@@ -1,0 +1,771 @@
+{
+  "schemaVersion": 1,
+  "reviewedThrough": "2026-07-29",
+  "sources": [
+    {
+      "id": "shewchuk-1997-adaptive-predicates",
+      "citationKey": "shewchuk1997adaptive",
+      "type": "paper",
+      "title": "Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates",
+      "authors": ["Jonathan Richard Shewchuk"],
+      "year": 1997,
+      "publication": "Discrete & Computational Geometry",
+      "publisher": "Springer",
+      "volume": "18",
+      "issue": "3",
+      "pages": "305–363",
+      "doi": "10.1007/PL00009321",
+      "url": "https://doi.org/10.1007/PL00009321",
+      "topics": ["robust geometry", "floating point", "predicates"],
+      "status": "adopted",
+      "confidence": "high",
+      "planSections": ["M1", "M2", "M3"],
+      "summary": "Shewchuk constructs adaptive orientation and incircle predicates from floating-point expansions. The fast path evaluates ordinary floating-point expressions, estimates their error, and escalates only uncertain signs to higher precision.",
+      "keyFindings": [
+        "Predicate correctness can be separated from coordinate construction so most geometry stays on the fast floating-point path.",
+        "The escalation threshold must derive from the executed arithmetic sequence and its error bound."
+      ],
+      "limitations": [
+        "The paper supplies predicates, not a complete policy for repairing non-manifold meshes or resolving coincident contours."
+      ],
+      "usage": {
+        "decision": "Use the adaptive-predicate pattern for orientation, segment ordering, triangle-plane classification, and topology-changing decisions.",
+        "targets": ["CPU geometry kernel", "degeneracy telemetry", "cross-backend oracle tests"]
+      },
+      "notePath": "notes/geometry-and-topology.md#shewchuk-1997-adaptive-predicates",
+      "pdf": {
+        "path": "papers/shewchuk-1997-robust-geometric-predicates.pdf",
+        "sourceUrl": "https://people.eecs.berkeley.edu/~jrs/papers/robustr.pdf",
+        "sha256": "5f047fd41666e53f6015497f68e42152e3a9d8d04556ab27f8b6fc92c74117d7",
+        "provenance": "Author-maintained publication site",
+        "accessNote": "Public author copy. Use for project research and cite the journal article.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "vatti-1992-polygon-clipping",
+      "citationKey": "vatti1992generic",
+      "type": "paper",
+      "title": "A Generic Solution to Polygon Clipping",
+      "authors": ["Bala R. Vatti"],
+      "year": 1992,
+      "publication": "Communications of the ACM",
+      "publisher": "Association for Computing Machinery",
+      "volume": "35",
+      "issue": "7",
+      "pages": "56–63",
+      "doi": "10.1145/129902.129906",
+      "url": "https://doi.org/10.1145/129902.129906",
+      "topics": ["polygon clipping", "planar topology", "contours"],
+      "status": "candidate",
+      "confidence": "medium",
+      "planSections": ["M3"],
+      "summary": "Vatti describes a general scanbeam clipping algorithm for arbitrary polygons. Its event ordering and active-edge structure are relevant to contour union, difference, and offset cleanup.",
+      "keyFindings": [
+        "A single clipping model can process concave polygons and holes when edge events and winding state remain explicit.",
+        "Topological output depends on deterministic event ordering at coincident vertices and horizontal edges."
+      ],
+      "limitations": [
+        "The paper predates modern robust-predicate practice and does not define the degeneracy contract required by this project."
+      ],
+      "usage": {
+        "decision": "Evaluate the scanbeam model against a smaller arrangement-based implementation before choosing the production polygon kernel.",
+        "targets": ["polygon Boolean prototype", "offset cleanup benchmarks"]
+      },
+      "notePath": "notes/geometry-and-topology.md#vatti-1992-polygon-clipping",
+      "pdf": null
+    },
+    {
+      "id": "campen-kobbelt-2010-self-intersections",
+      "citationKey": "campen2010exact",
+      "type": "paper",
+      "title": "Exact and Robust (Self-)Intersections for Polygonal Meshes",
+      "authors": ["Marcel Campen", "Leif Kobbelt"],
+      "year": 2010,
+      "publication": "Computer Graphics Forum",
+      "publisher": "Wiley",
+      "volume": "29",
+      "issue": "2",
+      "pages": "663–674",
+      "doi": "10.1111/j.1467-8659.2009.01609.x",
+      "url": "https://doi.org/10.1111/j.1467-8659.2009.01609.x",
+      "topics": ["mesh repair", "self-intersection", "exact arithmetic"],
+      "status": "candidate",
+      "confidence": "high",
+      "planSections": ["M2"],
+      "summary": "Campen and Kobbelt localize mesh intersections with an adaptive octree, then resolve critical cells with plane-based BSP operations under explicit precision bounds.",
+      "keyFindings": [
+        "Broad localization limits exact work to cells that contain an intersection.",
+        "Input quantization and fixed-precision bounds can provide a documented correctness envelope."
+      ],
+      "limitations": [
+        "The full BSP repair method is larger than the minimum viable slicer and may exceed the first implementation scope."
+      ],
+      "usage": {
+        "decision": "Adopt localization and explicit precision accounting. Defer the complete BSP repair operator until failure data justifies it.",
+        "targets": ["mesh diagnostics", "repair staging", "precision contract"]
+      },
+      "notePath": "notes/geometry-and-topology.md#campen-kobbelt-2010-self-intersections",
+      "pdf": {
+        "path": "papers/campen-kobbelt-2010-mesh-self-intersections.pdf",
+        "sourceUrl": "https://graphics.rwth-aachen.de/media/papers/campen_2010_eg_021.pdf",
+        "sha256": "8afb5c83f66ebd355949d09255bcfebc485b9714ff0a3dcee48d2020c17d49f0",
+        "provenance": "RWTH Aachen author publication archive",
+        "accessNote": "Public institutional copy. Cite the Computer Graphics Forum article.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "karras-2012-parallel-bvh",
+      "citationKey": "karras2012maximizing",
+      "type": "paper",
+      "title": "Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees",
+      "authors": ["Tero Karras"],
+      "year": 2012,
+      "publication": "High Performance Graphics",
+      "publisher": "Eurographics Association",
+      "volume": null,
+      "issue": null,
+      "pages": "33–37",
+      "doi": "10.2312/EGGH/HPG12/033-037",
+      "url": "https://doi.org/10.2312/EGGH/HPG12/033-037",
+      "topics": ["BVH", "GPU", "parallel algorithms", "Morton codes"],
+      "status": "candidate",
+      "confidence": "high",
+      "planSections": ["M4", "M8", "M9"],
+      "summary": "Karras maps sorted Morton codes to binary radix-tree nodes so each internal node can calculate its range and children independently. The construction exposes one parallel task per internal node.",
+      "keyFindings": [
+        "Sorted spatial keys can encode hierarchy topology without a level-by-level construction pass.",
+        "The output layout and equal-key tie rule are part of the algorithm contract."
+      ],
+      "limitations": [
+        "A linear BVH favors construction speed. Its traversal quality must be measured against the slicer's repeated layer queries."
+      ],
+      "usage": {
+        "decision": "Prototype this construction for GPU and CPU layer indexes, then retain it only if total build-plus-query time beats simpler z-interval buckets.",
+        "targets": ["Metal acceleration prototype", "CPU reference implementation"]
+      },
+      "notePath": "notes/parallelism-and-apple-silicon.md#karras-2012-parallel-bvh",
+      "pdf": {
+        "path": "papers/karras-2012-parallel-bvh-construction.pdf",
+        "sourceUrl": "https://research.nvidia.com/sites/default/files/pubs/2012-06_Maximizing-Parallelism-in/karras2012hpg_paper.pdf",
+        "sha256": "d398e0b8f6514f5b9286e0a46b829d43ab7f90ac21410b8f19700a799bd9572e",
+        "provenance": "NVIDIA Research publication archive",
+        "accessNote": "Public author copy. Cite the High Performance Graphics paper.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "felzenszwalb-huttenlocher-2012-distance-transforms",
+      "citationKey": "felzenszwalb2012distance",
+      "type": "paper",
+      "title": "Distance Transforms of Sampled Functions",
+      "authors": ["Pedro F. Felzenszwalb", "Daniel P. Huttenlocher"],
+      "year": 2012,
+      "publication": "Theory of Computing",
+      "publisher": "Theory of Computing",
+      "volume": "8",
+      "issue": "19",
+      "pages": "415–428",
+      "doi": "10.4086/toc.2012.v008a019",
+      "url": "https://doi.org/10.4086/toc.2012.v008a019",
+      "topics": ["distance transform", "grids", "dynamic programming"],
+      "status": "adopted",
+      "confidence": "high",
+      "planSections": ["M6"],
+      "summary": "Felzenszwalb and Huttenlocher reduce a class of grid transforms to separable lower-envelope calculations. The Euclidean case executes linear work per dimension instead of searching every source cell.",
+      "keyFindings": [
+        "A squared Euclidean distance transform can execute as independent one-dimensional passes over rows and columns.",
+        "The lower-envelope representation produces exact grid distances under the stated sampled-function model."
+      ],
+      "limitations": [
+        "The transform operates on a discrete grid. Grid resolution and conservative rasterization still control geometric error."
+      ],
+      "usage": {
+        "decision": "Use as the reference algorithm for infill fields, clearance maps, and support influence fields on raster layers.",
+        "targets": ["CPU field oracle", "Metal distance-transform kernel"]
+      },
+      "notePath": "notes/supports-and-fields.md#felzenszwalb-huttenlocher-2012-distance-transforms",
+      "pdf": {
+        "path": "papers/felzenszwalb-huttenlocher-2012-distance-transforms.pdf",
+        "sourceUrl": "https://theoryofcomputing.org/articles/v008a019/v008a019.pdf",
+        "sha256": "5c86137f39f0a4cfd38fdbd4aa2bd7058dc0d5e924991589fc1bc054393f1b13",
+        "provenance": "Official open-access journal",
+        "accessNote": "Published under CC BY. Preserve attribution to both authors and the journal.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "meijster-2000-linear-distance-transform",
+      "citationKey": "meijster2000general",
+      "type": "paper",
+      "title": "A General Algorithm for Computing Distance Transforms in Linear Time",
+      "authors": ["Arnold Meijster", "Jos B. T. M. Roerdink", "Wim H. Hesselink"],
+      "year": 2000,
+      "publication": "Mathematical Morphology and its Applications to Image and Signal Processing",
+      "publisher": "Kluwer Academic Publishers",
+      "volume": null,
+      "issue": null,
+      "pages": "331–340",
+      "doi": "10.1007/0-306-47025-X_36",
+      "url": "https://doi.org/10.1007/0-306-47025-X_36",
+      "topics": ["distance transform", "grids", "linear-time algorithms"],
+      "status": "candidate",
+      "confidence": "high",
+      "planSections": ["M6"],
+      "summary": "Meijster, Roerdink, and Hesselink split exact Euclidean distance transformation into a vertical scan and an independent horizontal lower-envelope pass.",
+      "keyFindings": [
+        "The two-phase data flow maps naturally to a structure-of-arrays grid and parallel row or column dispatch.",
+        "Intermediate integer squared distances avoid square roots until a consumer needs physical units."
+      ],
+      "limitations": [
+        "The paper does not account for GPU threadgroup occupancy, transposition cost, or Apple unified-memory behavior."
+      ],
+      "usage": {
+        "decision": "Benchmark beside the Felzenszwalb–Huttenlocher formulation and choose one shared CPU/Metal contract.",
+        "targets": ["distance-field benchmark", "GPU memory-layout experiment"]
+      },
+      "notePath": "notes/supports-and-fields.md#meijster-2000-linear-distance-transform",
+      "pdf": {
+        "path": "papers/meijster-et-al-2000-linear-distance-transforms.pdf",
+        "sourceUrl": "https://pure.rug.nl/ws/portalfiles/portal/3059926/2002CompImagVisMeijster.pdf",
+        "sha256": "e6d6dbea4cf3b64855d888520bffdf2a17f4a4e01fe4a362ed792d8ac1717696",
+        "provenance": "University of Groningen institutional repository",
+        "accessNote": "Public institutional copy. Cite the published chapter.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "dumas-2014-bridging-the-gap",
+      "citationKey": "dumas2014bridging",
+      "type": "paper",
+      "title": "Bridging the Gap: Automated Steady Scaffoldings for 3D Printing",
+      "authors": ["Jérémie Dumas", "Jean Hergel", "Sylvain Lefebvre"],
+      "year": 2014,
+      "publication": "ACM Transactions on Graphics",
+      "publisher": "Association for Computing Machinery",
+      "volume": "33",
+      "issue": "4",
+      "pages": "98:1–98:10",
+      "doi": "10.1145/2601097.2601153",
+      "url": "https://doi.org/10.1145/2601097.2601153",
+      "topics": ["supports", "bridging", "FFF", "stability"],
+      "status": "candidate",
+      "confidence": "high",
+      "planSections": ["M5", "M6"],
+      "summary": "Dumas, Hergel, and Lefebvre construct supports from vertical pillars and printable bridges. The optimization includes overhang contact selection and stability during intermediate print states.",
+      "keyFindings": [
+        "Bridges convert unsupported spans into structures anchored at both ends.",
+        "Support validity depends on the evolving printed prefix, not only the final model geometry."
+      ],
+      "limitations": [
+        "Printer-specific bridge limits and surface-quality tolerances require calibration before the method can become a default."
+      ],
+      "usage": {
+        "decision": "Use as the basis for an optional bridge-aware support planner after the simpler overhang and vertical-support pipeline is validated.",
+        "targets": ["support research prototype", "printer calibration fixtures"]
+      },
+      "notePath": "notes/supports-and-fields.md#dumas-2014-bridging-the-gap",
+      "pdf": {
+        "path": "papers/dumas-et-al-2014-bridging-the-gap.pdf",
+        "sourceUrl": "https://inria.hal.science/hal-01100737/document",
+        "sha256": "9aabf032cab06a9ee86306a2c69a30aa3a34b2420775d9d46616030c893355f4",
+        "provenance": "HAL/Inria open repository",
+        "accessNote": "Open repository copy. Cite the ACM Transactions on Graphics article.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "vanek-2014-clever-support",
+      "citationKey": "vanek2014clever",
+      "type": "paper",
+      "title": "Clever Support: Efficient Support Structure Generation for Digital Fabrication",
+      "authors": ["Juraj Vanek", "Jorge A. G. Galicia", "Bedřich Benes"],
+      "year": 2014,
+      "publication": "Computer Graphics Forum",
+      "publisher": "Wiley",
+      "volume": "33",
+      "issue": "5",
+      "pages": "117–125",
+      "doi": "10.1111/cgf.12437",
+      "url": "https://doi.org/10.1111/cgf.12437",
+      "topics": ["supports", "tree structures", "overhangs", "orientation"],
+      "status": "candidate",
+      "confidence": "high",
+      "planSections": ["M5", "M6"],
+      "summary": "Vanek, Galicia, and Benes detect overhang samples, define printable support cones, and greedily merge nearby support branches into a tree.",
+      "keyFindings": [
+        "Support-cone intersection turns printer angle limits into a concrete feasible region for branch merging.",
+        "The greedy merge produces practical tree supports but does not guarantee a global minimum."
+      ],
+      "limitations": [
+        "The physical tests cover a specific printer, material, and parameter range. Those dimensions cannot transfer as universal defaults."
+      ],
+      "usage": {
+        "decision": "Adopt support cones and explicit printer calibration. Treat greedy tree merging as a benchmark candidate.",
+        "targets": ["overhang sampler", "support-cone geometry", "tree-support prototype"]
+      },
+      "notePath": "notes/supports-and-fields.md#vanek-2014-clever-support",
+      "pdf": {
+        "path": "papers/vanek-et-al-2014-clever-support.pdf",
+        "sourceUrl": "https://gershon.cs.technion.ac.il/Seminar23_3DP/Papers/Geometry/Tree-like-sopport-Vanek_et_al-2014.pdf",
+        "sha256": "569937d30c8cb07937f6f10b6082651729986dda23749474c26a1d002a034ca8",
+        "provenance": "Public Technion academic course mirror",
+        "accessNote": "Public academic copy with author and publisher notices intact. Cite the Computer Graphics Forum article.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "hu-2015-support-slimming",
+      "citationKey": "hu2015support",
+      "type": "paper",
+      "title": "Support Slimming for Single Material Based Additive Manufacturing",
+      "authors": ["Kailun Hu", "Shuo Jin", "Charlie C. L. Wang"],
+      "year": 2015,
+      "publication": "Computer-Aided Design",
+      "publisher": "Elsevier",
+      "volume": "65",
+      "issue": null,
+      "pages": "1–10",
+      "doi": "10.1016/j.cad.2015.03.001",
+      "url": "https://doi.org/10.1016/j.cad.2015.03.001",
+      "topics": ["supports", "orientation", "shape optimization"],
+      "status": "background",
+      "confidence": "high",
+      "planSections": ["M5", "M6"],
+      "summary": "Hu, Jin, and Wang optimize model orientation and deform geometry to reduce support demand while limiting shape change.",
+      "keyFindings": [
+        "Support demand can be reduced before slicing by jointly changing orientation and local shape.",
+        "The method treats geometric deviation as an optimization constraint rather than a repair side effect."
+      ],
+      "limitations": [
+        "HW Slicer must preserve imported geometry by default, so automatic shape deformation is outside the first product contract."
+      ],
+      "usage": {
+        "decision": "Use as background for orientation scoring and a possible explicit design-assistance mode. Do not mutate production input automatically.",
+        "targets": ["orientation score research", "future design-assistance mode"]
+      },
+      "notePath": "notes/supports-and-fields.md#hu-2015-support-slimming",
+      "pdf": null
+    },
+    {
+      "id": "merrill-garland-2016-prefix-scan",
+      "citationKey": "merrill2016singlepass",
+      "type": "report",
+      "title": "Single-Pass Parallel Prefix Scan with Decoupled Look-Back",
+      "authors": ["Duane Merrill", "Michael Garland"],
+      "year": 2016,
+      "publication": "NVIDIA Technical Report NVR-2016-002",
+      "publisher": "NVIDIA",
+      "volume": null,
+      "issue": null,
+      "pages": "1–9",
+      "doi": null,
+      "url": "https://research.nvidia.com/publication/2016-03_single-pass-parallel-prefix-scan-decoupled-look-back",
+      "topics": ["prefix scan", "GPU", "compaction", "parallel algorithms"],
+      "status": "candidate",
+      "confidence": "high",
+      "planSections": ["M8", "M9"],
+      "summary": "Merrill and Garland use redundant local work to decouple block progress from global prefix propagation. Their scan reads each input and writes each output once in the steady data path.",
+      "keyFindings": [
+        "A prefix scan can drive stream compaction and output allocation without a separate global-count pass.",
+        "Correctness depends on publication state, memory ordering, and forward-progress assumptions."
+      ],
+      "limitations": [
+        "The implementation and evaluation target NVIDIA GPU execution. Metal synchronization and Apple GPU scheduling require a separate proof and benchmark."
+      ],
+      "usage": {
+        "decision": "Use the report as an algorithm candidate, not a direct port. Establish a two-pass Metal baseline first.",
+        "targets": ["segment compaction", "triangle-bin allocation", "Metal scan benchmark"]
+      },
+      "notePath": "notes/parallelism-and-apple-silicon.md#merrill-garland-2016-prefix-scan",
+      "pdf": {
+        "path": "papers/merrill-garland-2016-prefix-scan.pdf",
+        "sourceUrl": "https://research.nvidia.com/sites/default/files/pubs/2016-03_Single-pass-Parallel-Prefix/nvr-2016-002.pdf",
+        "sha256": "f8e3fb29fe562bcba5cb4a2094a3a93d05209b867be4c2e58887a37076e4058c",
+        "provenance": "NVIDIA Research official report archive",
+        "accessNote": "Public technical report. Preserve the report number in citations.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "michael-scott-1996-concurrent-queues",
+      "citationKey": "michael1996queues",
+      "type": "paper",
+      "title": "Simple, Fast, and Practical Non-Blocking and Blocking Concurrent Queue Algorithms",
+      "authors": ["Maged M. Michael", "Michael L. Scott"],
+      "year": 1996,
+      "publication": "Proceedings of the Fifteenth Annual ACM Symposium on Principles of Distributed Computing",
+      "publisher": "Association for Computing Machinery",
+      "volume": null,
+      "issue": null,
+      "pages": "267–275",
+      "doi": "10.1145/248052.248106",
+      "url": "https://doi.org/10.1145/248052.248106",
+      "topics": ["concurrency", "queues", "memory ordering"],
+      "status": "background",
+      "confidence": "high",
+      "planSections": ["M8"],
+      "summary": "Michael and Scott define blocking and non-blocking FIFO queues around atomic pointer updates and explicit progress properties.",
+      "keyFindings": [
+        "A queue algorithm must specify reclamation and atomic ordering together with its pointer transitions.",
+        "A two-lock queue can permit one enqueue and one dequeue to execute concurrently with a simpler proof."
+      ],
+      "limitations": [
+        "The original machine model and memory-reclamation discussion do not directly specify ARM64 acquire-release operations."
+      ],
+      "usage": {
+        "decision": "Use for terminology and correctness review. Prefer bounded queues or ownership transfer before introducing a lock-free queue.",
+        "targets": ["job-system design review", "ARM64 memory-order audit"]
+      },
+      "notePath": "notes/parallelism-and-apple-silicon.md#michael-scott-1996-concurrent-queues",
+      "pdf": {
+        "path": "papers/michael-scott-1996-concurrent-queues.pdf",
+        "sourceUrl": "https://www.cs.rochester.edu/~scott/papers/1996_PODC_queues.pdf",
+        "sha256": "f24685985fe3e806e3fda5ad030092f6ca64bf91899ec82db83a63faaae7b7cf",
+        "provenance": "University of Rochester author publication archive",
+        "accessNote": "Public author copy. Cite the PODC proceedings article.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "claessen-hughes-2000-quickcheck",
+      "citationKey": "claessen2000quickcheck",
+      "type": "paper",
+      "title": "QuickCheck: A Lightweight Tool for Random Testing of Haskell Programs",
+      "authors": ["Koen Claessen", "John Hughes"],
+      "year": 2000,
+      "publication": "Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming",
+      "publisher": "Association for Computing Machinery",
+      "volume": null,
+      "issue": null,
+      "pages": "268–279",
+      "doi": "10.1145/351240.351266",
+      "url": "https://doi.org/10.1145/351240.351266",
+      "topics": ["property testing", "generators", "shrinking"],
+      "status": "adopted",
+      "confidence": "high",
+      "planSections": ["M12"],
+      "summary": "Claessen and Hughes express program properties as executable functions, generate structured random inputs, and reduce failures to smaller counterexamples.",
+      "keyFindings": [
+        "Generators encode valid input structure while properties encode behavior independent of specific examples.",
+        "Failure reduction converts a random counterexample into a small regression fixture."
+      ],
+      "limitations": [
+        "The paper uses Haskell. Odin requires an explicit generator, seed, shrinker, and replay interface."
+      ],
+      "usage": {
+        "decision": "Adopt property-based generation and deterministic shrinking for parsers, predicates, polygon operations, and scheduling invariants.",
+        "targets": ["Odin test harness", "mesh and G-code generators", "seed replay"]
+      },
+      "notePath": "notes/formats-validation-and-tooling.md#claessen-hughes-2000-quickcheck",
+      "pdf": null
+    },
+    {
+      "id": "zeller-hildebrandt-2002-delta-debugging",
+      "citationKey": "zeller2002simplifying",
+      "type": "paper",
+      "title": "Simplifying and Isolating Failure-Inducing Input",
+      "authors": ["Andreas Zeller", "Ralf Hildebrandt"],
+      "year": 2002,
+      "publication": "IEEE Transactions on Software Engineering",
+      "publisher": "IEEE",
+      "volume": "28",
+      "issue": "2",
+      "pages": "183–200",
+      "doi": "10.1109/32.988498",
+      "url": "https://doi.org/10.1109/32.988498",
+      "topics": ["delta debugging", "failure reduction", "testing"],
+      "status": "adopted",
+      "confidence": "high",
+      "planSections": ["M12"],
+      "summary": "Zeller and Hildebrandt repeatedly partition a failure-inducing input, execute a controlled test, and retain the smallest subset or difference that preserves the failure.",
+      "keyFindings": [
+        "A reducer needs a stable pass, fail, and unresolved result contract.",
+        "Automated minimization makes large parser or geometry failures suitable for permanent regression tests."
+      ],
+      "limitations": [
+        "Non-deterministic failures break the test oracle and must be stabilized before reduction."
+      ],
+      "usage": {
+        "decision": "Build reducers for 3MF package parts, mesh components, layers, contours, and G-code command ranges.",
+        "targets": ["failure artifact pipeline", "fuzz regression minimizer"]
+      },
+      "notePath": "notes/formats-validation-and-tooling.md#zeller-hildebrandt-2002-delta-debugging",
+      "pdf": {
+        "path": "papers/zeller-hildebrandt-2002-delta-debugging.pdf",
+        "sourceUrl": "https://www.st.cs.uni-saarland.de/papers/tse2002/tse2002.pdf",
+        "sha256": "7ed0c812e1b3212f3956f5a624ac9103a00468ab665cae00784520d866e1c8aa",
+        "provenance": "Saarland University author publication archive",
+        "accessNote": "Public author copy. Cite the IEEE Transactions article.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "kramer-2000-rs274ngc",
+      "citationKey": "kramer2000rs274ngc",
+      "type": "report",
+      "title": "The NIST RS274NGC Interpreter, Version 3",
+      "authors": ["Thomas R. Kramer", "Frederick M. Proctor", "Elena R. Messina"],
+      "year": 2000,
+      "publication": "NIST Interagency/Internal Report 6556",
+      "publisher": "National Institute of Standards and Technology",
+      "volume": null,
+      "issue": null,
+      "pages": "1–121",
+      "doi": "10.6028/NIST.IR.6556",
+      "url": "https://doi.org/10.6028/NIST.IR.6556",
+      "topics": ["G-code", "parser", "motion commands", "RS274"],
+      "status": "adopted",
+      "confidence": "high",
+      "planSections": ["M7", "M10"],
+      "summary": "NISTIR 6556 specifies an RS274/NGC interpreter that parses blocks, maintains modal state, and emits canonical machining functions.",
+      "keyFindings": [
+        "Parsing and machine action separate through a canonical-function boundary.",
+        "Modal groups and block execution order require explicit state transitions."
+      ],
+      "limitations": [
+        "FFF printer dialects extend and diverge from RS274/NGC. Firmware-specific commands need separate profiles."
+      ],
+      "usage": {
+        "decision": "Adopt the modal-state and canonical-command architecture, then define explicit FFF dialect profiles.",
+        "targets": ["G-code parser", "motion planning IR", "dialect conformance tests"]
+      },
+      "notePath": "notes/formats-validation-and-tooling.md#kramer-2000-rs274ngc",
+      "pdf": {
+        "path": "papers/kramer-et-al-2000-nist-rs274ngc.pdf",
+        "sourceUrl": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=823374",
+        "sha256": "bfadafd00b76a791609bd2fbf843e866a4a470f72e8e02ca8fe84c62abbc4476",
+        "provenance": "Official NIST publication download",
+        "accessNote": "United States government report. Preserve report number and DOI.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "3mf-core-1-3-0",
+      "citationKey": "threeMF2021core",
+      "type": "specification",
+      "title": "3MF Core Specification, Version 1.3.0",
+      "authors": ["3MF Consortium"],
+      "year": 2021,
+      "publication": "3D Manufacturing Format Core Specification and Reference Guide",
+      "publisher": "3MF Consortium",
+      "volume": null,
+      "issue": null,
+      "pages": "1–40",
+      "doi": null,
+      "url": "https://3mf.io/spec/core-v1-3-0/",
+      "topics": ["3MF", "XML", "ZIP", "mesh format", "conformance"],
+      "status": "adopted",
+      "confidence": "high",
+      "planSections": ["M10"],
+      "summary": "The 3MF Core specification defines package relationships, model resources, meshes, components, units, transforms, and producer-consumer conformance requirements.",
+      "keyFindings": [
+        "A 3MF reader must validate both ZIP package relationships and XML model constraints.",
+        "Units, transforms, component graphs, and resource identifiers must resolve before triangles enter the geometry pipeline."
+      ],
+      "limitations": [
+        "Version 1.4.0 is the latest consortium revision. Version 1.3.0 remains the archived PDF baseline and requires a tracked delta review."
+      ],
+      "usage": {
+        "decision": "Implement version 1.3.0 as the initial conformance baseline, then audit the 1.4.0 source revision before declaring current-format support.",
+        "targets": ["3MF parser", "package validator", "conformance corpus"]
+      },
+      "notePath": "notes/formats-validation-and-tooling.md#3mf-core-1-3-0",
+      "pdf": {
+        "path": "papers/3mf-core-specification-1.3.0.pdf",
+        "sourceUrl": "https://github.com/3MFConsortium/spec_core/releases/download/1.3.0/3MF_Core_Specification_v1.3.0.pdf",
+        "sha256": "b925af36a04f937a2d3d870ee162a9cabd1961fe8de98d308e48301289a91470",
+        "provenance": "Official 3MF Consortium GitHub release",
+        "accessNote": "Official specification copy. Preserve the embedded terms and version.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "arm-aapcs64-release-2025q4",
+      "citationKey": "arm2025aapcs64",
+      "type": "specification",
+      "title": "Procedure Call Standard for the Arm 64-bit Architecture",
+      "authors": ["Arm Limited"],
+      "year": 2025,
+      "publication": "Application Binary Interface for the Arm Architecture",
+      "publisher": "Arm Limited",
+      "volume": null,
+      "issue": null,
+      "pages": "1–65",
+      "doi": null,
+      "url": "https://github.com/ARM-software/abi-aa/releases/tag/2025Q4",
+      "topics": ["ARM64", "ABI", "calling convention", "data layout"],
+      "status": "adopted",
+      "confidence": "high",
+      "planSections": ["M8", "M11"],
+      "summary": "AAPCS64 defines register roles, argument and result transfer, stack alignment, data layout, and obligations across separately compiled AArch64 routines.",
+      "keyFindings": [
+        "Interop boundaries must preserve the platform register and stack contracts before Odin, C, Objective-C, and assembly can call one another safely.",
+        "Aggregate layout and homogeneous vector rules affect SIMD helpers and foreign-function bindings."
+      ],
+      "limitations": [
+        "The PDF asset distributed with the 2025Q4 release is labeled 2025Q1 internally. The source tree identifies 2025Q4, so this discrepancy must remain visible."
+      ],
+      "usage": {
+        "decision": "Treat the standard as the ABI authority for all hand-written ARM64 and foreign-function boundaries.",
+        "targets": ["Odin FFI review", "NEON assembly", "callback trampolines"]
+      },
+      "notePath": "notes/parallelism-and-apple-silicon.md#arm-aapcs64-release-2025q4",
+      "pdf": {
+        "path": "papers/arm-aapcs64-2025q4.pdf",
+        "sourceUrl": "https://github.com/ARM-software/abi-aa/releases/download/2025Q4/aapcs64.pdf",
+        "sha256": "a9990923129732ed0714dae2d9dfeaf5f438ba6e56f65e96306b1feae3dab5e3",
+        "provenance": "Official Arm ABI release asset",
+        "accessNote": "CC BY-SA 4.0 with the specification's patent grant and trademark terms.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "apple-metal-shading-language-4-1",
+      "citationKey": "apple2026msl41",
+      "type": "specification",
+      "title": "Metal Shading Language Specification, Version 4.1",
+      "authors": ["Apple Inc."],
+      "year": 2026,
+      "publication": "Apple Developer Documentation",
+      "publisher": "Apple Inc.",
+      "volume": null,
+      "issue": null,
+      "pages": "1–383",
+      "doi": null,
+      "url": "https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf",
+      "topics": ["Metal", "GPU", "shaders", "memory model", "Apple Silicon"],
+      "status": "adopted",
+      "confidence": "high",
+      "planSections": ["M9"],
+      "summary": "Metal Shading Language 4.1 defines shader data types, address spaces, atomics, synchronization, function attributes, compilation, and compute-kernel execution rules.",
+      "keyFindings": [
+        "Buffer ownership and address-space types must match the resource binding and synchronization plan.",
+        "Threadgroup barriers order only the memory domains and threads named by their contract."
+      ],
+      "limitations": [
+        "Language availability does not prove feature support on a device. Runtime family checks must use the feature tables and Metal APIs."
+      ],
+      "usage": {
+        "decision": "Use as the language authority for every compute kernel and memory-order review.",
+        "targets": ["Metal kernel code", "binding generator", "GPU synchronization tests"]
+      },
+      "notePath": "notes/parallelism-and-apple-silicon.md#apple-metal-shading-language-4-1",
+      "pdf": {
+        "path": "papers/apple-metal-shading-language-specification.pdf",
+        "sourceUrl": "https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf",
+        "sha256": "41538b30d2f1140a5b2a0c84ce0a9f7b67bf0c707e224cfea0bfe5a44aa26cf5",
+        "provenance": "Official Apple Developer download",
+        "accessNote": "Reference copy from Apple. Retain Apple's notices and link to the current official download.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "apple-metal-feature-tables-2026-05-21",
+      "citationKey": "apple2026metalfeatures",
+      "type": "specification",
+      "title": "Metal Feature Set Tables",
+      "authors": ["Apple Inc."],
+      "year": 2026,
+      "publication": "Apple Developer Documentation",
+      "publisher": "Apple Inc.",
+      "volume": null,
+      "issue": null,
+      "pages": "1–18",
+      "doi": null,
+      "url": "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf",
+      "topics": ["Metal", "GPU families", "limits", "Apple Silicon"],
+      "status": "adopted",
+      "confidence": "high",
+      "planSections": ["M9"],
+      "summary": "The May 21, 2026 feature tables map Metal features, formats, limits, and programming models to Apple and Mac GPU families.",
+      "keyFindings": [
+        "Kernel dispatch dimensions, buffer limits, atomics, and memory features must derive from the active GPU family.",
+        "Metal 4 language features and device features have separate availability conditions."
+      ],
+      "limitations": [
+        "Apple updates this document independently of the repository. The checksum identifies the reviewed snapshot only."
+      ],
+      "usage": {
+        "decision": "Bind startup capability detection and test-matrix selection to these limits, while checking the live device through Metal APIs.",
+        "targets": ["GPU capability table", "dispatch validation", "fallback selection"]
+      },
+      "notePath": "notes/parallelism-and-apple-silicon.md#apple-metal-feature-tables-2026-05-21",
+      "pdf": {
+        "path": "papers/apple-metal-feature-set-tables.pdf",
+        "sourceUrl": "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf",
+        "sha256": "9f31df15dd6827545702c5a0845f6e36e1889878cd0e534123bd70211e5c00a8",
+        "provenance": "Official Apple Developer download",
+        "accessNote": "Reference copy from Apple. Retain Apple's notices and link to the current official download.",
+        "retrieved": "2026-07-29"
+      }
+    },
+    {
+      "id": "odin-project-documentation",
+      "citationKey": "odin2026documentation",
+      "type": "documentation",
+      "title": "Odin Documentation",
+      "authors": ["Odin Project"],
+      "year": 2026,
+      "publication": "Odin Language Documentation",
+      "publisher": "Odin Project",
+      "volume": null,
+      "issue": null,
+      "pages": null,
+      "doi": null,
+      "url": "https://odin-lang.org/docs/",
+      "topics": ["Odin", "language", "foreign function interface", "build system"],
+      "status": "adopted",
+      "confidence": "medium",
+      "planSections": ["M8", "M11", "M12"],
+      "summary": "The official documentation defines Odin language syntax, package behavior, memory facilities, foreign imports, build modes, and platform integration.",
+      "keyFindings": [
+        "Allocator choice and lifetime remain explicit at package boundaries.",
+        "Foreign bindings expose platform APIs without changing their ownership or ABI contracts."
+      ],
+      "limitations": [
+        "The documentation changes continuously and has no immutable PDF edition. Code must pin the Odin compiler version separately."
+      ],
+      "usage": {
+        "decision": "Use as the language authority, with compiler behavior verified against the version pinned by the project toolchain.",
+        "targets": ["language decisions", "FFI bindings", "build and test commands"]
+      },
+      "notePath": "notes/formats-validation-and-tooling.md#odin-project-documentation",
+      "pdf": null
+    },
+    {
+      "id": "apple-notarization-documentation",
+      "citationKey": "apple2026notarization",
+      "type": "documentation",
+      "title": "Notarizing macOS Software Before Distribution",
+      "authors": ["Apple Inc."],
+      "year": 2026,
+      "publication": "Apple Developer Documentation",
+      "publisher": "Apple Inc.",
+      "volume": null,
+      "issue": null,
+      "pages": null,
+      "doi": null,
+      "url": "https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution",
+      "topics": ["macOS", "notarization", "distribution", "security"],
+      "status": "candidate",
+      "confidence": "medium",
+      "planSections": ["M12"],
+      "summary": "Apple's distribution documentation defines the submission, status, ticket stapling, and Gatekeeper validation flow for software distributed outside the Mac App Store.",
+      "keyFindings": [
+        "The release pipeline must sign the complete application before notarization and staple the accepted ticket to the distributed artifact.",
+        "Release verification must execute on the final packaged artifact, not on an earlier build directory."
+      ],
+      "limitations": [
+        "The live documentation changes with Apple's service and toolchain. The release runbook must record the executed command versions."
+      ],
+      "usage": {
+        "decision": "Use when the release system is implemented. Keep signing identities and service credentials outside the repository.",
+        "targets": ["release runbook", "signed artifact verification"]
+      },
+      "notePath": "notes/formats-validation-and-tooling.md#apple-notarization-documentation",
+      "pdf": null
+    }
+  ]
+}

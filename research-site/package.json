@@ -1,0 +1,22 @@
+{
+  "name": "hw-slicer-research",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "sync-research": "node scripts/sync-research.mjs",
+    "build": "npm run sync-research && vite build && node scripts/build-worker.mjs",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "verify": "node scripts/verify-site.mjs"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/kit": "2.69.3",
+    "@sveltejs/vite-plugin-svelte": "7.0.0",
+    "svelte": "5.56.5",
+    "svelte-check": "4.4.7",
+    "typescript": "6.0.3",
+    "vite": "8.1.4"
+  }
+}
