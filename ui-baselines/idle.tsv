@@ -1,0 +1,17 @@
+controls	16	theme	dark	modal	none
+1	window close	close window	8	5	30	30	enabled
+2	window minimize	minimize window	40	5	30	30	enabled
+3	window zoom	zoom window	72	5	30	30	enabled
+4	theme	switch to light theme	1124	5	82	30	enabled
+5	help	viewer help	1214	5	54	30	enabled
+7	model benchy	load 3D Benchy	20	86	204	40	enabled
+8	model all in one	load all in one printer test	20	134	204	40	enabled
+9	model bunny	load Stanford Bunny	20	182	204	40	enabled
+10	frame mesh	frame the complete mesh	256	64	78	30	enabled
+11	wireframe	toggle mesh wireframe	342	64	98	30	enabled
+12	action open	01 open	12	736	209	52	enabled
+13	action slice	02 slice	221	736	209	52	disabled
+14	action cancel	03 cancel	431	736	209	52	disabled
+15	action capture	04 capture	640	736	209	52	disabled
+16	action compare	05 compare	849	736	209	52	disabled
+17	action export	06 export	1059	736	209	52	disabled

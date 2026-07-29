@@ -3,3 +3,4 @@ build/
 *.dSYM/
 *.o
 *.dylib
+.hw-slicer-runtime/
