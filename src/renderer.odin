@@ -16,6 +16,7 @@ Scene_Uniforms :: struct {
 
 Solid_Vertex :: struct {
 	position: Vec2,
+	padding:  Vec2,
 	color:    Vec4,
 }
 
@@ -650,7 +651,7 @@ renderer_draw :: proc(
 		sel_registerName("setRenderPipelineState:"),
 		renderer.solid_pipeline,
 	)
-	max_vertices := 112
+	max_vertices := 111
 	for start := 0; start < len(solids); start += max_vertices {
 		count := min(max_vertices, len(solids)-start)
 		batch := solids[start:start+count]

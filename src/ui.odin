@@ -402,10 +402,10 @@ ui_add_rect :: proc(
 	x1 := f32((rect.x+rect.w)/ui.width*2-1)
 	y0 := f32(1-rect.y/ui.height*2)
 	y1 := f32(1-(rect.y+rect.h)/ui.height*2)
-	a := Solid_Vertex{{x0, y0}, color}
-	b := Solid_Vertex{{x1, y0}, color}
-	c := Solid_Vertex{{x1, y1}, color}
-	d := Solid_Vertex{{x0, y1}, color}
+	a := Solid_Vertex{position = {x0, y0}, color = color}
+	b := Solid_Vertex{position = {x1, y0}, color = color}
+	c := Solid_Vertex{position = {x1, y1}, color = color}
+	d := Solid_Vertex{position = {x0, y1}, color = color}
 	append(vertices, a, b, c, a, c, d)
 }
 
