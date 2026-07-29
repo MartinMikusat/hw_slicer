@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "sync-research": "node scripts/sync-research.mjs",
-    "build": "npm run sync-research && vite build && node scripts/build-worker.mjs",
+    "build": "npm run sync-research && vite build",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "verify": "node scripts/verify-site.mjs"
   },

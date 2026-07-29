@@ -19,11 +19,11 @@ npm run build
 npm run verify
 ```
 
-`npm run build` validates `../research/catalog.json` before it creates the
-static site and the Cloudflare Worker entry.
+Run `npm run dev`, then open `http://localhost:5173`.
 
-The production bundle includes catalog metadata and external source links. It
-does not include the local research PDF snapshots.
+`npm run build` validates `../research/catalog.json` before it creates a local
+static build in `build/`. The build includes catalog metadata and external
+source links. It does not copy the research PDF snapshots.
 
 ## Third-party assets
 
