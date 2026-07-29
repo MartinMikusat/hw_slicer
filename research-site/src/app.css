@@ -695,6 +695,13 @@ footer p {
   background: var(--raised);
 }
 
+.action-bar button:active,
+.action-bar button.active {
+  color: var(--text);
+  background: var(--raised);
+  box-shadow: inset 0 -2px 0 var(--warm);
+}
+
 .action-bar kbd {
   color: var(--warm);
 }

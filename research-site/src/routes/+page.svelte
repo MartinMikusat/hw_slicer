@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { actionSlotFromKey, type ActionSlot } from "$lib/action-shortcuts";
 
   type SourceStatus = "adopted" | "candidate" | "background" | "rejected" | "unreviewed";
   type SourceType = "paper" | "report" | "specification" | "documentation";
@@ -56,7 +57,9 @@
   let selectedId = $state<string | null>(null);
   let copiedKey = $state<string | null>(null);
   let theme = $state<"light" | "dark">("light");
+  let activeAction = $state<ActionSlot | null>(null);
   let searchInput: HTMLInputElement;
+  let actionResetTimer: number | undefined;
 
   const statusOptions: Array<SourceStatus | "all"> = [
     "all",
@@ -194,6 +197,28 @@
     history.replaceState(null, "", location.pathname);
   }
 
+  function focusSearch() {
+    searchInput?.focus({ preventScroll: true });
+    searchInput?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function showMethod() {
+    document.querySelector("#method")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function runAction(slot: ActionSlot) {
+    activeAction = slot;
+    window.clearTimeout(actionResetTimer);
+    actionResetTimer = window.setTimeout(() => {
+      activeAction = null;
+    }, 500);
+
+    if (slot === 1) focusSearch();
+    else if (slot === 2) clearFilters();
+    else if (slot === 3) showMethod();
+    else toggleTheme();
+  }
+
   function formattedCitation(source: ResearchSource) {
     const locator = source.doi ? `https://doi.org/${source.doi}` : source.url;
     return `${source.authors.join(", ")}. “${source.title}.” ${source.publication}, ${source.year}. ${locator}`;
@@ -208,28 +233,34 @@
   }
 
   function handleGlobalKey(event: KeyboardEvent) {
-    if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
+    if (
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.defaultPrevented ||
+      event.repeat
+    ) {
+      return;
+    }
+
     const target = event.target as HTMLElement;
     const ownsText =
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||
-      target instanceof HTMLSelectElement ||
       target.isContentEditable;
-    if (ownsText) return;
 
-    if (event.key === "1") {
-      event.preventDefault();
-      searchInput?.focus();
-    } else if (event.key === "2") {
-      event.preventDefault();
-      clearFilters();
-    } else if (event.key === "3") {
-      event.preventDefault();
-      document.querySelector("#method")?.scrollIntoView({ behavior: "smooth" });
-    } else if (event.key === "4") {
-      event.preventDefault();
-      toggleTheme();
+    if (ownsText) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        target.blur();
+      }
+      return;
     }
+
+    const slot = actionSlotFromKey(event.code, event.key);
+    if (!slot) return;
+    event.preventDefault();
+    runAction(slot);
   }
 </script>
 
@@ -549,13 +580,40 @@
 </footer>
 
 <div class="action-bar" aria-label="Keyboard actions">
-  <button type="button" onclick={() => searchInput?.focus()}><kbd>01</kbd> SEARCH</button>
-  <button type="button" onclick={clearFilters}><kbd>02</kbd> CLEAR</button>
   <button
     type="button"
-    onclick={() => document.querySelector("#method")?.scrollIntoView({ behavior: "smooth" })}
+    class:active={activeAction === 1}
+    aria-keyshortcuts="1"
+    title="Press 1"
+    onclick={() => runAction(1)}
+  >
+    <kbd>01</kbd> SEARCH
+  </button>
+  <button
+    type="button"
+    class:active={activeAction === 2}
+    aria-keyshortcuts="2"
+    title="Press 2"
+    onclick={() => runAction(2)}
+  >
+    <kbd>02</kbd> CLEAR
+  </button>
+  <button
+    type="button"
+    class:active={activeAction === 3}
+    aria-keyshortcuts="3"
+    title="Press 3"
+    onclick={() => runAction(3)}
   >
     <kbd>03</kbd> METHOD
   </button>
-  <button type="button" onclick={toggleTheme}><kbd>04</kbd> THEME</button>
+  <button
+    type="button"
+    class:active={activeAction === 4}
+    aria-keyshortcuts="4"
+    title="Press 4"
+    onclick={() => runAction(4)}
+  >
+    <kbd>04</kbd> THEME
+  </button>
 </div>

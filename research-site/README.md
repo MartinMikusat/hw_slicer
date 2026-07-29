@@ -15,6 +15,7 @@ Models used:
 ```sh
 npm run dev
 npm run check
+npm test
 npm run build
 npm run verify
 ```
