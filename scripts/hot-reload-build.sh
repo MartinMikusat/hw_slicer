@@ -47,6 +47,7 @@ case "$PART" in
 esac
 
 "$ROOT/scripts/dependencies.sh" check
+ODIN=$("$ROOT/scripts/odin.sh" --print-path)
 
 HOT_DIR="$ROOT/build/hot-reload/$MODE"
 HOST="$APP/Contents/MacOS/HWSlicer"
@@ -115,7 +116,7 @@ build_module() {
   (
     cd "$HOT_DIR"
     # shellcheck disable=SC2086
-    odin build "$ROOT/src" \
+    "$ODIN" build "$ROOT/src" \
       -build-mode:dll \
       -out:"$MODULE_NEXT" \
       $ODIN_FLAGS \

@@ -74,6 +74,12 @@ under `.hw-slicer-runtime/` and return only the control count and artifact path.
 The project requires Apple Silicon macOS, Xcode 26.6, and Odin
 `dev-2026-01:393fec2f6`.
 
+The build selects the pinned compiler from `HW_SLICER_ODIN`,
+`/opt/homebrew/bin/odin`, or `PATH`, in that order. This keeps an older Odin
+earlier in the interactive shell path from changing the build. Set
+`HW_SLICER_ODIN=/path/to/odin` to use another installation of the pinned
+version.
+
 `dependencies.lock` pins `hw_odin_ui_flash` to repository
 `https://github.com/MartinMikusat/hw_odin_ui_flash.git` at commit
 `d06e98a40640b13eea5b979319022aad0a470d72`. The build rejects a different
