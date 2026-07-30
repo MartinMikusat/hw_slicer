@@ -198,6 +198,10 @@ The current engine implementation provides:
   interface spacing.
 - Half-line boundary insets, alternating layer axes, exact rational boundary
   hits, and canonical support-path hashes.
+- Priority-ordered model-role subtraction before path generation, with
+  canonical source ordering and exact removed-area evidence.
+- Explicit rejection of overlapping equal-priority masks, including separate
+  evidence for sources that higher-priority geometry removes completely.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact

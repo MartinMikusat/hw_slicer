@@ -1,5 +1,7 @@
 package features
 
+import profiles "../profiles"
+
 FEATURE_ORDINAL_CLASS_SHIFT :: 62
 FEATURE_ORDINAL_PAYLOAD_MASK :: u64(1)<<FEATURE_ORDINAL_CLASS_SHIFT-1
 FEATURE_ORDINAL_SURFACE_PREFIX :: u64(1)<<FEATURE_ORDINAL_CLASS_SHIFT
@@ -9,6 +11,7 @@ FEATURE_ORDINAL_GAP_EVIDENCE_BASE :: u64(1)<<32
 FEATURE_ORDINAL_BRIDGE_EVIDENCE_BASE :: u64(2)<<32
 FEATURE_ORDINAL_SUPPORT_DEMAND_BASE :: u64(3)<<32
 FEATURE_ORDINAL_SUPPORT_GEOMETRY_BASE :: u64(4)<<32
+FEATURE_ORDINAL_ROLE_OVERLAP_BASE :: u64(5)<<32
 FEATURE_PERIMETER_COUNT_LIMIT :: u32(1)<<30
 
 feature_perimeter_ordinal :: proc(
@@ -77,4 +80,16 @@ feature_support_geometry_ordinal :: proc(
 	return FEATURE_ORDINAL_SKIN_PREFIX |
 		FEATURE_ORDINAL_SUPPORT_GEOMETRY_BASE |
 		u64(kind), true
+}
+
+feature_role_overlap_ordinal :: proc(
+	role: profiles.Printable_Role,
+) -> (u64, bool) {
+	_, role_ok := profiles.printable_role_priority(role)
+	if !role_ok || role == .Support || role == .Support_Interface {
+		return 0, false
+	}
+	return FEATURE_ORDINAL_SKIN_PREFIX |
+		FEATURE_ORDINAL_ROLE_OVERLAP_BASE |
+		u64(role), true
 }
