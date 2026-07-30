@@ -109,14 +109,25 @@ motion_plan_capture_rejects_budget_path_and_content_failures_test :: proc(
 }
 
 motion_plan_capture_test_artifact :: proc(t: ^testing.T) -> []u8 {
+	return motion_plan_capture_test_artifact_with_dependencies(
+		t,
+		MOTION_CAPTURE_TEST_HASH,
+		MOTION_CAPTURE_TEST_HASH,
+	)
+}
+
+motion_plan_capture_test_artifact_with_dependencies :: proc(
+	t: ^testing.T,
+	path_plan_hash, extrusion_hash: contracts.Content_Hash,
+) -> []u8 {
 	dependency_layer := features.Motion_Plan_Layer_Dependency{
 		stable_id = 10,
 		z = 200,
 		model_hash = MOTION_CAPTURE_TEST_HASH,
 	}
 	dependencies := features.Motion_Plan_Hash_Dependencies{
-		path_plan_hash = MOTION_CAPTURE_TEST_HASH,
-		extrusion_hash = MOTION_CAPTURE_TEST_HASH,
+		path_plan_hash = path_plan_hash,
+		extrusion_hash = extrusion_hash,
 		printer_hash = MOTION_CAPTURE_TEST_HASH,
 		process_hash = MOTION_CAPTURE_TEST_HASH,
 		layers = []features.Motion_Plan_Layer_Dependency{dependency_layer},

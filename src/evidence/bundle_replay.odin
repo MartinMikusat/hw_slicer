@@ -15,11 +15,13 @@ Evidence_Bundle_Replay :: struct {
 	topology:         Topology_Artifact,
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
+	extrusion:        features.Extrusion_Artifact,
 	motion_plan:      features.Motion_Plan_Artifact,
 	marlin:           gcode.Marlin_Artifact,
 	topology_loaded:  bool,
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
+	extrusion_loaded: bool,
 	motion_plan_loaded: bool,
 	marlin_loaded:    bool,
 }
@@ -58,6 +60,9 @@ evidence_bundle_replay_destroy :: proc(
 	}
 	if replay.path_plan_loaded {
 		path_plan_artifact_destroy(&replay.path_plan, allocator)
+	}
+	if replay.extrusion_loaded {
+		features.extrusion_artifact_destroy(&replay.extrusion, allocator)
 	}
 	if replay.motion_plan_loaded {
 		features.motion_plan_artifact_destroy(&replay.motion_plan, allocator)
@@ -332,6 +337,9 @@ evidence_bundle_archive_replay :: proc(
 		   evidence_bundle_replay_stage_supported(stage.stage.name) {
 			return {}, .Invalid_Content
 		}
+		if !evidence_bundle_replay_dependencies_valid(replay) {
+			return {}, .Invalid_Content
+		}
 	}
 	complete = true
 	return replay, .None
@@ -520,6 +528,9 @@ evidence_bundle_directory_replay :: proc(
 		   evidence_bundle_replay_stage_supported(stage.stage.name) {
 			return {}, .Invalid_Content
 		}
+		if !evidence_bundle_replay_dependencies_valid(replay) {
+			return {}, .Invalid_Content
+		}
 	}
 	root_manifest_after, reread_error :=
 		evidence_bundle_directory_read_file(
@@ -579,6 +590,7 @@ evidence_bundle_replay_primitive_supported :: proc(
 		return format == REGION_ARTIFACT_FORMAT
 	case "plan-paths":
 		return format == PATH_PLAN_ARTIFACT_FORMAT ||
+			format == features.EXTRUSION_ARTIFACT_FORMAT ||
 			format == features.MOTION_PLAN_ARTIFACT_FORMAT
 	case "emit-gcode":
 		return format == gcode.MARLIN_ARTIFACT_FORMAT
@@ -688,6 +700,39 @@ evidence_bundle_replay_stage_decode :: proc(
 			}
 			replay.path_plan = artifact
 			replay.path_plan_loaded = true
+		case features.EXTRUSION_ARTIFACT_FORMAT:
+			if replay.extrusion_loaded {return .Invalid_Content}
+			expectations, preflight_error :=
+				extrusion_manifest_preflight(
+					manifest,
+					primitive.path,
+					artifact_bytes,
+				)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error :=
+				features.extrusion_artifact_decode(
+					artifact_bytes,
+					features.DEFAULT_EXTRUSION_ARTIFACT_LIMITS,
+					allocator,
+				)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
+			}
+			if extrusion_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				features.extrusion_artifact_destroy(
+					&artifact,
+					allocator,
+				)
+				return .Invalid_Content
+			}
+			replay.extrusion = artifact
+			replay.extrusion_loaded = true
 		case features.MOTION_PLAN_ARTIFACT_FORMAT:
 			if replay.motion_plan_loaded {return .Invalid_Content}
 			expectations, preflight_error := motion_plan_manifest_preflight(
@@ -752,4 +797,29 @@ evidence_bundle_replay_stage_decode :: proc(
 	case:
 	}
 	return .None
+}
+
+evidence_bundle_replay_dependencies_valid :: proc(
+	replay: Evidence_Bundle_Replay,
+) -> bool {
+	if replay.path_plan_loaded && replay.extrusion_loaded &&
+	   replay.extrusion.dependencies.path_plan_hash !=
+		replay.path_plan.result_hash {
+		return false
+	}
+	if replay.path_plan_loaded && replay.motion_plan_loaded &&
+	   replay.motion_plan.dependencies.path_plan_hash !=
+		replay.path_plan.result_hash {
+		return false
+	}
+	if replay.extrusion_loaded && replay.motion_plan_loaded &&
+	   replay.motion_plan.dependencies.extrusion_hash !=
+		replay.extrusion.result_hash {
+		return false
+	}
+	if replay.motion_plan_loaded && replay.marlin_loaded &&
+	   replay.marlin.motion_hash != replay.motion_plan.result_hash {
+		return false
+	}
+	return true
 }

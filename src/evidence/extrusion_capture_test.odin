@@ -107,6 +107,21 @@ extrusion_capture_rejects_budget_path_and_content_failures_test :: proc(
 }
 
 extrusion_capture_test_artifact :: proc(t: ^testing.T) -> []u8 {
+	return extrusion_capture_test_artifact_with_dependencies(
+		t,
+		{
+			path_plan_hash = EXTRUSION_CAPTURE_TEST_HASH,
+			layer_schedule_hash = EXTRUSION_CAPTURE_TEST_HASH,
+			material_hash = EXTRUSION_CAPTURE_TEST_HASH,
+			process_hash = EXTRUSION_CAPTURE_TEST_HASH,
+		},
+	)
+}
+
+extrusion_capture_test_artifact_with_dependencies :: proc(
+	t: ^testing.T,
+	dependencies: features.Extrusion_Hash_Dependencies,
+) -> []u8 {
 	filament_diameter := u128(1_750)
 	filament_denominator :=
 		u128(features.EXTRUSION_PI_SCALED)*
@@ -127,12 +142,6 @@ extrusion_capture_test_artifact :: proc(t: ^testing.T) -> []u8 {
 		filament_length_denominator = filament_denominator,
 		quantized_length_denominator = filament_denominator*10,
 		layers = []features.Extrusion_Layer{{}},
-	}
-	dependencies := features.Extrusion_Hash_Dependencies{
-		path_plan_hash = EXTRUSION_CAPTURE_TEST_HASH,
-		layer_schedule_hash = EXTRUSION_CAPTURE_TEST_HASH,
-		material_hash = EXTRUSION_CAPTURE_TEST_HASH,
-		process_hash = EXTRUSION_CAPTURE_TEST_HASH,
 	}
 	result_hash, result_ok :=
 		features.extrusion_result_content_hash(dependencies, result)

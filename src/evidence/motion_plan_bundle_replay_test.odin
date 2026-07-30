@@ -45,7 +45,49 @@ motion_plan_bundle_replays_with_path_plan_without_source_test :: proc(
 	path_hash_text := hex.encode(path_artifact.result_hash[:])
 	defer delete(path_hash_text)
 
-	motion_bytes := motion_plan_capture_test_artifact(t)
+	extrusion_bytes := extrusion_capture_test_artifact_with_dependencies(
+		t,
+		{
+			path_plan_hash = path_artifact.result_hash,
+			layer_schedule_hash = EXTRUSION_CAPTURE_TEST_HASH,
+			material_hash = EXTRUSION_CAPTURE_TEST_HASH,
+			process_hash = EXTRUSION_CAPTURE_TEST_HASH,
+		},
+	)
+	defer delete(extrusion_bytes)
+	extrusion_capture, extrusion_capture_error :=
+		extrusion_capture_describe(
+			"stages/10-plan-paths/primitives/extrusion.bin",
+			{
+				level = .Primitives,
+				item_limit = 1,
+				byte_limit = u64(len(extrusion_bytes)),
+			},
+			{},
+			extrusion_bytes,
+		)
+	defer extrusion_capture_destroy(&extrusion_capture)
+	testing.expect_value(
+		t,
+		extrusion_capture_error,
+		Extrusion_Capture_Error.None,
+	)
+	extrusion_artifact, extrusion_decode_error :=
+		features.extrusion_artifact_decode(extrusion_bytes)
+	defer features.extrusion_artifact_destroy(&extrusion_artifact)
+	testing.expect_value(
+		t,
+		extrusion_decode_error,
+		features.Extrusion_Artifact_Error.None,
+	)
+	extrusion_hash_text := hex.encode(extrusion_artifact.result_hash[:])
+	defer delete(extrusion_hash_text)
+
+	motion_bytes := motion_plan_capture_test_artifact_with_dependencies(
+		t,
+		path_artifact.result_hash,
+		extrusion_artifact.result_hash,
+	)
 	defer delete(motion_bytes)
 	motion_capture, motion_capture_error := motion_plan_capture_describe(
 		"stages/10-plan-paths/primitives/motion.bin",
@@ -80,12 +122,24 @@ motion_plan_bundle_replays_with_path_plan_without_source_test :: proc(
 		.Plan_Paths,
 	)
 	testing.expect(t, provider_ok)
-	summary := [14]Evidence_Counter{
+	summary := [17]Evidence_Counter{
 		{"layers", u64(len(path_artifact.result.layers))},
 		{"paths", u64(len(path_artifact.result.paths))},
 		{"moves", u64(len(path_artifact.result.moves))},
 		{"travel_moves", path_artifact.result.travel_move_count},
 		{"extrude_moves", path_artifact.result.extrude_move_count},
+		{
+			"extrusion_layers",
+			u64(len(extrusion_artifact.result.layers)),
+		},
+		{
+			"extrusion_moves",
+			u64(len(extrusion_artifact.result.moves)),
+		},
+		{
+			"extrusion_volume_cubic_um",
+			extrusion_artifact.result.total_volume_cubic_um,
+		},
 		{"motion_layers", u64(len(motion_artifact.result.layers))},
 		{"motion_operations", u64(len(motion_artifact.result.operations))},
 		{"retractions", motion_artifact.result.retraction_count},
@@ -105,7 +159,7 @@ motion_plan_bundle_replays_with_path_plan_without_source_test :: proc(
 			motion_artifact.result.total_planned_duration_us,
 		},
 	}
-	invariants := [4]Evidence_Invariant{
+	invariants := [6]Evidence_Invariant{
 		{
 			"canonical_result_hash",
 			true,
@@ -114,6 +168,18 @@ motion_plan_bundle_replays_with_path_plan_without_source_test :: proc(
 		},
 		{
 			"source_independent_replay",
+			true,
+			"passed",
+			"passed",
+		},
+		{
+			"canonical_extrusion_result_hash",
+			true,
+			string(extrusion_hash_text),
+			string(extrusion_hash_text),
+		},
+		{
+			"source_independent_extrusion_replay",
 			true,
 			"passed",
 			"passed",
@@ -131,8 +197,9 @@ motion_plan_bundle_replays_with_path_plan_without_source_test :: proc(
 			"passed",
 		},
 	}
-	primitives := [2]Evidence_Artifact{
+	primitives := [3]Evidence_Artifact{
 		motion_capture.artifact,
+		extrusion_capture.artifact,
 		path_capture.artifact,
 	}
 	stage_manifest := Evidence_Manifest{
@@ -183,7 +250,7 @@ motion_plan_bundle_replays_with_path_plan_without_source_test :: proc(
 		request_hash = GOLDEN_HASH,
 		source_root_id = stage_manifest.source_root_id,
 		stage_count = 1,
-		file_count = 2,
+		file_count = 3,
 	}
 	bundle_summary_bytes, bundle_summary_error :=
 		evidence_bundle_summary_encode(bundle_summary_record)
@@ -215,8 +282,9 @@ motion_plan_bundle_replays_with_path_plan_without_source_test :: proc(
 			manifest = stage_descriptor,
 		},
 	}
-	files := [2]Evidence_Artifact{
+	files := [3]Evidence_Artifact{
 		motion_capture.artifact,
+		extrusion_capture.artifact,
 		path_capture.artifact,
 	}
 	root := Evidence_Bundle_Manifest{
@@ -227,10 +295,11 @@ motion_plan_bundle_replays_with_path_plan_without_source_test :: proc(
 		stages = stages[:],
 		files = files[:],
 	}
-	contents := [4]Evidence_Bundle_Content{
+	contents := [5]Evidence_Bundle_Content{
 		{bundle_summary.path, bundle_summary_bytes},
 		{stage_descriptor.path, stage_bytes},
 		{motion_capture.artifact.path, motion_bytes},
+		{extrusion_capture.artifact.path, extrusion_bytes},
 		{path_capture.artifact.path, path_capture.bytes},
 	}
 	package_bytes, package_error :=
@@ -284,11 +353,36 @@ motion_plan_bundle_replays_with_path_plan_without_source_test :: proc(
 	motion_plan_bundle_expect_replay(t, directory_replay)
 }
 
+@(test)
+evidence_bundle_replay_rejects_retained_dependency_mismatch_test :: proc(
+	t: ^testing.T,
+) {
+	replay := Evidence_Bundle_Replay{
+		path_plan_loaded = true,
+		extrusion_loaded = true,
+		motion_plan_loaded = true,
+		marlin_loaded = true,
+	}
+	testing.expect(t, evidence_bundle_replay_dependencies_valid(replay))
+	replay.extrusion.dependencies.path_plan_hash[0] = 1
+	testing.expect(t, !evidence_bundle_replay_dependencies_valid(replay))
+	replay.extrusion.dependencies.path_plan_hash[0] = 0
+	replay.motion_plan.dependencies.path_plan_hash[0] = 1
+	testing.expect(t, !evidence_bundle_replay_dependencies_valid(replay))
+	replay.motion_plan.dependencies.path_plan_hash[0] = 0
+	replay.motion_plan.dependencies.extrusion_hash[0] = 1
+	testing.expect(t, !evidence_bundle_replay_dependencies_valid(replay))
+	replay.motion_plan.dependencies.extrusion_hash[0] = 0
+	replay.marlin.motion_hash[0] = 1
+	testing.expect(t, !evidence_bundle_replay_dependencies_valid(replay))
+}
+
 motion_plan_bundle_expect_replay :: proc(
 	t: ^testing.T,
 	replay: Evidence_Bundle_Replay,
 ) {
 	testing.expect(t, replay.path_plan_loaded)
+	testing.expect(t, replay.extrusion_loaded)
 	testing.expect(t, replay.motion_plan_loaded)
 	testing.expect(t, !replay.topology_loaded)
 	testing.expect(t, !replay.regions_loaded)
@@ -297,6 +391,8 @@ motion_plan_bundle_expect_replay :: proc(
 	testing.expect_value(t, len(replay.path_plan.result.layers), 1)
 	testing.expect_value(t, len(replay.path_plan.result.paths), 1)
 	testing.expect_value(t, len(replay.path_plan.result.moves), 1)
+	testing.expect_value(t, len(replay.extrusion.result.layers), 1)
+	testing.expect_value(t, len(replay.extrusion.result.moves), 0)
 	testing.expect_value(t, len(replay.motion_plan.result.layers), 1)
 	testing.expect_value(t, len(replay.motion_plan.result.operations), 0)
 }
