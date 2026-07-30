@@ -804,14 +804,61 @@ layer_span_index_hash :: proc(
 		expected_offset += u64(layer.count)
 	}
 	if expected_offset != u64(pair_count) {return {}, false}
+	expected_pair_count: u64
 	for range_value in index.triangle_ranges {
 		range_end := u64(range_value.first_layer)+
 			u64(range_value.layer_count)
-		if range_end > u64(len(index.layers)) {return {}, false}
-	}
-	for triangle_index in index.triangle_indices {
-		if u64(triangle_index) >= u64(len(index.triangle_ranges)) {
+		switch range_value.kind {
+		case .None:
+			if range_value.first_layer != 0 ||
+			   range_value.layer_count != 0 {
+				return {}, false
+			}
+		case .Crossing_Candidates:
+			if range_value.layer_count == 0 ||
+			   range_end > u64(len(index.layers)) {
+				return {}, false
+			}
+		case .Quantized_Planar:
+			if range_value.layer_count != 1 ||
+			   range_end > u64(len(index.layers)) {
+				return {}, false
+			}
+		case:
 			return {}, false
+		}
+		if expected_pair_count > max(u64)-
+		   u64(range_value.layer_count) {
+			return {}, false
+		}
+		expected_pair_count += u64(range_value.layer_count)
+	}
+	if expected_pair_count != u64(pair_count) {return {}, false}
+	for layer, layer_index in index.layers {
+		start := int(layer.offset)
+		end := start+int(layer.count)
+		previous_triangle_index: u32
+		for triangle_index, pair_index in index.triangle_indices[start:end] {
+			if u64(triangle_index) >=
+			   u64(len(index.triangle_ranges)) {
+				return {}, false
+			}
+			range_value := index.triangle_ranges[triangle_index]
+			range_end := u64(range_value.first_layer)+
+				u64(range_value.layer_count)
+			out_of_order :=
+				pair_index > 0 &&
+				triangle_index <= previous_triangle_index
+			wrong_layer :=
+				u64(layer_index) < u64(range_value.first_layer) ||
+				u64(layer_index) >= range_end
+			invalid_id :=
+				index.triangle_ids[start+pair_index] ==
+				contracts.INVALID_STABLE_ID
+			if out_of_order || wrong_layer || invalid_id {
+				return {}, false
+			}
+			previous_triangle_index = triangle_index
 		}
 	}
 

@@ -82,6 +82,44 @@ slicing_stage_hashes_reject_inconsistent_arrays_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+layer_span_hash_rejects_semantic_mutations_test :: proc(t: ^testing.T) {
+	schedule, schedule_error := fixed_layer_schedule_build({
+		minimum_z = 0,
+		maximum_z = 1000,
+		first_plane_z = 200,
+		layer_step = 200,
+		max_layer_count = 10,
+	})
+	defer fixed_layer_schedule_destroy(&schedule)
+	testing.expect_value(t, schedule_error, Schedule_Error.None)
+	schedule_hash, schedule_hash_ok := fixed_layer_schedule_hash(schedule)
+	testing.expect(t, schedule_hash_ok)
+	index, span_error :=
+		layer_span_index_build(layer_span_test_mesh(), schedule)
+	defer layer_span_index_destroy(&index)
+	testing.expect_value(t, span_error, Layer_Span_Error.None)
+
+	index.triangle_ranges[0].kind = Triangle_Span_Kind(255)
+	_, span_ok := layer_span_index_hash(schedule_hash, index)
+	testing.expect(t, !span_ok)
+	index.triangle_ranges[0].kind = .Crossing_Candidates
+
+	index.triangle_ranges[0].layer_count -= 1
+	_, span_ok = layer_span_index_hash(schedule_hash, index)
+	testing.expect(t, !span_ok)
+	index.triangle_ranges[0].layer_count += 1
+
+	index.triangle_indices[1] = index.triangle_indices[0]
+	_, span_ok = layer_span_index_hash(schedule_hash, index)
+	testing.expect(t, !span_ok)
+	index.triangle_indices[1] = 4
+
+	index.triangle_ids[0] = contracts.INVALID_STABLE_ID
+	_, span_ok = layer_span_index_hash(schedule_hash, index)
+	testing.expect(t, !span_ok)
+}
+
+@(test)
 intersection_and_snapped_segment_hashes_are_stable_test :: proc(
 	t: ^testing.T,
 ) {
