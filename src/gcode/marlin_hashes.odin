@@ -55,7 +55,19 @@ marlin_result_hash :: proc(
 		return {}, false
 	}
 
-	revisions := profiles.profile_revisions(profile)
+	return marlin_result_content_hash(
+		motion_hash,
+		profiles.profile_revisions(profile),
+		result,
+	)
+}
+
+marlin_result_content_hash :: proc(
+	motion_hash: contracts.Content_Hash,
+	revisions: contracts.Profile_Revisions,
+	result: Marlin_Result,
+) -> (contracts.Content_Hash, bool) {
+	if !marlin_result_structurally_valid(result) {return {}, false}
 	hash: contracts.Canonical_Hash
 	contracts.canonical_hash_init(
 		&hash,
@@ -113,6 +125,55 @@ marlin_result_hash :: proc(
 		contracts.canonical_hash_append_u32(&hash, command.layer_index)
 	}
 	return contracts.canonical_hash_final(&hash), true
+}
+
+marlin_result_structurally_valid :: proc(result: Marlin_Result) -> bool {
+	shutdown_retraction_valid :=
+		u128(result.shutdown_retraction_nm) <=
+		result.negative_filament_nm
+	if result.schema_version != MARLIN_EMITTER_SCHEMA_VERSION ||
+	   result.layer_count == 0 ||
+	   result.motion_operation_count == 0 ||
+	   result.positive_filament_nm == 0 ||
+	   !shutdown_retraction_valid ||
+	   len(result.bytes) == 0 ||
+	   len(result.commands) == 0 ||
+	   u64(len(result.commands)-1) > u64(max(u32)) ||
+	   result.motion_operation_count > u64(len(result.commands)) {
+		return false
+	}
+	expected_offset: u64
+	for command, command_index in result.commands {
+		byte_range_valid :=
+			command.byte_offset <= u64(len(result.bytes)) &&
+			u64(command.byte_count) <=
+			u64(len(result.bytes))-command.byte_offset
+		layer_valid :=
+			command.layer_index == max(u32) ||
+			command.layer_index < result.layer_count
+		if command.stable_id == contracts.INVALID_STABLE_ID ||
+		   command.command_index != u32(command_index) ||
+		   command.kind == .Invalid ||
+		   u8(command.kind) > u8(Marlin_Command_Kind.Disable_Steppers) ||
+		   command.byte_offset != expected_offset ||
+		   command.byte_count == 0 ||
+		   !byte_range_valid ||
+		   !layer_valid {
+			return false
+		}
+		end := command.byte_offset+u64(command.byte_count)
+		line := result.bytes[int(command.byte_offset):int(end)]
+		for byte, byte_index in line {
+			last := byte_index == len(line)-1
+			if last {
+				if byte != '\n' {return false}
+			} else if byte < 0x20 || byte > 0x7e {
+				return false
+			}
+		}
+		expected_offset = end
+	}
+	return expected_offset == u64(len(result.bytes))
 }
 
 marlin_hash_append_u128 :: proc(
