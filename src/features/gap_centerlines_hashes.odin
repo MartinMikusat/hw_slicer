@@ -77,13 +77,19 @@ gap_centerline_result_hash :: proc(
 					evidence,
 					mask.region_index,
 				)
-				expected_id := contracts.stable_id_child(
+				expected_path_set_id := contracts.stable_id_child(
 					mask.stable_id,
+					.Feature,
+					0,
+				)
+				expected_id := contracts.stable_id_child(
+					expected_path_set_id,
 					.Path,
 					u64(run.mask_run_index)*2+
 						u64(line_index),
 				)
 				if path.stable_id != expected_id ||
+				   path.path_set_id != expected_path_set_id ||
 				   path.evidence_mask_id != mask.stable_id ||
 				   path.evidence_mask_index != run.evidence_mask_index ||
 				   path.region_id != mask.region_id ||
@@ -163,6 +169,10 @@ gap_centerline_result_hash :: proc(
 	contracts.canonical_hash_append_u64(&hash, u64(len(result.paths)))
 	for path in result.paths {
 		contracts.canonical_hash_append_stable_id(&hash, path.stable_id)
+		contracts.canonical_hash_append_stable_id(
+			&hash,
+			path.path_set_id,
+		)
 		contracts.canonical_hash_append_stable_id(
 			&hash,
 			path.evidence_mask_id,

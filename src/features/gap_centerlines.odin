@@ -25,6 +25,7 @@ Gap_Centerline_Layer :: struct {
 
 Gap_Centerline_Path :: struct {
 	stable_id:          contracts.Stable_ID,
+	path_set_id:        contracts.Stable_ID,
 	evidence_mask_id:   contracts.Stable_ID,
 	evidence_mask_index: u32,
 	region_id:          contracts.Stable_ID,
@@ -257,14 +258,20 @@ gap_centerlines_build :: proc(
 					}
 					vertex_write += 1
 				}
-				path_id := contracts.stable_id_child(
+				path_set_id := contracts.stable_id_child(
 					mask.stable_id,
+					.Feature,
+					0,
+				)
+				path_id := contracts.stable_id_child(
+					path_set_id,
 					.Path,
 					u64(run.mask_run_index)*2+
 						u64(line_index),
 				)
 				result.paths[path_write] = {
 					stable_id = path_id,
+					path_set_id = path_set_id,
 					evidence_mask_id = mask.stable_id,
 					evidence_mask_index =
 						run.evidence_mask_index,
