@@ -1,11 +1,9 @@
-#ifndef HW_SLICER_MODULE_H
-#define HW_SLICER_MODULE_H
+#ifndef HW_SLICER_APPLICATION_H
+#define HW_SLICER_APPLICATION_H
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#define HW_SLICER_MODULE_API_VERSION 1u
 
 typedef struct HW_Slicer_Rect {
     double x;
@@ -38,17 +36,8 @@ typedef struct HW_Slicer_Host {
     void (*preference_set_int)(const char *key, int32_t value);
 } HW_Slicer_Host;
 
-typedef struct HW_Slicer_Module_API {
-    uint32_t api_version;
-    uint32_t state_version;
-    size_t snapshot_size;
-    bool (*initialize)(
-        const HW_Slicer_Host *host,
-        const void *snapshot,
-        size_t snapshot_size
-    );
-    bool (*can_reload)(void);
-    void (*capture)(void *snapshot, size_t snapshot_size);
+typedef struct HW_Slicer_Application_API {
+    bool (*initialize)(const HW_Slicer_Host *host);
     void (*shutdown)(void);
     void (*frame)(double width, double height, double scale);
     void (*mouse)(
@@ -70,8 +59,8 @@ typedef struct HW_Slicer_Module_API {
     uint64_t (*hit_test)(double x, double y);
     bool (*activate_control)(uint64_t control_id);
     bool (*write_ui_snapshot)(const char *path);
-} HW_Slicer_Module_API;
+} HW_Slicer_Application_API;
 
-typedef const HW_Slicer_Module_API *(*HW_Slicer_Module_Entry)(void);
+int32_t hw_slicer_host_run(const HW_Slicer_Application_API *application);
 
 #endif

@@ -1,18 +1,12 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
-#import <copyfile.h>
-#import <dlfcn.h>
-#import <sys/stat.h>
 
-#import "hw_slicer_module.h"
+#import "hw_slicer_application.h"
 
-static const HW_Slicer_Module_API *g_module;
+static const HW_Slicer_Application_API *g_application;
+static bool g_application_initialized;
 static HW_Slicer_Host g_host;
-static NSString *g_module_path;
-static struct timespec g_module_time;
-static unsigned long long g_generation;
-static NSMutableArray<NSValue *> *g_loaded_handles;
 static NSString *g_snapshot_path;
 static NSString *g_resource_root;
 static char *g_resource_root_bytes;
@@ -31,7 +25,7 @@ static char *g_resource_root_bytes;
 
 @implementation HWSlicerAXElement
 - (BOOL)accessibilityPerformPress {
-    return g_module && g_module->activate_control(self.controlID);
+    return g_application && g_application->activate_control(self.controlID);
 }
 @end
 
@@ -69,12 +63,12 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
 }
 
 - (NSArray *)accessibilityChildren {
-    if (!g_module) { return @[]; }
+    if (!g_application) { return @[]; }
     NSMutableArray *children = [NSMutableArray array];
-    size_t count = g_module->control_count();
+    size_t count = g_application->control_count();
     for (size_t index = 0; index < count; ++index) {
         HW_Slicer_Control control = {0};
-        if (!g_module->control_at(index, &control)) { continue; }
+        if (!g_application->control_at(index, &control)) { continue; }
         HWSlicerAXElement *element = [HWSlicerAXElement new];
         element.controlID = control.id;
         element.accessibilityParent = self;
@@ -101,8 +95,8 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module && point.y < 40 &&
-        g_module->hit_test(point.x, point.y) == 0) {
+    if (g_application && point.y < 40 &&
+        g_application->hit_test(point.x, point.y) == 0) {
         if (event.clickCount == 2) {
             [self.window zoom:nil];
         } else {
@@ -110,67 +104,79 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
         }
         return;
     }
-    if (g_module) {
-        g_module->mouse(0, 0, point.x, point.y, 0, 0);
+    if (g_application) {
+        g_application->mouse(0, 0, point.x, point.y, 0, 0);
     }
 }
 - (void)mouseDragged:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module) {
-        g_module->mouse(
+    if (g_application) {
+        g_application->mouse(
             1, 0, point.x, point.y, event.deltaX, -event.deltaY
         );
     }
 }
 - (void)mouseUp:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module) {
-        g_module->mouse(2, 0, point.x, point.y, 0, 0);
+    if (g_application) {
+        g_application->mouse(2, 0, point.x, point.y, 0, 0);
     }
 }
 - (void)rightMouseDown:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module) { g_module->mouse(0, 1, point.x, point.y, 0, 0); }
+    if (g_application) {
+        g_application->mouse(0, 1, point.x, point.y, 0, 0);
+    }
 }
 - (void)rightMouseDragged:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module) {
-        g_module->mouse(
+    if (g_application) {
+        g_application->mouse(
             1, 1, point.x, point.y, event.deltaX, -event.deltaY
         );
     }
 }
 - (void)rightMouseUp:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module) { g_module->mouse(2, 1, point.x, point.y, 0, 0); }
+    if (g_application) {
+        g_application->mouse(2, 1, point.x, point.y, 0, 0);
+    }
 }
 - (void)otherMouseDown:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module) { g_module->mouse(0, 2, point.x, point.y, 0, 0); }
+    if (g_application) {
+        g_application->mouse(0, 2, point.x, point.y, 0, 0);
+    }
 }
 - (void)otherMouseDragged:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module) {
-        g_module->mouse(
+    if (g_application) {
+        g_application->mouse(
             1, 2, point.x, point.y, event.deltaX, -event.deltaY
         );
     }
 }
 - (void)otherMouseUp:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module) { g_module->mouse(2, 2, point.x, point.y, 0, 0); }
+    if (g_application) {
+        g_application->mouse(2, 2, point.x, point.y, 0, 0);
+    }
 }
 - (void)scrollWheel:(NSEvent *)event {
-    if (g_module) { g_module->scroll(event.scrollingDeltaX, event.scrollingDeltaY); }
+    if (g_application) {
+        g_application->scroll(event.scrollingDeltaX, event.scrollingDeltaY);
+    }
 }
 - (void)mouseMoved:(NSEvent *)event {
     NSPoint point = slicer_event_point(self, event);
-    if (g_module) { g_module->mouse(3, -1, point.x, point.y, 0, 0); }
+    if (g_application) {
+        g_application->mouse(3, -1, point.x, point.y, 0, 0);
+    }
 }
 - (void)keyDown:(NSEvent *)event {
-    if (!g_module) { return; }
+    if (!g_application) { return; }
     const char *characters = event.charactersIgnoringModifiers.UTF8String ?: "";
-    g_module->key(event.keyCode, characters, event.modifierFlags);
+    g_application->key(event.keyCode, characters, event.modifierFlags);
 }
 @end
 
@@ -217,93 +223,6 @@ static int32_t slicer_preference_get_int(
 static void slicer_preference_set_int(const char *key, int32_t value) {
     NSString *name = [NSString stringWithUTF8String:key];
     [[NSUserDefaults standardUserDefaults] setInteger:value forKey:name];
-}
-
-static bool slicer_module_stamp(NSString *path, struct timespec *stamp) {
-    struct stat info = {0};
-    if (stat(path.fileSystemRepresentation, &info) != 0) { return false; }
-    *stamp = info.st_mtimespec;
-    return true;
-}
-
-static bool slicer_same_stamp(struct timespec a, struct timespec b) {
-    return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
-}
-
-static bool slicer_load_module(bool initial) {
-    struct timespec stamp = {0};
-    if (!slicer_module_stamp(g_module_path, &stamp)) { return false; }
-    if (!initial && slicer_same_stamp(stamp, g_module_time)) { return false; }
-    g_module_time = stamp;
-
-    NSString *directory = g_module_path.stringByDeletingLastPathComponent;
-    NSString *shadow = [directory stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"slicer.generation-%llu.dylib",
-            ++g_generation]];
-    if (copyfile(
-            g_module_path.fileSystemRepresentation,
-            shadow.fileSystemRepresentation,
-            NULL,
-            COPYFILE_ALL
-        ) != 0) {
-        NSLog(@"HW Slicer could not stage module %@", shadow);
-        return false;
-    }
-
-    void *handle = dlopen(shadow.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        NSLog(@"HW Slicer module load failed: %s", dlerror());
-        return false;
-    }
-    HW_Slicer_Module_Entry entry = (HW_Slicer_Module_Entry)dlsym(
-        handle,
-        "hw_slicer_module_api"
-    );
-    if (!entry) {
-        NSLog(@"HW Slicer module entry is missing");
-        dlclose(handle);
-        return false;
-    }
-    const HW_Slicer_Module_API *next = entry();
-    if (!next || next->api_version != HW_SLICER_MODULE_API_VERSION ||
-        next->snapshot_size > 4096) {
-        NSLog(@"HW Slicer module contract is incompatible");
-        dlclose(handle);
-        return false;
-    }
-
-    _Alignas(16) uint8_t snapshot[4096] = {0};
-    size_t snapshot_size = 0;
-    if (g_module) {
-        if (!g_module->can_reload()) {
-            dlclose(handle);
-            return false;
-        }
-        snapshot_size = g_module->snapshot_size;
-        g_module->capture(snapshot, sizeof(snapshot));
-        if (next->state_version != g_module->state_version ||
-            next->snapshot_size != snapshot_size) {
-            NSLog(@"HW Slicer state contract changed; restart required");
-            dlclose(handle);
-            return false;
-        }
-    }
-    if (!next->initialize(
-            &g_host,
-            snapshot_size ? snapshot : NULL,
-            snapshot_size
-        )) {
-        NSLog(@"HW Slicer rejected the staged module");
-        dlclose(handle);
-        return false;
-    }
-
-    const HW_Slicer_Module_API *previous = g_module;
-    g_module = next;
-    if (previous) { previous->shutdown(); }
-    [g_loaded_handles addObject:[NSValue valueWithPointer:handle]];
-    NSLog(@"HW Slicer activated module generation %llu", g_generation);
-    return true;
 }
 
 @interface HWSlicerDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
@@ -357,14 +276,14 @@ static bool slicer_load_module(bool initial) {
     g_host.preference_get_int = slicer_preference_get_int;
     g_host.preference_set_int = slicer_preference_set_int;
 
-    if (!slicer_load_module(true)) {
+    if (!g_application->initialize(&g_host)) {
         NSAlert *alert = [NSAlert new];
-        alert.messageText = @"HW Slicer could not load its viewer module.";
-        alert.informativeText = g_module_path ?: @"No module path was supplied.";
+        alert.messageText = @"HW Slicer could not initialize its viewer.";
         [alert runModal];
         [NSApp terminate:nil];
         return;
     }
+    g_application_initialized = true;
 
     __block unsigned snapshotTick = 0;
     self.timer = [NSTimer
@@ -372,8 +291,6 @@ static bool slicer_load_module(bool initial) {
         repeats:YES
         block:^(NSTimer *timer) {
             (void)timer;
-            slicer_load_module(false);
-            if (!g_module) { return; }
             NSRect bounds = view.bounds;
             double scale = window.backingScaleFactor;
             layer.contentsScale = scale;
@@ -381,9 +298,9 @@ static bool slicer_load_module(bool initial) {
                 bounds.size.width * scale,
                 bounds.size.height * scale
             );
-            g_module->frame(bounds.size.width, bounds.size.height, scale);
+            g_application->frame(bounds.size.width, bounds.size.height, scale);
             if (g_snapshot_path && ++snapshotTick % 30 == 0) {
-                g_module->write_ui_snapshot(
+                g_application->write_ui_snapshot(
                     g_snapshot_path.fileSystemRepresentation
                 );
             }
@@ -397,29 +314,31 @@ static bool slicer_load_module(bool initial) {
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
-    if (g_module) { g_module->shutdown(); }
+    if (g_application_initialized) {
+        g_application->shutdown();
+        g_application_initialized = false;
+    }
     free(g_resource_root_bytes);
     g_resource_root_bytes = NULL;
 }
 @end
 
-int main(int argc, const char *argv[]) {
-    (void)argc;
-    (void)argv;
+int32_t hw_slicer_host_run(const HW_Slicer_Application_API *applicationAPI) {
+    if (!applicationAPI || !applicationAPI->initialize ||
+        !applicationAPI->shutdown || !applicationAPI->frame ||
+        !applicationAPI->mouse || !applicationAPI->scroll ||
+        !applicationAPI->key || !applicationAPI->control_count ||
+        !applicationAPI->control_at || !applicationAPI->hit_test ||
+        !applicationAPI->activate_control ||
+        !applicationAPI->write_ui_snapshot) {
+        return 2;
+    }
     @autoreleasepool {
-        const char *module = getenv("HW_SLICER_MODULE");
-        if (module) {
-            g_module_path = [NSString stringWithUTF8String:module];
-        } else {
-            g_module_path = [[NSBundle mainBundle].executablePath
-                .stringByDeletingLastPathComponent
-                stringByAppendingPathComponent:@"slicer.dylib"];
-        }
+        g_application = applicationAPI;
         const char *snapshot = getenv("HW_SLICER_UI_SNAPSHOT");
         if (snapshot) {
             g_snapshot_path = [NSString stringWithUTF8String:snapshot];
         }
-        g_loaded_handles = [NSMutableArray array];
         NSApplication *application = [NSApplication sharedApplication];
         application.activationPolicy = NSApplicationActivationPolicyRegular;
         HWSlicerDelegate *delegate = [HWSlicerDelegate new];

@@ -6,7 +6,11 @@ MODE=${1:-debug}
 
 case "$MODE" in
   debug) APP="$ROOT/build/HWSlicer.app" ;;
-  asan|release) APP="$ROOT/build/$MODE/HWSlicer.app" ;;
+  asan) APP="$ROOT/build/asan/HWSlicer.app" ;;
+  release)
+    "$ROOT/build.sh" release
+    exec "$ROOT/build/release/HWSlicer.app/Contents/MacOS/HWSlicer"
+    ;;
   *)
     echo "usage: ./dev.sh [debug|asan|release]" >&2
     exit 2
@@ -14,27 +18,25 @@ case "$MODE" in
 esac
 
 HOST="$APP/Contents/MacOS/HWSlicer"
-MODULE="$ROOT/build/hot-reload/$MODE/slicer.dylib"
 RUNTIME="$ROOT/.hw-slicer-runtime"
 LOCK="$ROOT/build/dev-watcher.lock"
 PID_FILE="$RUNTIME/pid"
 SNAPSHOT="$RUNTIME/controls.tsv"
 APP_PID=""
 
-module_fingerprint() {
-  stat -f '%m:%z:%N' "$ROOT"/src/*.odin "$ROOT/dependencies.lock" 2>/dev/null |
-    shasum | cut -d' ' -f1
-}
-
-host_fingerprint() {
+fingerprint() {
+  find \
+    "$ROOT/src" \
+    "$ROOT/host" \
+    "$ROOT/resources" \
+    -type f -print0 |
+    xargs -0 stat -f '%m:%z:%N' 2>/dev/null
   stat -f '%m:%z:%N' \
-    "$ROOT"/host/* "$ROOT/Info.plist" \
-    "$ROOT/scripts/hot-reload-build.sh" \
-    "$ROOT"/resources/fonts/* \
-    "$ROOT"/resources/icons/iconoir/* \
-    "$ROOT"/resources/models/* \
-    "$ROOT"/resources/models/licenses/* \
-    2>/dev/null | shasum | cut -d' ' -f1
+    "$ROOT"/*.sh \
+    "$ROOT"/scripts/*.sh \
+    "$ROOT"/dependencies.lock \
+    "$ROOT"/Info.plist \
+    2>/dev/null
 }
 
 launch_app() {
@@ -46,14 +48,12 @@ launch_app() {
     env \
       DYLD_INSERT_LIBRARIES="$asan_runtime" \
       HW_SLICER_ACTIVATE_ON_LAUNCH=0 \
-      HW_SLICER_MODULE="$MODULE" \
       HW_SLICER_UI_SNAPSHOT="$SNAPSHOT" \
       MTL_DEBUG_LAYER=1 \
       "$HOST" &
   else
     env \
       HW_SLICER_ACTIVATE_ON_LAUNCH=0 \
-      HW_SLICER_MODULE="$MODULE" \
       HW_SLICER_UI_SNAPSHOT="$SNAPSHOT" \
       MTL_DEBUG_LAYER=1 \
       "$HOST" &
@@ -61,6 +61,16 @@ launch_app() {
   APP_PID=$!
   printf '%s\n' "$APP_PID" > "$PID_FILE"
   printf '[hw_slicer] launched pid %s (%s)\n' "$APP_PID" "$MODE"
+}
+
+rebuild_and_launch() {
+  printf '\n[hw_slicer] rebuilding %s...\n' "$MODE"
+  if ! "$ROOT/build.sh" "$MODE"; then
+    printf '[hw_slicer] build failed; keeping the current app running\n'
+    return 1
+  fi
+  stop_app
+  launch_app
 }
 
 stop_app() {
@@ -95,10 +105,8 @@ fi
 printf '%s\n' "$$" > "$LOCK/pid"
 trap cleanup INT TERM EXIT
 
-"$ROOT/scripts/hot-reload-build.sh" "$MODE" all || exit 1
-launch_app
-LAST_MODULE=$(module_fingerprint)
-LAST_HOST=$(host_fingerprint)
+rebuild_and_launch || exit 1
+LAST_FINGERPRINT=$(fingerprint | shasum | cut -d' ' -f1)
 
 while :; do
   sleep 0.5
@@ -106,17 +114,9 @@ while :; do
     wait "$APP_PID"
     exit $?
   fi
-  CURRENT_HOST=$(host_fingerprint)
-  CURRENT_MODULE=$(module_fingerprint)
-  if [ "$CURRENT_HOST" != "$LAST_HOST" ]; then
-    LAST_HOST=$CURRENT_HOST
-    LAST_MODULE=$CURRENT_MODULE
-    if "$ROOT/scripts/hot-reload-build.sh" "$MODE" all; then
-      stop_app
-      launch_app
-    fi
-  elif [ "$CURRENT_MODULE" != "$LAST_MODULE" ]; then
-    LAST_MODULE=$CURRENT_MODULE
-    "$ROOT/scripts/hot-reload-build.sh" "$MODE" module || true
+  CURRENT_FINGERPRINT=$(fingerprint | shasum | cut -d' ' -f1)
+  if [ "$CURRENT_FINGERPRINT" != "$LAST_FINGERPRINT" ]; then
+    LAST_FINGERPRINT=$CURRENT_FINGERPRINT
+    rebuild_and_launch
   fi
 done

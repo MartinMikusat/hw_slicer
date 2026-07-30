@@ -48,16 +48,17 @@ wireframe rendering, light and dark themes, Flash navigation, and
 Accessibility actions. The remaining numbered action slots stay visible and
 disabled until their slicing stages exist.
 
-Build and run the hot-reload development app:
+Build and run the development app:
 
 ```sh
 ./test.sh
 ./dev.sh debug
 ```
 
-The watcher builds `build/HWSlicer.app`, launches it behind the active
-application, and replaces only the Odin viewer module after a successful source
-change. Use `./dev.sh asan` for AddressSanitizer development.
+The watcher builds `build/HWSlicer.app` and launches it behind the active
+application. A source or resource change rebuilds the complete app. The watcher
+replaces the running process only after a successful build. Use
+`./dev.sh asan` for AddressSanitizer development.
 
 Capture or check the current live control registry:
 

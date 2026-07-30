@@ -31,17 +31,8 @@ Host_Services :: struct {
 	preference_set_int: proc "c" (key: cstring, value: i32),
 }
 
-Module_API :: struct {
-	api_version: u32,
-	state_version: u32,
-	snapshot_size: uint,
-	initialize: proc "c" (
-		host: ^Host_Services,
-		snapshot: rawptr,
-		snapshot_size: uint,
-	) -> bool,
-	can_reload: proc "c" () -> bool,
-	capture: proc "c" (snapshot: rawptr, snapshot_size: uint),
+Application_API :: struct {
+	initialize: proc "c" (host: ^Host_Services) -> bool,
 	shutdown: proc "c" (),
 	frame: proc "c" (width, height, scale: f64),
 	mouse: proc "c" (
@@ -55,4 +46,8 @@ Module_API :: struct {
 	hit_test: proc "c" (x, y: f64) -> u64,
 	activate_control: proc "c" (control_id: u64) -> bool,
 	write_ui_snapshot: proc "c" (path: cstring) -> bool,
+}
+
+foreign {
+	hw_slicer_host_run :: proc "c" (application: ^Application_API) -> i32 ---
 }

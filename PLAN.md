@@ -181,9 +181,8 @@ The stage sequence is:
 - Provide CLI operations for slice, inspect, capture, render, query, diff,
   validate, benchmark, and replay. The GUI invokes the same application
   services, not a second slicing path.
-- Use a stable AppKit host and reloadable application dylib in debug and
-  AddressSanitizer modes. Swap the module only at a frame boundary after pipeline
-  work releases the old generation.
+- Link the AppKit host and Odin application into one executable in debug and
+  AddressSanitizer modes. Relaunch it only after a successful complete build.
 
 Delivery proceeds through gates. A gate closes only when its listed evidence is
 stored in the repository or release artifacts.
@@ -1099,8 +1098,8 @@ layer, issue, or stable ID updates every region through immutable view state.
   `Debug_Evidence` scene and use explicit view descriptors.
 - **Large paths exceed render memory.** Build level-of-detail spans by layer and
   role, cull by viewport, and stream visible tiles.
-- **Hot reload retains old callbacks.** Keep AppKit classes, callback
-  trampolines, display link, and long-lived Metal objects in the stable host.
+- **A rebuild interrupts transient work.** Persist durable project state through
+  normal storage. Relaunch only after a successful complete build.
 
 ### Measurable Acceptance Criteria
 
@@ -1153,14 +1152,11 @@ debugger behavior remain inspectable.
 - Keep one generated binding source and one typed shim per required framework
   surface. Check SDK size and offset assertions at build or startup.
 - Put AppKit classes, Objective-C callback trampolines, frame timing, run loop,
-  Accessibility bridge, and module loader in the stable host. Put slicer policy
-  and view construction in the reloadable dylib.
-- Version the host-module contract. Stage new state and Metal pipelines before a
-  frame-boundary swap. Request a controlled restart when the state layout or
-  contract is incompatible.
-- Keep prior module generations loaded until shutdown because framework
-  callbacks can retain code addresses. Archive the active dylib and dSYM with
-  each crash.
+  and Accessibility bridge in a typed platform shim. Link that shim and the
+  Odin application into one executable.
+- Rebuild the complete application after source or resource changes. Replace
+  the running process only after a successful build.
+- Archive the executable and dSYM with each crash.
 - Generate and archive optimized LLVM or ARM64 assembly for designated kernels.
   Fail a performance-review check if a kernel unexpectedly loses SIMD or gains
   stack spills above its accepted record.
@@ -1174,8 +1170,8 @@ debugger behavior remain inspectable.
   source URL, SHA-256, and adjacent license. This includes Iosevka, Iconoir,
   polygon providers, archive or XML libraries, profiles, and benchmark models.
 - Sign release Mach-O files from the inside out with a Developer ID Application
-  identity and hardened runtime. Do not include the hot-reload module mechanism
-  or `get-task-allow` in release.
+  identity and hardened runtime. Do not include development watcher tooling or
+  `get-task-allow` in release.
 - Submit the signed archive with `notarytool`, inspect the notarization log,
   staple the ticket, verify signatures, and run Gatekeeper assessment. Apple
   requires Developer ID signing and hardened runtime for notarized direct
@@ -1194,8 +1190,9 @@ debugger behavior remain inspectable.
   generated-source provenance, and assert ABI sizes and offsets.
 - **Debuggers cannot explain optimized geometry.** Preserve checked scalar
   paths, stage captures, replay commands, symbols, and minimized fuzz cases.
-- **Hot reload conflicts with release security.** Keep reload in unsigned or
-  development-signed builds. Package one fixed signed engine in release.
+- **Development settings conflict with release security.** Keep validation and
+  diagnostic settings in development builds. Package one fixed signed engine
+  in release.
 - **Build scripts become an opaque build system.** Keep each script narrow,
   fail on unknown modes, print invoked tool versions, and test clean builds.
 - **External providers block notarization or licensing.** Prefer source-built
@@ -1209,9 +1206,8 @@ debugger behavior remain inspectable.
   commit changes.
 - A deterministic crash fixture archives the exact executable or dylib, dSYM,
   UUID, Git revision, request manifest, and debug capture.
-- Debug and ASan hot reload preserve the window, project, source mesh, current
-  layer, selected evidence, and completed stage generations across a compatible
-  module swap.
+- Debug and ASan watchers rebuild the complete application and relaunch it
+  behind active applications only after a successful build.
 - The release bundle contains only signed expected Mach-O files and no writable
   or unsigned executable code.
 - `codesign --verify`, notarization, stapling, and Gatekeeper assessment pass for
@@ -1252,7 +1248,7 @@ backends exist.
   stable project resource handles. Resolve native paths and bookmarks in the
   platform layer.
 - Define monotonic clocks, signposts, threads, semaphores, memory reservation,
-  mapped files, dynamic modules, process information, and crash artifacts under
+  mapped files, process information, and crash artifacts under
   `platform`.
 - Define compute buffers, dispatch descriptors, fences, capabilities, and
   completion records in a backend-neutral stage-provider contract. Keep
@@ -2290,8 +2286,8 @@ Total: 56 hours.
 
 **Title & Goal**
 
-Build the pinned Odin toolchain, typed macOS shims, stable host, hot-reload
-contract, immediate-mode control registry, Metal renderer, and evidence
+Build the pinned Odin toolchain, typed macOS shims, single application
+executable, immediate-mode control registry, Metal renderer, and evidence
 inspector.
 
 **Why it matters to this slicer**
@@ -2365,8 +2361,8 @@ same evidence that CLI and automated review consume.
 
 **Milestone Project**
 
-Promote the stable host, reloadable dylib, AppKit shim, renderer, complete
-control registry, evidence readers, and structural UI CLI into the application.
+Promote the AppKit shim, Odin executable, renderer, complete control registry,
+evidence readers, and structural UI CLI into the application.
 
 **Time Estimate**
 
@@ -2809,8 +2805,8 @@ an automatic fail regardless of the weighted score.
   resource modes, ARM64 validation, native profiling, and no invented device
   capacity.
 - **Odin Specificity — 5/5.** It defines compiler pins, allocator boundaries,
-  foreign linking, Objective-C shims, hot reload, symbol analysis, and concrete
-  tooling mitigations.
+  foreign linking, Objective-C shims, rebuild watchers, symbol analysis, and
+  concrete tooling mitigations.
 - **Performance Rigor — 5/5.** It separates microbenchmarks from end-to-end
   results and records memory, fallbacks, thermal state, synchronization, raw
   samples, and deterministic hashes.

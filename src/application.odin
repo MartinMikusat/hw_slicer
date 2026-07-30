@@ -15,16 +15,6 @@ Camera :: struct {
 	distance: f32,
 }
 
-App_Snapshot :: struct {
-	magic:          u32,
-	selected_model: i32,
-	dark:           bool,
-	wireframe:      bool,
-	help_open:      bool,
-	camera:         Camera,
-	external_path:  [1024]u8,
-}
-
 App_State :: struct {
 	host:          Host_Services,
 	renderer:      Renderer,
@@ -44,10 +34,6 @@ App_State :: struct {
 }
 
 app: App_State
-
-APP_SNAPSHOT_MAGIC :: u32(0x48575331)
-APP_API_VERSION :: u32(1)
-APP_STATE_VERSION :: u32(1)
 
 app_set_status :: proc(text: string) {
 	delete(app.status)
@@ -170,12 +156,9 @@ app_activate :: proc(action: UI_Action) -> bool {
 	return true
 }
 
-app_initialize_from_snapshot :: proc(
-	host: ^Host_Services,
-	snapshot: ^App_Snapshot,
-) -> bool {
+app_initialize :: proc(host: ^Host_Services) -> bool {
 	if host == nil || !objc_initialize() {
-		fmt.eprintln("HW Slicer reload stage failed before Objective-C initialization")
+		fmt.eprintln("HW Slicer failed before Objective-C initialization")
 		return false
 	}
 	app = {}
@@ -185,32 +168,18 @@ app_initialize_from_snapshot :: proc(
 	app.ui.selected_model = 0
 	ui_initialize(&app.ui)
 	if !renderer_initialize(&app.renderer, Id(host.layer)) {
-		fmt.eprintln("HW Slicer reload stage failed during Metal initialization")
+		fmt.eprintln("HW Slicer failed during Metal initialization")
 		renderer_shutdown(&app.renderer)
 		ui_destroy(&app.ui)
 		return false
 	}
 	_ = ui_register_font(app.resource_root)
 
-	frame_camera := true
-	if snapshot != nil && snapshot.magic == APP_SNAPSHOT_MAGIC {
-		app.ui.selected_model = int(snapshot.selected_model)
-		app.ui.dark = snapshot.dark
-		app.ui.wireframe = snapshot.wireframe
-		app.ui.help_open = snapshot.help_open
-		app.camera = snapshot.camera
-		if snapshot.external_path[0] != 0 {
-			app.external_path = strings.clone(
-				string(cstring(&snapshot.external_path[0])),
-			)
-		}
-		frame_camera = false
-	}
-	if !app_load_model(app.ui.selected_model, frame_camera) {
+	if !app_load_model(app.ui.selected_model, true) {
 		if app.ui.selected_model != 0 && app_load_model(0, true) {
 			app_set_status("FALLBACK: LOADED 3DBENCHY")
 		} else {
-			fmt.eprintln("HW Slicer reload stage failed while loading its mesh")
+			fmt.eprintln("HW Slicer failed while loading its mesh")
 			renderer_shutdown(&app.renderer)
 			ui_destroy(&app.ui)
 			return false
@@ -229,24 +198,6 @@ app_destroy :: proc() {
 	delete(app.model_name)
 	delete(app.status)
 	app = {}
-}
-
-app_capture_snapshot :: proc(snapshot: ^App_Snapshot) {
-	if snapshot == nil {return}
-	// Preserve value state only. Each generation rebuilds its Metal resources.
-	snapshot^ = {
-		magic = APP_SNAPSHOT_MAGIC,
-		selected_model = i32(app.ui.selected_model),
-		dark = app.ui.dark,
-		wireframe = app.ui.wireframe,
-		help_open = app.ui.help_open,
-		camera = app.camera,
-	}
-	if len(app.external_path) > 0 {
-		count := min(len(app.external_path), len(snapshot.external_path)-1)
-		copy(snapshot.external_path[:count], transmute([]u8)app.external_path)
-		snapshot.external_path[count] = 0
-	}
 }
 
 app_camera_eye :: proc(camera: Camera) -> Vec3 {
@@ -300,35 +251,17 @@ renderer_draw_application :: proc() {
 	app.needs_redraw = false
 }
 
-module_initialize :: proc "c" (
-	host: ^Host_Services,
-	snapshot_data: rawptr,
-	snapshot_size: uint,
-) -> bool {
+application_initialize :: proc "c" (host: ^Host_Services) -> bool {
 	context = runtime.default_context()
-	snapshot: ^App_Snapshot
-	if snapshot_data != nil && snapshot_size == size_of(App_Snapshot) {
-		snapshot = (^App_Snapshot)(snapshot_data)
-	}
-	return app_initialize_from_snapshot(host, snapshot)
+	return app_initialize(host)
 }
 
-module_can_reload :: proc "c" () -> bool {
-	return !app.dragging
-}
-
-module_capture :: proc "c" (destination: rawptr, destination_size: uint) {
-	context = runtime.default_context()
-	if destination == nil || destination_size < size_of(App_Snapshot) {return}
-	app_capture_snapshot((^App_Snapshot)(destination))
-}
-
-module_shutdown :: proc "c" () {
+application_shutdown :: proc "c" () {
 	context = runtime.default_context()
 	app_destroy()
 }
 
-module_frame :: proc "c" (width, height, scale: f64) {
+application_frame :: proc "c" (width, height, scale: f64) {
 	context = runtime.default_context()
 	if width <= 0 || height <= 0 {return}
 	if width != app.last_width || height != app.last_height ||
@@ -346,7 +279,7 @@ module_frame :: proc "c" (width, height, scale: f64) {
 	}
 }
 
-module_mouse :: proc "c" (
+application_mouse :: proc "c" (
 	phase, button: i32,
 	x, y, delta_x, delta_y: f64,
 ) {
@@ -390,7 +323,7 @@ module_mouse :: proc "c" (
 	}
 }
 
-module_scroll :: proc "c" (delta_x, delta_y: f64) {
+application_scroll :: proc "c" (delta_x, delta_y: f64) {
 	context = runtime.default_context()
 	_ = delta_x
 	app.camera.distance *= math.exp(f32(delta_y)*0.035)
@@ -398,7 +331,7 @@ module_scroll :: proc "c" (delta_x, delta_y: f64) {
 	app.needs_redraw = true
 }
 
-module_key :: proc "c" (
+application_key :: proc "c" (
 	key_code: u16,
 	characters: cstring,
 	modifiers: u64,
@@ -455,11 +388,11 @@ module_key :: proc "c" (
 	}
 }
 
-module_control_count :: proc "c" () -> uint {
+application_control_count :: proc "c" () -> uint {
 	return uint(len(app.ui.controls))
 }
 
-module_control_at :: proc "c" (
+application_control_at :: proc "c" (
 	index: uint,
 	output: ^Host_Control,
 ) -> bool {
@@ -481,42 +414,39 @@ module_control_at :: proc "c" (
 	return true
 }
 
-module_hit_test :: proc "c" (x, y: f64) -> u64 {
+application_hit_test :: proc "c" (x, y: f64) -> u64 {
 	context = runtime.default_context()
 	return ui_hit_test(&app.ui, x, y)
 }
 
-module_activate_control :: proc "c" (control_id: u64) -> bool {
+application_activate_control :: proc "c" (control_id: u64) -> bool {
 	context = runtime.default_context()
 	return app_activate(UI_Action(control_id))
 }
 
-module_write_ui_snapshot :: proc "c" (path: cstring) -> bool {
+application_write_ui_snapshot :: proc "c" (path: cstring) -> bool {
 	context = runtime.default_context()
 	if path == nil {return false}
 	return ui_write_snapshot(&app.ui, string(path))
 }
 
-module_api := Module_API{
-	api_version = APP_API_VERSION,
-	state_version = APP_STATE_VERSION,
-	snapshot_size = size_of(App_Snapshot),
-	initialize = module_initialize,
-	can_reload = module_can_reload,
-	capture = module_capture,
-	shutdown = module_shutdown,
-	frame = module_frame,
-	mouse = module_mouse,
-	scroll = module_scroll,
-	key = module_key,
-	control_count = module_control_count,
-	control_at = module_control_at,
-	hit_test = module_hit_test,
-	activate_control = module_activate_control,
-	write_ui_snapshot = module_write_ui_snapshot,
+application_api := Application_API{
+	initialize = application_initialize,
+	shutdown = application_shutdown,
+	frame = application_frame,
+	mouse = application_mouse,
+	scroll = application_scroll,
+	key = application_key,
+	control_count = application_control_count,
+	control_at = application_control_at,
+	hit_test = application_hit_test,
+	activate_control = application_activate_control,
+	write_ui_snapshot = application_write_ui_snapshot,
 }
 
-@(export)
-hw_slicer_module_api :: proc "c" () -> ^Module_API {
-	return &module_api
+main :: proc() {
+	status := hw_slicer_host_run(&application_api)
+	if status != 0 {
+		os.exit(int(status))
+	}
 }
