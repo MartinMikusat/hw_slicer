@@ -141,6 +141,10 @@ extrusion_hash_rejects_mutated_filament_increment_test :: proc(
 		0x0a, 0xc5, 0xf9, 0x18, 0x27, 0x46, 0x39, 0x2e,
 	}
 	testing.expect_value(t, hash, expected_hash)
+	replayed_hash, replayed_hash_ok :=
+		extrusion_result_content_hash({}, result)
+	testing.expect(t, replayed_hash_ok)
+	testing.expect_value(t, replayed_hash, hash)
 	result.moves[0].incremental_filament_nm += 1
 	_, mutated_hash_ok := extrusion_result_hash(
 		{},
@@ -154,6 +158,9 @@ extrusion_hash_rejects_mutated_filament_increment_test :: proc(
 		result,
 	)
 	testing.expect(t, !mutated_hash_ok)
+	_, mutated_content_hash_ok :=
+		extrusion_result_content_hash({}, result)
+	testing.expect(t, !mutated_content_hash_ok)
 }
 
 extrusion_test_plan :: proc(
