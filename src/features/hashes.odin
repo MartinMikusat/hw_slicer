@@ -20,8 +20,10 @@ perimeter_result_hash :: proc(
 	for layer, layer_index in result.layers {
 		if layer.group_offset != expected_group_offset ||
 		   layer.path_offset != expected_layer_path_offset ||
+		   layer.group_offset > max(u64)-u64(layer.group_count) ||
 		   layer.group_offset+u64(layer.group_count) >
 		   	u64(len(result.groups)) ||
+		   layer.path_offset > max(u64)-u64(layer.path_count) ||
 		   layer.path_offset+u64(layer.path_count) >
 		   	u64(len(result.paths)) {
 			return {}, false
@@ -55,6 +57,7 @@ perimeter_result_hash :: proc(
 	for group, group_index in result.groups {
 		if group.region_id == contracts.INVALID_STABLE_ID ||
 		   group.path_offset != expected_path_offset ||
+		   group.path_offset > max(u64)-u64(group.path_count) ||
 		   group.path_offset+u64(group.path_count) >
 		   	u64(len(result.paths)) {
 			return {}, false
@@ -93,6 +96,7 @@ perimeter_result_hash :: proc(
 			   path.perimeter_index != group.perimeter_index ||
 			   path.group_path_index != u32(local_path_index) ||
 			   path.point_count < 3 ||
+			   path.point_offset > max(u64)-u64(path.point_count) ||
 			   path.point_offset+u64(path.point_count) >
 			   	u64(len(result.points)) {
 				return {}, false

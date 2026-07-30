@@ -168,9 +168,25 @@ perimeter_hash_rejects_mutated_group_spans_test :: proc(t: ^testing.T) {
 	defer perimeter_result_destroy(&result)
 	testing.expect_value(t, region_error, slicing.Region_Error.None)
 	testing.expect_value(t, error, Perimeter_Error.None)
-	if len(result.groups) == 0 {return}
-	result.groups[0].path_offset = 1
+	if len(result.layers) == 0 ||
+	   len(result.groups) == 0 ||
+	   len(result.paths) == 0 {
+		return
+	}
+	result.layers[0].group_offset = max(u64)
 	_, hash_ok := perimeter_result_hash(contracts.Content_Hash{}, result)
+	testing.expect(t, !hash_ok)
+	result.layers[0].group_offset = 0
+	result.layers[0].path_offset = max(u64)
+	_, hash_ok = perimeter_result_hash(contracts.Content_Hash{}, result)
+	testing.expect(t, !hash_ok)
+	result.layers[0].path_offset = 0
+	result.groups[0].path_offset = max(u64)
+	_, hash_ok = perimeter_result_hash(contracts.Content_Hash{}, result)
+	testing.expect(t, !hash_ok)
+	result.groups[0].path_offset = 0
+	result.paths[0].point_offset = max(u64)
+	_, hash_ok = perimeter_result_hash(contracts.Content_Hash{}, result)
 	testing.expect(t, !hash_ok)
 }
 
