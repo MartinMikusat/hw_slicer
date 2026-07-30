@@ -220,6 +220,12 @@ The current engine implementation provides:
   duration estimates.
 - Exterior-crossing retraction and recovery operations, bounded short-layer
   slowdown, and residual dwell after the minimum print speed is reached.
+- Conservative Marlin file emission with millimetre units, absolute XYZ,
+  relative extrusion, typed heating, homing, leveling, parking, and shutdown.
+- Exact decimal coordinate, feed, acceleration, and extrusion formatting with
+  command-to-motion correlation records.
+- An independent strict parser that replays modes, temperatures, acceleration,
+  cooling, motion, extrusion, bounds, parking, and final machine state.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact

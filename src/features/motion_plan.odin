@@ -596,6 +596,8 @@ motion_scaled_speed :: proc(
 	scaled :=
 		(i128(base)*i128(scale))/i128(profiles.RATIO_SCALE)
 	if scaled < i128(minimum) {return minimum}
+	scaled -= scaled%50
+	if scaled < i128(minimum) {return minimum}
 	return profiles.Speed_Um_Per_Second(scaled)
 }
 

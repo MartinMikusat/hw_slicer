@@ -177,7 +177,7 @@ process_profile_validate :: proc(
 	}
 	if profile.extrusion_accumulation !=
 	   	.Volume_Then_Fixed_Point_Length ||
-	   profile.extrusion_length_quantum_nm == 0 {
+	   profile.extrusion_length_quantum_nm != 10 {
 		return .Process_Extrusion_Target
 	}
 	return .None
@@ -344,12 +344,15 @@ process_motion_targets_valid :: proc(
 	}
 	return i64(profile.travel.speed) > 0 &&
 	       i64(profile.travel.speed) <= i64(printer.maximum_speed) &&
+	       i64(profile.travel.speed)%50 == 0 &&
 	       i64(profile.travel.acceleration) > 0 &&
 	       i64(profile.travel.acceleration) <=
 	       	i64(printer.maximum_acceleration) &&
+	       i64(profile.travel.acceleration)%1_000 == 0 &&
 	       u32(profile.minimum_layer_time) > 0 &&
 	       profile.minimum_layer_time_policy == .Slowdown_Then_Dwell &&
-	       i64(profile.minimum_print_speed) > 0
+	       i64(profile.minimum_print_speed) > 0 &&
+	       i64(profile.minimum_print_speed)%50 == 0
 }
 
 process_thermal_targets_valid :: proc(
@@ -391,14 +394,17 @@ process_travel_targets_valid :: proc(
 	return profile.seam == .Deterministic_Cost &&
 	       profile.seam_visibility == .Rear_Maximum_Y &&
 	       profile.retraction == .Distance_And_Exterior_Crossing &&
-	       i64(profile.retraction_distance) >= 0 &&
+	       i64(profile.retraction_distance) > 0 &&
 	       i64(profile.minimum_retraction_travel) > 0 &&
 	       i64(profile.retraction_speed) > 0 &&
 	       i64(profile.retraction_speed) <= i64(printer.maximum_extruder_speed) &&
+	       i64(profile.retraction_speed)%50 == 0 &&
 	       i64(profile.recovery_speed) > 0 &&
 	       i64(profile.recovery_speed) <= i64(printer.maximum_extruder_speed) &&
+	       i64(profile.recovery_speed)%50 == 0 &&
 	       i64(profile.retraction_acceleration) > 0 &&
 	       i64(profile.retraction_acceleration) <= i64(printer.maximum_extruder_acceleration) &&
+	       i64(profile.retraction_acceleration)%1_000 == 0 &&
 	       profile.travel_policy == .Direct &&
 	       (!profile.z_hop_enabled &&
 	       	i64(profile.z_hop_height) == 0 ||
@@ -439,9 +445,11 @@ role_target_valid :: proc(
 ) -> bool {
 	return i64(target.speed) > 0 &&
 	       i64(target.speed) <= i64(printer.maximum_speed) &&
+	       i64(target.speed)%50 == 0 &&
 	       i64(target.acceleration) > 0 &&
 	       i64(target.acceleration) <=
 	       	i64(printer.maximum_acceleration) &&
+	       i64(target.acceleration)%1_000 == 0 &&
 	       u32(target.flow_ratio) > 0 &&
 	       u32(target.flow_ratio) <= RATIO_SCALE*2 &&
 	       u32(target.fan_ratio) <= RATIO_SCALE

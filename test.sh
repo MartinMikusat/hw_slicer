@@ -19,6 +19,7 @@ ODIN="$ROOT/scripts/odin.sh"
 "$ROOT/scripts/clipper2-test.sh" debug
 "$ROOT/scripts/repair-test.sh" debug
 "$ROOT/scripts/features-test.sh" debug
+"$ROOT/scripts/gcode-test.sh" debug
 "$ODIN" test "$ROOT/src/slicing" -debug -o:none
 "$ODIN" test "$ROOT/src/pipeline" -debug -o:none
 "$ROOT/scripts/evidence-test.sh" debug

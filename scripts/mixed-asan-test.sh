@@ -5,7 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PACKAGE=${1:-}
 
 case "$PACKAGE" in
-  formats|polygon|repair|features|evidence) ;;
+  formats|polygon|repair|features|evidence|gcode) ;;
   *)
     printf '[hw_slicer] invalid mixed ASan package: %s\n' "$PACKAGE" >&2
     exit 2

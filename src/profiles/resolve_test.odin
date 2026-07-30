@@ -359,7 +359,7 @@ profile_test_documents :: proc() -> (
 		z_hop_enabled = false,
 		z_hop_height = 0,
 		extrusion_accumulation = .Volume_Then_Fixed_Point_Length,
-		extrusion_length_quantum_nm = 1,
+		extrusion_length_quantum_nm = 10,
 	}
 	dialect := Dialect_Profile{
 		schema_version = DIALECT_PROFILE_SCHEMA_VERSION,
