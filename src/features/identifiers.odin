@@ -5,6 +5,7 @@ FEATURE_ORDINAL_PAYLOAD_MASK :: u64(1)<<FEATURE_ORDINAL_CLASS_SHIFT-1
 FEATURE_ORDINAL_SURFACE_PREFIX :: u64(1)<<FEATURE_ORDINAL_CLASS_SHIFT
 FEATURE_ORDINAL_INFILL_PREFIX :: u64(2)<<FEATURE_ORDINAL_CLASS_SHIFT
 FEATURE_ORDINAL_SKIN_PREFIX :: u64(3)<<FEATURE_ORDINAL_CLASS_SHIFT
+FEATURE_ORDINAL_GAP_EVIDENCE_BASE :: u64(1)<<32
 FEATURE_PERIMETER_COUNT_LIMIT :: u32(1)<<30
 
 feature_perimeter_ordinal :: proc(
@@ -37,4 +38,15 @@ feature_skin_ordinal :: proc(kind: Skin_Kind) -> (u64, bool) {
 		return 0, false
 	}
 	return FEATURE_ORDINAL_SKIN_PREFIX | u64(kind), true
+}
+
+feature_gap_evidence_ordinal :: proc(
+	kind: Gap_Evidence_Kind,
+) -> (u64, bool) {
+	if kind == .Invalid {
+		return 0, false
+	}
+	return FEATURE_ORDINAL_SKIN_PREFIX |
+		FEATURE_ORDINAL_GAP_EVIDENCE_BASE |
+		u64(kind), true
 }

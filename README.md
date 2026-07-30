@@ -159,6 +159,9 @@ The current engine implementation provides:
   counts, including one disjoint role for simultaneous top and bottom skin.
 - Exact skin-to-surface provenance with target-region clipping and a canonical
   stage hash.
+- Perimeter bead coverage, uncovered-region, printable-center, over-wide-core,
+  and unprinted-remainder masks for thin-wall and gap diagnosis.
+- Conservative half-width rounding recorded in a canonical gap-evidence hash.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
