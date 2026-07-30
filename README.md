@@ -186,6 +186,10 @@ The current engine implementation provides:
   face normals, and the configured surface angle from vertical.
 - Canonical micrometre projections and source-triangle provenance for each
   downward overhang face.
+- Planar support-demand masks from adjacent-layer model projection intersected
+  with the classified mesh overhang projections.
+- Fixed-point lateral overhang margins and exact source-face references for
+  every nonempty support-demand layer.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
