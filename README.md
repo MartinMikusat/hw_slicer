@@ -54,10 +54,11 @@ or GUI framework.
 The viewer loads the three bundled reference models or an exact binary STL
 selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
 package or published evidence directory in the stage timeline and inspector.
-The inspector retains the layer schedule, topology, region, exposed-surface,
-perimeter, sparse-infill, unified feature-source, current unified path-plan,
-legacy path-plan, extrusion, motion, and G-code graphs without the source
-model. Pointer, Flash, and Accessibility input select one stage record.
+The inspector retains the layer schedule, triangle layer-span index, topology,
+region, exposed-surface, perimeter, sparse-infill, unified feature-source,
+current unified path-plan, legacy path-plan, extrusion, motion, and G-code
+graphs without the source model. Pointer, Flash, and Accessibility input select
+one stage record.
 
 The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
 light and dark themes, Flash navigation, and Accessibility actions. The
@@ -97,6 +98,8 @@ The G0 foundation provides:
 - A versioned debug-evidence manifest with a golden JSON fixture.
 - Valid UTF-8 artifact paths, format tokens, schemas, and destination uniqueness.
 - A preflighted little-endian layer-schedule artifact with source-independent
+  replay.
+- A preflighted little-endian layer-span artifact with source-independent
   replay.
 - A preflighted little-endian path-plan artifact with hash-validated replay.
 - A preflighted little-endian exposed-surface artifact with source-independent
@@ -156,7 +159,9 @@ The current engine implementation provides:
 - Fixed micrometre layer schedules with canonical Z values and stable IDs.
 - A bounded little-endian layer-schedule artifact that retains the request and
   result hashes, Z bounds, first plane, step, and every scheduled layer.
-- Two-pass triangle span indexes.
+- Two-pass triangle span indexes with canonical range and pair validation.
+- A bounded little-endian layer-span artifact that retains each triangle range,
+  layer descriptor, triangle-layer pair, stable ID, and dependency hash.
 - Filtered plane classification with an exact scalar fallback.
 - Two-pass CPU intersections with separate planar and degeneracy results.
 - Half-open ownership resolution for manifold coplanar edge groups.
@@ -414,9 +419,9 @@ Inspect all retained bundle records from either container:
 ```
 
 The inspector validates each descriptor once, retains the stage manifests, and
-decodes each supported graph, including a declared layer schedule. It emits
-the retained counters and schedule bounds as one JSON record without reading
-the source model.
+decodes each supported graph, including declared layer schedules and span
+indexes. It emits the retained schedule bounds and span counters as one JSON
+record without reading the source model.
 
 Replay topology and rebuild regions without the source model:
 
