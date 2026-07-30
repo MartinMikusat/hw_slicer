@@ -32,6 +32,12 @@ Marlin_Artifact :: struct {
 	result:            Marlin_Result,
 }
 
+Marlin_Artifact_Summary :: struct {
+	command_count:    u64,
+	gcode_byte_count: u64,
+	byte_count:       u64,
+}
+
 Marlin_Artifact_Error :: enum u8 {
 	None,
 	Invalid_Record,
@@ -136,39 +142,10 @@ marlin_artifact_decode :: proc(
 	limits := DEFAULT_MARLIN_ARTIFACT_LIMITS,
 	allocator := context.allocator,
 ) -> (Marlin_Artifact, Marlin_Artifact_Error) {
-	if u64(len(bytes)) > limits.max_bytes {return {}, .Limit}
-	if len(bytes) < int(MARLIN_ARTIFACT_HEADER_SIZE) ||
-	   !marlin_artifact_magic_valid(bytes) {
-		return {}, .Malformed
-	}
-	if marlin_artifact_get_u32(bytes, 8) !=
-	   MARLIN_ARTIFACT_SCHEMA_VERSION {
-		return {}, .Unsupported_Version
-	}
-	if marlin_artifact_get_u32(bytes, 12) != MARLIN_ARTIFACT_HEADER_SIZE ||
-	   marlin_artifact_get_u32(bytes, 16) != MARLIN_ARTIFACT_COMMAND_SIZE ||
-	   marlin_artifact_get_u32(bytes, 20) != MARLIN_EMITTER_SCHEMA_VERSION ||
-	   !marlin_artifact_bytes_zero(bytes, 24, 32) ||
-	   !marlin_artifact_bytes_zero(bytes, 244, 248) ||
-	   !marlin_artifact_bytes_zero(bytes, 328, 352) {
-		return {}, .Malformed
-	}
-	gcode_byte_count := marlin_artifact_get_u64(bytes, 224)
-	command_count := marlin_artifact_get_u64(bytes, 232)
-	byte_count, size_ok :=
-		marlin_artifact_byte_count(command_count, gcode_byte_count)
-	counts_fit := marlin_artifact_counts_fit_limits(
-		command_count,
-		gcode_byte_count,
-		byte_count,
-		limits,
-	)
-	if !size_ok || !counts_fit ||
-	   command_count > u64(max(int)) ||
-	   gcode_byte_count > u64(max(int)) {
-		return {}, .Limit
-	}
-	if byte_count != u64(len(bytes)) {return {}, .Malformed}
+	summary, preflight_error := marlin_artifact_preflight(bytes, limits)
+	if preflight_error != .None {return {}, preflight_error}
+	gcode_byte_count := summary.gcode_byte_count
+	command_count := summary.command_count
 
 	artifact: Marlin_Artifact
 	marlin_artifact_get_hash(bytes, 32, &artifact.motion_hash)
@@ -266,6 +243,50 @@ marlin_artifact_decode :: proc(
 		return {}, .Hash_Mismatch
 	}
 	return artifact, .None
+}
+
+marlin_artifact_preflight :: proc(
+	bytes: []u8,
+	limits := DEFAULT_MARLIN_ARTIFACT_LIMITS,
+) -> (Marlin_Artifact_Summary, Marlin_Artifact_Error) {
+	if u64(len(bytes)) > limits.max_bytes {return {}, .Limit}
+	if len(bytes) < int(MARLIN_ARTIFACT_HEADER_SIZE) ||
+	   !marlin_artifact_magic_valid(bytes) {
+		return {}, .Malformed
+	}
+	if marlin_artifact_get_u32(bytes, 8) !=
+	   MARLIN_ARTIFACT_SCHEMA_VERSION {
+		return {}, .Unsupported_Version
+	}
+	if marlin_artifact_get_u32(bytes, 12) != MARLIN_ARTIFACT_HEADER_SIZE ||
+	   marlin_artifact_get_u32(bytes, 16) != MARLIN_ARTIFACT_COMMAND_SIZE ||
+	   marlin_artifact_get_u32(bytes, 20) != MARLIN_EMITTER_SCHEMA_VERSION ||
+	   !marlin_artifact_bytes_zero(bytes, 24, 32) ||
+	   !marlin_artifact_bytes_zero(bytes, 244, 248) ||
+	   !marlin_artifact_bytes_zero(bytes, 328, 352) {
+		return {}, .Malformed
+	}
+	gcode_byte_count := marlin_artifact_get_u64(bytes, 224)
+	command_count := marlin_artifact_get_u64(bytes, 232)
+	byte_count, size_ok :=
+		marlin_artifact_byte_count(command_count, gcode_byte_count)
+	counts_fit := marlin_artifact_counts_fit_limits(
+		command_count,
+		gcode_byte_count,
+		byte_count,
+		limits,
+	)
+	if !size_ok || !counts_fit ||
+	   command_count > u64(max(int)) ||
+	   gcode_byte_count > u64(max(int)) {
+		return {}, .Limit
+	}
+	if byte_count != u64(len(bytes)) {return {}, .Malformed}
+	return {
+		command_count = command_count,
+		gcode_byte_count = gcode_byte_count,
+		byte_count = byte_count,
+	}, .None
 }
 
 marlin_artifact_destroy :: proc(

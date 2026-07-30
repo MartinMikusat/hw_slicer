@@ -228,6 +228,7 @@ The current engine implementation provides:
   cooling, motion, extrusion, bounds, parking, and final machine state.
 - A bounded little-endian G-code artifact that retains profile revisions,
   motion identity, command correlation, summary values, and exact output bytes.
+  Generic evidence capture applies item and byte budgets before full decoding.
 - Atomic create-only and explicit replacement publication for validated
   `.gcode` files, with synchronized sibling staging and failure cleanup.
 - Configured perimeter centerlines at half-width inward offsets, including
