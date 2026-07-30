@@ -7,6 +7,7 @@ import "core:sys/posix"
 import features "../features"
 import formats "../formats"
 import gcode "../gcode"
+import slicing "../slicing"
 
 Evidence_Bundle_Replay :: struct {
 	root:             Evidence_Bundle_Manifest,
@@ -14,6 +15,7 @@ Evidence_Bundle_Replay :: struct {
 	stage_manifests:  []Evidence_Manifest,
 	layer_schedule:   Layer_Schedule_Artifact,
 	layer_spans:      Layer_Span_Artifact,
+	intersections:    CPU_Intersection_Artifact,
 	topology:         Topology_Artifact,
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
@@ -27,6 +29,7 @@ Evidence_Bundle_Replay :: struct {
 	marlin:           gcode.Marlin_Artifact,
 	layer_schedule_loaded: bool,
 	layer_spans_loaded: bool,
+	intersections_loaded: bool,
 	topology_loaded:  bool,
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
@@ -71,6 +74,12 @@ evidence_bundle_replay_destroy :: proc(
 	}
 	if replay.layer_spans_loaded {
 		layer_span_artifact_destroy(&replay.layer_spans, allocator)
+	}
+	if replay.intersections_loaded {
+		cpu_intersection_artifact_destroy(
+			&replay.intersections,
+			allocator,
+		)
 	}
 	if replay.topology_loaded {
 		topology_artifact_destroy(&replay.topology, allocator)
@@ -295,6 +304,8 @@ evidence_bundle_archive_replay :: proc(
 		return {}, .Allocation_Failed
 	}
 	for stage, stage_index in replay.root.stages {
+		stage_supported :=
+			evidence_bundle_replay_stage_supported(stage.stage)
 		manifest_index, manifest_found :=
 			evidence_bundle_archive_entry_find(
 				archive,
@@ -335,7 +346,8 @@ evidence_bundle_archive_replay :: proc(
 		replay.stage_manifests[stage_index] = manifest
 		supported_primitive_count := 0
 		for primitive in manifest.primitives {
-			if !evidence_bundle_replay_primitive_supported(
+			if !stage_supported ||
+			   !evidence_bundle_replay_primitive_supported(
 				stage.stage.name,
 				primitive.format,
 			) {
@@ -374,8 +386,7 @@ evidence_bundle_archive_replay :: proc(
 			delete(artifact_bytes, allocator)
 			if stage_error != .None {return {}, stage_error}
 		}
-		if supported_primitive_count == 0 &&
-		   evidence_bundle_replay_stage_supported(stage.stage.name) {
+		if supported_primitive_count == 0 && stage_supported {
 			return {}, .Invalid_Content
 		}
 		if !evidence_bundle_replay_dependencies_valid(replay) {
@@ -495,6 +506,8 @@ evidence_bundle_directory_replay :: proc(
 		return {}, .Allocation_Failed
 	}
 	for stage, stage_index in replay.root.stages {
+		stage_supported :=
+			evidence_bundle_replay_stage_supported(stage.stage)
 		manifest_bytes, manifest_read_error :=
 			evidence_bundle_directory_read_file(
 				root_fd,
@@ -528,7 +541,8 @@ evidence_bundle_directory_replay :: proc(
 		replay.stage_manifests[stage_index] = manifest
 		supported_primitive_count := 0
 		for primitive in manifest.primitives {
-			if !evidence_bundle_replay_primitive_supported(
+			if !stage_supported ||
+			   !evidence_bundle_replay_primitive_supported(
 				stage.stage.name,
 				primitive.format,
 			) {
@@ -565,8 +579,7 @@ evidence_bundle_directory_replay :: proc(
 				return {}, .Invalid_Content
 			}
 		}
-		if supported_primitive_count == 0 &&
-		   evidence_bundle_replay_stage_supported(stage.stage.name) {
+		if supported_primitive_count == 0 && stage_supported {
 			return {}, .Invalid_Content
 		}
 		if !evidence_bundle_replay_dependencies_valid(replay) {
@@ -605,12 +618,18 @@ evidence_bundle_directory_replay :: proc(
 	return replay, .None
 }
 
-evidence_bundle_replay_stage_supported :: proc(stage_name: string) -> bool {
-	switch stage_name {
+evidence_bundle_replay_stage_supported :: proc(
+	stage: Evidence_Stage,
+) -> bool {
+	switch stage.name {
 	case "schedule-layers":
 		return true
 	case "build-acceleration":
 		return true
+	case "intersect":
+		return stage.schema_version ==
+			slicing.SCHEMA_VERSION_CPU_INTERSECTION_HASH &&
+			stage.revision == CPU_INTERSECTION_MANIFEST_STAGE_REVISION
 	case "reconstruct-topology":
 		return true
 	case "calculate-regions":
@@ -635,6 +654,8 @@ evidence_bundle_replay_primitive_supported :: proc(
 		return format == LAYER_SCHEDULE_ARTIFACT_FORMAT
 	case "build-acceleration":
 		return format == LAYER_SPAN_ARTIFACT_FORMAT
+	case "intersect":
+		return format == CPU_INTERSECTION_ARTIFACT_FORMAT
 	case "reconstruct-topology":
 		return format == TOPOLOGY_ARTIFACT_FORMAT
 	case "calculate-regions":
@@ -727,6 +748,35 @@ evidence_bundle_replay_stage_decode :: proc(
 		}
 		replay.layer_spans = artifact
 		replay.layer_spans_loaded = true
+	case "intersect":
+		if replay.intersections_loaded {return .Invalid_Content}
+		expectations, preflight_error :=
+			cpu_intersection_manifest_preflight(
+				manifest,
+				primitive.path,
+				artifact_bytes,
+			)
+		if preflight_error != .None {return .Invalid_Content}
+		artifact, decode_error := cpu_intersection_artifact_decode(
+			artifact_bytes,
+			DEFAULT_CPU_INTERSECTION_ARTIFACT_LIMITS,
+			allocator,
+		)
+		if decode_error != .None {
+			if decode_error == .Allocation_Failed {
+				return .Allocation_Failed
+			}
+			return .Invalid_Content
+		}
+		if cpu_intersection_manifest_replay_verify(
+			expectations,
+			artifact,
+		) != .None {
+			cpu_intersection_artifact_destroy(&artifact, allocator)
+			return .Invalid_Content
+		}
+		replay.intersections = artifact
+		replay.intersections_loaded = true
 	case "reconstruct-topology":
 		if replay.topology_loaded {return .Invalid_Content}
 		expectations, preflight_error := topology_manifest_preflight(
@@ -1082,6 +1132,14 @@ evidence_bundle_replay_dependencies_valid :: proc(
 			len(replay.layer_spans.result.layers) !=
 			len(replay.layer_schedule.result.layer_z)
 		if schedule_mismatch || layer_count_mismatch {return false}
+	}
+	if replay.layer_spans_loaded && replay.intersections_loaded {
+		span_mismatch :=
+			replay.intersections.span_hash != replay.layer_spans.result_hash
+		layer_count_mismatch :=
+			len(replay.intersections.result.layers) !=
+			len(replay.layer_spans.result.layers)
+		if span_mismatch || layer_count_mismatch {return false}
 	}
 	if replay.layer_schedule_loaded && replay.extrusion_loaded &&
 	   replay.extrusion.dependencies.layer_schedule_hash !=
