@@ -5,11 +5,13 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
 "$ROOT/scripts/dependencies.sh" check
 ODIN="$ROOT/scripts/odin.sh"
+"$ROOT/scripts/clipper2-build.sh" debug >/dev/null
 "$ODIN" test "$ROOT/src" \
   -debug \
   -o:none \
   -collection:flash="$FLASH_ROOT" \
-  -extra-linker-flags:"-framework Foundation -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics"
+  -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/debug/libhw_clipper2.a" \
+  -extra-linker-flags:"-lc++ -framework Foundation -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics"
 "$ODIN" test "$ROOT/src/contracts" -debug -o:none
 "$ODIN" test "$ROOT/src/formats" -debug -o:none
 "$ODIN" test "$ROOT/src/geometry" -debug -o:none

@@ -28,6 +28,7 @@ case "$MODE" in
 esac
 
 "$ROOT/scripts/dependencies.sh" check
+"$ROOT/scripts/clipper2-build.sh" "$MODE" >/dev/null
 ODIN="$ROOT/scripts/odin.sh"
 CLANG=$(xcrun --find clang)
 SDK_ROOT=$(xcrun --sdk macosx --show-sdk-path)
@@ -60,7 +61,8 @@ fi
     -out:"$EXECUTABLE" \
     $ODIN_FLAGS \
     -collection:flash="$FLASH_ROOT" \
-    -extra-linker-flags:"$HOST_OBJECT $ASAN_COMPAT_OBJECT $FRAMEWORKS"
+    -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$MODE/libhw_clipper2.a" \
+    -extra-linker-flags:"$HOST_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
 )
 
 mkdir -p \

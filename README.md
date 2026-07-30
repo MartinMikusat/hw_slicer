@@ -49,10 +49,15 @@ The implementation does not use a rendering engine, scene library, MetalKit,
 or GUI framework.
 
 The viewer loads the three bundled reference models or an exact binary STL
-selected through `01 OPEN`. It supports orbit, pan, zoom, frame-to-bounds,
-wireframe rendering, light and dark themes, Flash navigation, and
-Accessibility actions. The remaining numbered action slots stay visible and
-disabled until their slicing stages exist.
+selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
+package or published evidence directory in the stage timeline and inspector.
+The inspector retains the topology, region, and path-plan graphs without the
+source model. Pointer, Flash, and Accessibility input select one stage record.
+
+The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
+light and dark themes, Flash navigation, and Accessibility actions. The
+remaining numbered action slots stay visible and disabled until their slicing
+stages exist.
 
 Build and run the development app:
 

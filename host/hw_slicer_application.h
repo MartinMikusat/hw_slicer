@@ -19,6 +19,7 @@ typedef struct HW_Slicer_Control {
     HW_Slicer_Rect rect;
     int32_t role;
     bool enabled;
+    bool selected;
 } HW_Slicer_Control;
 
 typedef struct HW_Slicer_Host {
@@ -31,7 +32,7 @@ typedef struct HW_Slicer_Host {
     void (*window_close)(void);
     void (*window_minimize)(void);
     void (*window_zoom)(void);
-    bool (*open_stl_file)(char *path, size_t capacity);
+    bool (*open_document)(char *path, size_t capacity);
     int32_t (*preference_get_int)(const char *key, int32_t fallback);
     void (*preference_set_int)(const char *key, int32_t value);
 } HW_Slicer_Host;

@@ -7,6 +7,8 @@ import "core:strings"
 import CF "core:sys/darwin/CoreFoundation"
 import flash "flash:."
 
+import evidence "./evidence"
+
 foreign import core_graphics "system:CoreGraphics.framework"
 foreign core_graphics {
 	CGColorSpaceCreateDeviceRGB :: proc "c" () -> rawptr ---
@@ -118,6 +120,8 @@ UI_Action :: enum u64 {
 	Capture,
 	Compare,
 	Export,
+	Close_Evidence,
+	Evidence_Stage_Base = 1000,
 }
 
 UI_Control :: struct {
@@ -128,6 +132,13 @@ UI_Control :: struct {
 	action:  UI_Action,
 	enabled: bool,
 	role:    i32,
+	selected: bool,
+}
+
+UI_Evidence_View :: struct {
+	replay:    ^evidence.Evidence_Bundle_Replay,
+	source:    string,
+	container: string,
 }
 
 Theme :: struct {
@@ -175,6 +186,8 @@ UI_State :: struct {
 	controls: [dynamic]UI_Control,
 	flash_state: flash.State,
 	help_open: bool,
+	evidence_open: bool,
+	evidence_stage_index: int,
 	width: f64,
 	height: f64,
 	scale: f64,
@@ -226,6 +239,38 @@ ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	return {12, ui.height-64, ui.width-24, 52}
 }
 
+ui_evidence_available :: proc(view: ^UI_Evidence_View) -> bool {
+	return view != nil &&
+		view.replay != nil &&
+		len(view.replay.root.stages) > 0 &&
+		len(view.replay.root.stages) == len(view.replay.stage_manifests)
+}
+
+ui_evidence_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	width := min(900.0, ui.width-48)
+	height := min(600.0, ui.height-96)
+	return {
+		ui.width/2-width/2,
+		ui.height/2-height/2,
+		width,
+		height,
+	}
+}
+
+ui_evidence_stage_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Evidence_Stage_Base)+u64(index))
+}
+
+ui_evidence_stage_action_index :: proc(
+	action: UI_Action,
+	stage_count: int,
+) -> (int, bool) {
+	id := u64(action)
+	base := u64(UI_Action.Evidence_Stage_Base)
+	if id < base || id-base >= u64(stage_count) {return 0, false}
+	return int(id-base), true
+}
+
 ui_add_control :: proc(
 	ui: ^UI_State,
 	name, label: string,
@@ -233,6 +278,7 @@ ui_add_control :: proc(
 	action: UI_Action,
 	enabled := true,
 	role: i32 = 0,
+	selected := false,
 ) {
 	when ODIN_DEBUG {
 		assert(rect.w > 0 && rect.h > 0, "UI controls must have visible rectangles")
@@ -251,11 +297,15 @@ ui_add_control :: proc(
 			action = action,
 			enabled = enabled,
 			role = role,
+			selected = selected,
 		},
 	)
 }
 
-ui_build_controls :: proc(ui: ^UI_State) {
+ui_build_controls :: proc(
+	ui: ^UI_State,
+	evidence_view: ^UI_Evidence_View = nil,
+) {
 	clear(&ui.controls)
 	ui_add_control(ui, "window close", "close window", {8, 5, 30, 30}, .Window_Close)
 	ui_add_control(ui, "window minimize", "minimize window", {40, 5, 30, 30}, .Window_Minimize)
@@ -273,6 +323,43 @@ ui_build_controls :: proc(ui: ^UI_State) {
 			"01 close viewer help",
 			{modal.x+modal.w-132, modal.y+modal.h-54, 112, 36},
 			.Close_Help,
+		)
+		return
+	}
+	if ui.evidence_open && ui_evidence_available(evidence_view) {
+		modal := ui_evidence_modal_rect(ui)
+		stage_count := len(evidence_view.replay.root.stages)
+		if ui.evidence_stage_index < 0 ||
+		   ui.evidence_stage_index >= stage_count {
+			ui.evidence_stage_index = 0
+		}
+		for stage, stage_index in evidence_view.replay.root.stages {
+			ui_add_control(
+				ui,
+				stage.stage.name,
+				fmt.tprintf(
+					"stage %02d %s",
+					stage.ordinal,
+					stage.stage.name,
+				),
+				{
+					modal.x+20,
+					modal.y+72+f64(stage_index)*30,
+					270,
+					28,
+				},
+				ui_evidence_stage_action(stage_index),
+				true,
+				1,
+				stage_index == ui.evidence_stage_index,
+			)
+		}
+		ui_add_control(
+			ui,
+			"evidence close",
+			"1 close evidence inspector",
+			{modal.x+modal.w-132, modal.y+modal.h-48, 112, 32},
+			.Close_Evidence,
 		)
 		return
 	}
@@ -302,6 +389,7 @@ ui_build_controls :: proc(ui: ^UI_State) {
 			row.action,
 			true,
 			1,
+			index == ui.selected_model,
 		)
 	}
 
@@ -432,9 +520,16 @@ ui_add_border :: proc(
 	)
 }
 
-ui_build_geometry :: proc(ui: ^UI_State) -> [dynamic]Solid_Vertex {
+ui_build_geometry :: proc(
+	ui: ^UI_State,
+	evidence_view: ^UI_Evidence_View = nil,
+) -> [dynamic]Solid_Vertex {
 	vertices := make([dynamic]Solid_Vertex, context.temp_allocator)
 	theme := ui_theme(ui)
+	evidence_stage_count := 0
+	if ui_evidence_available(evidence_view) {
+		evidence_stage_count = len(evidence_view.replay.root.stages)
+	}
 	ui_add_rect(&vertices, ui, {0, 0, ui.width, 40}, theme.header)
 	ui_add_rect(&vertices, ui, ui_left_rect(ui), theme.surface)
 	ui_add_rect(&vertices, ui, ui_viewport_rect(ui), theme.raised)
@@ -451,11 +546,41 @@ ui_build_geometry :: proc(ui: ^UI_State) -> [dynamic]Solid_Vertex {
 		ui_add_rect(&vertices, ui, {0, 40, ui.width, ui.height-40}, {0, 0, 0, 0.58})
 		ui_add_rect(&vertices, ui, modal, theme.overlay)
 		ui_add_border(&vertices, ui, modal, COLOR_GUM)
+	} else if ui.evidence_open && ui_evidence_available(evidence_view) {
+		modal := ui_evidence_modal_rect(ui)
+		ui_add_rect(&vertices, ui, {0, 40, ui.width, ui.height-40}, {0, 0, 0, 0.58})
+		ui_add_rect(&vertices, ui, modal, theme.overlay)
 	}
 
 	for control in ui.controls {
 		hovered := control.id == ui.hovered_id
 		fill := theme.surface if hovered else theme.control
+		if _, is_stage := ui_evidence_stage_action_index(
+			control.action,
+			evidence_stage_count,
+		); is_stage {
+			ui_add_rect(
+				&vertices,
+				ui,
+				control.rect,
+				theme.surface if hovered else theme.raised,
+			)
+			if control.selected {
+				ui_add_rect(
+					&vertices,
+					ui,
+					{control.rect.x, control.rect.y, 4, control.rect.h},
+					COLOR_GUM,
+				)
+				ui_add_border(
+					&vertices,
+					ui,
+					control.rect,
+					COLOR_GUM,
+				)
+			}
+			continue
+		}
 		switch control.action {
 		case .Window_Close, .Window_Minimize, .Window_Zoom:
 			ui_add_rect(&vertices, ui, control.rect, fill)
@@ -480,14 +605,13 @@ ui_build_geometry :: proc(ui: ^UI_State) -> [dynamic]Solid_Vertex {
 		case .Show_Help, .Frame_Mesh:
 			ui_add_rect(&vertices, ui, control.rect, fill)
 		case .Select_Benchy, .Select_All_In_One, .Select_Bunny:
-			index := int(control.action)-int(UI_Action.Select_Benchy)
 			ui_add_rect(
 				&vertices,
 				ui,
 				control.rect,
 				theme.surface if hovered else theme.raised,
 			)
-			if index == ui.selected_model {
+			if control.selected {
 				ui_add_rect(
 					&vertices,
 					ui,
@@ -520,11 +644,10 @@ ui_build_geometry :: proc(ui: ^UI_State) -> [dynamic]Solid_Vertex {
 					COLOR_COFFEE,
 				)
 			}
-		case .Close_Help:
+		case .Close_Help, .Close_Evidence:
 			ui_add_rect(&vertices, ui, control.rect, fill)
 			ui_add_border(&vertices, ui, control.rect, COLOR_GUM)
-		case .None:
-		case:
+		case .None, .Evidence_Stage_Base:
 		}
 	}
 	for hint in flash.visible_hints(&ui.flash_state) {
@@ -775,10 +898,210 @@ ui_register_font :: proc(resource_root: string) -> bool {
 	return registered || error == nil
 }
 
+ui_draw_flash_hint_text :: proc(
+	ctx, font: rawptr,
+	ui: ^UI_State,
+) {
+	for hint in flash.visible_hints(&ui.flash_state) {
+		width := max(16.0, 8.0+8.0*f64(len(hint.label)))
+		rect := UI_Rect{
+			hint.target.rect.x+2,
+			hint.target.rect.y+2,
+			width,
+			18,
+		}
+		rect.x = min(rect.x, ui.width-rect.w)
+		rect.y = min(rect.y, ui.height-rect.h)
+		ui_draw_text(
+			ctx,
+			font,
+			ui,
+			hint.label,
+			rect,
+			FLASH_FG,
+			0,
+			.Center,
+		)
+	}
+}
+
+ui_evidence_stage_totals :: proc(
+	manifest: evidence.Evidence_Manifest,
+) -> (item_count, byte_count: u64) {
+	for primitive in manifest.primitives {
+		item_count += primitive.item_count
+		byte_count += primitive.byte_count
+	}
+	for render in manifest.renders {
+		item_count += render.item_count
+		byte_count += render.byte_count
+	}
+	return
+}
+
+ui_draw_evidence_overlay :: proc(
+	ctx, font: rawptr,
+	ui: ^UI_State,
+	view: ^UI_Evidence_View,
+) {
+	if !ui_evidence_available(view) {return}
+	modal := ui_evidence_modal_rect(ui)
+	replay := view.replay
+	selected_index := ui.evidence_stage_index
+	if selected_index < 0 || selected_index >= len(replay.root.stages) {
+		selected_index = 0
+	}
+	selected := replay.root.stages[selected_index]
+	manifest := replay.stage_manifests[selected_index]
+	item_count, byte_count := ui_evidence_stage_totals(manifest)
+	theme := ui_theme(ui)
+
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"EVIDENCE INSPECTOR",
+		{modal.x+20, modal.y+12, modal.w-40, 26},
+		theme.text,
+		0,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		fmt.tprintf(
+			"%s / %s / %d STAGES",
+			filepath.base(view.source),
+			view.container,
+			len(replay.root.stages),
+		),
+		{modal.x+20, modal.y+36, modal.w-40, 22},
+		theme.muted,
+		0,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		fmt.tprintf("REQUEST %s", replay.root.request_hash),
+		{modal.x+20, modal.y+54, modal.w-40, 20},
+		theme.muted,
+		0,
+	)
+
+	for stage, stage_index in replay.root.stages {
+		color := COLOR_GUM if stage_index == selected_index else theme.text
+		ui_draw_text(
+			ctx,
+			font,
+			ui,
+			fmt.tprintf("%02d  %s", stage.ordinal, stage.stage.name),
+			{
+				modal.x+28,
+				modal.y+72+f64(stage_index)*30,
+				250,
+				28,
+			},
+			color,
+			0,
+		)
+	}
+
+	detail_x := modal.x+316
+	detail_width := modal.w-336
+	graph_state := "MANIFEST RETAINED"
+	switch selected.stage.name {
+	case "reconstruct-topology":
+		if replay.topology_loaded {graph_state = "TOPOLOGY GRAPH RETAINED"}
+	case "calculate-regions":
+		if replay.regions_loaded {graph_state = "REGION GRAPH RETAINED"}
+	case "plan-paths":
+		if replay.path_plan_loaded {graph_state = "PATH-PLAN GRAPH RETAINED"}
+	case:
+	}
+	detail_lines := [7]string{
+		fmt.tprintf("STAGE      %02d %s", selected.ordinal, selected.stage.name),
+		fmt.tprintf(
+			"PROVIDER   %s / %s",
+			selected.provider.name,
+			selected.provider.version,
+		),
+		fmt.tprintf(
+			"SCHEMA     %d / REVISION %d",
+			selected.stage.schema_version,
+			selected.stage.revision,
+		),
+		fmt.tprintf(
+			"RECORDS    %d PRIMITIVES / %d RENDERS",
+			len(manifest.primitives),
+			len(manifest.renders),
+		),
+		fmt.tprintf("ITEMS      %d", item_count),
+		fmt.tprintf("BYTES      %d", byte_count),
+		graph_state,
+	}
+	for line, line_index in detail_lines {
+		ui_draw_text(
+			ctx,
+			font,
+			ui,
+			line,
+			{
+				detail_x,
+				modal.y+82+f64(line_index)*24,
+				detail_width,
+				22,
+			},
+			theme.text if line_index < 6 else COLOR_GUM,
+			0,
+		)
+	}
+	summary_y := modal.y+264
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"STAGE SUMMARY",
+		{detail_x, summary_y, detail_width, 22},
+		theme.muted,
+		0,
+	)
+	counter_limit := int((modal.y+modal.h-70-summary_y)/22)
+	for counter, counter_index in manifest.summary {
+		if counter_index >= counter_limit {break}
+		ui_draw_text(
+			ctx,
+			font,
+			ui,
+			fmt.tprintf("%-28s %d", counter.name, counter.value),
+			{
+				detail_x,
+				summary_y+24+f64(counter_index)*22,
+				detail_width,
+				20,
+			},
+			theme.text,
+			0,
+		)
+	}
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"1  CLOSE",
+		{modal.x+modal.w-132, modal.y+modal.h-48, 112, 32},
+		COLOR_GUM,
+		0,
+		.Center,
+	)
+	ui_draw_flash_hint_text(ctx, font, ui)
+}
+
 ui_build_text_overlay :: proc(
 	ui: ^UI_State,
 	mesh: ^Mesh,
 	model_name, status: string,
+	evidence_view: ^UI_Evidence_View = nil,
 ) -> []u8 {
 	width := uint(max(1, ui.width*ui.scale))
 	height := uint(max(1, ui.height*ui.scale))
@@ -837,7 +1160,7 @@ ui_build_text_overlay :: proc(
 			"SCROLL changes camera distance.",
 			"FRAME recalculates the target and distance from STL bounds.",
 			"WIREFRAME changes Metal triangle fill mode.",
-			"OPEN accepts exact binary STL payloads.",
+			"OPEN accepts exact STL files and validated evidence bundles.",
 			"The 220 x 220 mm grid uses direct Metal line primitives.",
 		}
 		for line, index in help_lines {
@@ -861,6 +1184,11 @@ ui_build_text_overlay :: proc(
 			0,
 			.Center,
 		)
+		ui_draw_flash_hint_text(ctx, font, ui)
+		return pixels
+	}
+	if ui.evidence_open && ui_evidence_available(evidence_view) {
+		ui_draw_evidence_overlay(ctx, font, ui, evidence_view)
 		return pixels
 	}
 	ui_draw_text(
@@ -995,27 +1323,7 @@ ui_build_text_overlay :: proc(
 		)
 	}
 
-	for hint in flash.visible_hints(&ui.flash_state) {
-		width := max(16.0, 8.0+8.0*f64(len(hint.label)))
-		rect := UI_Rect{
-			hint.target.rect.x+2,
-			hint.target.rect.y+2,
-			width,
-			18,
-		}
-		rect.x = min(rect.x, ui.width-rect.w)
-		rect.y = min(rect.y, ui.height-rect.h)
-		ui_draw_text(
-			ctx,
-			font,
-			ui,
-			hint.label,
-			rect,
-			FLASH_FG,
-			0,
-			.Center,
-		)
-	}
+	ui_draw_flash_hint_text(ctx, font, ui)
 
 	return pixels
 }
@@ -1024,17 +1332,24 @@ ui_snapshot_text :: proc(ui: ^UI_State) -> string {
 	builder: strings.Builder
 	strings.builder_init(&builder)
 	defer strings.builder_destroy(&builder)
+	modal := "none"
+	if ui.help_open {
+		modal = "help"
+	} else if ui.evidence_open {
+		modal = "evidence"
+	}
 	fmt.sbprintf(
 		&builder,
-		"controls\t%d\ttheme\t%s\tmodal\t%s\n",
+		"controls\t%d\ttheme\t%s\tmodal\t%s\tselected_stage\t%d\n",
 		len(ui.controls),
 		"dark" if ui.dark else "light",
-		"help" if ui.help_open else "none",
+		modal,
+		ui.evidence_stage_index,
 	)
 	for control in ui.controls {
 		fmt.sbprintf(
 			&builder,
-			"%d\t%s\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%s\n",
+			"%d\t%s\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%s\t%s\n",
 			control.id,
 			control.name,
 			control.label,
@@ -1043,6 +1358,7 @@ ui_snapshot_text :: proc(ui: ^UI_State) -> string {
 			control.rect.w,
 			control.rect.h,
 			"enabled" if control.enabled else "disabled",
+			"selected" if control.selected else "clear",
 		)
 	}
 	return strings.clone(strings.to_string(builder))

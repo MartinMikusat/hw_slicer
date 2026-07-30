@@ -11,6 +11,7 @@ Host_Control :: struct {
 	rect:    Host_Rect,
 	role:    i32,
 	enabled: bool,
+	selected: bool,
 }
 
 Host_Services :: struct {
@@ -23,7 +24,7 @@ Host_Services :: struct {
 	window_close: proc "c" (),
 	window_minimize: proc "c" (),
 	window_zoom: proc "c" (),
-	open_stl_file: proc "c" (path: [^]u8, capacity: uint) -> bool,
+	open_document: proc "c" (path: [^]u8, capacity: uint) -> bool,
 	preference_get_int: proc "c" (
 		key: cstring,
 		fallback: i32,

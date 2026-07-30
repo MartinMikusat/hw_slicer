@@ -31,6 +31,7 @@ static char *g_resource_root_bytes;
 
 @interface HWSlicerView : NSView
 @property(nonatomic) NSTrackingArea *trackingArea;
+@property(nonatomic) NSArray<HWSlicerAXElement *> *accessibilityControlElements;
 @end
 
 static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
@@ -44,7 +45,7 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)isOpaque { return YES; }
-- (BOOL)isAccessibilityElement { return NO; }
+- (BOOL)isAccessibilityElement { return YES; }
 - (NSString *)accessibilityRole { return NSAccessibilityGroupRole; }
 - (NSString *)accessibilityLabel { return @"HW Slicer"; }
 
@@ -80,6 +81,9 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
         element.accessibilityIdentifier = [NSString
             stringWithUTF8String:control.name ? control.name : ""];
         element.accessibilityEnabled = control.enabled;
+        if (control.role == 1) {
+            element.accessibilityValue = @(control.selected);
+        }
         NSRect local = NSMakeRect(
             control.rect.x,
             self.bounds.size.height - control.rect.y - control.rect.height,
@@ -90,7 +94,8 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
             [self convertRect:local toView:nil]];
         [children addObject:element];
     }
-    return children;
+    self.accessibilityControlElements = children;
+    return self.accessibilityControlElements;
 }
 
 - (void)mouseDown:(NSEvent *)event {
@@ -196,13 +201,15 @@ static void slicer_window_zoom(void) {
     [(__bridge NSWindow *)g_host.window zoom:nil];
 }
 
-static bool slicer_open_stl_file(char *path, size_t capacity) {
+static bool slicer_open_document(char *path, size_t capacity) {
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.canChooseFiles = YES;
-    panel.canChooseDirectories = NO;
+    panel.canChooseDirectories = YES;
     panel.allowsMultipleSelection = NO;
     panel.allowedContentTypes = @[
-        [UTType typeWithFilenameExtension:@"stl"]
+        [UTType typeWithFilenameExtension:@"stl"],
+        [UTType typeWithFilenameExtension:@"hwsdebug"],
+        [UTType typeWithIdentifier:@"public.folder"]
     ];
     if ([panel runModal] != NSModalResponseOK) { return false; }
     const char *selected = panel.URL.path.fileSystemRepresentation;
@@ -272,7 +279,7 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
     g_host.window_close = slicer_window_close;
     g_host.window_minimize = slicer_window_minimize;
     g_host.window_zoom = slicer_window_zoom;
-    g_host.open_stl_file = slicer_open_stl_file;
+    g_host.open_document = slicer_open_document;
     g_host.preference_get_int = slicer_preference_get_int;
     g_host.preference_set_int = slicer_preference_set_int;
 

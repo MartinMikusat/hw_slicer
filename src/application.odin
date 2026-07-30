@@ -8,6 +8,8 @@ import "core:path/filepath"
 import "core:strings"
 import flash "flash:."
 
+import evidence "./evidence"
+
 Camera :: struct {
 	target:   Vec3,
 	yaw:      f32,
@@ -20,9 +22,12 @@ App_State :: struct {
 	renderer:      Renderer,
 	ui:            UI_State,
 	mesh:          Mesh,
+	evidence_replay: evidence.Evidence_Bundle_Replay,
+	evidence_kind: evidence.Evidence_Bundle_Source_Kind,
 	camera:        Camera,
 	resource_root: string,
 	external_path: string,
+	evidence_path: string,
 	model_name:    string,
 	status:        string,
 	needs_redraw:  bool,
@@ -102,19 +107,72 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 	return true
 }
 
-app_open_model :: proc() {
+app_evidence_view :: proc() -> UI_Evidence_View {
+	container := "PACKAGE"
+	if app.evidence_kind == .Directory {
+		container = "DIRECTORY"
+	}
+	return {
+		replay = &app.evidence_replay,
+		source = app.evidence_path,
+		container = container,
+	}
+}
+
+app_load_evidence :: proc(path: string) -> bool {
+	next, kind, load_error := evidence.evidence_bundle_path_replay(path)
+	if load_error != .None {
+		fmt.eprintf(
+			"HW Slicer could not load evidence %s: %v\n",
+			path,
+			load_error,
+		)
+		app_set_status(fmt.tprintf("EVIDENCE FAILED: %v", load_error))
+		return false
+	}
+	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
+	app.evidence_replay = next
+	app.evidence_kind = kind
+	delete(app.evidence_path)
+	app.evidence_path = strings.clone(path)
+	app.ui.help_open = false
+	app.ui.evidence_open = true
+	app.ui.evidence_stage_index = 0
+	app_set_status(
+		fmt.tprintf(
+			"EVIDENCE: %d STAGES",
+			len(app.evidence_replay.root.stages),
+		),
+	)
+	return true
+}
+
+app_open_document :: proc() {
 	path: [4096]u8
-	if app.host.open_stl_file == nil ||
-	   !app.host.open_stl_file(raw_data(path[:]), len(path)) {
+	if app.host.open_document == nil ||
+	   !app.host.open_document(raw_data(path[:]), len(path)) {
 		return
 	}
 	selected := string(cstring(&path[0]))
+	if !strings.equal_fold(filepath.ext(selected), ".stl") {
+		_ = app_load_evidence(selected)
+		return
+	}
 	delete(app.external_path)
 	app.external_path = strings.clone(selected)
 	_ = app_load_model(3)
 }
 
 app_activate :: proc(action: UI_Action) -> bool {
+	if stage_index, is_stage := ui_evidence_stage_action_index(
+		action,
+		len(app.evidence_replay.root.stages),
+	); is_stage {
+		if !app.ui.evidence_open {return false}
+		app.ui.evidence_stage_index = stage_index
+		app.needs_redraw = true
+		return true
+	}
 	switch action {
 	case .Window_Close:
 		app.host.window_close()
@@ -130,10 +188,14 @@ app_activate :: proc(action: UI_Action) -> bool {
 		)
 		app.needs_redraw = true
 	case .Show_Help:
+		app.ui.evidence_open = false
 		app.ui.help_open = true
 		app.needs_redraw = true
 	case .Close_Help:
 		app.ui.help_open = false
+		app.needs_redraw = true
+	case .Close_Evidence:
+		app.ui.evidence_open = false
 		app.needs_redraw = true
 	case .Select_Benchy:
 		_ = app_load_model(0)
@@ -147,10 +209,10 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.ui.wireframe = !app.ui.wireframe
 		app.needs_redraw = true
 	case .Open:
-		app_open_model()
+		app_open_document()
 	case .Slice, .Cancel, .Capture, .Compare, .Export:
 		return false
-	case .None:
+	case .None, .Evidence_Stage_Base:
 		return false
 	}
 	return true
@@ -191,10 +253,12 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 
 app_destroy :: proc() {
 	mesh_destroy(&app.mesh)
+	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
 	renderer_shutdown(&app.renderer)
 	ui_destroy(&app.ui)
 	delete(app.resource_root)
 	delete(app.external_path)
+	delete(app.evidence_path)
 	delete(app.model_name)
 	delete(app.status)
 	app = {}
@@ -226,13 +290,15 @@ app_pan_camera :: proc(delta_x, delta_y: f64) {
 }
 
 renderer_draw_application :: proc() {
-	ui_build_controls(&app.ui)
-	solids := ui_build_geometry(&app.ui)
+	evidence_view := app_evidence_view()
+	ui_build_controls(&app.ui, &evidence_view)
+	solids := ui_build_geometry(&app.ui, &evidence_view)
 	pixels := ui_build_text_overlay(
 		&app.ui,
 		&app.mesh,
 		app.model_name,
 		app.status,
+		&evidence_view,
 	)
 	defer delete(pixels)
 	renderer_draw(
@@ -345,6 +411,9 @@ application_key :: proc "c" (
 		} else if app.ui.help_open {
 			app.ui.help_open = false
 			app.needs_redraw = true
+		} else if app.ui.evidence_open {
+			app.ui.evidence_open = false
+			app.needs_redraw = true
 		}
 		return
 	}
@@ -381,6 +450,10 @@ application_key :: proc "c" (
 		_ = app_activate(.Close_Help)
 		return
 	}
+	if app.ui.evidence_open && text == "1" {
+		_ = app_activate(.Close_Evidence)
+		return
+	}
 	if len(text) == 1 && text[0] >= '1' && text[0] <= '6' {
 		slot := int(text[0]-'1')
 		actions := [6]UI_Action{.Open, .Slice, .Cancel, .Capture, .Compare, .Export}
@@ -410,6 +483,7 @@ application_control_at :: proc "c" (
 		},
 		role = control.role,
 		enabled = control.enabled,
+		selected = control.selected,
 	}
 	return true
 }

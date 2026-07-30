@@ -1,6 +1,9 @@
 package main
 
 import "core:testing"
+import "core:strings"
+
+import evidence "./evidence"
 
 @(test)
 ui_registry_preserves_numbered_action_slots_test :: proc(t: ^testing.T) {
@@ -14,6 +17,8 @@ ui_registry_preserves_numbered_action_slots_test :: proc(t: ^testing.T) {
 	ui_build_controls(&ui)
 
 	testing.expect_value(t, len(ui.controls), 16)
+	testing.expect(t, ui.controls[5].selected)
+	testing.expect(t, !ui.controls[6].selected)
 	first_action := ui.controls[10]
 	testing.expect_value(t, first_action.action, UI_Action.Open)
 	testing.expect(t, first_action.enabled)
@@ -21,6 +26,67 @@ ui_registry_preserves_numbered_action_slots_test :: proc(t: ^testing.T) {
 		testing.expect(t, !ui.controls[index].enabled)
 	}
 	testing.expect_value(t, ui.controls[15].action, UI_Action.Export)
+}
+
+@(test)
+ui_evidence_transition_registers_stage_selection_test :: proc(t: ^testing.T) {
+	ui: UI_State
+	ui_initialize(&ui)
+	defer ui_destroy(&ui)
+	ui.width = 1280
+	ui.height = 800
+	ui.scale = 2
+	stages := [3]evidence.Evidence_Bundle_Stage{
+		{ordinal = 7, stage = {name = "reconstruct-topology"}},
+		{ordinal = 8, stage = {name = "calculate-regions"}},
+		{ordinal = 10, stage = {name = "plan-paths"}},
+	}
+	manifests: [3]evidence.Evidence_Manifest
+	replay := evidence.Evidence_Bundle_Replay{
+		root = {stages = stages[:]},
+		stage_manifests = manifests[:],
+	}
+	view := UI_Evidence_View{
+		replay = &replay,
+		source = "fixture.hwsdebug",
+		container = "PACKAGE",
+	}
+	ui.evidence_open = true
+	ui.evidence_stage_index = 2
+	ui_build_controls(&ui, &view)
+
+	testing.expect_value(t, len(ui.controls), 7)
+	testing.expect_value(
+		t,
+		ui.controls[3].action,
+		ui_evidence_stage_action(0),
+	)
+	testing.expect(t, !ui.controls[3].selected)
+	testing.expect(t, ui.controls[5].selected)
+	testing.expect_value(
+		t,
+		ui.controls[6].action,
+		UI_Action.Close_Evidence,
+	)
+	stage_index, stage_ok := ui_evidence_stage_action_index(
+		ui.controls[5].action,
+		len(stages),
+	)
+	testing.expect(t, stage_ok)
+	testing.expect_value(t, stage_index, 2)
+	testing.expect_value(
+		t,
+		ui_hit_test(
+			&ui,
+			ui.controls[5].rect.x+10,
+			ui.controls[5].rect.y+10,
+		),
+		u64(ui_evidence_stage_action(2)),
+	)
+	snapshot := ui_snapshot_text(&ui)
+	defer delete(snapshot)
+	testing.expect(t, strings.contains(snapshot, "modal\tevidence"))
+	testing.expect(t, strings.contains(snapshot, "selected_stage\t2"))
 }
 
 @(test)
