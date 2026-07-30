@@ -54,9 +54,9 @@ or GUI framework.
 The viewer loads the three bundled reference models or an exact binary STL
 selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
 package or published evidence directory in the stage timeline and inspector.
-The inspector retains the topology, region, path-plan, extrusion, motion, and
-G-code graphs without the source model. Pointer, Flash, and Accessibility input
-select one stage record.
+The inspector retains the topology, region, unified feature-source, path-plan,
+extrusion, motion, and G-code graphs without the source model. Pointer, Flash,
+and Accessibility input select one stage record.
 
 The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
 light and dark themes, Flash navigation, and Accessibility actions. The
@@ -96,6 +96,8 @@ The G0 foundation provides:
 - A versioned debug-evidence manifest with a golden JSON fixture.
 - Valid UTF-8 artifact paths, format tokens, schemas, and destination uniqueness.
 - A preflighted little-endian path-plan artifact with hash-validated replay.
+- A preflighted little-endian unified feature-source artifact with
+  source-independent replay.
 - A versioned feature request hash and registered CPU path-planner provider.
 - A bounded canonical SVG renderer for one decoded path-plan layer.
 - A versioned root evidence-bundle manifest with ordered stage descriptors.
@@ -213,6 +215,8 @@ The current engine implementation provides:
   per-endpoint line widths, explicit travel moves, and canonical plan hashes.
 - Canonical adapters from every generated path result into the unified source
   layout, including inner-first perimeter ordering and variable gap widths.
+- A bounded little-endian unified feature-source artifact that retains each
+  role, layer, path, point, width, dependency, and result identity.
 - Rounded-bead extrusion volume from endpoint widths and layer height, using a
   pinned fixed-point value of pi and nanometre path lengths.
 - Per-role flow scaling and fixed-point filament length with one carried
@@ -563,8 +567,9 @@ attribution and license checksums.
 Execute the staged plan through the release gate. Preserve the versioned stage
 contracts and debug-evidence protocol when an implementation is replaced.
 
-Extend retained evidence through the remaining feature graphs. Add geometric
-rendering and cross-stage selection for the retained records. Connect those
-stages to the production slice action before physical printer calibration.
-Preserve the profile provenance and invalidation rules from the
+Extend retained evidence through the remaining intermediate feature graphs and
+the unified path plan. Add geometric rendering and cross-stage selection for
+the retained records. Connect those stages to the production slice action
+before physical printer calibration. Preserve the profile provenance and
+invalidation rules from the
 [process-profile decision contract](../notes/hw-slicer-process-profile-decisions.md).
