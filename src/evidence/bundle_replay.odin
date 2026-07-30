@@ -12,6 +12,7 @@ Evidence_Bundle_Replay :: struct {
 	root:             Evidence_Bundle_Manifest,
 	summary:          Evidence_Bundle_Summary,
 	stage_manifests:  []Evidence_Manifest,
+	layer_schedule:   Layer_Schedule_Artifact,
 	topology:         Topology_Artifact,
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
@@ -23,6 +24,7 @@ Evidence_Bundle_Replay :: struct {
 	extrusion:        features.Extrusion_Artifact,
 	motion_plan:      features.Motion_Plan_Artifact,
 	marlin:           gcode.Marlin_Artifact,
+	layer_schedule_loaded: bool,
 	topology_loaded:  bool,
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
@@ -62,6 +64,9 @@ evidence_bundle_replay_destroy :: proc(
 	delete(replay.stage_manifests, allocator)
 	evidence_bundle_summary_destroy(&replay.summary, allocator)
 	evidence_bundle_manifest_destroy(&replay.root, allocator)
+	if replay.layer_schedule_loaded {
+		layer_schedule_artifact_destroy(&replay.layer_schedule, allocator)
+	}
 	if replay.topology_loaded {
 		topology_artifact_destroy(&replay.topology, allocator)
 	}
@@ -597,6 +602,8 @@ evidence_bundle_directory_replay :: proc(
 
 evidence_bundle_replay_stage_supported :: proc(stage_name: string) -> bool {
 	switch stage_name {
+	case "schedule-layers":
+		return true
 	case "reconstruct-topology":
 		return true
 	case "calculate-regions":
@@ -617,6 +624,8 @@ evidence_bundle_replay_primitive_supported :: proc(
 	format: string,
 ) -> bool {
 	switch stage_name {
+	case "schedule-layers":
+		return format == LAYER_SCHEDULE_ARTIFACT_FORMAT
 	case "reconstruct-topology":
 		return format == TOPOLOGY_ARTIFACT_FORMAT
 	case "calculate-regions":
@@ -652,6 +661,35 @@ evidence_bundle_replay_stage_decode :: proc(
 		return .Invalid_Content
 	}
 	switch manifest.stage.name {
+	case "schedule-layers":
+		if replay.layer_schedule_loaded {return .Invalid_Content}
+		expectations, preflight_error :=
+			layer_schedule_manifest_preflight(
+				manifest,
+				primitive.path,
+				artifact_bytes,
+			)
+		if preflight_error != .None {return .Invalid_Content}
+		artifact, decode_error := layer_schedule_artifact_decode(
+			artifact_bytes,
+			DEFAULT_LAYER_SCHEDULE_ARTIFACT_LIMITS,
+			allocator,
+		)
+		if decode_error != .None {
+			if decode_error == .Allocation_Failed {
+				return .Allocation_Failed
+			}
+			return .Invalid_Content
+		}
+		if layer_schedule_manifest_replay_verify(
+			expectations,
+			artifact,
+		) != .None {
+			layer_schedule_artifact_destroy(&artifact, allocator)
+			return .Invalid_Content
+		}
+		replay.layer_schedule = artifact
+		replay.layer_schedule_loaded = true
 	case "reconstruct-topology":
 		if replay.topology_loaded {return .Invalid_Content}
 		expectations, preflight_error := topology_manifest_preflight(
@@ -999,6 +1037,11 @@ evidence_bundle_replay_stage_decode :: proc(
 evidence_bundle_replay_dependencies_valid :: proc(
 	replay: Evidence_Bundle_Replay,
 ) -> bool {
+	if replay.layer_schedule_loaded && replay.extrusion_loaded &&
+	   replay.extrusion.dependencies.layer_schedule_hash !=
+		replay.layer_schedule.result_hash {
+		return false
+	}
 	if replay.regions_loaded && replay.surfaces_loaded &&
 	   replay.surfaces.region_hash != replay.regions.result_hash {
 		return false
