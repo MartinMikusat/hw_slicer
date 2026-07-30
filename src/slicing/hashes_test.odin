@@ -49,6 +49,30 @@ slicing_stage_hashes_reject_inconsistent_arrays_test :: proc(t: ^testing.T) {
 		layer_z = []contracts.Micrometres{200},
 	})
 	testing.expect(t, !schedule_ok)
+	schedule, schedule_error := fixed_layer_schedule_build({
+		minimum_z = 0,
+		maximum_z = 1000,
+		first_plane_z = 200,
+		layer_step = 200,
+		max_layer_count = 10,
+	})
+	defer fixed_layer_schedule_destroy(&schedule)
+	testing.expect_value(t, schedule_error, Schedule_Error.None)
+	schedule.layer_z[0] += 1
+	_, schedule_ok = fixed_layer_schedule_hash(schedule)
+	testing.expect(t, !schedule_ok)
+	schedule.layer_z[0] -= 1
+	schedule.layer_ids[0] = contracts.INVALID_STABLE_ID
+	_, schedule_ok = fixed_layer_schedule_hash(schedule)
+	testing.expect(t, !schedule_ok)
+	schedule.layer_ids[0] = contracts.stable_id_child(
+		contracts.stable_id_root(schedule.request_hash, .Layer),
+		.Layer,
+		0,
+	)
+	schedule.maximum_z += 1
+	_, schedule_ok = fixed_layer_schedule_hash(schedule)
+	testing.expect(t, !schedule_ok)
 	_, span_ok := layer_span_index_hash({}, {
 		triangle_ranges = []Triangle_Layer_Range{{}},
 		layers = []Layer_Descriptor{{}},
