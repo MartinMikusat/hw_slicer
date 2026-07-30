@@ -202,6 +202,10 @@ unified_path_plan_hash_rejects_mutated_move_width_test :: proc(
 		0x53, 0xc6, 0xa3, 0x33, 0x42, 0xf8, 0xce, 0xb2,
 	}
 	testing.expect_value(t, hash, expected_hash)
+	content_hash, content_hash_ok :=
+		unified_path_plan_result_content_hash({}, result)
+	testing.expect(t, content_hash_ok)
+	testing.expect_value(t, content_hash, expected_hash)
 	for &move in result.moves {
 		if move.kind != .Extrude {continue}
 		move.line_width_a += 1
@@ -214,6 +218,37 @@ unified_path_plan_hash_rejects_mutated_move_width_test :: proc(
 		result,
 	)
 	testing.expect(t, !mutated_hash_ok)
+	_, mutated_content_hash_ok :=
+		unified_path_plan_result_content_hash({}, result)
+	testing.expect(t, !mutated_content_hash_ok)
+}
+
+@(test)
+unified_path_plan_content_hash_rejects_broken_move_chain_test :: proc(
+	t: ^testing.T,
+) {
+	layer_ids := []contracts.Stable_ID{10}
+	sources := unified_path_plan_test_sources()
+	defer unified_path_plan_test_sources_destroy(sources)
+	result, error := unified_path_plan_build(
+		layer_ids,
+		sources,
+		unified_path_plan_test_config(),
+	)
+	defer unified_path_plan_result_destroy(&result)
+	testing.expect_value(t, error, Unified_Path_Plan_Error.None)
+	_, hash_ok := unified_path_plan_result_content_hash({}, result)
+	testing.expect(t, hash_ok)
+	path := result.paths[1]
+	move_index := int(path.move_offset)
+	if result.moves[move_index].kind == .Travel {
+		move_index += 1
+	}
+	result.moves[move_index].path_id =
+		contracts.INVALID_STABLE_ID
+	_, corrupt_hash_ok :=
+		unified_path_plan_result_content_hash({}, result)
+	testing.expect(t, !corrupt_hash_ok)
 }
 
 unified_path_plan_test_sources :: proc() -> []Unified_Path_Source {
