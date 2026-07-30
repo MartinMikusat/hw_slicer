@@ -177,6 +177,8 @@ The profile resolver provides:
   policies.
 - Explicit process-target validation against printer and material limits.
 - Deterministic first-layer override resolution and thin-wall width conversion.
+- Exact gap-width allocation into unprinted evidence, one centered line, two
+  partitioned lines, or a region that is too wide for gap fill.
 - Canonical profile revision hashes for each normalized document.
 - Earliest-stage cache invalidation with a complete downstream stage mask.
 - Explicit owner and invalidation metadata for every normalized field group.
