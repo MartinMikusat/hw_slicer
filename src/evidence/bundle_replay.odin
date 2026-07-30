@@ -16,6 +16,7 @@ Evidence_Bundle_Replay :: struct {
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
 	infill:           features.Infill_Artifact,
+	perimeters:       features.Perimeter_Artifact,
 	unified_sources:  features.Unified_Path_Source_Artifact,
 	unified_plan:     features.Unified_Path_Plan_Artifact,
 	extrusion:        features.Extrusion_Artifact,
@@ -25,6 +26,7 @@ Evidence_Bundle_Replay :: struct {
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
 	infill_loaded:    bool,
+	perimeters_loaded: bool,
 	unified_sources_loaded: bool,
 	unified_plan_loaded: bool,
 	extrusion_loaded: bool,
@@ -69,6 +71,9 @@ evidence_bundle_replay_destroy :: proc(
 	}
 	if replay.infill_loaded {
 		features.infill_artifact_destroy(&replay.infill, allocator)
+	}
+	if replay.perimeters_loaded {
+		features.perimeter_artifact_destroy(&replay.perimeters, allocator)
 	}
 	if replay.unified_sources_loaded {
 		features.unified_path_source_artifact_destroy(
@@ -612,7 +617,8 @@ evidence_bundle_replay_primitive_supported :: proc(
 	case "calculate-regions":
 		return format == REGION_ARTIFACT_FORMAT
 	case "generate-features":
-		return format == features.INFILL_ARTIFACT_FORMAT ||
+		return format == features.PERIMETER_ARTIFACT_FORMAT ||
+			format == features.INFILL_ARTIFACT_FORMAT ||
 			format == features.UNIFIED_PATH_SOURCE_ARTIFACT_FORMAT
 	case "plan-paths":
 		return format == PATH_PLAN_ARTIFACT_FORMAT ||
@@ -699,6 +705,39 @@ evidence_bundle_replay_stage_decode :: proc(
 		replay.regions_loaded = true
 	case "generate-features":
 		switch primitive.format {
+		case features.PERIMETER_ARTIFACT_FORMAT:
+			if replay.perimeters_loaded {return .Invalid_Content}
+			expectations, preflight_error :=
+				perimeter_manifest_preflight(
+					manifest,
+					primitive.path,
+					artifact_bytes,
+				)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error :=
+				features.perimeter_artifact_decode(
+					artifact_bytes,
+					features.DEFAULT_PERIMETER_ARTIFACT_LIMITS,
+					allocator,
+				)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
+			}
+			if perimeter_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				features.perimeter_artifact_destroy(
+					&artifact,
+					allocator,
+				)
+				return .Invalid_Content
+			}
+			replay.perimeters = artifact
+			replay.perimeters_loaded = true
 		case features.INFILL_ARTIFACT_FORMAT:
 			if replay.infill_loaded {return .Invalid_Content}
 			expectations, preflight_error := infill_manifest_preflight(
@@ -926,8 +965,17 @@ evidence_bundle_replay_stage_decode :: proc(
 evidence_bundle_replay_dependencies_valid :: proc(
 	replay: Evidence_Bundle_Replay,
 ) -> bool {
+	if replay.regions_loaded && replay.perimeters_loaded &&
+	   replay.perimeters.region_hash != replay.regions.result_hash {
+		return false
+	}
 	if replay.regions_loaded && replay.infill_loaded &&
 	   replay.infill.region_hash != replay.regions.result_hash {
+		return false
+	}
+	if replay.perimeters_loaded && replay.unified_sources_loaded &&
+	   replay.unified_sources.dependencies.perimeter_hash !=
+		replay.perimeters.result_hash {
 		return false
 	}
 	if replay.infill_loaded && replay.unified_sources_loaded &&
