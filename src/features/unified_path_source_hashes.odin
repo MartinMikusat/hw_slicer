@@ -1,9 +1,20 @@
 package features
 
 import contracts "../contracts"
+import geometry "../geometry"
 import profiles "../profiles"
 
 SCHEMA_VERSION_UNIFIED_PATH_SOURCE_HASH :: u32(1)
+
+Unified_Path_Source_Hash_Dependencies :: struct {
+	perimeter_hash: contracts.Content_Hash,
+	bridge_hash:    contracts.Content_Hash,
+	gap_hash:       contracts.Content_Hash,
+	solid_hash:     contracts.Content_Hash,
+	infill_hash:    contracts.Content_Hash,
+	support_hash:   contracts.Content_Hash,
+	process_hash:   contracts.Content_Hash,
+}
 
 unified_path_source_result_hash :: proc(
 	perimeter_hash, bridge_hash, gap_hash: contracts.Content_Hash,
@@ -78,20 +89,61 @@ unified_path_source_result_hash :: proc(
 			return {}, false
 		}
 	}
+	return unified_path_source_result_content_hash(
+		{
+			perimeter_hash = perimeter_hash,
+			bridge_hash = bridge_hash,
+			gap_hash = gap_hash,
+			solid_hash = solid_hash,
+			infill_hash = infill_hash,
+			support_hash = support_hash,
+			process_hash = process_hash,
+		},
+		result,
+	)
+}
 
+unified_path_source_result_content_hash :: proc(
+	dependencies: Unified_Path_Source_Hash_Dependencies,
+	result: Unified_Path_Source_Result,
+) -> (contracts.Content_Hash, bool) {
+	if !unified_path_source_result_structurally_valid(result) {
+		return {}, false
+	}
 	hash: contracts.Canonical_Hash
 	contracts.canonical_hash_init(
 		&hash,
 		"hw-slicer/unified-path-sources",
 		SCHEMA_VERSION_UNIFIED_PATH_SOURCE_HASH,
 	)
-	contracts.canonical_hash_append_content_hash(&hash, perimeter_hash)
-	contracts.canonical_hash_append_content_hash(&hash, bridge_hash)
-	contracts.canonical_hash_append_content_hash(&hash, gap_hash)
-	contracts.canonical_hash_append_content_hash(&hash, solid_hash)
-	contracts.canonical_hash_append_content_hash(&hash, infill_hash)
-	contracts.canonical_hash_append_content_hash(&hash, support_hash)
-	contracts.canonical_hash_append_content_hash(&hash, process_hash)
+	contracts.canonical_hash_append_content_hash(
+		&hash,
+		dependencies.perimeter_hash,
+	)
+	contracts.canonical_hash_append_content_hash(
+		&hash,
+		dependencies.bridge_hash,
+	)
+	contracts.canonical_hash_append_content_hash(
+		&hash,
+		dependencies.gap_hash,
+	)
+	contracts.canonical_hash_append_content_hash(
+		&hash,
+		dependencies.solid_hash,
+	)
+	contracts.canonical_hash_append_content_hash(
+		&hash,
+		dependencies.infill_hash,
+	)
+	contracts.canonical_hash_append_content_hash(
+		&hash,
+		dependencies.support_hash,
+	)
+	contracts.canonical_hash_append_content_hash(
+		&hash,
+		dependencies.process_hash,
+	)
 	contracts.canonical_hash_append_u8(
 		&hash,
 		u8(result.inner_perimeters_first),
@@ -144,4 +196,90 @@ unified_path_source_result_hash :: proc(
 		)
 	}
 	return contracts.canonical_hash_final(&hash), true
+}
+
+unified_path_source_result_structurally_valid :: proc(
+	result: Unified_Path_Source_Result,
+) -> bool {
+	if i64(result.nominal_line_width) <= 0 ||
+	   i64(result.nominal_line_width) >
+		geometry.MAX_PLANAR_COORDINATE_UM ||
+	   len(result.points) != len(result.line_widths) ||
+	   u64(len(result.layers)) > u64(max(u32)) {
+		return false
+	}
+	expected_source_offset: u64
+	expected_point_offset: u64
+	for layer, layer_index in result.layers {
+		if layer.source_offset != expected_source_offset ||
+		   layer.point_offset != expected_point_offset ||
+		   layer.source_offset >
+			max(u64)-u64(layer.source_count) ||
+		   layer.point_offset >
+			max(u64)-u64(layer.point_count) ||
+		   layer.source_offset+u64(layer.source_count) >
+			u64(len(result.sources)) ||
+		   layer.point_offset+u64(layer.point_count) >
+			u64(len(result.points)) {
+			return false
+		}
+		source_start := int(layer.source_offset)
+		source_end := source_start+int(layer.source_count)
+		point_cursor := int(layer.point_offset)
+		point_end := point_cursor+int(layer.point_count)
+		previous_kind := Unified_Path_Source_Kind.Invalid
+		source_order: u64
+		layer_id := contracts.INVALID_STABLE_ID
+		for source in result.sources[source_start:source_end] {
+			_, role_ok := profiles.printable_role_priority(source.role)
+			if !role_ok ||
+			   !unified_path_source_kind_valid(
+				source.source_kind,
+				source.role,
+			   ) ||
+			   source.stable_id == contracts.INVALID_STABLE_ID ||
+			   source.layer_id == contracts.INVALID_STABLE_ID ||
+			   source.layer_index != u32(layer_index) ||
+			   source.source_kind < previous_kind ||
+			   source.closed && len(source.points) < 3 ||
+			   !source.closed && len(source.points) < 2 ||
+			   len(source.points) != len(source.line_widths) ||
+			   u64(len(source.points)) > u64(max(u32)) ||
+			   point_cursor > point_end ||
+			   len(source.points) > point_end-point_cursor {
+				return false
+			}
+			if layer_id == contracts.INVALID_STABLE_ID {
+				layer_id = source.layer_id
+			} else if source.layer_id != layer_id {
+				return false
+			}
+			if source.source_kind != previous_kind {
+				previous_kind = source.source_kind
+				source_order = 0
+			}
+			if source.source_order != source_order {return false}
+			source_order += 1
+			previous := source.points[len(source.points)-1]
+			for point, point_index in source.points {
+				if point != result.points[point_cursor+point_index] ||
+				   source.line_widths[point_index] !=
+					result.line_widths[point_cursor+point_index] ||
+				   geometry.point_2_validate({point.x, point.y}) != .None ||
+				   i64(source.line_widths[point_index]) <= 0 ||
+				   i64(source.line_widths[point_index]) >
+					geometry.MAX_PLANAR_COORDINATE_UM ||
+				   point == previous {
+					return false
+				}
+				previous = point
+			}
+			point_cursor += len(source.points)
+		}
+		if point_cursor != point_end {return false}
+		expected_source_offset += u64(layer.source_count)
+		expected_point_offset += u64(layer.point_count)
+	}
+	return expected_source_offset == u64(len(result.sources)) &&
+		expected_point_offset == u64(len(result.points))
 }

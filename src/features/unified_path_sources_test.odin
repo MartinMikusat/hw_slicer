@@ -160,6 +160,10 @@ unified_path_source_hash_rejects_mutated_point_test :: proc(t: ^testing.T) {
 		0xe4, 0x30, 0x4e, 0x8f, 0x3c, 0xbf, 0xbf, 0x84,
 	}
 	testing.expect_value(t, hash, expected_hash)
+	replayed_hash, replayed_hash_ok :=
+		unified_path_source_result_content_hash({}, result)
+	testing.expect(t, replayed_hash_ok)
+	testing.expect_value(t, replayed_hash, hash)
 	result.points[0].x += 1
 	_, mutated_hash_ok := unified_path_source_result_hash(
 		{},
@@ -180,6 +184,10 @@ unified_path_source_hash_rejects_mutated_point_test :: proc(t: ^testing.T) {
 		result,
 	)
 	testing.expect(t, !mutated_hash_ok)
+	mutated_content_hash, mutated_content_hash_ok :=
+		unified_path_source_result_content_hash({}, result)
+	testing.expect(t, mutated_content_hash_ok)
+	testing.expect(t, mutated_content_hash != hash)
 }
 
 unified_path_source_test_inputs :: proc() -> (
