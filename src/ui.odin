@@ -950,8 +950,22 @@ ui_evidence_graph_state :: proc(
 	case "calculate-regions":
 		if replay.regions_loaded {return "REGION GRAPH RETAINED"}
 	case "generate-features":
+		if replay.perimeters_loaded &&
+		   replay.infill_loaded &&
+		   replay.unified_sources_loaded {
+			return "PERIMETER + INFILL + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.perimeters_loaded && replay.infill_loaded {
+			return "PERIMETER + INFILL GRAPHS RETAINED"
+		}
+		if replay.perimeters_loaded && replay.unified_sources_loaded {
+			return "PERIMETER + FEATURE SOURCE GRAPHS RETAINED"
+		}
 		if replay.infill_loaded && replay.unified_sources_loaded {
 			return "INFILL + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.perimeters_loaded {
+			return "PERIMETER GRAPH RETAINED"
 		}
 		if replay.infill_loaded {return "INFILL GRAPH RETAINED"}
 		if replay.unified_sources_loaded {

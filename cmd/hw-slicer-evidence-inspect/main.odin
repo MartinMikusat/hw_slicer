@@ -42,6 +42,11 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	infill_segments:       ^u64  `json:"infill_segments,omitempty"`,
 	infill_boundary_hits:  ^u64  `json:"infill_boundary_hits,omitempty"`,
 	infill_scanlines:      ^u64  `json:"infill_scanlines,omitempty"`,
+	perimeters_loaded:     ^bool `json:"perimeters_loaded,omitempty"`,
+	perimeter_layers:      ^u64  `json:"perimeter_layers,omitempty"`,
+	perimeter_groups:      ^u64  `json:"perimeter_groups,omitempty"`,
+	perimeter_paths:       ^u64  `json:"perimeter_paths,omitempty"`,
+	perimeter_points:      ^u64  `json:"perimeter_points,omitempty"`,
 	unified_sources_loaded: ^bool `json:"unified_sources_loaded,omitempty"`,
 	unified_source_layers: ^u64 `json:"unified_source_layers,omitempty"`,
 	unified_sources:       ^u64 `json:"unified_sources,omitempty"`,
@@ -138,6 +143,10 @@ main :: proc() {
 	infill_layers: u64
 	infill_segments: u64
 	infill_boundary_hits: u64
+	perimeter_layers: u64
+	perimeter_groups: u64
+	perimeter_paths: u64
+	perimeter_points: u64
 	unified_source_layers: u64
 	unified_sources: u64
 	unified_source_points: u64
@@ -191,6 +200,21 @@ main :: proc() {
 		decoded.infill_boundary_hits = &infill_boundary_hits
 		decoded.infill_scanlines =
 			&replay.infill.result.scanline_count
+	}
+	if replay.perimeters_loaded {
+		perimeter_layers =
+			u64(len(replay.perimeters.result.layers))
+		perimeter_groups =
+			u64(len(replay.perimeters.result.groups))
+		perimeter_paths =
+			u64(len(replay.perimeters.result.paths))
+		perimeter_points =
+			u64(len(replay.perimeters.result.points))
+		decoded.perimeters_loaded = &replay.perimeters_loaded
+		decoded.perimeter_layers = &perimeter_layers
+		decoded.perimeter_groups = &perimeter_groups
+		decoded.perimeter_paths = &perimeter_paths
+		decoded.perimeter_points = &perimeter_points
 	}
 	if replay.unified_sources_loaded {
 		unified_source_layers =

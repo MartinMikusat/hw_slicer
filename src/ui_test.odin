@@ -138,9 +138,30 @@ ui_evidence_graph_state_reports_retained_feature_sources_test :: proc(
 	t: ^testing.T,
 ) {
 	replay := evidence.Evidence_Bundle_Replay{
+		perimeters_loaded = true,
 		infill_loaded = true,
 		unified_sources_loaded = true,
 	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"PERIMETER + INFILL + FEATURE SOURCE GRAPHS RETAINED",
+	)
+	replay.unified_sources_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"PERIMETER + INFILL GRAPHS RETAINED",
+	)
+	replay.infill_loaded = false
+	replay.unified_sources_loaded = true
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"PERIMETER + FEATURE SOURCE GRAPHS RETAINED",
+	)
+	replay.perimeters_loaded = false
+	replay.infill_loaded = true
 	testing.expect_value(
 		t,
 		ui_evidence_graph_state("generate-features", &replay),
@@ -153,6 +174,13 @@ ui_evidence_graph_state_reports_retained_feature_sources_test :: proc(
 		"INFILL GRAPH RETAINED",
 	)
 	replay.infill_loaded = false
+	replay.perimeters_loaded = true
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"PERIMETER GRAPH RETAINED",
+	)
+	replay.perimeters_loaded = false
 	replay.unified_sources_loaded = true
 	testing.expect_value(
 		t,
