@@ -8,6 +8,7 @@ FEATURE_ORDINAL_SKIN_PREFIX :: u64(3)<<FEATURE_ORDINAL_CLASS_SHIFT
 FEATURE_ORDINAL_GAP_EVIDENCE_BASE :: u64(1)<<32
 FEATURE_ORDINAL_BRIDGE_EVIDENCE_BASE :: u64(2)<<32
 FEATURE_ORDINAL_SUPPORT_DEMAND_BASE :: u64(3)<<32
+FEATURE_ORDINAL_SUPPORT_GEOMETRY_BASE :: u64(4)<<32
 FEATURE_PERIMETER_COUNT_LIMIT :: u32(1)<<30
 
 feature_perimeter_ordinal :: proc(
@@ -67,4 +68,13 @@ feature_bridge_evidence_ordinal :: proc(
 feature_support_demand_ordinal :: proc() -> u64 {
 	return FEATURE_ORDINAL_SKIN_PREFIX |
 		FEATURE_ORDINAL_SUPPORT_DEMAND_BASE
+}
+
+feature_support_geometry_ordinal :: proc(
+	kind: Support_Geometry_Kind,
+) -> (u64, bool) {
+	if kind == .Invalid {return 0, false}
+	return FEATURE_ORDINAL_SKIN_PREFIX |
+		FEATURE_ORDINAL_SUPPORT_GEOMETRY_BASE |
+		u64(kind), true
 }

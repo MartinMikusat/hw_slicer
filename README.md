@@ -190,6 +190,10 @@ The current engine implementation provides:
   with the classified mesh overhang projections.
 - Fixed-point lateral overhang margins and exact source-face references for
   every nonempty support-demand layer.
+- Downward support propagation through physical Z clearance, support
+  expansion, and per-layer XY model clearance.
+- Disjoint regular and interface support masks, plus build-plate reachability
+  filtering and explicit unresolved-demand counts.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact

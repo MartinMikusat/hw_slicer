@@ -560,6 +560,69 @@ support_demand_allowed_margin :: proc(
 	return contracts.Micrometres(margin), true
 }
 
+support_demand_mask_input :: proc(
+	demand: Support_Demand_Result,
+	mask_index: u32,
+	allocator: mem.Allocator,
+) -> (polygon.Polygon_Set, Support_Demand_Error) {
+	if u64(mask_index) >= u64(len(demand.masks)) {
+		return {}, .Invalid_Input
+	}
+	mask := demand.masks[mask_index]
+	if mask.path_offset+u64(mask.path_count) >
+		u64(len(demand.paths)) ||
+	   mask.point_offset+u64(mask.point_count) >
+		u64(len(demand.points)) {
+		return {}, .Invalid_Input
+	}
+	result := polygon.Polygon_Set{
+		paths = make(
+			[]polygon.Polygon_Path,
+			int(mask.path_count),
+			allocator,
+		),
+		points = make(
+			[]polygon.Polygon_Point,
+			int(mask.point_count),
+			allocator,
+		),
+	}
+	if result.paths == nil || result.points == nil {
+		polygon.polygon_set_destroy(&result, allocator)
+		return {}, .Allocation_Failed
+	}
+	point_write := 0
+	path_start := int(mask.path_offset)
+	path_end := path_start+int(mask.path_count)
+	for path, local_path_index in demand.paths[path_start:path_end] {
+		if path.mask_id != mask.stable_id ||
+		   path.mask_path_index != u32(local_path_index) ||
+		   path.point_offset+u64(path.point_count) >
+			u64(len(demand.points)) {
+			polygon.polygon_set_destroy(&result, allocator)
+			return {}, .Invalid_Input
+		}
+		result.paths[local_path_index] = {
+			offset = u64(point_write),
+			count = u64(path.point_count),
+		}
+		start := int(path.point_offset)
+		end := start+int(path.point_count)
+		copy(
+			result.points[
+				point_write:point_write+int(path.point_count)
+			],
+			demand.points[start:end],
+		)
+		point_write += int(path.point_count)
+	}
+	if point_write != len(result.points) {
+		polygon.polygon_set_destroy(&result, allocator)
+		return {}, .Arithmetic
+	}
+	return result, .None
+}
+
 support_face_result_basic_valid :: proc(
 	faces: Support_Face_Result,
 	process: profiles.Resolved_Process_Profile,
