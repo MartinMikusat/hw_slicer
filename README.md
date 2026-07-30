@@ -15,9 +15,10 @@ Models used:
 The native mesh viewer and G0 foundation milestone are implemented. G1 reaches
 deterministic CPU loop reconstruction. G2 includes strict region
 classification, a pinned Clipper2 provider, exposed-surface classification,
-perimeter and rectilinear infill generation, and planar path ordering. The
-first profile contract resolves selected G2 and G3 policies against explicit
-printer and material limits before geometry execution.
+profile-driven skin propagation, perimeter and rectilinear infill generation,
+and planar path ordering. The first profile contract resolves selected G2 and
+G3 policies against explicit printer and material limits before geometry
+execution.
 
 The [technical implementation plan](PLAN.md) defines the subsystem contracts,
 CPU and Metal execution paths, visual-debug protocol, delivery gates,
@@ -154,6 +155,10 @@ The current engine implementation provides:
   tolerance, and output-edge links to source paths, edges, and segments.
 - Adjacent-layer Boolean classification of top-exposed and bottom-exposed
   region masks, without assigning profile-dependent skin depth or extrusion.
+- Top and bottom skin propagation through physical thickness and minimum layer
+  counts, including one disjoint role for simultaneous top and bottom skin.
+- Exact skin-to-surface provenance with target-region clipping and a canonical
+  stage hash.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact

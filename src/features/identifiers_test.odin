@@ -12,6 +12,7 @@ feature_ordinals_partition_the_feature_identifier_space_test :: proc(
 	)
 	bottom, bottom_ok := feature_surface_ordinal(.Bottom_Exposed)
 	top, top_ok := feature_surface_ordinal(.Top_Exposed)
+	skin, skin_ok := feature_skin_ordinal(.Top_Bottom)
 	infill, infill_ok := feature_infill_ordinal(
 		FEATURE_ORDINAL_PAYLOAD_MASK,
 	)
@@ -20,20 +21,24 @@ feature_ordinals_partition_the_feature_identifier_space_test :: proc(
 		0,
 	)
 	_, invalid_surface_ok := feature_surface_ordinal(.Invalid)
+	_, invalid_skin_ok := feature_skin_ordinal(.Invalid)
 	_, infill_overflow_ok := feature_infill_ordinal(
 		FEATURE_ORDINAL_PAYLOAD_MASK+1,
 	)
 	testing.expect(t, perimeter_ok)
 	testing.expect(t, bottom_ok)
 	testing.expect(t, top_ok)
+	testing.expect(t, skin_ok)
 	testing.expect(t, infill_ok)
 	testing.expect(t, !perimeter_overflow_ok)
 	testing.expect(t, !invalid_surface_ok)
+	testing.expect(t, !invalid_skin_ok)
 	testing.expect(t, !infill_overflow_ok)
 	testing.expect_value(t, perimeter, u64(0x3fff_ffff_ffff_ffff))
 	testing.expect_value(t, bottom, u64(0x4000_0000_0000_0001))
 	testing.expect_value(t, top, u64(0x4000_0000_0000_0002))
 	testing.expect_value(t, infill, u64(0xbfff_ffff_ffff_ffff))
+	testing.expect_value(t, skin, u64(0xc000_0000_0000_0003))
 	testing.expect_value(
 		t,
 		perimeter>>FEATURE_ORDINAL_CLASS_SHIFT,
@@ -53,6 +58,11 @@ feature_ordinals_partition_the_feature_identifier_space_test :: proc(
 		t,
 		infill>>FEATURE_ORDINAL_CLASS_SHIFT,
 		u64(2),
+	)
+	testing.expect_value(
+		t,
+		skin>>FEATURE_ORDINAL_CLASS_SHIFT,
+		u64(3),
 	)
 	testing.expect(t, bottom != top)
 }
