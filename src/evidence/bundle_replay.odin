@@ -15,6 +15,7 @@ Evidence_Bundle_Replay :: struct {
 	topology:         Topology_Artifact,
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
+	infill:           features.Infill_Artifact,
 	unified_sources:  features.Unified_Path_Source_Artifact,
 	unified_plan:     features.Unified_Path_Plan_Artifact,
 	extrusion:        features.Extrusion_Artifact,
@@ -23,6 +24,7 @@ Evidence_Bundle_Replay :: struct {
 	topology_loaded:  bool,
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
+	infill_loaded:    bool,
 	unified_sources_loaded: bool,
 	unified_plan_loaded: bool,
 	extrusion_loaded: bool,
@@ -64,6 +66,9 @@ evidence_bundle_replay_destroy :: proc(
 	}
 	if replay.path_plan_loaded {
 		path_plan_artifact_destroy(&replay.path_plan, allocator)
+	}
+	if replay.infill_loaded {
+		features.infill_artifact_destroy(&replay.infill, allocator)
 	}
 	if replay.unified_sources_loaded {
 		features.unified_path_source_artifact_destroy(
@@ -607,7 +612,8 @@ evidence_bundle_replay_primitive_supported :: proc(
 	case "calculate-regions":
 		return format == REGION_ARTIFACT_FORMAT
 	case "generate-features":
-		return format == features.UNIFIED_PATH_SOURCE_ARTIFACT_FORMAT
+		return format == features.INFILL_ARTIFACT_FORMAT ||
+			format == features.UNIFIED_PATH_SOURCE_ARTIFACT_FORMAT
 	case "plan-paths":
 		return format == PATH_PLAN_ARTIFACT_FORMAT ||
 			format == features.UNIFIED_PATH_PLAN_ARTIFACT_FORMAT ||
@@ -692,38 +698,69 @@ evidence_bundle_replay_stage_decode :: proc(
 		replay.regions = artifact
 		replay.regions_loaded = true
 	case "generate-features":
-		if replay.unified_sources_loaded {return .Invalid_Content}
-		expectations, preflight_error :=
-			unified_path_source_manifest_preflight(
+		switch primitive.format {
+		case features.INFILL_ARTIFACT_FORMAT:
+			if replay.infill_loaded {return .Invalid_Content}
+			expectations, preflight_error := infill_manifest_preflight(
 				manifest,
 				primitive.path,
 				artifact_bytes,
 			)
-		if preflight_error != .None {return .Invalid_Content}
-		artifact, decode_error :=
-			features.unified_path_source_artifact_decode(
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error := features.infill_artifact_decode(
 				artifact_bytes,
-				features.DEFAULT_UNIFIED_PATH_SOURCE_ARTIFACT_LIMITS,
+				features.DEFAULT_INFILL_ARTIFACT_LIMITS,
 				allocator,
 			)
-		if decode_error != .None {
-			if decode_error == .Allocation_Failed {
-				return .Allocation_Failed
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
 			}
-			return .Invalid_Content
+			if infill_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				features.infill_artifact_destroy(&artifact, allocator)
+				return .Invalid_Content
+			}
+			replay.infill = artifact
+			replay.infill_loaded = true
+		case features.UNIFIED_PATH_SOURCE_ARTIFACT_FORMAT:
+			if replay.unified_sources_loaded {return .Invalid_Content}
+			expectations, preflight_error :=
+				unified_path_source_manifest_preflight(
+					manifest,
+					primitive.path,
+					artifact_bytes,
+				)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error :=
+				features.unified_path_source_artifact_decode(
+					artifact_bytes,
+					features.DEFAULT_UNIFIED_PATH_SOURCE_ARTIFACT_LIMITS,
+					allocator,
+				)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
+			}
+			if unified_path_source_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				features.unified_path_source_artifact_destroy(
+					&artifact,
+					allocator,
+				)
+				return .Invalid_Content
+			}
+			replay.unified_sources = artifact
+			replay.unified_sources_loaded = true
 		}
-		if unified_path_source_manifest_replay_verify(
-			expectations,
-			artifact,
-		) != .None {
-			features.unified_path_source_artifact_destroy(
-				&artifact,
-				allocator,
-			)
-			return .Invalid_Content
-		}
-		replay.unified_sources = artifact
-		replay.unified_sources_loaded = true
 	case "plan-paths":
 		switch primitive.format {
 		case features.UNIFIED_PATH_PLAN_ARTIFACT_FORMAT:
@@ -889,6 +926,15 @@ evidence_bundle_replay_stage_decode :: proc(
 evidence_bundle_replay_dependencies_valid :: proc(
 	replay: Evidence_Bundle_Replay,
 ) -> bool {
+	if replay.regions_loaded && replay.infill_loaded &&
+	   replay.infill.region_hash != replay.regions.result_hash {
+		return false
+	}
+	if replay.infill_loaded && replay.unified_sources_loaded &&
+	   replay.unified_sources.dependencies.infill_hash !=
+		replay.infill.result_hash {
+		return false
+	}
 	if replay.unified_sources_loaded && replay.unified_plan_loaded &&
 	   replay.unified_plan.source_paths_hash !=
 		replay.unified_sources.result_hash {
