@@ -41,6 +41,12 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	unified_source_layers: ^u64 `json:"unified_source_layers,omitempty"`,
 	unified_sources:       ^u64 `json:"unified_sources,omitempty"`,
 	unified_source_points: ^u64 `json:"unified_source_points,omitempty"`,
+	unified_path_plan_loaded: ^bool `json:"unified_path_plan_loaded,omitempty"`,
+	unified_path_plan_layers: ^u64 `json:"unified_path_plan_layers,omitempty"`,
+	unified_path_plan_paths: ^u64 `json:"unified_path_plan_paths,omitempty"`,
+	unified_path_plan_moves: ^u64 `json:"unified_path_plan_moves,omitempty"`,
+	unified_path_plan_travel_moves: ^u64 `json:"unified_path_plan_travel_moves,omitempty"`,
+	unified_path_plan_extrude_moves: ^u64 `json:"unified_path_plan_extrude_moves,omitempty"`,
 	extrusion_loaded:      ^bool `json:"extrusion_loaded,omitempty"`,
 	extrusion_layers:      ^u64  `json:"extrusion_layers,omitempty"`,
 	extrusion_moves:       ^u64  `json:"extrusion_moves,omitempty"`,
@@ -127,6 +133,9 @@ main :: proc() {
 	unified_source_layers: u64
 	unified_sources: u64
 	unified_source_points: u64
+	unified_path_plan_layers: u64
+	unified_path_plan_paths: u64
+	unified_path_plan_moves: u64
 	extrusion_layers: u64
 	extrusion_moves: u64
 	motion_plan_layers: u64
@@ -175,6 +184,26 @@ main :: proc() {
 		decoded.unified_source_layers = &unified_source_layers
 		decoded.unified_sources = &unified_sources
 		decoded.unified_source_points = &unified_source_points
+	}
+	if replay.unified_plan_loaded {
+		unified_path_plan_layers =
+			u64(len(replay.unified_plan.result.layers))
+		unified_path_plan_paths =
+			u64(len(replay.unified_plan.result.paths))
+		unified_path_plan_moves =
+			u64(len(replay.unified_plan.result.moves))
+		decoded.unified_path_plan_loaded =
+			&replay.unified_plan_loaded
+		decoded.unified_path_plan_layers =
+			&unified_path_plan_layers
+		decoded.unified_path_plan_paths =
+			&unified_path_plan_paths
+		decoded.unified_path_plan_moves =
+			&unified_path_plan_moves
+		decoded.unified_path_plan_travel_moves =
+			&replay.unified_plan.result.travel_move_count
+		decoded.unified_path_plan_extrude_moves =
+			&replay.unified_plan.result.extrude_move_count
 	}
 	if replay.extrusion_loaded {
 		extrusion_layers =

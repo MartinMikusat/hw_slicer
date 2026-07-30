@@ -154,6 +154,34 @@ ui_evidence_graph_state_reports_retained_feature_sources_test :: proc(
 }
 
 @(test)
+ui_evidence_graph_state_reports_retained_unified_plan_test :: proc(
+	t: ^testing.T,
+) {
+	replay := evidence.Evidence_Bundle_Replay{
+		unified_plan_loaded = true,
+		extrusion_loaded = true,
+		motion_plan_loaded = true,
+	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("plan-paths", &replay),
+		"UNIFIED PATH + EXTRUSION + MOTION GRAPHS RETAINED",
+	)
+	replay.extrusion_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("plan-paths", &replay),
+		"UNIFIED PATH + MOTION GRAPHS RETAINED",
+	)
+	replay.motion_plan_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("plan-paths", &replay),
+		"UNIFIED PATH-PLAN GRAPH RETAINED",
+	)
+}
+
+@(test)
 ui_help_transition_exposes_only_window_and_modal_actions_test :: proc(t: ^testing.T) {
 	ui: UI_State
 	ui_initialize(&ui)

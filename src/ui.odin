@@ -954,6 +954,20 @@ ui_evidence_graph_state :: proc(
 			return "FEATURE SOURCE GRAPH RETAINED"
 		}
 	case "plan-paths":
+		if replay.unified_plan_loaded &&
+		   replay.extrusion_loaded &&
+		   replay.motion_plan_loaded {
+			return "UNIFIED PATH + EXTRUSION + MOTION GRAPHS RETAINED"
+		}
+		if replay.unified_plan_loaded && replay.extrusion_loaded {
+			return "UNIFIED PATH + EXTRUSION GRAPHS RETAINED"
+		}
+		if replay.unified_plan_loaded && replay.motion_plan_loaded {
+			return "UNIFIED PATH + MOTION GRAPHS RETAINED"
+		}
+		if replay.unified_plan_loaded {
+			return "UNIFIED PATH-PLAN GRAPH RETAINED"
+		}
 		if replay.path_plan_loaded &&
 		   replay.extrusion_loaded &&
 		   replay.motion_plan_loaded {
