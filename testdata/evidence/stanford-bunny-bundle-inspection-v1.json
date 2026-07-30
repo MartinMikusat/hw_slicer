@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "source": "stanford-bunny-path-plan-v1.hwsdebug",
+  "container": "package",
+  "request_hash": "6bb3d6d574ec659bccd429e88a8f3ec20a161581fe0fb14da35c322b0c0fdd73",
+  "source_root_id": "524d81e204d4e634",
+  "stage_count": 3,
+  "file_count": 3,
+  "stages": [
+    {
+      "ordinal": 7,
+      "name": "reconstruct-topology",
+      "schema_version": 1,
+      "revision": 1,
+      "provider": "cpu-canonical-topology",
+      "provider_version": "0.1.0",
+      "primitive_count": 1,
+      "render_count": 0,
+      "item_count": 919033,
+      "byte_count": 12299784,
+      "summary": [
+        {
+          "name": "layers",
+          "value": 539
+        },
+        {
+          "name": "vertices",
+          "value": 305937
+        },
+        {
+          "name": "paths",
+          "value": 683
+        },
+        {
+          "name": "path_vertex_indices",
+          "value": 305937
+        },
+        {
+          "name": "path_segment_indices",
+          "value": 305937
+        },
+        {
+          "name": "open_chains",
+          "value": 0
+        },
+        {
+          "name": "degenerate_loops",
+          "value": 0
+        },
+        {
+          "name": "non_manifold_vertices",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "ordinal": 8,
+      "name": "calculate-regions",
+      "schema_version": 2,
+      "revision": 1,
+      "provider": "cpu-canonical-regions",
+      "provider_version": "0.1.0",
+      "primitive_count": 1,
+      "render_count": 0,
+      "item_count": 2588,
+      "byte_count": 114180,
+      "summary": [
+        {
+          "name": "layers",
+          "value": 539
+        },
+        {
+          "name": "contours",
+          "value": 683
+        },
+        {
+          "name": "regions",
+          "value": 683
+        },
+        {
+          "name": "region_contour_indices",
+          "value": 683
+        },
+        {
+          "name": "holes",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "ordinal": 10,
+      "name": "plan-paths",
+      "schema_version": 1,
+      "revision": 1,
+      "provider": "cpu-canonical-nearest",
+      "provider_version": "0.1.0",
+      "primitive_count": 1,
+      "render_count": 0,
+      "item_count": 633143,
+      "byte_count": 35504552,
+      "summary": [
+        {
+          "name": "layers",
+          "value": 539
+        },
+        {
+          "name": "paths",
+          "value": 8200
+        },
+        {
+          "name": "moves",
+          "value": 624404
+        },
+        {
+          "name": "travel_moves",
+          "value": 8200
+        },
+        {
+          "name": "extrude_moves",
+          "value": 616204
+        }
+      ]
+    }
+  ],
+  "decoded": {
+    "topology_loaded": true,
+    "topology_layers": 539,
+    "topology_vertices": 305937,
+    "topology_paths": 683,
+    "regions_loaded": true,
+    "region_layers": 539,
+    "region_contours": 683,
+    "regions": 683,
+    "region_holes": 0,
+    "path_plan_loaded": true,
+    "path_plan_layers": 539,
+    "path_plan_paths": 8200,
+    "path_plan_moves": 624404,
+    "path_plan_travel_moves": 8200,
+    "path_plan_extrude_moves": 616204
+  },
+  "validated": true
+}

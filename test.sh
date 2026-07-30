@@ -76,6 +76,12 @@ mkdir -p "$ROOT/build/test"
   -out:"$ROOT/build/test/hw-slicer-evidence-directory-validate" \
   -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/debug/libhw_clipper2.a" \
   -extra-linker-flags:"-lc++"
+"$ODIN" build "$ROOT/cmd/hw-slicer-evidence-inspect" \
+  -debug \
+  -o:none \
+  -out:"$ROOT/build/test/hw-slicer-evidence-inspect" \
+  -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/debug/libhw_clipper2.a" \
+  -extra-linker-flags:"-lc++"
 
 set +e
 source_limit_output=$(

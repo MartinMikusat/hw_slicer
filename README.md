@@ -266,6 +266,17 @@ it with `RENAME_EXCL`. It does not replace an existing destination. The probe
 rejects empty, aliased, invalid file outputs, and existing directory outputs
 before it reads the source.
 
+Inspect all retained bundle records from either container:
+
+```sh
+./evidence-inspect.sh build/path-plan.hwsdebug
+./evidence-inspect.sh build/path-plan.hwsdebug-dir
+```
+
+The inspector validates each descriptor once, retains the stage manifests, and
+decodes the topology, region, and path-plan graphs. It emits their counters as
+one JSON record without reading the source model.
+
 Replay topology and rebuild regions without the source model:
 
 ```sh

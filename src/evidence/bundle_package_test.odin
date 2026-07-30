@@ -142,6 +142,28 @@ evidence_bundle_package_is_canonical_and_validates_content_test :: proc(
 		),
 		Evidence_Bundle_Package_Error.None,
 	)
+	replay, replay_error := evidence_bundle_package_replay(package_bytes)
+	defer evidence_bundle_replay_destroy(&replay)
+	testing.expect_value(
+		t,
+		replay_error,
+		Evidence_Bundle_Package_Error.None,
+	)
+	testing.expect(t, !replay.path_plan_loaded)
+	testing.expect(t, !replay.topology_loaded)
+	testing.expect(t, !replay.regions_loaded)
+	testing.expect_value(t, len(replay.stage_manifests), 1)
+	nil_replay, nil_replay_error := evidence_bundle_package_replay(
+		package_bytes,
+		formats.DEFAULT_BOUNDED_ZIP_LIMITS,
+		mem.nil_allocator(),
+	)
+	evidence_bundle_replay_destroy(&nil_replay, mem.nil_allocator())
+	testing.expect_value(
+		t,
+		nil_replay_error,
+		Evidence_Bundle_Package_Error.Allocation_Failed,
+	)
 	testing.expect_value(
 		t,
 		evidence_bundle_package_validate(
@@ -600,6 +622,21 @@ evidence_bundle_package_replays_path_plan_stage_test :: proc(
 		evidence_bundle_package_validate(package_bytes),
 		Evidence_Bundle_Package_Error.None,
 	)
+	package_replay, package_replay_error :=
+		evidence_bundle_package_replay(package_bytes)
+	defer evidence_bundle_replay_destroy(&package_replay)
+	testing.expect_value(
+		t,
+		package_replay_error,
+		Evidence_Bundle_Package_Error.None,
+	)
+	testing.expect(t, package_replay.path_plan_loaded)
+	testing.expect(t, !package_replay.topology_loaded)
+	testing.expect(t, !package_replay.regions_loaded)
+	testing.expect_value(t, len(package_replay.stage_manifests), 1)
+	testing.expect_value(t, len(package_replay.path_plan.result.layers), 1)
+	testing.expect_value(t, len(package_replay.path_plan.result.paths), 1)
+	testing.expect_value(t, len(package_replay.path_plan.result.moves), 1)
 	testing.expect_value(
 		t,
 		evidence_bundle_package_validate(
@@ -626,6 +663,18 @@ evidence_bundle_package_replays_path_plan_stage_test :: proc(
 		),
 		Evidence_Bundle_Directory_Error.None,
 	)
+	directory_replay, directory_replay_error :=
+		evidence_bundle_directory_replay(directory_destination)
+	defer evidence_bundle_replay_destroy(&directory_replay)
+	testing.expect_value(
+		t,
+		directory_replay_error,
+		Evidence_Bundle_Directory_Error.None,
+	)
+	testing.expect(t, directory_replay.path_plan_loaded)
+	testing.expect(t, !directory_replay.topology_loaded)
+	testing.expect(t, !directory_replay.regions_loaded)
+	testing.expect_value(t, len(directory_replay.stage_manifests), 1)
 
 	corrupt_artifact_bytes := make([]u8, len(artifact_bytes))
 	defer delete(corrupt_artifact_bytes)
@@ -1268,6 +1317,33 @@ evidence_bundle_package_replays_region_after_topology_test :: proc(
 		evidence_bundle_package_validate(package_bytes),
 		Evidence_Bundle_Package_Error.None,
 	)
+	package_replay, package_replay_error :=
+		evidence_bundle_package_replay(package_bytes)
+	defer evidence_bundle_replay_destroy(&package_replay)
+	testing.expect_value(
+		t,
+		package_replay_error,
+		Evidence_Bundle_Package_Error.None,
+	)
+	testing.expect(t, package_replay.topology_loaded)
+	testing.expect(t, package_replay.regions_loaded)
+	testing.expect(t, !package_replay.path_plan_loaded)
+	testing.expect_value(t, len(package_replay.stage_manifests), 2)
+	testing.expect_value(
+		t,
+		len(package_replay.topology.result.paths),
+		3,
+	)
+	testing.expect_value(
+		t,
+		len(package_replay.regions.result.contours),
+		3,
+	)
+	testing.expect_value(
+		t,
+		len(package_replay.regions.result.regions),
+		2,
+	)
 	directory_root := directory_test_root(t)
 	defer {
 		os2.remove_all(directory_root)
@@ -1285,6 +1361,18 @@ evidence_bundle_package_replays_region_after_topology_test :: proc(
 		),
 		Evidence_Bundle_Directory_Error.None,
 	)
+	directory_replay, directory_replay_error :=
+		evidence_bundle_directory_replay(directory_destination)
+	defer evidence_bundle_replay_destroy(&directory_replay)
+	testing.expect_value(
+		t,
+		directory_replay_error,
+		Evidence_Bundle_Directory_Error.None,
+	)
+	testing.expect(t, directory_replay.topology_loaded)
+	testing.expect(t, directory_replay.regions_loaded)
+	testing.expect(t, !directory_replay.path_plan_loaded)
+	testing.expect_value(t, len(directory_replay.stage_manifests), 2)
 
 	corrupt_region_bytes := make([]u8, len(region_capture.bytes))
 	defer delete(corrupt_region_bytes)

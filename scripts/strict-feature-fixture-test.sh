@@ -20,10 +20,15 @@ BUNDLE_EXPECTED_SHA256=1fab0f11792b7bdf3b01533992475cde4e3faa4f7318ed87cbb572a8f
 BUNDLE_VALIDATE_BINARY="$ROOT/build/evidence-bundle-validate/hw-slicer-evidence-bundle-validate"
 BUNDLE_VALIDATE_ACTUAL="$OUTPUT_DIR/stanford-bunny-path-plan-bundle-validation-v1.actual.json"
 BUNDLE_VALIDATE_EXPECTED="$ROOT/testdata/evidence/stanford-bunny-path-plan-bundle-validation-v1.json"
+BUNDLE_INSPECT_ACTUAL="$OUTPUT_DIR/stanford-bunny-bundle-inspection-v1.actual.json"
+BUNDLE_INSPECT_EXPECTED="$ROOT/testdata/evidence/stanford-bunny-bundle-inspection-v1.json"
+EVIDENCE_INSPECT_BINARY="$ROOT/build/evidence-inspect/hw-slicer-evidence-inspect"
 DIRECTORY_ACTUAL="$OUTPUT_DIR/stanford-bunny-path-plan-v1.hwsdebug-dir"
 DIRECTORY_VALIDATE_BINARY="$ROOT/build/evidence-directory-validate/hw-slicer-evidence-directory-validate"
 DIRECTORY_VALIDATE_ACTUAL="$OUTPUT_DIR/stanford-bunny-path-plan-directory-validation-v1.actual.json"
 DIRECTORY_VALIDATE_EXPECTED="$ROOT/testdata/evidence/stanford-bunny-path-plan-directory-validation-v1.json"
+DIRECTORY_INSPECT_ACTUAL="$OUTPUT_DIR/stanford-bunny-directory-inspection-v1.actual.json"
+DIRECTORY_INSPECT_EXPECTED="$ROOT/testdata/evidence/stanford-bunny-directory-inspection-v1.json"
 TOPOLOGY_ARTIFACT="$DIRECTORY_ACTUAL/stages/07-reconstruct-topology/primitives/topology.bin"
 TOPOLOGY_EXPECTED_BYTES=12299784
 TOPOLOGY_EXPECTED_SHA256=d6eb53fd2b3e2086c0b90ce27892d67cf7230310d509d27653fec0d6579a252a
@@ -81,6 +86,19 @@ fi
 if ! cmp -s "$DIRECTORY_VALIDATE_EXPECTED" "$DIRECTORY_VALIDATE_ACTUAL"; then
   printf '[hw_slicer] Stanford Bunny evidence directory validation changed\n' >&2
   diff -u "$DIRECTORY_VALIDATE_EXPECTED" "$DIRECTORY_VALIDATE_ACTUAL" >&2 || true
+  exit 1
+fi
+"$ROOT/evidence-inspect.sh" "$BUNDLE_ACTUAL" > "$BUNDLE_INSPECT_ACTUAL"
+if ! cmp -s "$BUNDLE_INSPECT_EXPECTED" "$BUNDLE_INSPECT_ACTUAL"; then
+  printf '[hw_slicer] Stanford Bunny bundle inspection changed\n' >&2
+  diff -u "$BUNDLE_INSPECT_EXPECTED" "$BUNDLE_INSPECT_ACTUAL" >&2 || true
+  exit 1
+fi
+"$EVIDENCE_INSPECT_BINARY" \
+  "$DIRECTORY_ACTUAL" > "$DIRECTORY_INSPECT_ACTUAL"
+if ! cmp -s "$DIRECTORY_INSPECT_EXPECTED" "$DIRECTORY_INSPECT_ACTUAL"; then
+  printf '[hw_slicer] Stanford Bunny directory inspection changed\n' >&2
+  diff -u "$DIRECTORY_INSPECT_EXPECTED" "$DIRECTORY_INSPECT_ACTUAL" >&2 || true
   exit 1
 fi
 if ! cmp -s \
