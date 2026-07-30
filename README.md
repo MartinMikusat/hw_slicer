@@ -170,6 +170,10 @@ The current engine implementation provides:
   one-line or two-line sample runs.
 - Explicit issues for ambiguous branches, allocation transitions, unprinted
   widths, over-wide regions, and runs with insufficient samples.
+- Unsupported bridge masks from current-layer regions minus expanded
+  preceding-layer model support.
+- Separate bridge evidence for eligible areas and unsupported areas below the
+  configured minimum, including exact signed area.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
