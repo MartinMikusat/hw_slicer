@@ -206,6 +206,10 @@ The current engine implementation provides:
   angle step, including arbitrary angles and half-line boundary insets.
 - Exact rational solid-path endpoints, collision-free path-set identifiers,
   collapsed-mask counts, and canonical hashes.
+- A unified role-ordered path plan for perimeter, bridge, gap, skin, sparse
+  infill, and support sources.
+- Deterministic open-path reversal, closed-path start selection, per-endpoint
+  line widths, explicit travel moves, and canonical plan hashes.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
