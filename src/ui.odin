@@ -1017,6 +1017,8 @@ ui_draw_evidence_overlay :: proc(
 		if replay.regions_loaded {graph_state = "REGION GRAPH RETAINED"}
 	case "plan-paths":
 		if replay.path_plan_loaded {graph_state = "PATH-PLAN GRAPH RETAINED"}
+	case "emit-gcode":
+		if replay.marlin_loaded {graph_state = "G-CODE GRAPH RETAINED"}
 	case:
 	}
 	detail_lines := [7]string{

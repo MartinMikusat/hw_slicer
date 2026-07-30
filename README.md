@@ -230,6 +230,7 @@ The current engine implementation provides:
   motion identity, command correlation, summary values, and exact output bytes.
   Generic evidence capture applies budgets before full decoding. Its stage
   manifest cross-checks identity, descriptor, counters, and the result hash.
+  Package and directory replay retain the validated graph for inspection.
 - Atomic create-only and explicit replacement publication for validated
   `.gcode` files, with synchronized sibling staging and failure cleanup.
 - Configured perimeter centerlines at half-width inward offsets, including

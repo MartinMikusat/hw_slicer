@@ -5,6 +5,7 @@ import "core:strings"
 import "core:sys/posix"
 
 import formats "../formats"
+import gcode "../gcode"
 
 Evidence_Bundle_Replay :: struct {
 	root:             Evidence_Bundle_Manifest,
@@ -13,9 +14,11 @@ Evidence_Bundle_Replay :: struct {
 	topology:         Topology_Artifact,
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
+	marlin:           gcode.Marlin_Artifact,
 	topology_loaded:  bool,
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
+	marlin_loaded:    bool,
 }
 
 Evidence_Bundle_Source_Kind :: enum u8 {
@@ -52,6 +55,9 @@ evidence_bundle_replay_destroy :: proc(
 	}
 	if replay.path_plan_loaded {
 		path_plan_artifact_destroy(&replay.path_plan, allocator)
+	}
+	if replay.marlin_loaded {
+		gcode.marlin_artifact_destroy(&replay.marlin, allocator)
 	}
 	replay^ = {}
 }
@@ -536,6 +542,8 @@ evidence_bundle_replay_stage_format :: proc(
 		return REGION_ARTIFACT_FORMAT, true
 	case "plan-paths":
 		return PATH_PLAN_ARTIFACT_FORMAT, true
+	case "emit-gcode":
+		return gcode.MARLIN_ARTIFACT_FORMAT, true
 	case:
 		return "", false
 	}
@@ -648,6 +656,39 @@ evidence_bundle_replay_stage_decode :: proc(
 		}
 		replay.path_plan = artifact
 		replay.path_plan_loaded = true
+	case "emit-gcode":
+		if replay.marlin_loaded {return .Invalid_Content}
+		primitive, primitive_ok := evidence_bundle_manifest_primitive_find(
+			manifest,
+			gcode.MARLIN_ARTIFACT_FORMAT,
+		)
+		if !primitive_ok {return .Invalid_Content}
+		expectations, preflight_error := marlin_manifest_preflight(
+			manifest,
+			primitive.path,
+			artifact_bytes,
+		)
+		if preflight_error != .None {return .Invalid_Content}
+		artifact, decode_error := gcode.marlin_artifact_decode(
+			artifact_bytes,
+			gcode.DEFAULT_MARLIN_ARTIFACT_LIMITS,
+			allocator,
+		)
+		if decode_error != .None {
+			if decode_error == .Allocation_Failed {
+				return .Allocation_Failed
+			}
+			return .Invalid_Content
+		}
+		if marlin_manifest_replay_verify(
+			expectations,
+			artifact,
+		) != .None {
+			gcode.marlin_artifact_destroy(&artifact, allocator)
+			return .Invalid_Content
+		}
+		replay.marlin = artifact
+		replay.marlin_loaded = true
 	case:
 	}
 	return .None

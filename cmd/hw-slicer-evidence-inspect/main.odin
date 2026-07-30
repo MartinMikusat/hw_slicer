@@ -37,6 +37,11 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	path_plan_moves:       u64,
 	path_plan_travel_moves: u64,
 	path_plan_extrude_moves: u64,
+	marlin_loaded:         bool `json:"marlin_loaded,omitempty"`,
+	marlin_commands:       u64  `json:"marlin_commands,omitempty"`,
+	marlin_gcode_bytes:    u64  `json:"marlin_gcode_bytes,omitempty"`,
+	marlin_layers:         u64  `json:"marlin_layers,omitempty"`,
+	marlin_motion_operations: u64 `json:"marlin_motion_operations,omitempty"`,
 }
 
 Evidence_Inspect_Wire :: struct {
@@ -104,6 +109,7 @@ main :: proc() {
 		topology_loaded = replay.topology_loaded,
 		regions_loaded = replay.regions_loaded,
 		path_plan_loaded = replay.path_plan_loaded,
+		marlin_loaded = replay.marlin_loaded,
 	}
 	if replay.topology_loaded {
 		decoded.topology_layers = u64(len(replay.topology.result.layers))
@@ -128,6 +134,16 @@ main :: proc() {
 			replay.path_plan.result.travel_move_count
 		decoded.path_plan_extrude_moves =
 			replay.path_plan.result.extrude_move_count
+	}
+	if replay.marlin_loaded {
+		decoded.marlin_commands =
+			u64(len(replay.marlin.result.commands))
+		decoded.marlin_gcode_bytes =
+			u64(len(replay.marlin.result.bytes))
+		decoded.marlin_layers =
+			u64(replay.marlin.result.layer_count)
+		decoded.marlin_motion_operations =
+			replay.marlin.result.motion_operation_count
 	}
 	wire := Evidence_Inspect_Wire{
 		schema_version = 1,
