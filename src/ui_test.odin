@@ -110,6 +110,26 @@ ui_evidence_graph_state_reports_retained_layer_schedule_test :: proc(
 }
 
 @(test)
+ui_evidence_graph_state_reports_retained_layer_spans_test :: proc(
+	t: ^testing.T,
+) {
+	replay := evidence.Evidence_Bundle_Replay{
+		layer_spans_loaded = true,
+	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("build-acceleration", &replay),
+		"LAYER-SPAN GRAPH RETAINED",
+	)
+	replay.layer_spans_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("build-acceleration", &replay),
+		"MANIFEST RETAINED",
+	)
+}
+
+@(test)
 ui_evidence_graph_state_reports_retained_motion_test :: proc(t: ^testing.T) {
 	replay := evidence.Evidence_Bundle_Replay{
 		path_plan_loaded = true,

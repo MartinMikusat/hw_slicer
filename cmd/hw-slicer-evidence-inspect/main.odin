@@ -28,6 +28,13 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	layer_schedule_maximum_z_um: ^i64 `json:"layer_schedule_maximum_z_um,omitempty"`,
 	layer_schedule_first_plane_z_um: ^i64 `json:"layer_schedule_first_plane_z_um,omitempty"`,
 	layer_schedule_step_um: ^i64 `json:"layer_schedule_step_um,omitempty"`,
+	layer_spans_loaded:     ^bool `json:"layer_spans_loaded,omitempty"`,
+	span_triangles:         ^u64  `json:"span_triangles,omitempty"`,
+	span_layers:            ^u64  `json:"span_layers,omitempty"`,
+	triangle_layer_pairs:   ^u64  `json:"triangle_layer_pairs,omitempty"`,
+	crossing_triangles:     ^u64  `json:"crossing_triangles,omitempty"`,
+	planar_triangles:       ^u64  `json:"planar_triangles,omitempty"`,
+	inactive_triangles:     ^u64  `json:"inactive_triangles,omitempty"`,
 	topology_loaded:       bool,
 	topology_layers:       u64,
 	topology_vertices:     u64,
@@ -182,6 +189,12 @@ main :: proc() {
 	layer_schedule_maximum_z_um: i64
 	layer_schedule_first_plane_z_um: i64
 	layer_schedule_step_um: i64
+	span_triangles: u64
+	span_layers: u64
+	triangle_layer_pairs: u64
+	crossing_triangles: u64
+	planar_triangles: u64
+	inactive_triangles: u64
 	decoded := Evidence_Inspect_Decoded_Wire{
 		topology_loaded = replay.topology_loaded,
 		regions_loaded = replay.regions_loaded,
@@ -208,6 +221,31 @@ main :: proc() {
 		decoded.layer_schedule_first_plane_z_um =
 			&layer_schedule_first_plane_z_um
 		decoded.layer_schedule_step_um = &layer_schedule_step_um
+	}
+	if replay.layer_spans_loaded {
+		span_triangles =
+			u64(len(replay.layer_spans.result.triangle_ranges))
+		span_layers = u64(len(replay.layer_spans.result.layers))
+		triangle_layer_pairs =
+			u64(len(replay.layer_spans.result.triangle_ids))
+		for range_value in replay.layer_spans.result.triangle_ranges {
+			switch range_value.kind {
+			case .None:
+				inactive_triangles += 1
+			case .Crossing_Candidates:
+				crossing_triangles += 1
+			case .Quantized_Planar:
+				planar_triangles += 1
+			case:
+			}
+		}
+		decoded.layer_spans_loaded = &replay.layer_spans_loaded
+		decoded.span_triangles = &span_triangles
+		decoded.span_layers = &span_layers
+		decoded.triangle_layer_pairs = &triangle_layer_pairs
+		decoded.crossing_triangles = &crossing_triangles
+		decoded.planar_triangles = &planar_triangles
+		decoded.inactive_triangles = &inactive_triangles
 	}
 	if replay.topology_loaded {
 		decoded.topology_layers = u64(len(replay.topology.result.layers))
