@@ -202,6 +202,10 @@ The current engine implementation provides:
   canonical source ordering and exact removed-area evidence.
 - Explicit rejection of overlapping equal-priority masks, including separate
   evidence for sources that higher-priority geometry removes completely.
+- Solid skin paths with the configured spacing, base angle, and per-layer
+  angle step, including arbitrary angles and half-line boundary insets.
+- Exact rational solid-path endpoints, collision-free path-set identifiers,
+  collapsed-mask counts, and canonical hashes.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact

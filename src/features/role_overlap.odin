@@ -1,5 +1,6 @@
 package features
 
+import "core:mem"
 import "core:slice"
 
 import contracts "../contracts"
@@ -510,6 +511,69 @@ role_overlap_order_less :: proc(
 	if a.priority != b.priority {return a.priority < b.priority}
 	if a.stable_id != b.stable_id {return a.stable_id < b.stable_id}
 	return a.source_index < b.source_index
+}
+
+role_overlap_mask_input :: proc(
+	overlap: Role_Overlap_Result,
+	mask_index: u32,
+	allocator: mem.Allocator,
+) -> (polygon.Polygon_Set, Role_Overlap_Error) {
+	if u64(mask_index) >= u64(len(overlap.masks)) {
+		return {}, .Invalid_Input
+	}
+	mask := overlap.masks[mask_index]
+	if mask.path_offset+u64(mask.path_count) >
+		u64(len(overlap.paths)) ||
+	   mask.point_offset+u64(mask.point_count) >
+		u64(len(overlap.points)) {
+		return {}, .Invalid_Input
+	}
+	result := polygon.Polygon_Set{
+		paths = make(
+			[]polygon.Polygon_Path,
+			int(mask.path_count),
+			allocator,
+		),
+		points = make(
+			[]polygon.Polygon_Point,
+			int(mask.point_count),
+			allocator,
+		),
+	}
+	if result.paths == nil || result.points == nil {
+		polygon.polygon_set_destroy(&result, allocator)
+		return {}, .Allocation_Failed
+	}
+	point_write := 0
+	path_start := int(mask.path_offset)
+	path_end := path_start+int(mask.path_count)
+	for path, local_path_index in overlap.paths[path_start:path_end] {
+		if path.mask_id != mask.stable_id ||
+		   path.mask_path_index != u32(local_path_index) ||
+		   path.point_offset+u64(path.point_count) >
+			u64(len(overlap.points)) {
+			polygon.polygon_set_destroy(&result, allocator)
+			return {}, .Invalid_Input
+		}
+		result.paths[local_path_index] = {
+			offset = u64(point_write),
+			count = u64(path.point_count),
+		}
+		start := int(path.point_offset)
+		end := start+int(path.point_count)
+		copy(
+			result.points[
+				point_write:point_write+int(path.point_count)
+			],
+			overlap.points[start:end],
+		)
+		point_write += int(path.point_count)
+	}
+	if point_write != len(result.points) {
+		polygon.polygon_set_destroy(&result, allocator)
+		return {}, .Arithmetic
+	}
+	return result, .None
 }
 
 role_overlap_area_2 :: proc(
