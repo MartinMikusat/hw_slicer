@@ -182,6 +182,10 @@ The current engine implementation provides:
   direction, including arbitrary configured angles.
 - Exact rational boundary intersections, explicit micrometre rounding error,
   and canonical path hashes for bridge line endpoints.
+- Per-triangle support-demand classification from source winding, downward
+  face normals, and the configured surface angle from vertical.
+- Canonical micrometre projections and source-triangle provenance for each
+  downward overhang face.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
