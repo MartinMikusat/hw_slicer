@@ -64,35 +64,71 @@ motion_plan_result_hash :: proc(
 			return {}, false
 		}
 	}
-	dependency_layers := make(
-		[]Motion_Plan_Layer_Dependency,
-		len(layer_ids),
+	dependencies, dependencies_ok := motion_plan_hash_dependencies_make(
+		path_plan_hash,
+		extrusion_hash,
+		layer_ids,
+		layer_z,
+		model_layers,
+		profile,
 		allocator,
 	)
-	if len(layer_ids) > 0 && dependency_layers == nil {
+	if !dependencies_ok {return {}, false}
+	defer motion_plan_hash_dependencies_destroy(&dependencies, allocator)
+	return motion_plan_result_content_hash(dependencies, result)
+}
+
+motion_plan_hash_dependencies_make :: proc(
+	path_plan_hash, extrusion_hash: contracts.Content_Hash,
+	layer_ids: []contracts.Stable_ID,
+	layer_z: []contracts.Micrometres,
+	model_layers: []polygon.Polygon_Set,
+	profile: profiles.Resolved_Profiles,
+	allocator := context.allocator,
+) -> (Motion_Plan_Hash_Dependencies, bool) {
+	if len(layer_ids) != len(layer_z) ||
+	   len(layer_ids) != len(model_layers) {
 		return {}, false
 	}
-	defer delete(dependency_layers, allocator)
-	for &dependency, layer_index in dependency_layers {
+	dependencies := Motion_Plan_Hash_Dependencies{
+		path_plan_hash = path_plan_hash,
+		extrusion_hash = extrusion_hash,
+		printer_hash = profiles.printer_profile_hash(profile.printer),
+		process_hash = profiles.process_profile_hash(profile.process),
+		layers = make(
+			[]Motion_Plan_Layer_Dependency,
+			len(layer_ids),
+			allocator,
+		),
+	}
+	if len(layer_ids) > 0 && dependencies.layers == nil {
+		return {}, false
+	}
+	for &dependency, layer_index in dependencies.layers {
 		model_hash, model_ok :=
 			polygon.polygon_set_hash(model_layers[layer_index])
-		if !model_ok {return {}, false}
+		if !model_ok {
+			motion_plan_hash_dependencies_destroy(
+				&dependencies,
+				allocator,
+			)
+			return {}, false
+		}
 		dependency = {
 			stable_id = layer_ids[layer_index],
 			z = layer_z[layer_index],
 			model_hash = model_hash,
 		}
 	}
-	return motion_plan_result_content_hash(
-		{
-			path_plan_hash = path_plan_hash,
-			extrusion_hash = extrusion_hash,
-			printer_hash = profiles.printer_profile_hash(profile.printer),
-			process_hash = profiles.process_profile_hash(profile.process),
-			layers = dependency_layers,
-		},
-		result,
-	)
+	return dependencies, true
+}
+
+motion_plan_hash_dependencies_destroy :: proc(
+	dependencies: ^Motion_Plan_Hash_Dependencies,
+	allocator := context.allocator,
+) {
+	delete(dependencies.layers, allocator)
+	dependencies^ = {}
 }
 
 motion_plan_result_content_hash :: proc(
