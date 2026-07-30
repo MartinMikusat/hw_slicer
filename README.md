@@ -54,7 +54,7 @@ or GUI framework.
 The viewer loads the three bundled reference models or an exact binary STL
 selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
 package or published evidence directory in the stage timeline and inspector.
-The inspector retains the topology, region, sparse-infill, unified
+The inspector retains the topology, region, perimeter, sparse-infill, unified
 feature-source, current unified path-plan, legacy path-plan, extrusion, motion,
 and G-code graphs without the source model. Pointer, Flash, and Accessibility
 input select one stage record.
@@ -97,6 +97,8 @@ The G0 foundation provides:
 - A versioned debug-evidence manifest with a golden JSON fixture.
 - Valid UTF-8 artifact paths, format tokens, schemas, and destination uniqueness.
 - A preflighted little-endian path-plan artifact with hash-validated replay.
+- A preflighted little-endian perimeter artifact with source-independent
+  replay.
 - A preflighted little-endian sparse-infill artifact with source-independent
   replay.
 - A preflighted little-endian unified feature-source artifact with
@@ -253,6 +255,8 @@ The current engine implementation provides:
   `.gcode` files, with synchronized sibling staging and failure cleanup.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
+- A bounded little-endian perimeter artifact that retains each layer, offset
+  group, canonical path, point, configuration value, and result hash.
 - Alternating rectilinear infill from globally phased scanlines, with exact
   rational intersections and explicit micrometre rounding evidence.
 - A bounded little-endian sparse-infill artifact that retains each layer,
