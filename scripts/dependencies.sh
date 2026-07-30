@@ -12,7 +12,7 @@ if [ "${1:-}" != "check" ]; then
   exit 2
 fi
 
-ODIN=$("$ROOT/scripts/odin.sh" --print-path)
+ODIN="$ROOT/scripts/odin.sh"
 ACTUAL_ODIN=$("$ODIN" version | awk '{print $NF}')
 if [ "$ACTUAL_ODIN" != "$EXPECTED_ODIN" ]; then
   echo "[hw_slicer] Odin version mismatch: expected $EXPECTED_ODIN, got $ACTUAL_ODIN" >&2

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "artifact": "all-in-one-topology.bin",
+  "artifact_format": "hws-topology-le",
+  "artifact_schema_version": 1,
+  "artifact_bytes": 7443736,
+  "artifact_sha256": "9259465ab0151513b450fad9bf8ce329b63cec28809ef91d3fe32d1d0a1797c2",
+  "snapped_hash": "160cbdc3fc8514c4bd01062a29c206258ced1f667b2f672d5a73fe1a4febaadd",
+  "topology_hash": "759778b563503663ddf1e400b32ea405edc8ae09f6076f65670597cd001eb9bd",
+  "source_segment_count": 182442,
+  "layer_count": 499,
+  "vertex_count": 182441,
+  "path_count": 1860,
+  "path_vertex_index_count": 182442,
+  "path_segment_index_count": 182442,
+  "open_chain_count": 0,
+  "degenerate_loop_count": 0,
+  "non_manifold_vertex_count": 1,
+  "validated": true
+}

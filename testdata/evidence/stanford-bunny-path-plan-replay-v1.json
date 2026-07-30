@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "artifact": "path-plan.bin",
+  "artifact_format": "hws-path-plan-le",
+  "artifact_schema_version": 1,
+  "artifact_bytes": 35504552,
+  "artifact_sha256": "e0074543cb5db6a85e0e53a5588bf7ee37a21211d3b193d25895df2620625f5f",
+  "perimeter_hash": "d16710e51fb91e2bb2f9db9411a675f9f7ebb0b580e127d40bc1e73a95487147",
+  "infill_hash": "c3d53b26b860b79a3ab8b1eb92bcc22e0d38d2e2ccd00131e8f68e0020f4acb3",
+  "result_hash": "9146f9cd190b7bd6dce5ed4e9256ed26362b63be182ca8d3c430300588601235",
+  "start_x_um": 0,
+  "start_y_um": 0,
+  "inner_perimeters_first": true,
+  "topology_policy": "strict-printable",
+  "layer_count": 539,
+  "path_count": 8200,
+  "move_count": 624404,
+  "travel_move_count": 8200,
+  "extrude_move_count": 616204,
+  "validated": true
+}

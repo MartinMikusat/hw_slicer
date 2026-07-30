@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="-1 -1 102 27" preserveAspectRatio="xMidYMid meet" data-schema-version="1" data-layer-index="0" data-result-hash="bf96fd0651736158d98b7befa2fabd647beae4ea27143d4060005f7192c1a31c">
+  <rect x="-1" y="-1" width="102" height="27" fill="#0E0F0E"/>
+  <g fill="none" stroke-linecap="round">
+    <line class="extrude" data-move-id="29633f834a0b403b" data-path-id="3a7e0fe10d4159a2" x1="0" y1="0" x2="100" y2="25"/>
+  </g>
+  <style>
+    .travel { stroke: #787D75; stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+    .extrude { stroke: #B27D57; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  </style>
+</svg>

@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "request_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "stage": {
+    "name": "intersect",
+    "schema_version": 1,
+    "revision": 3
+  },
+  "provider": {
+    "id": "71ff96d7e1de4738",
+    "name": "cpu-checked",
+    "version": "0.1.0"
+  },
+  "source_root_id": "8877665544332211",
+  "source_bounds": {
+    "valid": true,
+    "minimum": [
+      -10.0000000000000000,
+      -20.0000000000000000,
+      0.0000000000000000
+    ],
+    "maximum": [
+      10.0000000000000000,
+      20.0000000000000000,
+      30.0000000000000000
+    ],
+    "units": "millimetre"
+  },
+  "planar_bounds": {
+    "valid": true,
+    "minimum": [
+      -10000,
+      -20000
+    ],
+    "maximum": [
+      10000,
+      20000
+    ],
+    "units": "micrometre"
+  },
+  "summary": [
+    {
+      "name": "candidate_triangles",
+      "value": 12
+    },
+    {
+      "name": "segments",
+      "value": 8
+    }
+  ],
+  "invariants": [
+    {
+      "code": "finite_endpoints",
+      "passed": true,
+      "observed": "8",
+      "expected": "8"
+    }
+  ],
+  "provenance": [
+    {
+      "parent_id": "1122334455667788",
+      "child_id": "2233445566778899",
+      "relation": "triangle-to-segment"
+    }
+  ],
+  "primitives": [
+    {
+      "path": "stages/intersect/segments.bin",
+      "format": "hws-segments-le",
+      "schema_version": 1,
+      "item_count": 8,
+      "byte_count": 384,
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ],
+  "renders": [
+    {
+      "path": "renders/intersect-layer-000042.svg",
+      "format": "svg",
+      "schema_version": 1,
+      "item_count": 0,
+      "byte_count": 0,
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ],
+  "elapsed_ns": 125000
+}

@@ -57,6 +57,19 @@ mesh_parser_rejects_empty_triangle_stream_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+mesh_file_loader_rejects_size_before_decode_test :: proc(t: ^testing.T) {
+	_, error := mesh_load_stl(
+		"testdata/evidence/invalid-short-path-plan.bin",
+	)
+	testing.expect_value(t, error, Mesh_Error.Source_Limit)
+	testing.expect_value(
+		t,
+		mesh_error_text(error),
+		"the file size is outside the source limit",
+	)
+}
+
+@(test)
 camera_matrices_keep_metal_depth_range_test :: proc(t: ^testing.T) {
 	projection := mat4_perspective(1.0, 1.5, 0.1, 1000)
 	testing.expect(t, projection[0] > 0)

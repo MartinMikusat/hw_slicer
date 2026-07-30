@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "request_hash": "6bb3d6d574ec659bccd429e88a8f3ec20a161581fe0fb14da35c322b0c0fdd73",
+  "stage": {
+    "name": "calculate-regions",
+    "schema_version": 2,
+    "revision": 1
+  },
+  "provider": {
+    "id": "edf7672dacda5d0a",
+    "name": "cpu-canonical-regions",
+    "version": "0.1.0"
+  },
+  "source_root_id": "524d81e204d4e634",
+  "source_bounds": {
+    "valid": true,
+    "minimum": [
+      -23.5508193969726562,
+      -42.0099372863769531,
+      5.2750854492187500
+    ],
+    "maximum": [
+      84.1961135864257812,
+      45.7918472290039062,
+      113.1668395996093750
+    ],
+    "units": "millimetre"
+  },
+  "planar_bounds": {
+    "valid": true,
+    "minimum": [
+      -23549,
+      -42006
+    ],
+    "maximum": [
+      84193,
+      45791
+    ],
+    "units": "micrometre"
+  },
+  "summary": [
+    {
+      "name": "layers",
+      "value": 539
+    },
+    {
+      "name": "contours",
+      "value": 683
+    },
+    {
+      "name": "regions",
+      "value": 683
+    },
+    {
+      "name": "region_contour_indices",
+      "value": 683
+    },
+    {
+      "name": "holes",
+      "value": 0
+    }
+  ],
+  "invariants": [
+    {
+      "code": "canonical_result_hash",
+      "passed": true,
+      "observed": "307170c41140c6aeca7aa3e0af0537a0e0bbaf7c8c229db10645ae4179280a4c",
+      "expected": "307170c41140c6aeca7aa3e0af0537a0e0bbaf7c8c229db10645ae4179280a4c"
+    },
+    {
+      "code": "source_independent_replay",
+      "passed": true,
+      "observed": "passed",
+      "expected": "passed"
+    }
+  ],
+  "provenance": [
+
+  ],
+  "primitives": [
+    {
+      "path": "stages/08-calculate-regions/primitives/regions.bin",
+      "format": "hws-regions-le",
+      "schema_version": 1,
+      "item_count": 2588,
+      "byte_count": 114180,
+      "sha256": "ffae9c9887d2c70ae1b22bb53a4c2b651f3d9ac4dc8f3b4bfb3e75b4e7b18cea"
+    }
+  ],
+  "renders": [
+
+  ],
+  "elapsed_ns": 0
+}

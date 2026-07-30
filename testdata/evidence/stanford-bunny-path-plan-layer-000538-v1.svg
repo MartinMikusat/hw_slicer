@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="32412 -25272 336 1138" preserveAspectRatio="xMidYMid meet" data-schema-version="1" data-layer-index="538" data-result-hash="9146f9cd190b7bd6dce5ed4e9256ed26362b63be182ca8d3c430300588601235">
+  <rect x="32412" y="-25272" width="336" height="1138" fill="#0E0F0E"/>
+  <g fill="none" stroke-linecap="round">
+    <line class="travel" data-move-id="2e968382cb3f6b6c" data-path-id="e898d3e5396d3331" x1="32607" y1="-25000" x2="32737" y2="-25090"/>
+    <line class="extrude" data-move-id="6c8b9194e11d262e" data-path-id="e898d3e5396d3331" x1="32737" y1="-25090" x2="32502" y2="-25261"/>
+    <line class="extrude" data-move-id="8b86589dec0c704f" data-path-id="e898d3e5396d3331" x1="32502" y1="-25261" x2="32423" y2="-25132"/>
+    <line class="extrude" data-move-id="2e960382cb3e91ec" data-path-id="e898d3e5396d3331" x1="32423" y1="-25132" x2="32523" y2="-24145"/>
+    <line class="extrude" data-move-id="4d90ca8bd62ddc0d" data-path-id="e898d3e5396d3331" x1="32523" y1="-24145" x2="32737" y2="-25090"/>
+  </g>
+  <style>
+    .travel { stroke: #787D75; stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+    .extrude { stroke: #B27D57; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  </style>
+</svg>

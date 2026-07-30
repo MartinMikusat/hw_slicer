@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "request_hash": "6bb3d6d574ec659bccd429e88a8f3ec20a161581fe0fb14da35c322b0c0fdd73",
+  "stage": {
+    "name": "reconstruct-topology",
+    "schema_version": 1,
+    "revision": 1
+  },
+  "provider": {
+    "id": "0b1e3a6ecc38ddb2",
+    "name": "cpu-canonical-topology",
+    "version": "0.1.0"
+  },
+  "source_root_id": "524d81e204d4e634",
+  "source_bounds": {
+    "valid": true,
+    "minimum": [
+      -23.5508193969726562,
+      -42.0099372863769531,
+      5.2750854492187500
+    ],
+    "maximum": [
+      84.1961135864257812,
+      45.7918472290039062,
+      113.1668395996093750
+    ],
+    "units": "millimetre"
+  },
+  "planar_bounds": {
+    "valid": true,
+    "minimum": [
+      -23549,
+      -42006
+    ],
+    "maximum": [
+      84193,
+      45791
+    ],
+    "units": "micrometre"
+  },
+  "summary": [
+    {
+      "name": "layers",
+      "value": 539
+    },
+    {
+      "name": "vertices",
+      "value": 305937
+    },
+    {
+      "name": "paths",
+      "value": 683
+    },
+    {
+      "name": "path_vertex_indices",
+      "value": 305937
+    },
+    {
+      "name": "path_segment_indices",
+      "value": 305937
+    },
+    {
+      "name": "open_chains",
+      "value": 0
+    },
+    {
+      "name": "degenerate_loops",
+      "value": 0
+    },
+    {
+      "name": "non_manifold_vertices",
+      "value": 0
+    }
+  ],
+  "invariants": [
+    {
+      "code": "canonical_result_hash",
+      "passed": true,
+      "observed": "7fbd634bc0432d618e312fa990719dc4608a23d208dffcf5fa5db742f6873a7c",
+      "expected": "7fbd634bc0432d618e312fa990719dc4608a23d208dffcf5fa5db742f6873a7c"
+    },
+    {
+      "code": "source_independent_replay",
+      "passed": true,
+      "observed": "passed",
+      "expected": "passed"
+    }
+  ],
+  "provenance": [
+
+  ],
+  "primitives": [
+    {
+      "path": "stages/07-reconstruct-topology/primitives/topology.bin",
+      "format": "hws-topology-le",
+      "schema_version": 1,
+      "item_count": 919033,
+      "byte_count": 12299784,
+      "sha256": "d6eb53fd2b3e2086c0b90ce27892d67cf7230310d509d27653fec0d6579a252a"
+    }
+  ],
+  "renders": [
+
+  ],
+  "elapsed_ns": 0
+}

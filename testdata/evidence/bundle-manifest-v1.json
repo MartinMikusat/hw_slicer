@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "request_hash": "6bb3d6d574ec659bccd429e88a8f3ec20a161581fe0fb14da35c322b0c0fdd73",
+  "source_root_id": "524d81e204d4e634",
+  "summary": {
+    "path": "summary.json",
+    "format": "json",
+    "schema_version": 1,
+    "item_count": 1,
+    "byte_count": 256,
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "stages": [
+    {
+      "ordinal": 10,
+      "stage": {
+        "name": "plan-paths",
+        "schema_version": 1,
+        "revision": 1
+      },
+      "provider": {
+        "id": "8d284a7409f377bb",
+        "name": "cpu-canonical-nearest",
+        "version": "0.1.0"
+      },
+      "manifest": {
+        "path": "stages/10-plan-paths/manifest.json",
+        "format": "json",
+        "schema_version": 1,
+        "item_count": 1,
+        "byte_count": 1854,
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "stages/10-plan-paths/primitives/path-plan.bin",
+      "format": "hws-path-plan-le",
+      "schema_version": 1,
+      "item_count": 633143,
+      "byte_count": 35504552,
+      "sha256": "e0074543cb5db6a85e0e53a5588bf7ee37a21211d3b193d25895df2620625f5f"
+    },
+    {
+      "path": "stages/10-plan-paths/renders/layer-000538.svg",
+      "format": "svg",
+      "schema_version": 1,
+      "item_count": 5,
+      "byte_count": 1338,
+      "sha256": "fd7a02c7882d2d0fdc7a9db3cfb6da283e0b569b30348e00b288462bc514ff4a"
+    }
+  ]
+}

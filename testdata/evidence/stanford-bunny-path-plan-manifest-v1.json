@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "request_hash": "6bb3d6d574ec659bccd429e88a8f3ec20a161581fe0fb14da35c322b0c0fdd73",
+  "stage": {
+    "name": "plan-paths",
+    "schema_version": 1,
+    "revision": 1
+  },
+  "provider": {
+    "id": "8d284a7409f377bb",
+    "name": "cpu-canonical-nearest",
+    "version": "0.1.0"
+  },
+  "source_root_id": "524d81e204d4e634",
+  "source_bounds": {
+    "valid": true,
+    "minimum": [
+      -23.5508193969726562,
+      -42.0099372863769531,
+      5.2750854492187500
+    ],
+    "maximum": [
+      84.1961135864257812,
+      45.7918472290039062,
+      113.1668395996093750
+    ],
+    "units": "millimetre"
+  },
+  "planar_bounds": {
+    "valid": true,
+    "minimum": [
+      -23323,
+      -41780
+    ],
+    "maximum": [
+      83967,
+      45565
+    ],
+    "units": "micrometre"
+  },
+  "summary": [
+    {
+      "name": "layers",
+      "value": 539
+    },
+    {
+      "name": "paths",
+      "value": 8200
+    },
+    {
+      "name": "moves",
+      "value": 624404
+    },
+    {
+      "name": "travel_moves",
+      "value": 8200
+    },
+    {
+      "name": "extrude_moves",
+      "value": 616204
+    }
+  ],
+  "invariants": [
+    {
+      "code": "canonical_result_hash",
+      "passed": true,
+      "observed": "9146f9cd190b7bd6dce5ed4e9256ed26362b63be182ca8d3c430300588601235",
+      "expected": "9146f9cd190b7bd6dce5ed4e9256ed26362b63be182ca8d3c430300588601235"
+    },
+    {
+      "code": "source_independent_replay",
+      "passed": true,
+      "observed": "passed",
+      "expected": "passed"
+    }
+  ],
+  "provenance": [
+
+  ],
+  "primitives": [
+    {
+      "path": "path-plan.bin",
+      "format": "hws-path-plan-le",
+      "schema_version": 1,
+      "item_count": 633143,
+      "byte_count": 35504552,
+      "sha256": "e0074543cb5db6a85e0e53a5588bf7ee37a21211d3b193d25895df2620625f5f"
+    }
+  ],
+  "renders": [
+
+  ],
+  "elapsed_ns": 0
+}

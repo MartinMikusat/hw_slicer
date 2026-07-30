@@ -52,4 +52,18 @@ if [ "${1:-}" = "--print-path" ]; then
   exit 0
 fi
 
+case "${1:-}" in
+  build|bundle|check|run|test)
+    # The pinned compiler can race in its semantic checker on this project.
+    COMMAND=$1
+    shift
+    TARGET=${1:-}
+    if [ -z "$TARGET" ]; then
+      exec "$ODIN" "$COMMAND"
+    fi
+    shift
+    exec "$ODIN" "$COMMAND" "$TARGET" -no-threaded-checker "$@"
+    ;;
+esac
+
 exec "$ODIN" "$@"

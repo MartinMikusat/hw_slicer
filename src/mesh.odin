@@ -1,8 +1,9 @@
 package main
 
 import "core:fmt"
-import "core:os"
 import "core:strings"
+
+import formats "./formats"
 
 Mesh_Vertex :: struct {
 	position: Vec3,
@@ -24,6 +25,7 @@ Mesh :: struct {
 Mesh_Error :: enum {
 	None,
 	Read_Failed,
+	Source_Limit,
 	Truncated,
 	Invalid_Triangle_Count,
 	Unsupported_Format,
@@ -48,8 +50,21 @@ mesh_load_stl :: proc(
 	path: string,
 	allocator := context.allocator,
 ) -> (Mesh, Mesh_Error) {
-	bytes, ok := os.read_entire_file(path, allocator)
-	if !ok {return {}, .Read_Failed}
+	bytes, read_error := formats.source_file_read_bounded(
+		path,
+		84,
+		formats.DEFAULT_BINARY_STL_LIMITS.max_source_bytes,
+		allocator,
+	)
+	switch read_error {
+	case .None:
+	case .Size_Limit:
+		return {}, .Source_Limit
+	case .Allocation_Failed:
+		return {}, .Allocation_Failed
+	case .Open_Failed, .Read_Failed, .Changed_During_Read:
+		return {}, .Read_Failed
+	}
 	defer delete(bytes, allocator)
 	mesh, error := mesh_parse_binary_stl(bytes, allocator)
 	if error != .None {return {}, error}
@@ -137,6 +152,8 @@ mesh_error_text :: proc(error: Mesh_Error) -> string {
 		return "none"
 	case .Read_Failed:
 		return "the file could not be read"
+	case .Source_Limit:
+		return "the file size is outside the source limit"
 	case .Truncated:
 		return "the STL header is incomplete"
 	case .Invalid_Triangle_Count:
@@ -144,7 +161,7 @@ mesh_error_text :: proc(error: Mesh_Error) -> string {
 	case .Unsupported_Format:
 		return "the file is not an exact binary STL payload"
 	case .Allocation_Failed:
-		return "the mesh vertex buffer allocation failed"
+		return "memory allocation failed while loading the mesh"
 	}
 	return fmt.tprintf("unknown mesh error %d", int(error))
 }
