@@ -7,7 +7,7 @@ import polygon "../polygon"
 import profiles "../profiles"
 import slicing "../slicing"
 
-BRIDGE_DIRECTION_SCALE :: i64(1_000_000_000)
+BRIDGE_DIRECTION_SCALE :: i64(1_000_000)
 
 Bridge_Direction_Status :: enum u8 {
 	Invalid,
