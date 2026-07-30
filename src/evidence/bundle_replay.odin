@@ -15,12 +15,14 @@ Evidence_Bundle_Replay :: struct {
 	topology:         Topology_Artifact,
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
+	unified_sources:  features.Unified_Path_Source_Artifact,
 	extrusion:        features.Extrusion_Artifact,
 	motion_plan:      features.Motion_Plan_Artifact,
 	marlin:           gcode.Marlin_Artifact,
 	topology_loaded:  bool,
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
+	unified_sources_loaded: bool,
 	extrusion_loaded: bool,
 	motion_plan_loaded: bool,
 	marlin_loaded:    bool,
@@ -60,6 +62,12 @@ evidence_bundle_replay_destroy :: proc(
 	}
 	if replay.path_plan_loaded {
 		path_plan_artifact_destroy(&replay.path_plan, allocator)
+	}
+	if replay.unified_sources_loaded {
+		features.unified_path_source_artifact_destroy(
+			&replay.unified_sources,
+			allocator,
+		)
 	}
 	if replay.extrusion_loaded {
 		features.extrusion_artifact_destroy(&replay.extrusion, allocator)
@@ -570,6 +578,8 @@ evidence_bundle_replay_stage_supported :: proc(stage_name: string) -> bool {
 		return true
 	case "calculate-regions":
 		return true
+	case "generate-features":
+		return true
 	case "plan-paths":
 		return true
 	case "emit-gcode":
@@ -588,6 +598,8 @@ evidence_bundle_replay_primitive_supported :: proc(
 		return format == TOPOLOGY_ARTIFACT_FORMAT
 	case "calculate-regions":
 		return format == REGION_ARTIFACT_FORMAT
+	case "generate-features":
+		return format == features.UNIFIED_PATH_SOURCE_ARTIFACT_FORMAT
 	case "plan-paths":
 		return format == PATH_PLAN_ARTIFACT_FORMAT ||
 			format == features.EXTRUSION_ARTIFACT_FORMAT ||
@@ -670,6 +682,39 @@ evidence_bundle_replay_stage_decode :: proc(
 		}
 		replay.regions = artifact
 		replay.regions_loaded = true
+	case "generate-features":
+		if replay.unified_sources_loaded {return .Invalid_Content}
+		expectations, preflight_error :=
+			unified_path_source_manifest_preflight(
+				manifest,
+				primitive.path,
+				artifact_bytes,
+			)
+		if preflight_error != .None {return .Invalid_Content}
+		artifact, decode_error :=
+			features.unified_path_source_artifact_decode(
+				artifact_bytes,
+				features.DEFAULT_UNIFIED_PATH_SOURCE_ARTIFACT_LIMITS,
+				allocator,
+			)
+		if decode_error != .None {
+			if decode_error == .Allocation_Failed {
+				return .Allocation_Failed
+			}
+			return .Invalid_Content
+		}
+		if unified_path_source_manifest_replay_verify(
+			expectations,
+			artifact,
+		) != .None {
+			features.unified_path_source_artifact_destroy(
+				&artifact,
+				allocator,
+			)
+			return .Invalid_Content
+		}
+		replay.unified_sources = artifact
+		replay.unified_sources_loaded = true
 	case "plan-paths":
 		switch primitive.format {
 		case PATH_PLAN_ARTIFACT_FORMAT:
