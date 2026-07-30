@@ -950,10 +950,22 @@ ui_evidence_graph_state :: proc(
 	case "calculate-regions":
 		if replay.regions_loaded {return "REGION GRAPH RETAINED"}
 	case "plan-paths":
+		if replay.path_plan_loaded &&
+		   replay.extrusion_loaded &&
+		   replay.motion_plan_loaded {
+			return "PATH + EXTRUSION + MOTION GRAPHS RETAINED"
+		}
+		if replay.path_plan_loaded && replay.extrusion_loaded {
+			return "PATH + EXTRUSION GRAPHS RETAINED"
+		}
 		if replay.path_plan_loaded && replay.motion_plan_loaded {
 			return "PATH + MOTION GRAPHS RETAINED"
 		}
+		if replay.extrusion_loaded && replay.motion_plan_loaded {
+			return "EXTRUSION + MOTION GRAPHS RETAINED"
+		}
 		if replay.path_plan_loaded {return "PATH-PLAN GRAPH RETAINED"}
+		if replay.extrusion_loaded {return "EXTRUSION GRAPH RETAINED"}
 		if replay.motion_plan_loaded {return "MOTION GRAPH RETAINED"}
 	case "emit-gcode":
 		if replay.marlin_loaded {return "G-CODE GRAPH RETAINED"}

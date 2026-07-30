@@ -37,6 +37,11 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	path_plan_moves:       u64,
 	path_plan_travel_moves: u64,
 	path_plan_extrude_moves: u64,
+	extrusion_loaded:      bool `json:"extrusion_loaded,omitempty"`,
+	extrusion_layers:      u64  `json:"extrusion_layers,omitempty"`,
+	extrusion_moves:       u64  `json:"extrusion_moves,omitempty"`,
+	extrusion_volume_cubic_um: u64 `json:"extrusion_volume_cubic_um,omitempty"`,
+	extrusion_filament_nm: string `json:"extrusion_filament_nm,omitempty"`,
 	motion_plan_loaded:    bool `json:"motion_plan_loaded,omitempty"`,
 	motion_plan_layers:    u64  `json:"motion_plan_layers,omitempty"`,
 	motion_plan_operations: u64 `json:"motion_plan_operations,omitempty"`,
@@ -119,6 +124,7 @@ main :: proc() {
 		topology_loaded = replay.topology_loaded,
 		regions_loaded = replay.regions_loaded,
 		path_plan_loaded = replay.path_plan_loaded,
+		extrusion_loaded = replay.extrusion_loaded,
 		motion_plan_loaded = replay.motion_plan_loaded,
 		marlin_loaded = replay.marlin_loaded,
 	}
@@ -145,6 +151,18 @@ main :: proc() {
 			replay.path_plan.result.travel_move_count
 		decoded.path_plan_extrude_moves =
 			replay.path_plan.result.extrude_move_count
+	}
+	if replay.extrusion_loaded {
+		decoded.extrusion_layers =
+			u64(len(replay.extrusion.result.layers))
+		decoded.extrusion_moves =
+			u64(len(replay.extrusion.result.moves))
+		decoded.extrusion_volume_cubic_um =
+			replay.extrusion.result.total_volume_cubic_um
+		decoded.extrusion_filament_nm = fmt.tprintf(
+			"%d",
+			replay.extrusion.result.total_filament_nm,
+		)
 	}
 	if replay.motion_plan_loaded {
 		decoded.motion_plan_layers =
