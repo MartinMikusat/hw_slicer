@@ -23,8 +23,10 @@ surface_result_hash :: proc(
 	for layer, layer_index in result.layers {
 		if layer.mask_offset != expected_mask_offset ||
 		   layer.path_offset != expected_layer_path_offset ||
+		   layer.mask_offset > max(u64)-u64(layer.mask_count) ||
 		   layer.mask_offset+u64(layer.mask_count) >
 		   	u64(len(result.masks)) ||
+		   layer.path_offset > max(u64)-u64(layer.path_count) ||
 		   layer.path_offset+u64(layer.path_count) >
 		   	u64(len(result.paths)) {
 			return {}, false
@@ -62,8 +64,10 @@ surface_result_hash :: proc(
 		   mask.point_count == 0 ||
 		   mask.path_offset != expected_path_offset ||
 		   mask.point_offset != expected_point_offset ||
+		   mask.path_offset > max(u64)-u64(mask.path_count) ||
 		   mask.path_offset+u64(mask.path_count) >
 		   	u64(len(result.paths)) ||
+		   mask.point_offset > max(u64)-u64(mask.point_count) ||
 		   mask.point_offset+u64(mask.point_count) >
 		   	u64(len(result.points)) ||
 		   mask.stable_id != contracts.stable_id_child(
@@ -93,6 +97,7 @@ surface_result_hash :: proc(
 			   path.mask_path_index != u32(local_path_index) ||
 			   path.point_count < 3 ||
 			   path.point_offset != expected_point_offset ||
+			   path.point_offset > max(u64)-u64(path.point_count) ||
 			   path.point_offset+u64(path.point_count) >
 			   	mask_point_end ||
 			   path.stable_id != contracts.stable_id_child(

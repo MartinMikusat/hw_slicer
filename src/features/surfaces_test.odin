@@ -524,9 +524,33 @@ surface_hash_rejects_mutated_mask_spans_test :: proc(t: ^testing.T) {
 	defer surface_result_destroy(&result)
 	testing.expect_value(t, region_error, slicing.Region_Error.None)
 	testing.expect_value(t, error, Surface_Error.None)
-	if len(result.masks) == 0 {return}
-	result.masks[0].point_offset += 1
+	if len(result.layers) == 0 ||
+	   len(result.masks) == 0 ||
+	   len(result.paths) == 0 {
+		return
+	}
+	layer_mask_offset := result.layers[0].mask_offset
+	result.layers[0].mask_offset = max(u64)
 	_, hash_ok := surface_result_hash(contracts.Content_Hash{}, result)
+	testing.expect(t, !hash_ok)
+	result.layers[0].mask_offset = layer_mask_offset
+	layer_path_offset := result.layers[0].path_offset
+	result.layers[0].path_offset = max(u64)
+	_, hash_ok = surface_result_hash(contracts.Content_Hash{}, result)
+	testing.expect(t, !hash_ok)
+	result.layers[0].path_offset = layer_path_offset
+	mask_path_offset := result.masks[0].path_offset
+	result.masks[0].path_offset = max(u64)
+	_, hash_ok = surface_result_hash(contracts.Content_Hash{}, result)
+	testing.expect(t, !hash_ok)
+	result.masks[0].path_offset = mask_path_offset
+	mask_point_offset := result.masks[0].point_offset
+	result.masks[0].point_offset = max(u64)
+	_, hash_ok = surface_result_hash(contracts.Content_Hash{}, result)
+	testing.expect(t, !hash_ok)
+	result.masks[0].point_offset = mask_point_offset
+	result.paths[0].point_offset = max(u64)
+	_, hash_ok = surface_result_hash(contracts.Content_Hash{}, result)
 	testing.expect(t, !hash_ok)
 }
 
