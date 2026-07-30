@@ -2,10 +2,10 @@ package profiles
 
 import contracts "../contracts"
 
-PRINTER_PROFILE_SCHEMA_VERSION :: u32(1)
+PRINTER_PROFILE_SCHEMA_VERSION :: u32(2)
 MATERIAL_PROFILE_SCHEMA_VERSION :: u32(1)
-PROCESS_PROFILE_SCHEMA_VERSION :: u32(1)
-DIALECT_PROFILE_SCHEMA_VERSION :: u32(1)
+PROCESS_PROFILE_SCHEMA_VERSION :: u32(2)
+DIALECT_PROFILE_SCHEMA_VERSION :: u32(2)
 
 RATIO_SCALE :: u32(1_000_000)
 MAX_BRIDGE_ANGLE_CANDIDATES :: 8
@@ -99,9 +99,31 @@ Travel_Policy :: enum u8 {
 	Direct,
 }
 
+Minimum_Layer_Time_Policy :: enum u8 {
+	Invalid,
+	Slowdown_Then_Dwell,
+}
+
 Extrusion_Accumulation_Policy :: enum u8 {
 	Invalid,
 	Volume_Then_Fixed_Point_Length,
+}
+
+Bed_Leveling_Policy :: enum u8 {
+	Invalid,
+	None,
+	Probe_Before_Print,
+	Restore_Stored_Mesh,
+}
+
+Acceleration_Command_Policy :: enum u8 {
+	Invalid,
+	Profile_Approved,
+}
+
+GCode_Output_Mode :: enum u8 {
+	Invalid,
+	File,
 }
 
 GCode_Dialect :: enum u8 {
@@ -157,9 +179,13 @@ First_Layer_Overrides :: struct {
 
 Printer_Profile :: struct {
 	schema_version:       u32,
-	build_size_x:         contracts.Micrometres,
-	build_size_y:         contracts.Micrometres,
-	build_size_z:         contracts.Micrometres,
+	axis_minimum_x:       contracts.Micrometres,
+	axis_maximum_x:       contracts.Micrometres,
+	axis_minimum_y:       contracts.Micrometres,
+	axis_maximum_y:       contracts.Micrometres,
+	axis_minimum_z:       contracts.Micrometres,
+	axis_maximum_z:       contracts.Micrometres,
+	extruder_count:       u8,
 	nozzle_diameter:      contracts.Micrometres,
 	minimum_layer_height: contracts.Micrometres,
 	maximum_layer_height: contracts.Micrometres,
@@ -167,6 +193,13 @@ Printer_Profile :: struct {
 	maximum_line_width:   contracts.Micrometres,
 	maximum_speed:        Speed_Um_Per_Second,
 	maximum_acceleration: Acceleration_Um_Per_Second_Squared,
+	maximum_extruder_speed: Speed_Um_Per_Second,
+	maximum_extruder_acceleration: Acceleration_Um_Per_Second_Squared,
+	bed_leveling:         Bed_Leveling_Policy,
+	park_after_print:     bool,
+	park_x:               contracts.Micrometres,
+	park_y:               contracts.Micrometres,
+	park_z_lift:          contracts.Micrometres,
 }
 
 Material_Profile :: struct {
@@ -237,11 +270,16 @@ Process_Profile :: struct {
 	nozzle_temperature:      Temperature_Celsius,
 	bed_temperature:         Temperature_Celsius,
 	minimum_layer_time:      Duration_Milliseconds,
+	minimum_layer_time_policy: Minimum_Layer_Time_Policy,
+	minimum_print_speed:     Speed_Um_Per_Second,
 
 	seam:                    Seam_Policy,
 	retraction:              Retraction_Policy,
 	retraction_distance:     contracts.Micrometres,
 	minimum_retraction_travel: contracts.Micrometres,
+	retraction_speed:        Speed_Um_Per_Second,
+	recovery_speed:          Speed_Um_Per_Second,
+	retraction_acceleration: Acceleration_Um_Per_Second_Squared,
 	travel_policy:           Travel_Policy,
 	z_hop_enabled:           bool,
 	z_hop_height:            contracts.Micrometres,
@@ -262,6 +300,9 @@ Dialect_Profile :: struct {
 	line_ending:         Line_Ending,
 	line_numbers:        bool,
 	checksums:           bool,
+	acceleration_commands: Acceleration_Command_Policy,
+	output_mode:         GCode_Output_Mode,
+	emit_layer_comments: bool,
 }
 
 Effective_First_Layer :: struct {

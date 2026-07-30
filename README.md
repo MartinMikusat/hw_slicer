@@ -233,6 +233,10 @@ The profile resolver provides:
 - The selected overlap, thin-wall, gap, bridge, support, extrusion, and motion
   policies.
 - Explicit process-target validation against printer and material limits.
+- Explicit machine-coordinate bounds, one-extruder enforcement, and bounded
+  extruder motion limits.
+- Typed homing, leveling, parking, acceleration, cooling, and file-output
+  policies for the conservative Marlin target.
 - Deterministic first-layer override resolution and thin-wall width conversion.
 - Exact gap-width allocation into unprinted evidence, one centered line, two
   partitioned lines, or a region that is too wide for gap fill.

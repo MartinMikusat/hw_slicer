@@ -28,6 +28,7 @@ Profile_Field_Group :: enum u8 {
 	Motion_Targets,
 	Extrusion_Targets,
 	Dialect_Syntax,
+	Printer_GCode_Actions,
 	Display_Only,
 }
 
@@ -97,6 +98,7 @@ profile_stage_hashes :: proc(
 		"hw-slicer/profile-stage/emit-gcode",
 		PROFILE_STAGE_HASH_SCHEMA_VERSION,
 	)
+	append_printer_gcode_actions(&gcode, profiles.printer)
 	append_dialect_profile(&gcode, profiles.dialect)
 
 	return {
@@ -209,6 +211,8 @@ profile_field_contract :: proc(
 		return {.Process, .Plan_Paths}, true
 	case .Dialect_Syntax:
 		return {.Dialect, .Emit_GCode}, true
+	case .Printer_GCode_Actions:
+		return {.Printer, .Emit_GCode}, true
 	case .Display_Only:
 		return {.Derived, .Invalid}, true
 	case .Invalid:
@@ -230,6 +234,7 @@ printer_profile_hash :: proc(
 	append_printer_feature_geometry(&hash, profile)
 	append_printer_layer_limits(&hash, profile)
 	append_printer_motion_limits(&hash, profile)
+	append_printer_gcode_actions(&hash, profile)
 	return contracts.canonical_hash_final(&hash)
 }
 
@@ -284,9 +289,13 @@ append_printer_build_geometry :: proc(
 	hash: ^contracts.Canonical_Hash,
 	profile: Printer_Profile,
 ) {
-	contracts.canonical_hash_append_i64(hash, i64(profile.build_size_x))
-	contracts.canonical_hash_append_i64(hash, i64(profile.build_size_y))
-	contracts.canonical_hash_append_i64(hash, i64(profile.build_size_z))
+	contracts.canonical_hash_append_i64(hash, i64(profile.axis_minimum_x))
+	contracts.canonical_hash_append_i64(hash, i64(profile.axis_maximum_x))
+	contracts.canonical_hash_append_i64(hash, i64(profile.axis_minimum_y))
+	contracts.canonical_hash_append_i64(hash, i64(profile.axis_maximum_y))
+	contracts.canonical_hash_append_i64(hash, i64(profile.axis_minimum_z))
+	contracts.canonical_hash_append_i64(hash, i64(profile.axis_maximum_z))
+	contracts.canonical_hash_append_u8(hash, profile.extruder_count)
 }
 
 append_printer_feature_geometry :: proc(
@@ -327,6 +336,25 @@ append_printer_motion_limits :: proc(
 		hash,
 		i64(profile.maximum_acceleration),
 	)
+	contracts.canonical_hash_append_i64(
+		hash,
+		i64(profile.maximum_extruder_speed),
+	)
+	contracts.canonical_hash_append_i64(
+		hash,
+		i64(profile.maximum_extruder_acceleration),
+	)
+}
+
+append_printer_gcode_actions :: proc(
+	hash: ^contracts.Canonical_Hash,
+	profile: Printer_Profile,
+) {
+	contracts.canonical_hash_append_u8(hash, u8(profile.bed_leveling))
+	contracts.canonical_hash_append_u8(hash, u8(profile.park_after_print))
+	contracts.canonical_hash_append_i64(hash, i64(profile.park_x))
+	contracts.canonical_hash_append_i64(hash, i64(profile.park_y))
+	contracts.canonical_hash_append_i64(hash, i64(profile.park_z_lift))
 }
 
 append_material_path_limits :: proc(
@@ -524,6 +552,14 @@ append_process_path_targets :: proc(
 		hash,
 		u32(profile.minimum_layer_time),
 	)
+	contracts.canonical_hash_append_u8(
+		hash,
+		u8(profile.minimum_layer_time_policy),
+	)
+	contracts.canonical_hash_append_i64(
+		hash,
+		i64(profile.minimum_print_speed),
+	)
 	contracts.canonical_hash_append_u8(hash, u8(profile.seam))
 	contracts.canonical_hash_append_u8(hash, u8(profile.retraction))
 	contracts.canonical_hash_append_i64(
@@ -533,6 +569,18 @@ append_process_path_targets :: proc(
 	contracts.canonical_hash_append_i64(
 		hash,
 		i64(profile.minimum_retraction_travel),
+	)
+	contracts.canonical_hash_append_i64(
+		hash,
+		i64(profile.retraction_speed),
+	)
+	contracts.canonical_hash_append_i64(
+		hash,
+		i64(profile.recovery_speed),
+	)
+	contracts.canonical_hash_append_i64(
+		hash,
+		i64(profile.retraction_acceleration),
 	)
 	contracts.canonical_hash_append_u8(hash, u8(profile.travel_policy))
 	contracts.canonical_hash_append_u8(hash, u8(profile.z_hop_enabled))
@@ -564,6 +612,15 @@ append_dialect_profile :: proc(
 	contracts.canonical_hash_append_u8(hash, u8(profile.line_ending))
 	contracts.canonical_hash_append_u8(hash, u8(profile.line_numbers))
 	contracts.canonical_hash_append_u8(hash, u8(profile.checksums))
+	contracts.canonical_hash_append_u8(
+		hash,
+		u8(profile.acceleration_commands),
+	)
+	contracts.canonical_hash_append_u8(hash, u8(profile.output_mode))
+	contracts.canonical_hash_append_u8(
+		hash,
+		u8(profile.emit_layer_comments),
+	)
 }
 
 append_skin_target :: proc(

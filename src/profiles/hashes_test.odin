@@ -28,7 +28,7 @@ profile_invalidation_starts_at_normalize_for_build_geometry_test :: proc(
 ) {
 	previous := profile_test_resolved(t)
 	next := previous
-	next.printer.build_size_x += 1
+	next.printer.axis_maximum_x += 1
 	expect_invalidation_suffix(t, previous, next, .Normalize)
 }
 
@@ -79,6 +79,10 @@ profile_invalidation_starts_at_gcode_for_dialect_fields_test :: proc(
 	next := previous
 	next.dialect.e_decimal_places += 1
 	expect_invalidation_suffix(t, previous, next, .Emit_GCode)
+
+	next = previous
+	next.printer.bed_leveling = .Probe_Before_Print
+	expect_invalidation_suffix(t, previous, next, .Emit_GCode)
 }
 
 @(test)
@@ -112,6 +116,7 @@ profile_field_contract_covers_every_selected_owner_group_test :: proc(
 		.Motion_Targets,
 		.Extrusion_Targets,
 		.Dialect_Syntax,
+		.Printer_GCode_Actions,
 		.Display_Only,
 	}
 	for field in fields {

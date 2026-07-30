@@ -79,9 +79,10 @@ printer_profile_validate :: proc(
 	if profile.schema_version != PRINTER_PROFILE_SCHEMA_VERSION {
 		return .Printer_Schema
 	}
-	if i64(profile.build_size_x) <= 0 ||
-	   i64(profile.build_size_y) <= 0 ||
-	   i64(profile.build_size_z) <= 0 ||
+	if i64(profile.axis_maximum_x) <= i64(profile.axis_minimum_x) ||
+	   i64(profile.axis_maximum_y) <= i64(profile.axis_minimum_y) ||
+	   i64(profile.axis_maximum_z) <= i64(profile.axis_minimum_z) ||
+	   profile.extruder_count != 1 ||
 	   i64(profile.nozzle_diameter) <= 0 {
 		return .Printer_Geometry
 	}
@@ -92,8 +93,27 @@ printer_profile_validate :: proc(
 	   i64(profile.maximum_line_width) <
 	   	i64(profile.minimum_line_width) ||
 	   i64(profile.maximum_speed) <= 0 ||
-	   i64(profile.maximum_acceleration) <= 0 {
+	   i64(profile.maximum_acceleration) <= 0 ||
+	   i64(profile.maximum_extruder_speed) <= 0 ||
+	   i64(profile.maximum_extruder_acceleration) <= 0 {
 		return .Printer_Limits
+	}
+	park_position_valid :=
+		i64(profile.park_x) >= i64(profile.axis_minimum_x) &&
+		i64(profile.park_x) <= i64(profile.axis_maximum_x) &&
+		i64(profile.park_y) >= i64(profile.axis_minimum_y) &&
+		i64(profile.park_y) <= i64(profile.axis_maximum_y)
+	park_values_zero :=
+		i64(profile.park_x) == 0 &&
+		i64(profile.park_y) == 0 &&
+		i64(profile.park_z_lift) == 0
+	park_enabled_valid :=
+		park_position_valid && i64(profile.park_z_lift) > 0
+	if profile.bed_leveling == .Invalid ||
+	   i64(profile.park_z_lift) < 0 ||
+	   profile.park_after_print && !park_enabled_valid ||
+	   !profile.park_after_print && !park_values_zero {
+		return .Printer_Geometry
 	}
 	return .None
 }
@@ -152,7 +172,7 @@ process_profile_validate :: proc(
 	if !process_motion_targets_valid(profile, printer) {
 		return .Process_Motion_Target
 	}
-	if !process_travel_targets_valid(profile) {
+	if !process_travel_targets_valid(profile, printer) {
 		return .Process_Travel_Target
 	}
 	if profile.extrusion_accumulation !=
@@ -170,14 +190,18 @@ dialect_profile_validate :: proc(
 		return .Dialect_Schema
 	}
 	if profile.dialect != .Marlin_Conservative ||
-	   profile.coordinate_mode == .Invalid ||
-	   profile.extrusion_mode == .Invalid ||
-	   profile.xy_decimal_places > 6 ||
-	   profile.z_decimal_places > 6 ||
-	   profile.e_decimal_places > 9 ||
-	   profile.feed_decimal_places > 3 ||
-	   profile.line_ending == .Invalid ||
-	   profile.checksums && !profile.line_numbers {
+	   profile.coordinate_mode != .Absolute ||
+	   profile.extrusion_mode != .Relative ||
+	   profile.xy_decimal_places != 3 ||
+	   profile.z_decimal_places != 3 ||
+	   profile.e_decimal_places != 5 ||
+	   profile.feed_decimal_places != 0 ||
+	   profile.line_ending != .LF ||
+	   profile.line_numbers ||
+	   profile.checksums ||
+	   profile.acceleration_commands != .Profile_Approved ||
+	   profile.output_mode != .File ||
+	   !profile.emit_layer_comments {
 		return .Dialect_Target
 	}
 	return .None
@@ -320,7 +344,10 @@ process_motion_targets_valid :: proc(
 	       i64(profile.travel.acceleration) > 0 &&
 	       i64(profile.travel.acceleration) <=
 	       	i64(printer.maximum_acceleration) &&
-	       u32(profile.minimum_layer_time) > 0
+	       u32(profile.minimum_layer_time) > 0 &&
+	       profile.minimum_layer_time_policy == .Slowdown_Then_Dwell &&
+	       i64(profile.minimum_print_speed) > 0 &&
+	       i64(profile.minimum_print_speed) <= i64(profile.perimeter.speed)
 }
 
 process_thermal_targets_valid :: proc(
@@ -355,11 +382,20 @@ process_thermal_targets_valid :: proc(
 	return true
 }
 
-process_travel_targets_valid :: proc(profile: Process_Profile) -> bool {
+process_travel_targets_valid :: proc(
+	profile: Process_Profile,
+	printer: Printer_Profile,
+) -> bool {
 	return profile.seam == .Deterministic_Cost &&
 	       profile.retraction == .Distance_And_Exterior_Crossing &&
 	       i64(profile.retraction_distance) >= 0 &&
 	       i64(profile.minimum_retraction_travel) > 0 &&
+	       i64(profile.retraction_speed) > 0 &&
+	       i64(profile.retraction_speed) <= i64(printer.maximum_extruder_speed) &&
+	       i64(profile.recovery_speed) > 0 &&
+	       i64(profile.recovery_speed) <= i64(printer.maximum_extruder_speed) &&
+	       i64(profile.retraction_acceleration) > 0 &&
+	       i64(profile.retraction_acceleration) <= i64(printer.maximum_extruder_acceleration) &&
 	       profile.travel_policy == .Direct &&
 	       (!profile.z_hop_enabled &&
 	       	i64(profile.z_hop_height) == 0 ||

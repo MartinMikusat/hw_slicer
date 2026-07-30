@@ -5,7 +5,7 @@ import "core:testing"
 import contracts "../contracts"
 
 @(test)
-profiles_resolve_produces_selected_v1_policies_test :: proc(t: ^testing.T) {
+profiles_resolve_produces_selected_v2_policies_test :: proc(t: ^testing.T) {
 	printer, material, process, dialect := profile_test_documents()
 	resolved, error := profiles_resolve(
 		printer,
@@ -172,6 +172,48 @@ profiles_resolve_rejects_noncanonical_policy_documents_test :: proc(
 		dialect_error,
 		Profile_Resolve_Error.Dialect_Target,
 	)
+
+	printer, _, process, dialect = profile_test_documents()
+	printer.extruder_count = 2
+	_, printer_error := profiles_resolve(
+		printer,
+		material,
+		process,
+		dialect,
+	)
+	testing.expect_value(
+		t,
+		printer_error,
+		Profile_Resolve_Error.Printer_Geometry,
+	)
+
+	printer, _, process, dialect = profile_test_documents()
+	process.retraction_speed = printer.maximum_extruder_speed+1
+	_, retraction_error := profiles_resolve(
+		printer,
+		material,
+		process,
+		dialect,
+	)
+	testing.expect_value(
+		t,
+		retraction_error,
+		Profile_Resolve_Error.Process_Travel_Target,
+	)
+
+	printer, _, process, dialect = profile_test_documents()
+	dialect.extrusion_mode = .Absolute
+	_, mode_error := profiles_resolve(
+		printer,
+		material,
+		process,
+		dialect,
+	)
+	testing.expect_value(
+		t,
+		mode_error,
+		Profile_Resolve_Error.Dialect_Target,
+	)
 }
 
 @(test)
@@ -206,9 +248,13 @@ profile_test_documents :: proc() -> (
 ) {
 	printer := Printer_Profile{
 		schema_version = PRINTER_PROFILE_SCHEMA_VERSION,
-		build_size_x = 220_000,
-		build_size_y = 220_000,
-		build_size_z = 250_000,
+		axis_minimum_x = 0,
+		axis_maximum_x = 220_000,
+		axis_minimum_y = 0,
+		axis_maximum_y = 220_000,
+		axis_minimum_z = 0,
+		axis_maximum_z = 250_000,
+		extruder_count = 1,
 		nozzle_diameter = 400,
 		minimum_layer_height = 80,
 		maximum_layer_height = 320,
@@ -216,6 +262,9 @@ profile_test_documents :: proc() -> (
 		maximum_line_width = 800,
 		maximum_speed = 300_000,
 		maximum_acceleration = 5_000_000,
+		maximum_extruder_speed = 50_000,
+		maximum_extruder_acceleration = 5_000_000,
+		bed_leveling = .None,
 	}
 	material := Material_Profile{
 		schema_version = MATERIAL_PROFILE_SCHEMA_VERSION,
@@ -296,10 +345,15 @@ profile_test_documents :: proc() -> (
 		nozzle_temperature = 210,
 		bed_temperature = 60,
 		minimum_layer_time = 5_000,
+		minimum_layer_time_policy = .Slowdown_Then_Dwell,
+		minimum_print_speed = 10_000,
 		seam = .Deterministic_Cost,
 		retraction = .Distance_And_Exterior_Crossing,
 		retraction_distance = 800,
 		minimum_retraction_travel = 1_500,
+		retraction_speed = 35_000,
+		recovery_speed = 30_000,
+		retraction_acceleration = 1_000_000,
 		travel_policy = .Direct,
 		z_hop_enabled = false,
 		z_hop_height = 0,
@@ -318,6 +372,9 @@ profile_test_documents :: proc() -> (
 		line_ending = .LF,
 		line_numbers = false,
 		checksums = false,
+		acceleration_commands = .Profile_Approved,
+		output_mode = .File,
+		emit_layer_comments = true,
 	}
 	return printer, material, process, dialect
 }
