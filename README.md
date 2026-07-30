@@ -54,8 +54,9 @@ or GUI framework.
 The viewer loads the three bundled reference models or an exact binary STL
 selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
 package or published evidence directory in the stage timeline and inspector.
-The inspector retains the topology, region, and path-plan graphs without the
-source model. Pointer, Flash, and Accessibility input select one stage record.
+The inspector retains the topology, region, path-plan, motion, and G-code
+graphs without the source model. Pointer, Flash, and Accessibility input select
+one stage record.
 
 The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
 light and dark themes, Flash navigation, and Accessibility actions. The
@@ -220,6 +221,9 @@ The current engine implementation provides:
   duration estimates.
 - Exterior-crossing retraction and recovery operations, bounded short-layer
   slowdown, and residual dwell after the minimum print speed is reached.
+- A bounded little-endian motion artifact that retains path, extrusion,
+  printer, process, layer, operation, timing, and result identities. Package
+  and directory replay retain it beside the path-plan primitive in one stage.
 - Conservative Marlin file emission with millimetre units, absolute XYZ,
   relative extrusion, typed heating, homing, leveling, parking, and shutdown.
 - Exact decimal coordinate, feed, acceleration, and extrusion formatting with
@@ -556,8 +560,8 @@ attribution and license checksums.
 Execute the staged plan through the release gate. Preserve the versioned stage
 contracts and debug-evidence protocol when an implementation is replaced.
 
-Extend retained evidence and the application inspector through the implemented
-feature, extrusion, motion, and G-code graphs. Connect those stages to the
-production slice action before physical printer calibration. Preserve the
-profile provenance and invalidation rules from the
+Extend retained evidence through the remaining feature and extrusion graphs.
+Add geometric rendering and cross-stage selection for the retained records.
+Connect those stages to the production slice action before physical printer
+calibration. Preserve the profile provenance and invalidation rules from the
 [process-profile decision contract](../notes/hw-slicer-process-profile-decisions.md).
