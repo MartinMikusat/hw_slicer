@@ -194,6 +194,10 @@ The current engine implementation provides:
   expansion, and per-layer XY model clearance.
 - Disjoint regular and interface support masks, plus build-plate reachability
   filtering and explicit unresolved-demand counts.
+- Rectilinear support paths with density-derived regular spacing and explicit
+  interface spacing.
+- Half-line boundary insets, alternating layer axes, exact rational boundary
+  hits, and canonical support-path hashes.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
