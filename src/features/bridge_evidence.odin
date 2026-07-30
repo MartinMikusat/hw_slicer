@@ -479,6 +479,68 @@ bridge_evidence_area_2 :: proc(
 	return area_2, area_2 > 0
 }
 
+bridge_evidence_mask_input :: proc(
+	evidence: Bridge_Evidence_Result,
+	mask_index: u32,
+	allocator: mem.Allocator,
+) -> (polygon.Polygon_Set, Bridge_Evidence_Error) {
+	if u64(mask_index) >= u64(len(evidence.masks)) {
+		return {}, .Invalid_Input
+	}
+	mask := evidence.masks[mask_index]
+	if mask.path_offset+u64(mask.path_count) >
+	    u64(len(evidence.paths)) ||
+	   mask.point_offset+u64(mask.point_count) >
+	    u64(len(evidence.points)) {
+		return {}, .Invalid_Input
+	}
+	result: polygon.Polygon_Set
+	result.paths = make(
+		[]polygon.Polygon_Path,
+		int(mask.path_count),
+		allocator,
+	)
+	result.points = make(
+		[]polygon.Polygon_Point,
+		int(mask.point_count),
+		allocator,
+	)
+	if result.paths == nil || result.points == nil {
+		polygon.polygon_set_destroy(&result, allocator)
+		return {}, .Allocation_Failed
+	}
+	point_write := 0
+	path_start := int(mask.path_offset)
+	path_end := path_start+int(mask.path_count)
+	for path, local_path_index in evidence.paths[path_start:path_end] {
+		if path.point_offset+u64(path.point_count) >
+		    u64(len(evidence.points)) ||
+		   path.mask_id != mask.stable_id ||
+		   path.mask_path_index != u32(local_path_index) {
+			polygon.polygon_set_destroy(&result, allocator)
+			return {}, .Invalid_Input
+		}
+		result.paths[local_path_index] = {
+			offset = u64(point_write),
+			count = u64(path.point_count),
+		}
+		source_start := int(path.point_offset)
+		source_end := source_start+int(path.point_count)
+		copy(
+			result.points[
+				point_write:point_write+int(path.point_count)
+			],
+			evidence.points[source_start:source_end],
+		)
+		point_write += int(path.point_count)
+	}
+	if point_write != len(result.points) {
+		polygon.polygon_set_destroy(&result, allocator)
+		return {}, .Arithmetic
+	}
+	return result, .None
+}
+
 bridge_evidence_config_valid :: proc(
 	config: Bridge_Evidence_Config,
 ) -> bool {

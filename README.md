@@ -174,6 +174,10 @@ The current engine implementation provides:
   preceding-layer model support.
 - Separate bridge evidence for eligible areas and unsupported areas below the
   configured minimum, including exact signed area.
+- Bounded bridge-angle scoring with quantized direction vectors, projected
+  unsupported span, and separate anchor capacity for both path directions.
+- Explicit one-sided bridge evidence when no candidate reaches support at both
+  ends.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
