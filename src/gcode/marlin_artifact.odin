@@ -33,9 +33,13 @@ Marlin_Artifact :: struct {
 }
 
 Marlin_Artifact_Summary :: struct {
-	command_count:    u64,
-	gcode_byte_count: u64,
-	byte_count:       u64,
+	command_count:             u64,
+	gcode_byte_count:          u64,
+	byte_count:                u64,
+	layer_count:               u32,
+	motion_operation_count:    u64,
+	emitted_dwell_ms:          u64,
+	shutdown_retraction_nm:    u64,
 }
 
 Marlin_Artifact_Error :: enum u8 {
@@ -286,6 +290,10 @@ marlin_artifact_preflight :: proc(
 		command_count = command_count,
 		gcode_byte_count = gcode_byte_count,
 		byte_count = byte_count,
+		layer_count = marlin_artifact_get_u32(bytes, 240),
+		motion_operation_count = marlin_artifact_get_u64(bytes, 248),
+		emitted_dwell_ms = marlin_artifact_get_u64(bytes, 288),
+		shutdown_retraction_nm = marlin_artifact_get_u64(bytes, 296),
 	}, .None
 }
 
