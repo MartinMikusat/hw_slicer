@@ -142,37 +142,9 @@ unified_path_plan_build :: proc(
 	}
 	extrude_move_count: u64
 	for source, source_slice_index in sources {
-		priority, priority_ok :=
-			profiles.printable_role_priority(source.role)
-		if !priority_ok ||
-		   !unified_path_source_kind_valid(
-				source.source_kind,
-				source.role,
-		   ) ||
-		   source.stable_id == contracts.INVALID_STABLE_ID ||
-		   source.layer_id == contracts.INVALID_STABLE_ID ||
-		   u64(source.layer_index) >= u64(len(layer_ids)) ||
-		   source.layer_id != layer_ids[source.layer_index] ||
-		   len(source.points) != len(source.line_widths) ||
-		   source.closed && len(source.points) < 3 ||
-		   !source.closed && len(source.points) < 2 ||
-		   u64(len(source.points)) > u64(max(u32)) {
-			return {}, .Invalid_Input
-		}
-		previous := source.points[len(source.points)-1]
-		for point, point_index in source.points {
-			if geometry.point_2_validate({
-				point.x,
-				point.y,
-			}) != .None ||
-			   i64(source.line_widths[point_index]) <= 0 ||
-			   i64(source.line_widths[point_index]) >
-				geometry.MAX_PLANAR_COORDINATE_UM ||
-			   point == previous {
-				return {}, .Invalid_Input
-			}
-			previous = point
-		}
+		priority, source_ok :=
+			unified_path_source_validate(source, layer_ids)
+		if !source_ok {return {}, .Invalid_Input}
 		edge_count := len(source.points)-1
 		if source.closed {edge_count = len(source.points)}
 		if extrude_move_count > limits.max_moves ||
@@ -483,6 +455,44 @@ unified_path_source_kind_valid :: proc(
 		return false
 	}
 	return false
+}
+
+unified_path_source_validate :: proc(
+	source: Unified_Path_Source,
+	layer_ids: []contracts.Stable_ID,
+) -> (u8, bool) {
+	priority, priority_ok :=
+		profiles.printable_role_priority(source.role)
+	if !priority_ok ||
+	   !unified_path_source_kind_valid(
+			source.source_kind,
+			source.role,
+	   ) ||
+	   source.stable_id == contracts.INVALID_STABLE_ID ||
+	   source.layer_id == contracts.INVALID_STABLE_ID ||
+	   u64(source.layer_index) >= u64(len(layer_ids)) ||
+	   source.layer_id != layer_ids[source.layer_index] ||
+	   len(source.points) != len(source.line_widths) ||
+	   source.closed && len(source.points) < 3 ||
+	   !source.closed && len(source.points) < 2 ||
+	   u64(len(source.points)) > u64(max(u32)) {
+		return 0, false
+	}
+	previous := source.points[len(source.points)-1]
+	for point, point_index in source.points {
+		if geometry.point_2_validate({
+			point.x,
+			point.y,
+		}) != .None ||
+		   i64(source.line_widths[point_index]) <= 0 ||
+		   i64(source.line_widths[point_index]) >
+			geometry.MAX_PLANAR_COORDINATE_UM ||
+		   point == previous {
+			return 0, false
+		}
+		previous = point
+	}
+	return priority, true
 }
 
 unified_path_plan_result_destroy :: proc(

@@ -210,6 +210,8 @@ The current engine implementation provides:
   infill, and support sources.
 - Deterministic open-path reversal, closed-path start selection, per-endpoint
   line widths, explicit travel moves, and canonical plan hashes.
+- Canonical adapters from every generated path result into the unified source
+  layout, including inner-first perimeter ordering and variable gap widths.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
