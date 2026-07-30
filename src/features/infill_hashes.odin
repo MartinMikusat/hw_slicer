@@ -18,6 +18,8 @@ infill_result_hash :: proc(
 	expected_segment_offset: u64
 	for layer, layer_index in result.layers {
 		if layer.segment_offset != expected_segment_offset ||
+		   layer.segment_offset >
+			max(u64)-u64(layer.segment_count) ||
 		   layer.segment_offset+u64(layer.segment_count) >
 		   	u64(len(result.segments)) ||
 		   layer.axis != infill_layer_axis(
