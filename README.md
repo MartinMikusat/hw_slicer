@@ -162,6 +162,10 @@ The current engine implementation provides:
 - Perimeter bead coverage, uncovered-region, printable-center, over-wide-core,
   and unprinted-remainder masks for thin-wall and gap diagnosis.
 - Conservative half-width rounding recorded in a canonical gap-evidence hash.
+- Deterministic cross-section samples along each uncovered region's dominant
+  axis, with exact one-line, two-line, and unprinted width allocations.
+- Doubled-micrometre center coordinates that preserve half-micrometre positions
+  without floating-point path state.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
