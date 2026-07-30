@@ -166,6 +166,10 @@ The current engine implementation provides:
   axis, with exact one-line, two-line, and unprinted width allocations.
 - Doubled-micrometre center coordinates that preserve half-micrometre positions
   without floating-point path state.
+- Conservative gap and thin-wall path candidates that connect only continuous
+  one-line or two-line sample runs.
+- Explicit issues for ambiguous branches, allocation transitions, unprinted
+  widths, over-wide regions, and runs with insufficient samples.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
