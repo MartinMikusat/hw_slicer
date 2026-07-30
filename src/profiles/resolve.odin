@@ -338,6 +338,9 @@ process_motion_targets_valid :: proc(
 	}
 	for target in roles {
 		if !role_target_valid(target, printer) {return false}
+		if i64(profile.minimum_print_speed) > i64(target.speed) {
+			return false
+		}
 	}
 	return i64(profile.travel.speed) > 0 &&
 	       i64(profile.travel.speed) <= i64(printer.maximum_speed) &&
@@ -346,8 +349,7 @@ process_motion_targets_valid :: proc(
 	       	i64(printer.maximum_acceleration) &&
 	       u32(profile.minimum_layer_time) > 0 &&
 	       profile.minimum_layer_time_policy == .Slowdown_Then_Dwell &&
-	       i64(profile.minimum_print_speed) > 0 &&
-	       i64(profile.minimum_print_speed) <= i64(profile.perimeter.speed)
+	       i64(profile.minimum_print_speed) > 0
 }
 
 process_thermal_targets_valid :: proc(

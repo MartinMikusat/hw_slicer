@@ -216,6 +216,10 @@ The current engine implementation provides:
   pinned fixed-point value of pi and nanometre path lengths.
 - Per-role flow scaling and fixed-point filament length with one carried
   remainder across moves, plus exact volume and rounding evidence.
+- Per-role speed, acceleration, and fan annotations with deterministic layer
+  duration estimates.
+- Exterior-crossing retraction and recovery operations, bounded short-layer
+  slowdown, and residual dwell after the minimum print speed is reached.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact

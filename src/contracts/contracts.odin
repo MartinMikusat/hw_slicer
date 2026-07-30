@@ -107,6 +107,8 @@ Entity_Kind :: enum u8 {
 	Mesh_Issue,
 	Topology_Issue,
 	Provider,
+	Motion,
+	Command,
 }
 
 Issue_Severity :: enum u8 {
