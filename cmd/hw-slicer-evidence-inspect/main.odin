@@ -22,6 +22,12 @@ Evidence_Inspect_Stage_Wire :: struct {
 }
 
 Evidence_Inspect_Decoded_Wire :: struct {
+	layer_schedule_loaded: ^bool `json:"layer_schedule_loaded,omitempty"`,
+	layer_schedule_layers: ^u64  `json:"layer_schedule_layers,omitempty"`,
+	layer_schedule_minimum_z_um: ^i64 `json:"layer_schedule_minimum_z_um,omitempty"`,
+	layer_schedule_maximum_z_um: ^i64 `json:"layer_schedule_maximum_z_um,omitempty"`,
+	layer_schedule_first_plane_z_um: ^i64 `json:"layer_schedule_first_plane_z_um,omitempty"`,
+	layer_schedule_step_um: ^i64 `json:"layer_schedule_step_um,omitempty"`,
 	topology_loaded:       bool,
 	topology_layers:       u64,
 	topology_vertices:     u64,
@@ -171,10 +177,37 @@ main :: proc() {
 	marlin_commands: u64
 	marlin_gcode_bytes: u64
 	marlin_layers: u64
+	layer_schedule_layers: u64
+	layer_schedule_minimum_z_um: i64
+	layer_schedule_maximum_z_um: i64
+	layer_schedule_first_plane_z_um: i64
+	layer_schedule_step_um: i64
 	decoded := Evidence_Inspect_Decoded_Wire{
 		topology_loaded = replay.topology_loaded,
 		regions_loaded = replay.regions_loaded,
 		path_plan_loaded = replay.path_plan_loaded,
+	}
+	if replay.layer_schedule_loaded {
+		layer_schedule_layers =
+			u64(len(replay.layer_schedule.result.layer_z))
+		layer_schedule_minimum_z_um =
+			i64(replay.layer_schedule.result.minimum_z)
+		layer_schedule_maximum_z_um =
+			i64(replay.layer_schedule.result.maximum_z)
+		layer_schedule_first_plane_z_um =
+			i64(replay.layer_schedule.result.first_plane_z)
+		layer_schedule_step_um =
+			i64(replay.layer_schedule.result.layer_step)
+		decoded.layer_schedule_loaded =
+			&replay.layer_schedule_loaded
+		decoded.layer_schedule_layers = &layer_schedule_layers
+		decoded.layer_schedule_minimum_z_um =
+			&layer_schedule_minimum_z_um
+		decoded.layer_schedule_maximum_z_um =
+			&layer_schedule_maximum_z_um
+		decoded.layer_schedule_first_plane_z_um =
+			&layer_schedule_first_plane_z_um
+		decoded.layer_schedule_step_um = &layer_schedule_step_um
 	}
 	if replay.topology_loaded {
 		decoded.topology_layers = u64(len(replay.topology.result.layers))

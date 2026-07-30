@@ -90,6 +90,26 @@ ui_evidence_transition_registers_stage_selection_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+ui_evidence_graph_state_reports_retained_layer_schedule_test :: proc(
+	t: ^testing.T,
+) {
+	replay := evidence.Evidence_Bundle_Replay{
+		layer_schedule_loaded = true,
+	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("schedule-layers", &replay),
+		"LAYER-SCHEDULE GRAPH RETAINED",
+	)
+	replay.layer_schedule_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("schedule-layers", &replay),
+		"MANIFEST RETAINED",
+	)
+}
+
+@(test)
 ui_evidence_graph_state_reports_retained_motion_test :: proc(t: ^testing.T) {
 	replay := evidence.Evidence_Bundle_Replay{
 		path_plan_loaded = true,

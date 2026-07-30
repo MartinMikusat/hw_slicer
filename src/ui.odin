@@ -945,6 +945,10 @@ ui_evidence_graph_state :: proc(
 ) -> string {
 	if replay == nil {return "MANIFEST RETAINED"}
 	switch stage_name {
+	case "schedule-layers":
+		if replay.layer_schedule_loaded {
+			return "LAYER-SCHEDULE GRAPH RETAINED"
+		}
 	case "reconstruct-topology":
 		if replay.topology_loaded {return "TOPOLOGY GRAPH RETAINED"}
 	case "calculate-regions":
