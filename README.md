@@ -54,10 +54,10 @@ or GUI framework.
 The viewer loads the three bundled reference models or an exact binary STL
 selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
 package or published evidence directory in the stage timeline and inspector.
-The inspector retains the topology, region, perimeter, sparse-infill, unified
-feature-source, current unified path-plan, legacy path-plan, extrusion, motion,
-and G-code graphs without the source model. Pointer, Flash, and Accessibility
-input select one stage record.
+The inspector retains the topology, region, exposed-surface, perimeter,
+sparse-infill, unified feature-source, current unified path-plan, legacy
+path-plan, extrusion, motion, and G-code graphs without the source model.
+Pointer, Flash, and Accessibility input select one stage record.
 
 The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
 light and dark themes, Flash navigation, and Accessibility actions. The
@@ -97,6 +97,8 @@ The G0 foundation provides:
 - A versioned debug-evidence manifest with a golden JSON fixture.
 - Valid UTF-8 artifact paths, format tokens, schemas, and destination uniqueness.
 - A preflighted little-endian path-plan artifact with hash-validated replay.
+- A preflighted little-endian exposed-surface artifact with source-independent
+  replay.
 - A preflighted little-endian perimeter artifact with source-independent
   replay.
 - A preflighted little-endian sparse-infill artifact with source-independent
@@ -165,6 +167,8 @@ The current engine implementation provides:
   tolerance, and output-edge links to source paths, edges, and segments.
 - Adjacent-layer Boolean classification of top-exposed and bottom-exposed
   region masks, without assigning profile-dependent skin depth or extrusion.
+- A bounded little-endian exposed-surface artifact that retains each layer,
+  mask, canonical path, point, configuration value, and result hash.
 - Top and bottom skin propagation through physical thickness and minimum layer
   counts, including one disjoint role for simultaneous top and bottom skin.
 - Exact skin-to-surface provenance with target-region clipping and a canonical
