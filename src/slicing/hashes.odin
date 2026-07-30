@@ -86,7 +86,7 @@ cpu_intersection_result_hash :: proc(
 	}
 	expected_segment_offset: u64
 	expected_planar_offset: u64
-	for layer in result.layers {
+	for layer, layer_index in result.layers {
 		if layer.segment_offset != expected_segment_offset ||
 		   layer.planar_offset != expected_planar_offset ||
 		   u64(layer.segment_count) >
@@ -97,28 +97,75 @@ cpu_intersection_result_hash :: proc(
 		}
 		expected_segment_offset += u64(layer.segment_count)
 		expected_planar_offset += u64(layer.planar_count)
+		previous_triangle_index: u32
+		for local_index in 0..<int(layer.segment_count) {
+			segment_index := int(layer.segment_offset)+local_index
+			triangle_index :=
+				result.segments.triangle_indices[segment_index]
+			wrong_layer :=
+				result.segments.layer_indices[segment_index] !=
+				u32(layer_index)
+			out_of_order :=
+				local_index > 0 &&
+				triangle_index <= previous_triangle_index
+			if wrong_layer || out_of_order {return {}, false}
+			previous_triangle_index = triangle_index
+		}
+		previous_triangle_index = 0
+		for local_index in 0..<int(layer.planar_count) {
+			planar_index := int(layer.planar_offset)+local_index
+			triangle_index :=
+				result.planar_candidates[planar_index].triangle_index
+			wrong_layer :=
+				result.planar_candidates[planar_index].layer_index !=
+				u32(layer_index)
+			out_of_order :=
+				local_index > 0 &&
+				triangle_index <= previous_triangle_index
+			if wrong_layer || out_of_order {return {}, false}
+			previous_triangle_index = triangle_index
+		}
 	}
 	if expected_segment_offset != u64(segment_count) ||
 	   expected_planar_offset != u64(planar_count) {
 		return {}, false
 	}
 	for segment_index in 0..<segment_count {
+		edge_a := result.segments.edge_a[segment_index]
+		edge_b := result.segments.edge_b[segment_index]
+		x0 := result.segments.x0[segment_index]
+		y0 := result.segments.y0[segment_index]
+		x1 := result.segments.x1[segment_index]
+		y1 := result.segments.y1[segment_index]
 		if result.segments.segment_ids[segment_index] ==
 		   	contracts.INVALID_STABLE_ID ||
 		   result.segments.triangle_ids[segment_index] ==
 		   	contracts.INVALID_STABLE_ID ||
-		   result.segments.edge_a[segment_index] == .Invalid ||
-		   result.segments.edge_b[segment_index] == .Invalid ||
-		   !slicing_hash_f64_valid(result.segments.x0[segment_index]) ||
-		   !slicing_hash_f64_valid(result.segments.y0[segment_index]) ||
-		   !slicing_hash_f64_valid(result.segments.x1[segment_index]) ||
-		   !slicing_hash_f64_valid(result.segments.y1[segment_index]) {
+		   !slicing_hash_triangle_edge_valid(edge_a) ||
+		   !slicing_hash_triangle_edge_valid(edge_b) ||
+		   edge_a == edge_b ||
+		   !slicing_hash_f64_valid(x0) ||
+		   !slicing_hash_f64_valid(y0) ||
+		   !slicing_hash_f64_valid(x1) ||
+		   !slicing_hash_f64_valid(y1) ||
+		   x1 < x0 || x1 == x0 && y1 <= y0 {
 			return {}, false
 		}
 	}
 	for planar in result.planar_candidates {
-		if planar.triangle_id == contracts.INVALID_STABLE_ID ||
-		   planar.kind == .Invalid {
+		if planar.triangle_id == contracts.INVALID_STABLE_ID {
+			return {}, false
+		}
+		switch planar.kind {
+		case .Quantized_Face, .Exact_Face:
+			if planar.source_edge != .Invalid {return {}, false}
+		case .Exact_Edge:
+			if !slicing_hash_triangle_edge_valid(planar.source_edge) {
+				return {}, false
+			}
+		case .Invalid:
+			return {}, false
+		case:
 			return {}, false
 		}
 	}
@@ -198,6 +245,15 @@ cpu_intersection_result_hash :: proc(
 		contracts.canonical_hash_append_u8(&hash, u8(planar.source_edge))
 	}
 	return contracts.canonical_hash_final(&hash), true
+}
+
+slicing_hash_triangle_edge_valid :: proc(edge: Triangle_Edge) -> bool {
+	switch edge {
+	case .AB, .BC, .CA:
+		return true
+	case .Invalid:
+	}
+	return false
 }
 
 snapped_segment_result_hash :: proc(

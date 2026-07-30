@@ -166,6 +166,44 @@ intersection_and_snapped_segment_hashes_are_stable_test :: proc(
 		expected_intersection_hash,
 	)
 
+	intersections.segments.layer_indices[0] = 1
+	_, mutated_ok :=
+		cpu_intersection_result_hash(span_hash, intersections)
+	testing.expect(t, !mutated_ok)
+	intersections.segments.layer_indices[0] = 0
+
+	original_edge_a := intersections.segments.edge_a[0]
+	intersections.segments.edge_a[0] = Triangle_Edge(255)
+	_, mutated_ok =
+		cpu_intersection_result_hash(span_hash, intersections)
+	testing.expect(t, !mutated_ok)
+	intersections.segments.edge_a[0] = original_edge_a
+
+	original_y0 := intersections.segments.y0[0]
+	intersections.segments.y0[0] = 2
+	_, mutated_ok =
+		cpu_intersection_result_hash(span_hash, intersections)
+	testing.expect(t, !mutated_ok)
+	intersections.segments.y0[0] = original_y0
+
+	original_source_edge :=
+		intersections.planar_candidates[1].source_edge
+	intersections.planar_candidates[1].source_edge = .AB
+	_, mutated_ok =
+		cpu_intersection_result_hash(span_hash, intersections)
+	testing.expect(t, !mutated_ok)
+	intersections.planar_candidates[1].source_edge =
+		original_source_edge
+
+	original_planar_kind := intersections.planar_candidates[0].kind
+	intersections.planar_candidates[0].kind =
+		Planar_Candidate_Kind(255)
+	_, mutated_ok =
+		cpu_intersection_result_hash(span_hash, intersections)
+	testing.expect(t, !mutated_ok)
+	intersections.planar_candidates[0].kind =
+		original_planar_kind
+
 	snapped, snap_error := snapped_segments_build(intersections)
 	defer snapped_segments_destroy(&snapped)
 	testing.expect_value(t, snap_error, Snapped_Segment_Error.None)
