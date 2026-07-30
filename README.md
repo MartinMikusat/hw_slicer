@@ -54,11 +54,11 @@ or GUI framework.
 The viewer loads the three bundled reference models or an exact binary STL
 selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
 package or published evidence directory in the stage timeline and inspector.
-The inspector retains the layer schedule, triangle layer-span index, topology,
-region, exposed-surface, perimeter, sparse-infill, unified feature-source,
-current unified path-plan, legacy path-plan, extrusion, motion, and G-code
-graphs without the source model. Pointer, Flash, and Accessibility input select
-one stage record.
+The inspector retains the layer schedule, triangle layer-span index, CPU
+intersection graph, topology, region, exposed-surface, perimeter, sparse-infill,
+unified feature-source, current unified path-plan, legacy path-plan, extrusion,
+motion, and G-code graphs without the source model. Pointer, Flash, and
+Accessibility input select one stage record.
 
 The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
 light and dark themes, Flash navigation, and Accessibility actions. The
@@ -100,6 +100,8 @@ The G0 foundation provides:
 - A preflighted little-endian layer-schedule artifact with source-independent
   replay.
 - A preflighted little-endian layer-span artifact with source-independent
+  replay.
+- A preflighted little-endian CPU-intersection artifact with source-independent
   replay.
 - A preflighted little-endian path-plan artifact with hash-validated replay.
 - A preflighted little-endian exposed-surface artifact with source-independent
@@ -164,6 +166,8 @@ The current engine implementation provides:
   layer descriptor, triangle-layer pair, stable ID, and dependency hash.
 - Filtered plane classification with an exact scalar fallback.
 - Two-pass CPU intersections with separate planar and degeneracy results.
+- A bounded little-endian CPU-intersection artifact that retains each layer,
+  raw segment, planar candidate, diagnostic counter, and dependency hash.
 - Half-open ownership resolution for manifold coplanar edge groups.
 - Canonical micrometre endpoint snapping and deterministic loop reconstruction.
 - Strict loop containment with outer, hole, and nested-island classification.
@@ -419,9 +423,9 @@ Inspect all retained bundle records from either container:
 ```
 
 The inspector validates each descriptor once, retains the stage manifests, and
-decodes each supported graph, including declared layer schedules and span
-indexes. It emits the retained schedule bounds and span counters as one JSON
-record without reading the source model.
+decodes each supported graph, including declared layer schedules, span indexes,
+and CPU intersections. It emits retained schedule bounds, span counters, and
+intersection counters as one JSON record without reading the source model.
 
 Replay topology and rebuild regions without the source model:
 
