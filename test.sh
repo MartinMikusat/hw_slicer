@@ -13,6 +13,7 @@ ODIN="$ROOT/scripts/odin.sh"
   -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/debug/libhw_clipper2.a" \
   -extra-linker-flags:"-lc++ -framework Foundation -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics"
 "$ODIN" test "$ROOT/src/contracts" -debug -o:none
+"$ODIN" test "$ROOT/src/profiles" -debug -o:none
 "$ODIN" test "$ROOT/src/formats" -debug -o:none
 "$ODIN" test "$ROOT/src/geometry" -debug -o:none
 "$ROOT/scripts/clipper2-test.sh" debug

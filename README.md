@@ -15,7 +15,9 @@ Models used:
 The native mesh viewer and G0 foundation milestone are implemented. G1 reaches
 deterministic CPU loop reconstruction. G2 includes strict region
 classification, a pinned Clipper2 provider, exposed-surface classification,
-perimeter and rectilinear infill generation, and planar path ordering.
+perimeter and rectilinear infill generation, and planar path ordering. The
+first profile contract resolves selected G2 and G3 policies against explicit
+printer and material limits before geometry execution.
 
 The [technical implementation plan](PLAN.md) defines the subsystem contracts,
 CPU and Metal execution paths, visual-debug protocol, delivery gates,
@@ -160,6 +162,18 @@ The current engine implementation provides:
   starts, deterministic infill direction, and explicit travel moves.
 - Disjoint feature-ordinal ranges for perimeters, exposed surfaces, and infill.
 - Versioned golden hashes for each implemented stage boundary.
+
+The profile resolver provides:
+
+- Separate versioned printer, material, process, and Marlin dialect documents.
+- Required canonical units for every physical and process field.
+- Combined physical thickness and minimum layer-count skin targets.
+- The selected overlap, thin-wall, gap, bridge, support, extrusion, and motion
+  policies.
+- Explicit process-target validation against printer and material limits.
+- Deterministic first-layer override resolution and thin-wall width conversion.
+- Rejection before geometry execution when a document or resolved target is
+  invalid.
 
 The main test command runs these package tests with the viewer tests:
 
@@ -454,9 +468,7 @@ attribution and license checksums.
 Execute the staged plan through the release gate. Preserve the versioned stage
 contracts and debug-evidence protocol when an implementation is replaced.
 
-Define the policy for skin depth, overlap, thin walls, gaps, bridges, and
-supports before converting the exposed masks into extrusion features. Define
-printer, material, process, and G-code dialect profiles before calculating
-extrusion or emitting machine commands. Use the
-[process-profile decision contract](../notes/hw-slicer-process-profile-decisions.md)
-to record these choices.
+Implement the selected skin propagation, thin-wall, gap, bridge, support,
+extrusion, and G-code stages. Preserve the profile provenance and invalidation
+rules from the
+[process-profile decision contract](../notes/hw-slicer-process-profile-decisions.md).

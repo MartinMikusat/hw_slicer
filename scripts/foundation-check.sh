@@ -10,6 +10,7 @@ done
 
 "$ROOT/test.sh"
 "$ODIN" test "$ROOT/src/contracts" -o:speed
+"$ODIN" test "$ROOT/src/profiles" -o:speed
 "$ODIN" test "$ROOT/src/formats" -o:speed
 "$ODIN" test "$ROOT/src/geometry" -o:speed
 "$ODIN" test "$ROOT/src/slicing" -o:speed
