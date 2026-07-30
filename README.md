@@ -54,10 +54,10 @@ or GUI framework.
 The viewer loads the three bundled reference models or an exact binary STL
 selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
 package or published evidence directory in the stage timeline and inspector.
-The inspector retains the topology, region, unified feature-source, current
-unified path-plan, legacy path-plan, extrusion, motion, and G-code graphs
-without the source model. Pointer, Flash, and Accessibility input select one
-stage record.
+The inspector retains the topology, region, sparse-infill, unified
+feature-source, current unified path-plan, legacy path-plan, extrusion, motion,
+and G-code graphs without the source model. Pointer, Flash, and Accessibility
+input select one stage record.
 
 The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
 light and dark themes, Flash navigation, and Accessibility actions. The
@@ -97,6 +97,8 @@ The G0 foundation provides:
 - A versioned debug-evidence manifest with a golden JSON fixture.
 - Valid UTF-8 artifact paths, format tokens, schemas, and destination uniqueness.
 - A preflighted little-endian path-plan artifact with hash-validated replay.
+- A preflighted little-endian sparse-infill artifact with source-independent
+  replay.
 - A preflighted little-endian unified feature-source artifact with
   source-independent replay.
 - A preflighted little-endian unified path-plan artifact with
@@ -253,6 +255,8 @@ The current engine implementation provides:
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
   rational intersections and explicit micrometre rounding evidence.
+- A bounded little-endian sparse-infill artifact that retains each layer,
+  segment, exact rational boundary hit, configuration value, and result hash.
 - Layer and region path ordering with inner perimeters first, canonical nearest
   starts, deterministic infill direction, and explicit travel moves.
 - Disjoint feature-ordinal ranges for perimeters, exposed surfaces, and infill.
