@@ -387,6 +387,7 @@ process_travel_targets_valid :: proc(
 	printer: Printer_Profile,
 ) -> bool {
 	return profile.seam == .Deterministic_Cost &&
+	       profile.seam_visibility == .Rear_Maximum_Y &&
 	       profile.retraction == .Distance_And_Exterior_Crossing &&
 	       i64(profile.retraction_distance) >= 0 &&
 	       i64(profile.minimum_retraction_travel) > 0 &&

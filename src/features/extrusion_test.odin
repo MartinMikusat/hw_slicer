@@ -184,7 +184,7 @@ extrusion_test_plan :: proc(
 	result, error := unified_path_plan_build(
 		[]contracts.Stable_ID{10},
 		sources,
-		{start = {0, 0}},
+		unified_path_plan_test_config(),
 	)
 	for &source in sources {
 		delete(source.points)

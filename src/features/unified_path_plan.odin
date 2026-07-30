@@ -31,7 +31,9 @@ Unified_Path_Source :: struct {
 }
 
 Unified_Path_Plan_Config :: struct {
-	start: polygon.Polygon_Point,
+	start:           polygon.Polygon_Point,
+	seam:            profiles.Seam_Policy,
+	seam_visibility: profiles.Seam_Visibility_Policy,
 }
 
 Unified_Planned_Layer :: struct {
@@ -108,6 +110,13 @@ Unified_Path_Order :: struct {
 	stable_id:         contracts.Stable_ID,
 }
 
+Unified_Seam_Score :: struct {
+	turn_score:      u32,
+	rear_coordinate: i64,
+	travel_distance: u128,
+	point_index:     u32,
+}
+
 unified_path_plan_build :: proc(
 	layer_ids: []contracts.Stable_ID,
 	sources: []Unified_Path_Source,
@@ -118,7 +127,9 @@ unified_path_plan_build :: proc(
 	if geometry.point_2_validate({
 		config.start.x,
 		config.start.y,
-	}) != .None {
+	}) != .None ||
+	   config.seam != .Deterministic_Cost ||
+	   config.seam_visibility != .Rear_Maximum_Y {
 		return {}, .Invalid_Config
 	}
 	if u64(len(layer_ids)) > u64(max(u32)) ||
@@ -267,7 +278,10 @@ unified_path_plan_emit_source :: proc(
 	start_index := 0
 	reversed := false
 	if source.closed {
-		start_index = path_plan_nearest_point(source.points, current^)
+		start_index = unified_path_plan_seam_index(
+			source.points,
+			current^,
+		)
 	} else if path_plan_distance_2(
 		current^,
 		source.points[len(source.points)-1],
@@ -355,6 +369,72 @@ unified_path_plan_emit_source :: proc(
 	}
 	path_write^ += 1
 	return true
+}
+
+unified_path_plan_seam_index :: proc(
+	points: []polygon.Polygon_Point,
+	current: polygon.Polygon_Point,
+) -> int {
+	best_index := 0
+	best := unified_path_plan_seam_score(points, 0, current)
+	for point_index in 1..<len(points) {
+		candidate :=
+			unified_path_plan_seam_score(points, point_index, current)
+		if unified_path_plan_seam_score_less(candidate, best) {
+			best_index = point_index
+			best = candidate
+		}
+	}
+	return best_index
+}
+
+unified_path_plan_seam_score :: proc(
+	points: []polygon.Polygon_Point,
+	point_index: int,
+	current: polygon.Polygon_Point,
+) -> Unified_Seam_Score {
+	previous := points[(point_index+len(points)-1)%len(points)]
+	point := points[point_index]
+	next := points[(point_index+1)%len(points)]
+	incoming_x := i128(i64(point.x))-i128(i64(previous.x))
+	incoming_y := i128(i64(point.y))-i128(i64(previous.y))
+	outgoing_x := i128(i64(next.x))-i128(i64(point.x))
+	outgoing_y := i128(i64(next.y))-i128(i64(point.y))
+	cross :=
+		incoming_x*outgoing_y-incoming_y*outgoing_x
+	if cross < 0 {cross = -cross}
+	dot :=
+		incoming_x*outgoing_x+incoming_y*outgoing_y
+	if dot < 0 {dot = -dot}
+	turn_denominator := u128(cross)+u128(dot)
+	turn_score: u32
+	if turn_denominator > 0 {
+		turn_score = u32(
+			(u128(cross)*u128(profiles.RATIO_SCALE))/
+			turn_denominator,
+		)
+	}
+	return {
+		turn_score = turn_score,
+		rear_coordinate = i64(point.y),
+		travel_distance = path_plan_distance_2(current, point),
+		point_index = u32(point_index),
+	}
+}
+
+unified_path_plan_seam_score_less :: proc(
+	candidate, current: Unified_Seam_Score,
+) -> bool {
+	if candidate.turn_score != current.turn_score {
+		return candidate.turn_score > current.turn_score
+	}
+	if candidate.rear_coordinate != current.rear_coordinate {
+		return candidate.rear_coordinate > current.rear_coordinate
+	}
+	if candidate.travel_distance != current.travel_distance {
+		return candidate.travel_distance < current.travel_distance
+	}
+	return candidate.point_index < current.point_index
 }
 
 unified_path_plan_emit_travel :: proc(

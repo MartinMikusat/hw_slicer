@@ -348,6 +348,7 @@ profile_test_documents :: proc() -> (
 		minimum_layer_time_policy = .Slowdown_Then_Dwell,
 		minimum_print_speed = 10_000,
 		seam = .Deterministic_Cost,
+		seam_visibility = .Rear_Maximum_Y,
 		retraction = .Distance_And_Exterior_Crossing,
 		retraction_distance = 800,
 		minimum_retraction_travel = 1_500,

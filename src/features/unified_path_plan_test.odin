@@ -16,14 +16,14 @@ unified_path_plan_orders_roles_and_preserves_variable_widths_test :: proc(
 	result, error := unified_path_plan_build(
 		layer_ids,
 		sources,
-		{start = {0, 0}},
+		unified_path_plan_test_config(),
 	)
 	defer unified_path_plan_result_destroy(&result)
 	testing.expect_value(t, error, Unified_Path_Plan_Error.None)
 	testing.expect_value(t, len(result.paths), 6)
 	testing.expect_value(t, result.layers[0].path_count, u32(6))
 	testing.expect_value(t, result.extrude_move_count, u64(10))
-	testing.expect_value(t, result.travel_move_count, u64(5))
+	testing.expect_value(t, result.travel_move_count, u64(6))
 	expected_roles := []profiles.Printable_Role{
 		.Perimeter,
 		.Bridge,
@@ -111,12 +111,37 @@ unified_path_plan_uses_source_order_within_one_priority_test :: proc(
 	result, error := unified_path_plan_build(
 		layer_ids,
 		sources,
-		{start = {0, 0}},
+		unified_path_plan_test_config(),
 	)
 	defer unified_path_plan_result_destroy(&result)
 	testing.expect_value(t, error, Unified_Path_Plan_Error.None)
 	testing.expect_value(t, result.paths[0].source_id, contracts.Stable_ID(2))
 	testing.expect_value(t, result.paths[1].source_id, contracts.Stable_ID(1))
+}
+
+@(test)
+unified_path_plan_scores_corner_then_rear_then_travel_for_seams_test :: proc(
+	t: ^testing.T,
+) {
+	layer_ids := []contracts.Stable_ID{10}
+	source := unified_path_plan_test_perimeter()
+	defer {
+		delete(source.points)
+		delete(source.line_widths)
+	}
+	result, error := unified_path_plan_build(
+		layer_ids,
+		[]Unified_Path_Source{source},
+		unified_path_plan_test_config(),
+	)
+	defer unified_path_plan_result_destroy(&result)
+	testing.expect_value(t, error, Unified_Path_Plan_Error.None)
+	testing.expect_value(t, result.paths[0].start_index, u32(3))
+	testing.expect_value(
+		t,
+		result.moves[0].point_b,
+		polygon.Polygon_Point{0, 50},
+	)
 }
 
 @(test)
@@ -143,7 +168,7 @@ unified_path_plan_rejects_duplicate_source_ids_test :: proc(t: ^testing.T) {
 	result, error := unified_path_plan_build(
 		layer_ids,
 		sources,
-		{start = {0, 0}},
+		unified_path_plan_test_config(),
 	)
 	defer unified_path_plan_result_destroy(&result)
 	testing.expect_value(t, error, Unified_Path_Plan_Error.Invalid_Input)
@@ -159,7 +184,7 @@ unified_path_plan_hash_rejects_mutated_move_width_test :: proc(
 	result, error := unified_path_plan_build(
 		layer_ids,
 		sources,
-		{start = {0, 0}},
+		unified_path_plan_test_config(),
 	)
 	defer unified_path_plan_result_destroy(&result)
 	testing.expect_value(t, error, Unified_Path_Plan_Error.None)
@@ -171,10 +196,10 @@ unified_path_plan_hash_rejects_mutated_move_width_test :: proc(
 	)
 	testing.expect(t, hash_ok)
 	expected_hash := contracts.Content_Hash{
-		0x4d, 0x0d, 0x1b, 0xdc, 0x5d, 0xc6, 0xf3, 0x18,
-		0x84, 0xce, 0x63, 0x26, 0xf6, 0xa1, 0xf0, 0x28,
-		0xe1, 0x59, 0x87, 0x49, 0x0f, 0x3b, 0x12, 0xfd,
-		0xbc, 0x01, 0x16, 0xfa, 0x27, 0x5e, 0x50, 0xde,
+		0x78, 0x4b, 0xd6, 0x1f, 0x4a, 0x95, 0x20, 0x2c,
+		0xaf, 0xe2, 0x82, 0x65, 0xc3, 0xe3, 0x0a, 0x82,
+		0x90, 0x29, 0x27, 0xb3, 0x40, 0xbc, 0x34, 0x94,
+		0x53, 0xc6, 0xa3, 0x33, 0x42, 0xf8, 0xce, 0xb2,
 	}
 	testing.expect_value(t, hash, expected_hash)
 	for &move in result.moves {
@@ -315,4 +340,12 @@ unified_path_plan_test_sources_destroy :: proc(
 		delete(source.line_widths)
 	}
 	delete(sources)
+}
+
+unified_path_plan_test_config :: proc() -> Unified_Path_Plan_Config {
+	return {
+		start = {0, 0},
+		seam = .Deterministic_Cost,
+		seam_visibility = .Rear_Maximum_Y,
+	}
 }

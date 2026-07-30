@@ -561,6 +561,7 @@ append_process_path_targets :: proc(
 		i64(profile.minimum_print_speed),
 	)
 	contracts.canonical_hash_append_u8(hash, u8(profile.seam))
+	contracts.canonical_hash_append_u8(hash, u8(profile.seam_visibility))
 	contracts.canonical_hash_append_u8(hash, u8(profile.retraction))
 	contracts.canonical_hash_append_i64(
 		hash,

@@ -89,6 +89,11 @@ Seam_Policy :: enum u8 {
 	Deterministic_Cost,
 }
 
+Seam_Visibility_Policy :: enum u8 {
+	Invalid,
+	Rear_Maximum_Y,
+}
+
 Retraction_Policy :: enum u8 {
 	Invalid,
 	Distance_And_Exterior_Crossing,
@@ -274,6 +279,7 @@ Process_Profile :: struct {
 	minimum_print_speed:     Speed_Um_Per_Second,
 
 	seam:                    Seam_Policy,
+	seam_visibility:         Seam_Visibility_Policy,
 	retraction:              Retraction_Policy,
 	retraction_distance:     contracts.Micrometres,
 	minimum_retraction_travel: contracts.Micrometres,

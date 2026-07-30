@@ -63,7 +63,7 @@ unified_path_sources_adapt_all_generated_path_stages_test :: proc(
 	plan, plan_error := unified_path_plan_build(
 		layer_ids,
 		result.sources,
-		{start = {0, 0}},
+		unified_path_plan_test_config(),
 	)
 	defer unified_path_plan_result_destroy(&plan)
 	testing.expect_value(t, plan_error, Unified_Path_Plan_Error.None)

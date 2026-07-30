@@ -208,8 +208,8 @@ The current engine implementation provides:
   collapsed-mask counts, and canonical hashes.
 - A unified role-ordered path plan for perimeter, bridge, gap, skin, sparse
   infill, and support sources.
-- Deterministic open-path reversal, closed-path start selection, per-endpoint
-  line widths, explicit travel moves, and canonical plan hashes.
+- Deterministic open-path reversal, corner-first rear-visible seam selection,
+  per-endpoint line widths, explicit travel moves, and canonical plan hashes.
 - Canonical adapters from every generated path result into the unified source
   layout, including inner-first perimeter ordering and variable gap widths.
 - Rounded-bead extrusion volume from endpoint widths and layer height, using a

@@ -2,7 +2,7 @@ package features
 
 import contracts "../contracts"
 
-SCHEMA_VERSION_UNIFIED_PATH_PLAN_HASH :: u32(1)
+SCHEMA_VERSION_UNIFIED_PATH_PLAN_HASH :: u32(2)
 
 unified_path_plan_result_hash :: proc(
 	source_paths_hash: contracts.Content_Hash,
@@ -59,6 +59,11 @@ unified_path_plan_result_hash :: proc(
 	contracts.canonical_hash_append_i64(
 		&hash,
 		i64(result.config.start.y),
+	)
+	contracts.canonical_hash_append_u8(&hash, u8(result.config.seam))
+	contracts.canonical_hash_append_u8(
+		&hash,
+		u8(result.config.seam_visibility),
 	)
 	contracts.canonical_hash_append_u64(
 		&hash,
