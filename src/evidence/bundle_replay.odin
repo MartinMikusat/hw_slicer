@@ -4,6 +4,7 @@ import "core:os"
 import "core:strings"
 import "core:sys/posix"
 
+import features "../features"
 import formats "../formats"
 import gcode "../gcode"
 
@@ -14,10 +15,12 @@ Evidence_Bundle_Replay :: struct {
 	topology:         Topology_Artifact,
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
+	motion_plan:      features.Motion_Plan_Artifact,
 	marlin:           gcode.Marlin_Artifact,
 	topology_loaded:  bool,
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
+	motion_plan_loaded: bool,
 	marlin_loaded:    bool,
 }
 
@@ -55,6 +58,9 @@ evidence_bundle_replay_destroy :: proc(
 	}
 	if replay.path_plan_loaded {
 		path_plan_artifact_destroy(&replay.path_plan, allocator)
+	}
+	if replay.motion_plan_loaded {
+		features.motion_plan_artifact_destroy(&replay.motion_plan, allocator)
 	}
 	if replay.marlin_loaded {
 		gcode.marlin_artifact_destroy(&replay.marlin, allocator)
@@ -281,42 +287,51 @@ evidence_bundle_archive_replay :: proc(
 			return {}, .Invalid_Content
 		}
 		replay.stage_manifests[stage_index] = manifest
-		primitive_format, supported :=
-			evidence_bundle_replay_stage_format(stage.stage.name)
-		if !supported {continue}
-		primitive, primitive_found :=
-			evidence_bundle_manifest_primitive_find(
+		supported_primitive_count := 0
+		for primitive in manifest.primitives {
+			if !evidence_bundle_replay_primitive_supported(
+				stage.stage.name,
+				primitive.format,
+			) {
+				continue
+			}
+			supported_primitive_count += 1
+			artifact_index, artifact_found :=
+				evidence_bundle_archive_entry_find(
+					archive,
+					primitive.path,
+				)
+			if !artifact_found {return {}, .Missing_Content}
+			artifact_bytes, artifact_extract_error :=
+				formats.bounded_zip_extract(
+					archive,
+					artifact_index,
+					allocator,
+				)
+			if artifact_extract_error != .None {
+				if artifact_extract_error == .Allocation_Failed {
+					return {}, .Allocation_Failed
+				}
+				return {}, .Zip_Read_Failed
+			}
+			if evidence_artifact_verify(primitive, artifact_bytes) != .None {
+				delete(artifact_bytes, allocator)
+				return {}, .Invalid_Content
+			}
+			stage_error := evidence_bundle_replay_stage_decode(
+				&replay,
 				manifest,
-				primitive_format,
-			)
-		if !primitive_found {return {}, .Invalid_Content}
-		artifact_index, artifact_found :=
-			evidence_bundle_archive_entry_find(archive, primitive.path)
-		if !artifact_found {return {}, .Missing_Content}
-		artifact_bytes, artifact_extract_error :=
-			formats.bounded_zip_extract(
-				archive,
-				artifact_index,
+				primitive,
+				artifact_bytes,
 				allocator,
 			)
-		if artifact_extract_error != .None {
-			if artifact_extract_error == .Allocation_Failed {
-				return {}, .Allocation_Failed
-			}
-			return {}, .Zip_Read_Failed
-		}
-		if evidence_artifact_verify(primitive, artifact_bytes) != .None {
 			delete(artifact_bytes, allocator)
+			if stage_error != .None {return {}, stage_error}
+		}
+		if supported_primitive_count == 0 &&
+		   evidence_bundle_replay_stage_supported(stage.stage.name) {
 			return {}, .Invalid_Content
 		}
-		stage_error := evidence_bundle_replay_stage_decode(
-			&replay,
-			manifest,
-			artifact_bytes,
-			allocator,
-		)
-		delete(artifact_bytes, allocator)
-		if stage_error != .None {return {}, stage_error}
 	}
 	complete = true
 	return replay, .None
@@ -462,41 +477,47 @@ evidence_bundle_directory_replay :: proc(
 			return {}, .Invalid_Content
 		}
 		replay.stage_manifests[stage_index] = manifest
-		primitive_format, supported :=
-			evidence_bundle_replay_stage_format(stage.stage.name)
-		if !supported {continue}
-		primitive, primitive_found :=
-			evidence_bundle_manifest_primitive_find(
+		supported_primitive_count := 0
+		for primitive in manifest.primitives {
+			if !evidence_bundle_replay_primitive_supported(
+				stage.stage.name,
+				primitive.format,
+			) {
+				continue
+			}
+			supported_primitive_count += 1
+			artifact_bytes, artifact_read_error :=
+				evidence_bundle_directory_read_file(
+					root_fd,
+					primitive.path,
+					primitive.byte_count,
+					primitive.byte_count,
+					allocator,
+				)
+			if artifact_read_error != .None {
+				return {}, artifact_read_error
+			}
+			if evidence_artifact_verify(primitive, artifact_bytes) != .None {
+				delete(artifact_bytes, allocator)
+				return {}, .Invalid_Content
+			}
+			stage_error := evidence_bundle_replay_stage_decode(
+				&replay,
 				manifest,
-				primitive_format,
-			)
-		if !primitive_found {return {}, .Invalid_Content}
-		artifact_bytes, artifact_read_error :=
-			evidence_bundle_directory_read_file(
-				root_fd,
-				primitive.path,
-				primitive.byte_count,
-				primitive.byte_count,
+				primitive,
+				artifact_bytes,
 				allocator,
 			)
-		if artifact_read_error != .None {
-			return {}, artifact_read_error
-		}
-		if evidence_artifact_verify(primitive, artifact_bytes) != .None {
 			delete(artifact_bytes, allocator)
-			return {}, .Invalid_Content
-		}
-		stage_error := evidence_bundle_replay_stage_decode(
-			&replay,
-			manifest,
-			artifact_bytes,
-			allocator,
-		)
-		delete(artifact_bytes, allocator)
-		if stage_error != .None {
-			if stage_error == .Allocation_Failed {
-				return {}, .Allocation_Failed
+			if stage_error != .None {
+				if stage_error == .Allocation_Failed {
+					return {}, .Allocation_Failed
+				}
+				return {}, .Invalid_Content
 			}
+		}
+		if supported_primitive_count == 0 &&
+		   evidence_bundle_replay_stage_supported(stage.stage.name) {
 			return {}, .Invalid_Content
 		}
 	}
@@ -532,37 +553,56 @@ evidence_bundle_directory_replay :: proc(
 	return replay, .None
 }
 
-evidence_bundle_replay_stage_format :: proc(
-	stage_name: string,
-) -> (string, bool) {
+evidence_bundle_replay_stage_supported :: proc(stage_name: string) -> bool {
 	switch stage_name {
 	case "reconstruct-topology":
-		return TOPOLOGY_ARTIFACT_FORMAT, true
+		return true
 	case "calculate-regions":
-		return REGION_ARTIFACT_FORMAT, true
+		return true
 	case "plan-paths":
-		return PATH_PLAN_ARTIFACT_FORMAT, true
+		return true
 	case "emit-gcode":
-		return gcode.MARLIN_ARTIFACT_FORMAT, true
+		return true
 	case:
-		return "", false
+		return false
+	}
+}
+
+evidence_bundle_replay_primitive_supported :: proc(
+	stage_name: string,
+	format: string,
+) -> bool {
+	switch stage_name {
+	case "reconstruct-topology":
+		return format == TOPOLOGY_ARTIFACT_FORMAT
+	case "calculate-regions":
+		return format == REGION_ARTIFACT_FORMAT
+	case "plan-paths":
+		return format == PATH_PLAN_ARTIFACT_FORMAT ||
+			format == features.MOTION_PLAN_ARTIFACT_FORMAT
+	case "emit-gcode":
+		return format == gcode.MARLIN_ARTIFACT_FORMAT
+	case:
+		return false
 	}
 }
 
 evidence_bundle_replay_stage_decode :: proc(
 	replay: ^Evidence_Bundle_Replay,
 	manifest: Evidence_Manifest,
+	primitive: Evidence_Artifact,
 	artifact_bytes: []u8,
 	allocator := context.allocator,
 ) -> Evidence_Bundle_Package_Error {
+	if !evidence_bundle_replay_primitive_supported(
+		manifest.stage.name,
+		primitive.format,
+	) {
+		return .Invalid_Content
+	}
 	switch manifest.stage.name {
 	case "reconstruct-topology":
 		if replay.topology_loaded {return .Invalid_Content}
-		primitive, primitive_ok := evidence_bundle_manifest_primitive_find(
-			manifest,
-			TOPOLOGY_ARTIFACT_FORMAT,
-		)
-		if !primitive_ok {return .Invalid_Content}
 		expectations, preflight_error := topology_manifest_preflight(
 			manifest,
 			primitive.path,
@@ -593,11 +633,6 @@ evidence_bundle_replay_stage_decode :: proc(
 		if replay.regions_loaded || !replay.topology_loaded {
 			return .Invalid_Content
 		}
-		primitive, primitive_ok := evidence_bundle_manifest_primitive_find(
-			manifest,
-			REGION_ARTIFACT_FORMAT,
-		)
-		if !primitive_ok {return .Invalid_Content}
 		expectations, preflight_error := region_manifest_preflight(
 			manifest,
 			primitive.path,
@@ -624,45 +659,70 @@ evidence_bundle_replay_stage_decode :: proc(
 		replay.regions = artifact
 		replay.regions_loaded = true
 	case "plan-paths":
-		if replay.path_plan_loaded {return .Invalid_Content}
-		primitive, primitive_ok := evidence_bundle_manifest_primitive_find(
-			manifest,
-			PATH_PLAN_ARTIFACT_FORMAT,
-		)
-		if !primitive_ok {return .Invalid_Content}
-		expectations, preflight_error := path_plan_manifest_preflight(
-			manifest,
-			primitive.path,
-			artifact_bytes,
-		)
-		if preflight_error != .None {return .Invalid_Content}
-		artifact, decode_error := path_plan_artifact_decode(
-			artifact_bytes,
-			DEFAULT_PATH_PLAN_ARTIFACT_LIMITS,
-			allocator,
-		)
-		if decode_error != .None {
-			if decode_error == .Allocation_Failed {
-				return .Allocation_Failed
+		switch primitive.format {
+		case PATH_PLAN_ARTIFACT_FORMAT:
+			if replay.path_plan_loaded {return .Invalid_Content}
+			expectations, preflight_error := path_plan_manifest_preflight(
+				manifest,
+				primitive.path,
+				artifact_bytes,
+			)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error := path_plan_artifact_decode(
+				artifact_bytes,
+				DEFAULT_PATH_PLAN_ARTIFACT_LIMITS,
+				allocator,
+			)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
 			}
-			return .Invalid_Content
+			if path_plan_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				path_plan_artifact_destroy(&artifact, allocator)
+				return .Invalid_Content
+			}
+			replay.path_plan = artifact
+			replay.path_plan_loaded = true
+		case features.MOTION_PLAN_ARTIFACT_FORMAT:
+			if replay.motion_plan_loaded {return .Invalid_Content}
+			expectations, preflight_error := motion_plan_manifest_preflight(
+				manifest,
+				primitive.path,
+				artifact_bytes,
+			)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error :=
+				features.motion_plan_artifact_decode(
+					artifact_bytes,
+					features.DEFAULT_MOTION_PLAN_ARTIFACT_LIMITS,
+					allocator,
+				)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
+			}
+			if motion_plan_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				features.motion_plan_artifact_destroy(
+					&artifact,
+					allocator,
+				)
+				return .Invalid_Content
+			}
+			replay.motion_plan = artifact
+			replay.motion_plan_loaded = true
 		}
-		if path_plan_manifest_replay_verify(
-			expectations,
-			artifact,
-		) != .None {
-			path_plan_artifact_destroy(&artifact, allocator)
-			return .Invalid_Content
-		}
-		replay.path_plan = artifact
-		replay.path_plan_loaded = true
 	case "emit-gcode":
 		if replay.marlin_loaded {return .Invalid_Content}
-		primitive, primitive_ok := evidence_bundle_manifest_primitive_find(
-			manifest,
-			gcode.MARLIN_ARTIFACT_FORMAT,
-		)
-		if !primitive_ok {return .Invalid_Content}
 		expectations, preflight_error := marlin_manifest_preflight(
 			manifest,
 			primitive.path,
