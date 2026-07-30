@@ -47,6 +47,13 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	perimeter_groups:      ^u64  `json:"perimeter_groups,omitempty"`,
 	perimeter_paths:       ^u64  `json:"perimeter_paths,omitempty"`,
 	perimeter_points:      ^u64  `json:"perimeter_points,omitempty"`,
+	surfaces_loaded:       ^bool `json:"surfaces_loaded,omitempty"`,
+	surface_layers:        ^u64  `json:"surface_layers,omitempty"`,
+	surface_masks:         ^u64  `json:"surface_masks,omitempty"`,
+	surface_paths:         ^u64  `json:"surface_paths,omitempty"`,
+	surface_points:        ^u64  `json:"surface_points,omitempty"`,
+	surface_bottom_masks:  ^u64  `json:"surface_bottom_masks,omitempty"`,
+	surface_top_masks:     ^u64  `json:"surface_top_masks,omitempty"`,
 	unified_sources_loaded: ^bool `json:"unified_sources_loaded,omitempty"`,
 	unified_source_layers: ^u64 `json:"unified_source_layers,omitempty"`,
 	unified_sources:       ^u64 `json:"unified_sources,omitempty"`,
@@ -147,6 +154,10 @@ main :: proc() {
 	perimeter_groups: u64
 	perimeter_paths: u64
 	perimeter_points: u64
+	surface_layers: u64
+	surface_masks: u64
+	surface_paths: u64
+	surface_points: u64
 	unified_source_layers: u64
 	unified_sources: u64
 	unified_source_points: u64
@@ -215,6 +226,21 @@ main :: proc() {
 		decoded.perimeter_groups = &perimeter_groups
 		decoded.perimeter_paths = &perimeter_paths
 		decoded.perimeter_points = &perimeter_points
+	}
+	if replay.surfaces_loaded {
+		surface_layers = u64(len(replay.surfaces.result.layers))
+		surface_masks = u64(len(replay.surfaces.result.masks))
+		surface_paths = u64(len(replay.surfaces.result.paths))
+		surface_points = u64(len(replay.surfaces.result.points))
+		decoded.surfaces_loaded = &replay.surfaces_loaded
+		decoded.surface_layers = &surface_layers
+		decoded.surface_masks = &surface_masks
+		decoded.surface_paths = &surface_paths
+		decoded.surface_points = &surface_points
+		decoded.surface_bottom_masks =
+			&replay.surfaces.result.bottom_mask_count
+		decoded.surface_top_masks =
+			&replay.surfaces.result.top_mask_count
 	}
 	if replay.unified_sources_loaded {
 		unified_source_layers =

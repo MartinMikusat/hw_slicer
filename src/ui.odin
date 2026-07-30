@@ -950,6 +950,37 @@ ui_evidence_graph_state :: proc(
 	case "calculate-regions":
 		if replay.regions_loaded {return "REGION GRAPH RETAINED"}
 	case "generate-features":
+		if replay.surfaces_loaded &&
+		   replay.perimeters_loaded &&
+		   replay.infill_loaded &&
+		   replay.unified_sources_loaded {
+			return "SURFACE + PERIMETER + INFILL + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.surfaces_loaded &&
+		   replay.perimeters_loaded &&
+		   replay.infill_loaded {
+			return "SURFACE + PERIMETER + INFILL GRAPHS RETAINED"
+		}
+		if replay.surfaces_loaded &&
+		   replay.perimeters_loaded &&
+		   replay.unified_sources_loaded {
+			return "SURFACE + PERIMETER + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.surfaces_loaded &&
+		   replay.infill_loaded &&
+		   replay.unified_sources_loaded {
+			return "SURFACE + INFILL + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.surfaces_loaded && replay.perimeters_loaded {
+			return "SURFACE + PERIMETER GRAPHS RETAINED"
+		}
+		if replay.surfaces_loaded && replay.infill_loaded {
+			return "SURFACE + INFILL GRAPHS RETAINED"
+		}
+		if replay.surfaces_loaded && replay.unified_sources_loaded {
+			return "SURFACE + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.surfaces_loaded {return "SURFACE GRAPH RETAINED"}
 		if replay.perimeters_loaded &&
 		   replay.infill_loaded &&
 		   replay.unified_sources_loaded {

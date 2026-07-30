@@ -138,10 +138,17 @@ ui_evidence_graph_state_reports_retained_feature_sources_test :: proc(
 	t: ^testing.T,
 ) {
 	replay := evidence.Evidence_Bundle_Replay{
+		surfaces_loaded = true,
 		perimeters_loaded = true,
 		infill_loaded = true,
 		unified_sources_loaded = true,
 	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"SURFACE + PERIMETER + INFILL + FEATURE SOURCE GRAPHS RETAINED",
+	)
+	replay.surfaces_loaded = false
 	testing.expect_value(
 		t,
 		ui_evidence_graph_state("generate-features", &replay),
@@ -192,6 +199,12 @@ ui_evidence_graph_state_reports_retained_feature_sources_test :: proc(
 		t,
 		ui_evidence_graph_state("generate-features", &replay),
 		"MANIFEST RETAINED",
+	)
+	replay.surfaces_loaded = true
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"SURFACE GRAPH RETAINED",
 	)
 }
 
