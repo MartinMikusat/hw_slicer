@@ -17,6 +17,7 @@ Evidence_Bundle_Replay :: struct {
 	path_plan:        Path_Plan_Artifact,
 	infill:           features.Infill_Artifact,
 	perimeters:       features.Perimeter_Artifact,
+	surfaces:         features.Surface_Artifact,
 	unified_sources:  features.Unified_Path_Source_Artifact,
 	unified_plan:     features.Unified_Path_Plan_Artifact,
 	extrusion:        features.Extrusion_Artifact,
@@ -27,6 +28,7 @@ Evidence_Bundle_Replay :: struct {
 	path_plan_loaded: bool,
 	infill_loaded:    bool,
 	perimeters_loaded: bool,
+	surfaces_loaded:  bool,
 	unified_sources_loaded: bool,
 	unified_plan_loaded: bool,
 	extrusion_loaded: bool,
@@ -74,6 +76,9 @@ evidence_bundle_replay_destroy :: proc(
 	}
 	if replay.perimeters_loaded {
 		features.perimeter_artifact_destroy(&replay.perimeters, allocator)
+	}
+	if replay.surfaces_loaded {
+		features.surface_artifact_destroy(&replay.surfaces, allocator)
 	}
 	if replay.unified_sources_loaded {
 		features.unified_path_source_artifact_destroy(
@@ -617,7 +622,8 @@ evidence_bundle_replay_primitive_supported :: proc(
 	case "calculate-regions":
 		return format == REGION_ARTIFACT_FORMAT
 	case "generate-features":
-		return format == features.PERIMETER_ARTIFACT_FORMAT ||
+		return format == features.SURFACE_ARTIFACT_FORMAT ||
+			format == features.PERIMETER_ARTIFACT_FORMAT ||
 			format == features.INFILL_ARTIFACT_FORMAT ||
 			format == features.UNIFIED_PATH_SOURCE_ARTIFACT_FORMAT
 	case "plan-paths":
@@ -705,6 +711,34 @@ evidence_bundle_replay_stage_decode :: proc(
 		replay.regions_loaded = true
 	case "generate-features":
 		switch primitive.format {
+		case features.SURFACE_ARTIFACT_FORMAT:
+			if replay.surfaces_loaded {return .Invalid_Content}
+			expectations, preflight_error := surface_manifest_preflight(
+				manifest,
+				primitive.path,
+				artifact_bytes,
+			)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error := features.surface_artifact_decode(
+				artifact_bytes,
+				features.DEFAULT_SURFACE_ARTIFACT_LIMITS,
+				allocator,
+			)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
+			}
+			if surface_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				features.surface_artifact_destroy(&artifact, allocator)
+				return .Invalid_Content
+			}
+			replay.surfaces = artifact
+			replay.surfaces_loaded = true
 		case features.PERIMETER_ARTIFACT_FORMAT:
 			if replay.perimeters_loaded {return .Invalid_Content}
 			expectations, preflight_error :=
@@ -965,6 +999,10 @@ evidence_bundle_replay_stage_decode :: proc(
 evidence_bundle_replay_dependencies_valid :: proc(
 	replay: Evidence_Bundle_Replay,
 ) -> bool {
+	if replay.regions_loaded && replay.surfaces_loaded &&
+	   replay.surfaces.region_hash != replay.regions.result_hash {
+		return false
+	}
 	if replay.regions_loaded && replay.perimeters_loaded &&
 	   replay.perimeters.region_hash != replay.regions.result_hash {
 		return false
