@@ -138,8 +138,22 @@ ui_evidence_graph_state_reports_retained_feature_sources_test :: proc(
 	t: ^testing.T,
 ) {
 	replay := evidence.Evidence_Bundle_Replay{
+		infill_loaded = true,
 		unified_sources_loaded = true,
 	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"INFILL + FEATURE SOURCE GRAPHS RETAINED",
+	)
+	replay.unified_sources_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"INFILL GRAPH RETAINED",
+	)
+	replay.infill_loaded = false
+	replay.unified_sources_loaded = true
 	testing.expect_value(
 		t,
 		ui_evidence_graph_state("generate-features", &replay),

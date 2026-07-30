@@ -950,6 +950,10 @@ ui_evidence_graph_state :: proc(
 	case "calculate-regions":
 		if replay.regions_loaded {return "REGION GRAPH RETAINED"}
 	case "generate-features":
+		if replay.infill_loaded && replay.unified_sources_loaded {
+			return "INFILL + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.infill_loaded {return "INFILL GRAPH RETAINED"}
 		if replay.unified_sources_loaded {
 			return "FEATURE SOURCE GRAPH RETAINED"
 		}

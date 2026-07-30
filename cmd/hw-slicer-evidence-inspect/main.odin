@@ -37,6 +37,11 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	path_plan_moves:       u64,
 	path_plan_travel_moves: u64,
 	path_plan_extrude_moves: u64,
+	infill_loaded:         ^bool `json:"infill_loaded,omitempty"`,
+	infill_layers:         ^u64  `json:"infill_layers,omitempty"`,
+	infill_segments:       ^u64  `json:"infill_segments,omitempty"`,
+	infill_boundary_hits:  ^u64  `json:"infill_boundary_hits,omitempty"`,
+	infill_scanlines:      ^u64  `json:"infill_scanlines,omitempty"`,
 	unified_sources_loaded: ^bool `json:"unified_sources_loaded,omitempty"`,
 	unified_source_layers: ^u64 `json:"unified_source_layers,omitempty"`,
 	unified_sources:       ^u64 `json:"unified_sources,omitempty"`,
@@ -130,6 +135,9 @@ main :: proc() {
 			summary = manifest.summary,
 		}
 	}
+	infill_layers: u64
+	infill_segments: u64
+	infill_boundary_hits: u64
 	unified_source_layers: u64
 	unified_sources: u64
 	unified_source_points: u64
@@ -171,6 +179,18 @@ main :: proc() {
 			replay.path_plan.result.travel_move_count
 		decoded.path_plan_extrude_moves =
 			replay.path_plan.result.extrude_move_count
+	}
+	if replay.infill_loaded {
+		infill_layers = u64(len(replay.infill.result.layers))
+		infill_segments = u64(len(replay.infill.result.segments))
+		infill_boundary_hits =
+			u64(len(replay.infill.result.boundary_hits))
+		decoded.infill_loaded = &replay.infill_loaded
+		decoded.infill_layers = &infill_layers
+		decoded.infill_segments = &infill_segments
+		decoded.infill_boundary_hits = &infill_boundary_hits
+		decoded.infill_scanlines =
+			&replay.infill.result.scanline_count
 	}
 	if replay.unified_sources_loaded {
 		unified_source_layers =
