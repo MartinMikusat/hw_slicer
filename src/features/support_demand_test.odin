@@ -98,10 +98,10 @@ support_demand_intersects_layer_projection_with_mesh_overhang_test :: proc(
 	)
 	testing.expect(t, hash_ok)
 	expected_hash := contracts.Content_Hash{
-		0xeb, 0xe8, 0x4b, 0x99, 0xf1, 0x5f, 0xa9, 0xcd,
-		0x8c, 0x64, 0x61, 0xbb, 0xd4, 0x5a, 0xfc, 0xaf,
-		0xeb, 0x81, 0x38, 0xdd, 0xbc, 0x85, 0x4c, 0xad,
-		0x52, 0xd9, 0x45, 0x6d, 0x71, 0x0d, 0xcc, 0xdd,
+		0xf7, 0xc3, 0x6a, 0xe6, 0x87, 0xf0, 0x20, 0xca,
+		0xca, 0x2b, 0x9e, 0x75, 0x52, 0x62, 0xf8, 0x7d,
+		0xb6, 0xd6, 0x6e, 0x76, 0x9d, 0xf7, 0x88, 0xd8,
+		0x7a, 0xbb, 0xf8, 0x99, 0xdb, 0x27, 0x9b, 0xbd,
 	}
 	testing.expect_value(t, hash, expected_hash)
 }
@@ -206,18 +206,14 @@ support_demand_test_layers :: proc(
 	slicing.Topology_Result,
 	slicing.Region_Result,
 ) {
-	schedule := slicing.Fixed_Layer_Schedule{
+	schedule, schedule_error := slicing.fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 600,
 		first_plane_z = 200,
 		layer_step = 200,
-		layer_z = make([]contracts.Micrometres, 2),
-		layer_ids = make([]contracts.Stable_ID, 2),
-	}
-	schedule.layer_z[0] = 200
-	schedule.layer_z[1] = 400
-	schedule.layer_ids[0] = 10
-	schedule.layer_ids[1] = 11
+		max_layer_count = 2,
+	})
+	testing.expect_value(t, schedule_error, slicing.Schedule_Error.None)
 	layer_counts := []u32{1, 1}
 	path_points := [][4]slicing.Snapped_Point{
 		{{0, 0}, {500, 0}, {500, 1_000}, {0, 1_000}},

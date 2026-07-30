@@ -89,10 +89,10 @@ support_geometry_propagates_and_splits_interface_layers_test :: proc(
 	)
 	testing.expect(t, hash_ok)
 	expected_hash := contracts.Content_Hash{
-		0x8c, 0x0d, 0x6c, 0x41, 0x43, 0x92, 0x59, 0x70,
-		0xd6, 0x28, 0xdc, 0x86, 0xef, 0x27, 0x7b, 0xf6,
-		0xd3, 0x46, 0x9d, 0x03, 0xa1, 0xb4, 0xb0, 0xb8,
-		0xeb, 0x22, 0xa1, 0xe4, 0x45, 0x89, 0xa4, 0x31,
+		0x53, 0xb1, 0xcd, 0x47, 0xd4, 0x95, 0xd4, 0x7c,
+		0x40, 0x83, 0x2a, 0x13, 0xec, 0x01, 0x6d, 0x1b,
+		0x2f, 0x1b, 0x13, 0x8b, 0x54, 0xa7, 0xf9, 0x88,
+		0x05, 0x4f, 0xaa, 0x33, 0xc5, 0xdb, 0x65, 0x07,
 	}
 	testing.expect_value(t, hash, expected_hash)
 }
@@ -246,20 +246,14 @@ support_geometry_test_layers :: proc(
 	slicing.Region_Result,
 ) {
 	layer_count := 5
-	schedule := slicing.Fixed_Layer_Schedule{
+	schedule, schedule_error := slicing.fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1_200,
 		first_plane_z = 200,
 		layer_step = 200,
-		layer_z = make([]contracts.Micrometres, layer_count),
-		layer_ids = make([]contracts.Stable_ID, layer_count),
-	}
-	for layer_index in 0..<layer_count {
-		schedule.layer_z[layer_index] =
-			contracts.Micrometres((layer_index+1)*200)
-		schedule.layer_ids[layer_index] =
-			contracts.Stable_ID(10+layer_index)
-	}
+		max_layer_count = u32(layer_count),
+	})
+	testing.expect_value(t, schedule_error, slicing.Schedule_Error.None)
 	layer_counts := []u32{1, 1, 1, 1, 1}
 	path_points := [][4]slicing.Snapped_Point{
 		{{0, 0}, {500, 0}, {500, 1_000}, {0, 1_000}},
