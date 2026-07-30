@@ -90,6 +90,31 @@ ui_evidence_transition_registers_stage_selection_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+ui_evidence_graph_state_reports_retained_motion_test :: proc(t: ^testing.T) {
+	replay := evidence.Evidence_Bundle_Replay{
+		path_plan_loaded = true,
+		motion_plan_loaded = true,
+	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("plan-paths", &replay),
+		"PATH + MOTION GRAPHS RETAINED",
+	)
+	replay.path_plan_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("plan-paths", &replay),
+		"MOTION GRAPH RETAINED",
+	)
+	replay.motion_plan_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("plan-paths", &replay),
+		"MANIFEST RETAINED",
+	)
+}
+
+@(test)
 ui_help_transition_exposes_only_window_and_modal_actions_test :: proc(t: ^testing.T) {
 	ui: UI_State
 	ui_initialize(&ui)

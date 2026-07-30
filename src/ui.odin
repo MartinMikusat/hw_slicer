@@ -939,6 +939,29 @@ ui_evidence_stage_totals :: proc(
 	return
 }
 
+ui_evidence_graph_state :: proc(
+	stage_name: string,
+	replay: ^evidence.Evidence_Bundle_Replay,
+) -> string {
+	if replay == nil {return "MANIFEST RETAINED"}
+	switch stage_name {
+	case "reconstruct-topology":
+		if replay.topology_loaded {return "TOPOLOGY GRAPH RETAINED"}
+	case "calculate-regions":
+		if replay.regions_loaded {return "REGION GRAPH RETAINED"}
+	case "plan-paths":
+		if replay.path_plan_loaded && replay.motion_plan_loaded {
+			return "PATH + MOTION GRAPHS RETAINED"
+		}
+		if replay.path_plan_loaded {return "PATH-PLAN GRAPH RETAINED"}
+		if replay.motion_plan_loaded {return "MOTION GRAPH RETAINED"}
+	case "emit-gcode":
+		if replay.marlin_loaded {return "G-CODE GRAPH RETAINED"}
+	case:
+	}
+	return "MANIFEST RETAINED"
+}
+
 ui_draw_evidence_overlay :: proc(
 	ctx, font: rawptr,
 	ui: ^UI_State,
@@ -1009,18 +1032,7 @@ ui_draw_evidence_overlay :: proc(
 
 	detail_x := modal.x+316
 	detail_width := modal.w-336
-	graph_state := "MANIFEST RETAINED"
-	switch selected.stage.name {
-	case "reconstruct-topology":
-		if replay.topology_loaded {graph_state = "TOPOLOGY GRAPH RETAINED"}
-	case "calculate-regions":
-		if replay.regions_loaded {graph_state = "REGION GRAPH RETAINED"}
-	case "plan-paths":
-		if replay.path_plan_loaded {graph_state = "PATH-PLAN GRAPH RETAINED"}
-	case "emit-gcode":
-		if replay.marlin_loaded {graph_state = "G-CODE GRAPH RETAINED"}
-	case:
-	}
+	graph_state := ui_evidence_graph_state(selected.stage.name, replay)
 	detail_lines := [7]string{
 		fmt.tprintf("STAGE      %02d %s", selected.ordinal, selected.stage.name),
 		fmt.tprintf(

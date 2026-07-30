@@ -37,6 +37,16 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	path_plan_moves:       u64,
 	path_plan_travel_moves: u64,
 	path_plan_extrude_moves: u64,
+	motion_plan_loaded:    bool `json:"motion_plan_loaded,omitempty"`,
+	motion_plan_layers:    u64  `json:"motion_plan_layers,omitempty"`,
+	motion_plan_operations: u64 `json:"motion_plan_operations,omitempty"`,
+	motion_plan_retractions: u64 `json:"motion_plan_retractions,omitempty"`,
+	motion_plan_travels:   u64  `json:"motion_plan_travels,omitempty"`,
+	motion_plan_extrusions: u64 `json:"motion_plan_extrusions,omitempty"`,
+	motion_plan_dwells:    u64  `json:"motion_plan_dwells,omitempty"`,
+	motion_plan_motion_duration_us: u64 `json:"motion_plan_motion_duration_us,omitempty"`,
+	motion_plan_dwell_duration_us: u64 `json:"motion_plan_dwell_duration_us,omitempty"`,
+	motion_plan_total_duration_us: u64 `json:"motion_plan_total_duration_us,omitempty"`,
 	marlin_loaded:         bool `json:"marlin_loaded,omitempty"`,
 	marlin_commands:       u64  `json:"marlin_commands,omitempty"`,
 	marlin_gcode_bytes:    u64  `json:"marlin_gcode_bytes,omitempty"`,
@@ -109,6 +119,7 @@ main :: proc() {
 		topology_loaded = replay.topology_loaded,
 		regions_loaded = replay.regions_loaded,
 		path_plan_loaded = replay.path_plan_loaded,
+		motion_plan_loaded = replay.motion_plan_loaded,
 		marlin_loaded = replay.marlin_loaded,
 	}
 	if replay.topology_loaded {
@@ -134,6 +145,26 @@ main :: proc() {
 			replay.path_plan.result.travel_move_count
 		decoded.path_plan_extrude_moves =
 			replay.path_plan.result.extrude_move_count
+	}
+	if replay.motion_plan_loaded {
+		decoded.motion_plan_layers =
+			u64(len(replay.motion_plan.result.layers))
+		decoded.motion_plan_operations =
+			u64(len(replay.motion_plan.result.operations))
+		decoded.motion_plan_retractions =
+			replay.motion_plan.result.retraction_count
+		decoded.motion_plan_travels =
+			replay.motion_plan.result.travel_count
+		decoded.motion_plan_extrusions =
+			replay.motion_plan.result.extrusion_count
+		decoded.motion_plan_dwells =
+			replay.motion_plan.result.dwell_count
+		decoded.motion_plan_motion_duration_us =
+			replay.motion_plan.result.total_motion_duration_us
+		decoded.motion_plan_dwell_duration_us =
+			replay.motion_plan.result.total_dwell_duration_us
+		decoded.motion_plan_total_duration_us =
+			replay.motion_plan.result.total_planned_duration_us
 	}
 	if replay.marlin_loaded {
 		decoded.marlin_commands =
