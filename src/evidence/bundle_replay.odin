@@ -16,6 +16,7 @@ Evidence_Bundle_Replay :: struct {
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
 	unified_sources:  features.Unified_Path_Source_Artifact,
+	unified_plan:     features.Unified_Path_Plan_Artifact,
 	extrusion:        features.Extrusion_Artifact,
 	motion_plan:      features.Motion_Plan_Artifact,
 	marlin:           gcode.Marlin_Artifact,
@@ -23,6 +24,7 @@ Evidence_Bundle_Replay :: struct {
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
 	unified_sources_loaded: bool,
+	unified_plan_loaded: bool,
 	extrusion_loaded: bool,
 	motion_plan_loaded: bool,
 	marlin_loaded:    bool,
@@ -66,6 +68,12 @@ evidence_bundle_replay_destroy :: proc(
 	if replay.unified_sources_loaded {
 		features.unified_path_source_artifact_destroy(
 			&replay.unified_sources,
+			allocator,
+		)
+	}
+	if replay.unified_plan_loaded {
+		features.unified_path_plan_artifact_destroy(
+			&replay.unified_plan,
 			allocator,
 		)
 	}
@@ -602,6 +610,7 @@ evidence_bundle_replay_primitive_supported :: proc(
 		return format == features.UNIFIED_PATH_SOURCE_ARTIFACT_FORMAT
 	case "plan-paths":
 		return format == PATH_PLAN_ARTIFACT_FORMAT ||
+			format == features.UNIFIED_PATH_PLAN_ARTIFACT_FORMAT ||
 			format == features.EXTRUSION_ARTIFACT_FORMAT ||
 			format == features.MOTION_PLAN_ARTIFACT_FORMAT
 	case "emit-gcode":
@@ -717,6 +726,39 @@ evidence_bundle_replay_stage_decode :: proc(
 		replay.unified_sources_loaded = true
 	case "plan-paths":
 		switch primitive.format {
+		case features.UNIFIED_PATH_PLAN_ARTIFACT_FORMAT:
+			if replay.unified_plan_loaded {return .Invalid_Content}
+			expectations, preflight_error :=
+				unified_path_plan_manifest_preflight(
+					manifest,
+					primitive.path,
+					artifact_bytes,
+				)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error :=
+				features.unified_path_plan_artifact_decode(
+					artifact_bytes,
+					features.DEFAULT_UNIFIED_PATH_PLAN_ARTIFACT_LIMITS,
+					allocator,
+				)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
+			}
+			if unified_path_plan_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				features.unified_path_plan_artifact_destroy(
+					&artifact,
+					allocator,
+				)
+				return .Invalid_Content
+			}
+			replay.unified_plan = artifact
+			replay.unified_plan_loaded = true
 		case PATH_PLAN_ARTIFACT_FORMAT:
 			if replay.path_plan_loaded {return .Invalid_Content}
 			expectations, preflight_error := path_plan_manifest_preflight(
@@ -847,12 +889,31 @@ evidence_bundle_replay_stage_decode :: proc(
 evidence_bundle_replay_dependencies_valid :: proc(
 	replay: Evidence_Bundle_Replay,
 ) -> bool {
-	if replay.path_plan_loaded && replay.extrusion_loaded &&
+	if replay.unified_sources_loaded && replay.unified_plan_loaded &&
+	   replay.unified_plan.source_paths_hash !=
+		replay.unified_sources.result_hash {
+		return false
+	}
+	if replay.unified_plan_loaded && replay.extrusion_loaded &&
+	   replay.extrusion.dependencies.path_plan_hash !=
+		replay.unified_plan.result_hash {
+		return false
+	}
+	if replay.unified_plan_loaded && replay.motion_plan_loaded &&
+	   replay.motion_plan.dependencies.path_plan_hash !=
+		replay.unified_plan.result_hash {
+		return false
+	}
+	if !replay.unified_plan_loaded &&
+	   replay.path_plan_loaded &&
+	   replay.extrusion_loaded &&
 	   replay.extrusion.dependencies.path_plan_hash !=
 		replay.path_plan.result_hash {
 		return false
 	}
-	if replay.path_plan_loaded && replay.motion_plan_loaded &&
+	if !replay.unified_plan_loaded &&
+	   replay.path_plan_loaded &&
+	   replay.motion_plan_loaded &&
 	   replay.motion_plan.dependencies.path_plan_hash !=
 		replay.path_plan.result_hash {
 		return false

@@ -108,6 +108,16 @@ unified_plan_capture_rejects_budget_path_and_content_test :: proc(
 unified_path_plan_capture_test_artifact :: proc(
 	t: ^testing.T,
 ) -> []u8 {
+	return unified_path_plan_capture_test_artifact_with_source_hash(
+		t,
+		UNIFIED_PLAN_CAPTURE_TEST_SOURCE_HASH,
+	)
+}
+
+unified_path_plan_capture_test_artifact_with_source_hash :: proc(
+	t: ^testing.T,
+	source_hash: contracts.Content_Hash,
+) -> []u8 {
 	result := features.Unified_Path_Plan_Result{
 		config = {
 			seam = profiles.Seam_Policy.Deterministic_Cost,
@@ -118,7 +128,7 @@ unified_path_plan_capture_test_artifact :: proc(
 	}
 	result_hash, result_ok :=
 		features.unified_path_plan_result_content_hash(
-			UNIFIED_PLAN_CAPTURE_TEST_SOURCE_HASH,
+			source_hash,
 			result,
 		)
 	testing.expect(t, result_ok)
@@ -163,7 +173,7 @@ unified_path_plan_capture_test_artifact :: proc(
 	features.unified_path_plan_artifact_put_hash(
 		bytes,
 		32,
-		UNIFIED_PLAN_CAPTURE_TEST_SOURCE_HASH,
+		source_hash,
 	)
 	features.unified_path_plan_artifact_put_hash(
 		bytes,
