@@ -130,6 +130,26 @@ ui_evidence_graph_state_reports_retained_layer_spans_test :: proc(
 }
 
 @(test)
+ui_evidence_graph_state_reports_retained_intersections_test :: proc(
+	t: ^testing.T,
+) {
+	replay := evidence.Evidence_Bundle_Replay{
+		intersections_loaded = true,
+	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("intersect", &replay),
+		"INTERSECTION GRAPH RETAINED",
+	)
+	replay.intersections_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("intersect", &replay),
+		"MANIFEST RETAINED",
+	)
+}
+
+@(test)
 ui_evidence_graph_state_reports_retained_motion_test :: proc(t: ^testing.T) {
 	replay := evidence.Evidence_Bundle_Replay{
 		path_plan_loaded = true,

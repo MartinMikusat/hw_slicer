@@ -953,6 +953,10 @@ ui_evidence_graph_state :: proc(
 		if replay.layer_spans_loaded {
 			return "LAYER-SPAN GRAPH RETAINED"
 		}
+	case "intersect":
+		if replay.intersections_loaded {
+			return "INTERSECTION GRAPH RETAINED"
+		}
 	case "reconstruct-topology":
 		if replay.topology_loaded {return "TOPOLOGY GRAPH RETAINED"}
 	case "calculate-regions":

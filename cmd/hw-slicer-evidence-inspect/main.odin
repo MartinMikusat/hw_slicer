@@ -35,6 +35,13 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	crossing_triangles:     ^u64  `json:"crossing_triangles,omitempty"`,
 	planar_triangles:       ^u64  `json:"planar_triangles,omitempty"`,
 	inactive_triangles:     ^u64  `json:"inactive_triangles,omitempty"`,
+	intersections_loaded:   ^bool `json:"intersections_loaded,omitempty"`,
+	intersection_layers:    ^u64  `json:"intersection_layers,omitempty"`,
+	raw_segments:           ^u64  `json:"raw_segments,omitempty"`,
+	planar_candidates:      ^u64  `json:"planar_candidates,omitempty"`,
+	tangent_pairs:          ^u64  `json:"tangent_pairs,omitempty"`,
+	degenerate_pairs:       ^u64  `json:"degenerate_pairs,omitempty"`,
+	exact_predicates:       ^u64  `json:"exact_predicates,omitempty"`,
 	topology_loaded:       bool,
 	topology_layers:       u64,
 	topology_vertices:     u64,
@@ -195,6 +202,12 @@ main :: proc() {
 	crossing_triangles: u64
 	planar_triangles: u64
 	inactive_triangles: u64
+	intersection_layers: u64
+	raw_segments: u64
+	planar_candidates: u64
+	tangent_pairs: u64
+	degenerate_pairs: u64
+	exact_predicates: u64
 	decoded := Evidence_Inspect_Decoded_Wire{
 		topology_loaded = replay.topology_loaded,
 		regions_loaded = replay.regions_loaded,
@@ -246,6 +259,27 @@ main :: proc() {
 		decoded.crossing_triangles = &crossing_triangles
 		decoded.planar_triangles = &planar_triangles
 		decoded.inactive_triangles = &inactive_triangles
+	}
+	if replay.intersections_loaded {
+		intersection_layers =
+			u64(len(replay.intersections.result.layers))
+		raw_segments =
+			u64(len(replay.intersections.result.segments.segment_ids))
+		planar_candidates =
+			u64(len(replay.intersections.result.planar_candidates))
+		tangent_pairs = replay.intersections.result.tangent_count
+		degenerate_pairs =
+			replay.intersections.result.degenerate_count
+		exact_predicates =
+			replay.intersections.result.exact_predicate_count
+		decoded.intersections_loaded =
+			&replay.intersections_loaded
+		decoded.intersection_layers = &intersection_layers
+		decoded.raw_segments = &raw_segments
+		decoded.planar_candidates = &planar_candidates
+		decoded.tangent_pairs = &tangent_pairs
+		decoded.degenerate_pairs = &degenerate_pairs
+		decoded.exact_predicates = &exact_predicates
 	}
 	if replay.topology_loaded {
 		decoded.topology_layers = u64(len(replay.topology.result.layers))
