@@ -14,6 +14,7 @@ Support_Path_Layer :: struct {
 
 Support_Path :: struct {
 	stable_id:           contracts.Stable_ID,
+	path_set_id:         contracts.Stable_ID,
 	geometry_mask_id:    contracts.Stable_ID,
 	geometry_mask_index: u32,
 	layer_index:         u32,
@@ -361,12 +362,18 @@ support_path_scan_boundary :: proc(
 					first.rounded_coordinate,
 					second.rounded_coordinate,
 				)
+				path_set_id := contracts.stable_id_child(
+					mask.stable_id,
+					.Feature,
+					0,
+				)
 				paths[write_index] = {
 					stable_id = contracts.stable_id_child(
-						mask.stable_id,
+						path_set_id,
 						.Path,
 						mask_path_index,
 					),
+					path_set_id = path_set_id,
 					geometry_mask_id = mask.stable_id,
 					geometry_mask_index = mask_index,
 					layer_index = mask.layer_index,

@@ -112,6 +112,10 @@ support_path_result_hash :: proc(
 		contracts.canonical_hash_append_stable_id(&hash, path.stable_id)
 		contracts.canonical_hash_append_stable_id(
 			&hash,
+			path.path_set_id,
+		)
+		contracts.canonical_hash_append_stable_id(
+			&hash,
 			path.geometry_mask_id,
 		)
 		contracts.canonical_hash_append_u32(
