@@ -37,26 +37,30 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	path_plan_moves:       u64,
 	path_plan_travel_moves: u64,
 	path_plan_extrude_moves: u64,
-	extrusion_loaded:      bool `json:"extrusion_loaded,omitempty"`,
-	extrusion_layers:      u64  `json:"extrusion_layers,omitempty"`,
-	extrusion_moves:       u64  `json:"extrusion_moves,omitempty"`,
-	extrusion_volume_cubic_um: u64 `json:"extrusion_volume_cubic_um,omitempty"`,
+	unified_sources_loaded: ^bool `json:"unified_sources_loaded,omitempty"`,
+	unified_source_layers: ^u64 `json:"unified_source_layers,omitempty"`,
+	unified_sources:       ^u64 `json:"unified_sources,omitempty"`,
+	unified_source_points: ^u64 `json:"unified_source_points,omitempty"`,
+	extrusion_loaded:      ^bool `json:"extrusion_loaded,omitempty"`,
+	extrusion_layers:      ^u64  `json:"extrusion_layers,omitempty"`,
+	extrusion_moves:       ^u64  `json:"extrusion_moves,omitempty"`,
+	extrusion_volume_cubic_um: ^u64 `json:"extrusion_volume_cubic_um,omitempty"`,
 	extrusion_filament_nm: string `json:"extrusion_filament_nm,omitempty"`,
-	motion_plan_loaded:    bool `json:"motion_plan_loaded,omitempty"`,
-	motion_plan_layers:    u64  `json:"motion_plan_layers,omitempty"`,
-	motion_plan_operations: u64 `json:"motion_plan_operations,omitempty"`,
-	motion_plan_retractions: u64 `json:"motion_plan_retractions,omitempty"`,
-	motion_plan_travels:   u64  `json:"motion_plan_travels,omitempty"`,
-	motion_plan_extrusions: u64 `json:"motion_plan_extrusions,omitempty"`,
-	motion_plan_dwells:    u64  `json:"motion_plan_dwells,omitempty"`,
-	motion_plan_motion_duration_us: u64 `json:"motion_plan_motion_duration_us,omitempty"`,
-	motion_plan_dwell_duration_us: u64 `json:"motion_plan_dwell_duration_us,omitempty"`,
-	motion_plan_total_duration_us: u64 `json:"motion_plan_total_duration_us,omitempty"`,
-	marlin_loaded:         bool `json:"marlin_loaded,omitempty"`,
-	marlin_commands:       u64  `json:"marlin_commands,omitempty"`,
-	marlin_gcode_bytes:    u64  `json:"marlin_gcode_bytes,omitempty"`,
-	marlin_layers:         u64  `json:"marlin_layers,omitempty"`,
-	marlin_motion_operations: u64 `json:"marlin_motion_operations,omitempty"`,
+	motion_plan_loaded:    ^bool `json:"motion_plan_loaded,omitempty"`,
+	motion_plan_layers:    ^u64  `json:"motion_plan_layers,omitempty"`,
+	motion_plan_operations: ^u64 `json:"motion_plan_operations,omitempty"`,
+	motion_plan_retractions: ^u64 `json:"motion_plan_retractions,omitempty"`,
+	motion_plan_travels:   ^u64  `json:"motion_plan_travels,omitempty"`,
+	motion_plan_extrusions: ^u64 `json:"motion_plan_extrusions,omitempty"`,
+	motion_plan_dwells:    ^u64  `json:"motion_plan_dwells,omitempty"`,
+	motion_plan_motion_duration_us: ^u64 `json:"motion_plan_motion_duration_us,omitempty"`,
+	motion_plan_dwell_duration_us: ^u64 `json:"motion_plan_dwell_duration_us,omitempty"`,
+	motion_plan_total_duration_us: ^u64 `json:"motion_plan_total_duration_us,omitempty"`,
+	marlin_loaded:         ^bool `json:"marlin_loaded,omitempty"`,
+	marlin_commands:       ^u64  `json:"marlin_commands,omitempty"`,
+	marlin_gcode_bytes:    ^u64  `json:"marlin_gcode_bytes,omitempty"`,
+	marlin_layers:         ^u64  `json:"marlin_layers,omitempty"`,
+	marlin_motion_operations: ^u64 `json:"marlin_motion_operations,omitempty"`,
 }
 
 Evidence_Inspect_Wire :: struct {
@@ -120,13 +124,20 @@ main :: proc() {
 			summary = manifest.summary,
 		}
 	}
+	unified_source_layers: u64
+	unified_sources: u64
+	unified_source_points: u64
+	extrusion_layers: u64
+	extrusion_moves: u64
+	motion_plan_layers: u64
+	motion_plan_operations: u64
+	marlin_commands: u64
+	marlin_gcode_bytes: u64
+	marlin_layers: u64
 	decoded := Evidence_Inspect_Decoded_Wire{
 		topology_loaded = replay.topology_loaded,
 		regions_loaded = replay.regions_loaded,
 		path_plan_loaded = replay.path_plan_loaded,
-		extrusion_loaded = replay.extrusion_loaded,
-		motion_plan_loaded = replay.motion_plan_loaded,
-		marlin_loaded = replay.marlin_loaded,
 	}
 	if replay.topology_loaded {
 		decoded.topology_layers = u64(len(replay.topology.result.layers))
@@ -152,47 +163,70 @@ main :: proc() {
 		decoded.path_plan_extrude_moves =
 			replay.path_plan.result.extrude_move_count
 	}
+	if replay.unified_sources_loaded {
+		unified_source_layers =
+			u64(len(replay.unified_sources.result.layers))
+		unified_sources =
+			u64(len(replay.unified_sources.result.sources))
+		unified_source_points =
+			u64(len(replay.unified_sources.result.points))
+		decoded.unified_sources_loaded =
+			&replay.unified_sources_loaded
+		decoded.unified_source_layers = &unified_source_layers
+		decoded.unified_sources = &unified_sources
+		decoded.unified_source_points = &unified_source_points
+	}
 	if replay.extrusion_loaded {
-		decoded.extrusion_layers =
+		extrusion_layers =
 			u64(len(replay.extrusion.result.layers))
-		decoded.extrusion_moves =
+		extrusion_moves =
 			u64(len(replay.extrusion.result.moves))
+		decoded.extrusion_loaded = &replay.extrusion_loaded
+		decoded.extrusion_layers = &extrusion_layers
+		decoded.extrusion_moves = &extrusion_moves
 		decoded.extrusion_volume_cubic_um =
-			replay.extrusion.result.total_volume_cubic_um
+			&replay.extrusion.result.total_volume_cubic_um
 		decoded.extrusion_filament_nm = fmt.tprintf(
 			"%d",
 			replay.extrusion.result.total_filament_nm,
 		)
 	}
 	if replay.motion_plan_loaded {
-		decoded.motion_plan_layers =
+		motion_plan_layers =
 			u64(len(replay.motion_plan.result.layers))
-		decoded.motion_plan_operations =
+		motion_plan_operations =
 			u64(len(replay.motion_plan.result.operations))
+		decoded.motion_plan_loaded = &replay.motion_plan_loaded
+		decoded.motion_plan_layers = &motion_plan_layers
+		decoded.motion_plan_operations = &motion_plan_operations
 		decoded.motion_plan_retractions =
-			replay.motion_plan.result.retraction_count
+			&replay.motion_plan.result.retraction_count
 		decoded.motion_plan_travels =
-			replay.motion_plan.result.travel_count
+			&replay.motion_plan.result.travel_count
 		decoded.motion_plan_extrusions =
-			replay.motion_plan.result.extrusion_count
+			&replay.motion_plan.result.extrusion_count
 		decoded.motion_plan_dwells =
-			replay.motion_plan.result.dwell_count
+			&replay.motion_plan.result.dwell_count
 		decoded.motion_plan_motion_duration_us =
-			replay.motion_plan.result.total_motion_duration_us
+			&replay.motion_plan.result.total_motion_duration_us
 		decoded.motion_plan_dwell_duration_us =
-			replay.motion_plan.result.total_dwell_duration_us
+			&replay.motion_plan.result.total_dwell_duration_us
 		decoded.motion_plan_total_duration_us =
-			replay.motion_plan.result.total_planned_duration_us
+			&replay.motion_plan.result.total_planned_duration_us
 	}
 	if replay.marlin_loaded {
-		decoded.marlin_commands =
+		marlin_commands =
 			u64(len(replay.marlin.result.commands))
-		decoded.marlin_gcode_bytes =
+		marlin_gcode_bytes =
 			u64(len(replay.marlin.result.bytes))
-		decoded.marlin_layers =
+		marlin_layers =
 			u64(replay.marlin.result.layer_count)
+		decoded.marlin_loaded = &replay.marlin_loaded
+		decoded.marlin_commands = &marlin_commands
+		decoded.marlin_gcode_bytes = &marlin_gcode_bytes
+		decoded.marlin_layers = &marlin_layers
 		decoded.marlin_motion_operations =
-			replay.marlin.result.motion_operation_count
+			&replay.marlin.result.motion_operation_count
 	}
 	wire := Evidence_Inspect_Wire{
 		schema_version = 1,

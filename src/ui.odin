@@ -949,6 +949,10 @@ ui_evidence_graph_state :: proc(
 		if replay.topology_loaded {return "TOPOLOGY GRAPH RETAINED"}
 	case "calculate-regions":
 		if replay.regions_loaded {return "REGION GRAPH RETAINED"}
+	case "generate-features":
+		if replay.unified_sources_loaded {
+			return "FEATURE SOURCE GRAPH RETAINED"
+		}
 	case "plan-paths":
 		if replay.path_plan_loaded &&
 		   replay.extrusion_loaded &&

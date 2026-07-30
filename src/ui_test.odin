@@ -134,6 +134,26 @@ ui_evidence_graph_state_reports_retained_motion_test :: proc(t: ^testing.T) {
 }
 
 @(test)
+ui_evidence_graph_state_reports_retained_feature_sources_test :: proc(
+	t: ^testing.T,
+) {
+	replay := evidence.Evidence_Bundle_Replay{
+		unified_sources_loaded = true,
+	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"FEATURE SOURCE GRAPH RETAINED",
+	)
+	replay.unified_sources_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"MANIFEST RETAINED",
+	)
+}
+
+@(test)
 ui_help_transition_exposes_only_window_and_modal_actions_test :: proc(t: ^testing.T) {
 	ui: UI_State
 	ui_initialize(&ui)
