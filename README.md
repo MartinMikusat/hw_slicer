@@ -178,6 +178,10 @@ The current engine implementation provides:
   unsupported span, and separate anchor capacity for both path directions.
 - Explicit one-sided bridge evidence when no candidate reaches support at both
   ends.
+- Globally phased bridge paths at the nominal line width for each selected
+  direction, including arbitrary configured angles.
+- Exact rational boundary intersections, explicit micrometre rounding error,
+  and canonical path hashes for bridge line endpoints.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
