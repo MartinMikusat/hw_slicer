@@ -212,6 +212,10 @@ The current engine implementation provides:
   line widths, explicit travel moves, and canonical plan hashes.
 - Canonical adapters from every generated path result into the unified source
   layout, including inner-first perimeter ordering and variable gap widths.
+- Rounded-bead extrusion volume from endpoint widths and layer height, using a
+  pinned fixed-point value of pi and nanometre path lengths.
+- Per-role flow scaling and fixed-point filament length with one carried
+  remainder across moves, plus exact volume and rounding evidence.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
