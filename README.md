@@ -14,11 +14,11 @@ Models used:
 
 The native mesh viewer and G0 foundation milestone are implemented. G1 reaches
 deterministic CPU loop reconstruction. G2 includes strict region
-classification, a pinned Clipper2 provider, exposed-surface classification,
-profile-driven skin propagation, perimeter and rectilinear infill generation,
-and planar path ordering. The first profile contract resolves selected G2 and
-G3 policies against explicit printer and material limits before geometry
-execution.
+classification, printable feature generation, unified path planning,
+fixed-point extrusion, and constrained motion planning. G3 has an initial
+conservative Marlin emitter, an independent state replay validator, and atomic
+file publication. The profile contract resolves these policies against explicit
+printer and material limits before geometry execution.
 
 The [technical implementation plan](PLAN.md) defines the subsystem contracts,
 CPU and Metal execution paths, visual-debug protocol, delivery gates,
@@ -226,6 +226,8 @@ The current engine implementation provides:
   command-to-motion correlation records.
 - An independent strict parser that replays modes, temperatures, acceleration,
   cooling, motion, extrusion, bounds, parking, and final machine state.
+- Atomic create-only and explicit replacement publication for validated
+  `.gcode` files, with synchronized sibling staging and failure cleanup.
 - Configured perimeter centerlines at half-width inward offsets, including
   holes, split outputs, collapsed groups, and stable feature identifiers.
 - Alternating rectilinear infill from globally phased scanlines, with exact
@@ -549,7 +551,8 @@ attribution and license checksums.
 Execute the staged plan through the release gate. Preserve the versioned stage
 contracts and debug-evidence protocol when an implementation is replaced.
 
-Implement the selected skin propagation, thin-wall, gap, bridge, support,
-extrusion, and G-code stages. Preserve the profile provenance and invalidation
-rules from the
+Extend retained evidence and the application inspector through the implemented
+feature, extrusion, motion, and G-code graphs. Connect those stages to the
+production slice action before physical printer calibration. Preserve the
+profile provenance and invalidation rules from the
 [process-profile decision contract](../notes/hw-slicer-process-profile-decisions.md).
