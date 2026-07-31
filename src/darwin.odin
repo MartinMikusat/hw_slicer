@@ -83,6 +83,11 @@ msg_void_f64 :: proc(receiver: Id, selector: Sel, value: f64) {
 	p(receiver, selector, value)
 }
 
+msg_id_f64_f64 :: proc(receiver: Id, selector: Sel, a, b: f64) -> Id {
+	p := transmute(proc "c" (Id, Sel, f64, f64) -> Id)objc_send_address
+	return p(receiver, selector, a, b)
+}
+
 msg_void_clear_color :: proc(
 	receiver: Id,
 	selector: Sel,

@@ -993,8 +993,8 @@ state.
 
 Use a thin AppKit host with a project-owned immediate-mode UI and direct Metal
 renderer. AppKit creates the window, menu, panels, drag regions, event bridge,
-Accessibility elements, and `CAMetalLayer`. Core Text shapes Iosevka interface
-text. Metal renders the model, toolpaths, fields, controls, and overlays.
+Accessibility elements, and `CAMetalLayer`. Core Text shapes AppKit's system
+monospaced font. Metal renders models, toolpaths, fields, controls, and overlays.
 
 SDL2 would reduce some window and input work but adds a shipped dependency and
 still needs AppKit for native menus, file panels, Accessibility, complete IME,
@@ -1052,9 +1052,8 @@ layer, issue, or stable ID updates every region through immutable view state.
   and `8 + 8 × label length`, inset the anchor by two points, and clamp the
   complete badge to the view. Use the workspace's separate normal and selected
   Flash colors.
-- Bundle one exact Iosevka Regular file and only the used Iconoir Regular SVG
-  sources. Record each version, source, SHA-256, and adjacent license before the
-  first distributable build.
+- Request AppKit's system monospaced font without hard-coding its concrete
+  family. Bundle only the used Iconoir Regular SVG sources.
 - Shape and measure one complete glyph run, then place it from its destination
   rectangle. Keep text layout independent from the Core Text backend contract.
 - Render on demand while idle. During orbit, scrub, or active slicing, schedule
@@ -1167,8 +1166,8 @@ debugger behavior remain inspectable.
   dependency-check, package, and release commands. Each command emits a compact
   machine-readable result where automation consumes it.
 - Record every bundled compiler-independent asset in the README with version,
-  source URL, SHA-256, and adjacent license. This includes Iosevka, Iconoir,
-  polygon providers, archive or XML libraries, profiles, and benchmark models.
+  source URL, SHA-256, and adjacent license. This includes Iconoir, polygon
+  providers, archive or XML libraries, profiles, and benchmark models.
 - Sign release Mach-O files from the inside out with a Developer ID Application
   identity and hardened runtime. Do not include development watcher tooling or
   `get-task-allow` in release.

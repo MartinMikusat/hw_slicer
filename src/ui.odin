@@ -45,28 +45,19 @@ foreign core_graphics {
 
 foreign import core_text "system:CoreText.framework"
 foreign core_text {
-	CTFontCreateWithName :: proc "c" (
-		name: rawptr,
-		size: f64,
-		transform: rawptr,
-	) -> rawptr ---
 	CTLineCreateWithAttributedString :: proc "c" (string: rawptr) -> rawptr ---
 	CTLineGetTypographicBounds :: proc "c" (
 		line: rawptr,
 		ascent, descent, leading: ^f64,
 	) -> f64 ---
 	CTLineDraw :: proc "c" (line, ctx: rawptr) ---
-	CTFontManagerRegisterFontsForURL :: proc "c" (
-		url: rawptr,
-		scope: u32,
-		error: ^rawptr,
-	) -> bool ---
 	kCTFontAttributeName: rawptr
 	kCTForegroundColorFromContextAttributeName: rawptr
 }
 
 foreign import slicer_core_foundation "system:CoreFoundation.framework"
 foreign slicer_core_foundation {
+	CFRetain :: proc "c" (value: rawptr) -> rawptr ---
 	CFStringCreateWithBytes :: proc "c" (
 		allocator: rawptr,
 		bytes: [^]u8,
@@ -89,12 +80,6 @@ foreign slicer_core_foundation {
 		range: CF.Range,
 		name, value: rawptr,
 	) ---
-	CFURLCreateFromFileSystemRepresentation :: proc "c" (
-		allocator: rawptr,
-		bytes: [^]u8,
-		length: int,
-		is_directory: bool,
-	) -> rawptr ---
 	CFRelease :: proc "c" (value: rawptr) ---
 	kCFBooleanTrue: rawptr
 }
@@ -880,22 +865,15 @@ ui_draw_help_icon :: proc(
 	)
 }
 
-ui_register_font :: proc(resource_root: string) -> bool {
-	path := filepath.join({resource_root, "Fonts", "Iosevka-Regular.ttf"})
-	defer delete(path)
-	bytes := transmute([]u8)path
-	url := CFURLCreateFromFileSystemRepresentation(
-		nil,
-		raw_data(bytes),
-		len(bytes),
-		false,
+ui_system_monospaced_font :: proc(size: f64) -> rawptr {
+	font := msg_id_f64_f64(
+		objc_getClass("NSFont"),
+		sel_registerName("monospacedSystemFontOfSize:weight:"),
+		size,
+		0,
 	)
-	if url == nil {return false}
-	defer CFRelease(url)
-	error: rawptr
-	registered := CTFontManagerRegisterFontsForURL(url, 1, &error)
-	if error != nil {CFRelease(error)}
-	return registered || error == nil
+	if font == nil {return nil}
+	return CFRetain(font)
 }
 
 ui_draw_flash_hint_text :: proc(
@@ -1247,10 +1225,7 @@ ui_build_text_overlay :: proc(
 	if ctx == nil {return pixels}
 	defer CGContextRelease(ctx)
 	CGContextClearRect(ctx, {{0, 0}, {f64(width), f64(height)}})
-	font_name := ui_cf_string("Iosevka")
-	if font_name == nil {return pixels}
-	defer CFRelease(font_name)
-	font := CTFontCreateWithName(font_name, 12*ui.scale, nil)
+	font := ui_system_monospaced_font(12*ui.scale)
 	if font == nil {return pixels}
 	defer CFRelease(font)
 	theme := ui_theme(ui)

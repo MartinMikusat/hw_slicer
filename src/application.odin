@@ -235,8 +235,6 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 		ui_destroy(&app.ui)
 		return false
 	}
-	_ = ui_register_font(app.resource_root)
-
 	if !app_load_model(app.ui.selected_model, true) {
 		if app.ui.selected_model != 0 && app_load_model(0, true) {
 			app_set_status("FALLBACK: LOADED 3DBENCHY")

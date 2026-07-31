@@ -65,15 +65,11 @@ fi
     -extra-linker-flags:"$HOST_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
 )
 
+rm -rf "$APP/Contents/Resources/Fonts"
 mkdir -p \
-  "$APP/Contents/Resources/Fonts" \
   "$APP/Contents/Resources/Icons/Iconoir" \
   "$APP/Contents/Resources/Models/licenses"
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
-cp "$ROOT/resources/fonts/Iosevka-Regular.ttf" \
-  "$APP/Contents/Resources/Fonts/Iosevka-Regular.ttf"
-cp "$ROOT/resources/fonts/IOSEVKA-LICENSE.md" \
-  "$APP/Contents/Resources/Fonts/IOSEVKA-LICENSE.md"
 cp "$ROOT/resources/icons/iconoir/"*.svg \
   "$APP/Contents/Resources/Icons/Iconoir/"
 cp "$ROOT/resources/icons/iconoir/LICENSE" \

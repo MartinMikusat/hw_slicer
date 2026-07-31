@@ -30,7 +30,6 @@ source links. It does not copy the research PDF snapshots.
 
 | Asset | Version | Source | SHA-256 | License |
 | --- | --- | --- | --- | --- |
-| `static/fonts/Iosevka-Regular.woff2` | 34.8.0 | [Iosevka release](https://github.com/be5invis/Iosevka/releases/tag/v34.8.0) | `a9e7ae712f2caad059501223f307349e9240da655588cbc5c6e0c0e33ac5477a` | [`static/licenses/iosevka-34.8.0-OFL-1.1.md`](static/licenses/iosevka-34.8.0-OFL-1.1.md) |
 | `static/og.png` | Generated 2026-07-29 | Built-in image generation with `gpt-image-2` | `592691483d318d10275fc9c2e81c7d7b09ba239dd61d1541753766f74f685eca` | Project-generated asset. |
 
 The social preview prompt requested a 1200×630 editorial evidence pipeline. It

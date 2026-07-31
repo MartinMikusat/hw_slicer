@@ -42,7 +42,7 @@ The viewer uses Apple system APIs and project-owned code:
 - `CAMetalLayer` presents frames.
 - Metal allocates the mesh buffers, depth texture, pipeline states, and command
   buffers directly.
-- Core Text shapes the bundled Iosevka font.
+- Core Text shapes AppKit's system monospaced font.
 - Project code parses STL files and constructs the camera, interface, and
   control registry.
 - `hw_odin_ui_flash` selects keyboard targets. It does not render controls or
@@ -574,7 +574,6 @@ sibling checkout.
 | Asset | Version | Source | SHA-256 | License |
 | --- | --- | --- | --- | --- |
 | Clipper2 integer clipping and offset source bundle | 2.0.1, commit `21ebba05db8894f0c7217ad35ea518080f324946` | [Official tag](https://github.com/AngusJohnson/Clipper2/tree/Clipper2_2.0.1) | [`be03fc289ca704b97133fcc26fc1167cc5a88554226abf73dc80dccf18448bbe`](third_party/clipper2/SHA256SUMS) | [`third_party/clipper2/LICENSE`](third_party/clipper2/LICENSE) |
-| Iosevka Regular TTF | 34.8.0 | [GitHub release](https://github.com/be5invis/Iosevka/releases/tag/v34.8.0) | `d1da5c2a3ce59781df12a4607f678e3f499d3483182329d14d8bad8cbf6e3c90` | [`resources/fonts/IOSEVKA-LICENSE.md`](resources/fonts/IOSEVKA-LICENSE.md) |
 | Iconoir `xmark.svg` | 7.11.1, commit `3497016dcb93122b5a64a2df1221598a14ecf4f3` | [Official repository](https://github.com/iconoir-icons/iconoir/blob/v7.11.1/icons/regular/xmark.svg) | `61aa0a4913a440aaafcc45064a87e24fe8eb22ba4abc4c5ef020530928ed8daf` | [`resources/icons/iconoir/LICENSE`](resources/icons/iconoir/LICENSE) |
 | Iconoir `minus.svg` | 7.11.1, commit `3497016dcb93122b5a64a2df1221598a14ecf4f3` | [Official repository](https://github.com/iconoir-icons/iconoir/blob/v7.11.1/icons/regular/minus.svg) | `babb05bca016bffdd38cbd1dcaeef6ccdf42fc8654124dee169a412eeed6d425` | [`resources/icons/iconoir/LICENSE`](resources/icons/iconoir/LICENSE) |
 | Iconoir `maximize.svg` | 7.11.1, commit `3497016dcb93122b5a64a2df1221598a14ecf4f3` | [Official repository](https://github.com/iconoir-icons/iconoir/blob/v7.11.1/icons/regular/maximize.svg) | `3a3048cdc0e8e4aef5d68353b5434f0c0e074dc672b6c0abf25a5a64bc5cc8f4` | [`resources/icons/iconoir/LICENSE`](resources/icons/iconoir/LICENSE) |

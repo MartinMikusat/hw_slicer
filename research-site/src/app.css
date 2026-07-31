@@ -1,13 +1,5 @@
-@font-face {
-  font-family: "Iosevka";
-  src: url("/fonts/Iosevka-Regular.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
 :root {
-  font-family: "Iosevka", "SFMono-Regular", Consolas, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
   color: #262528;
   background: #ccc7b8;
   font-synthesis: none;

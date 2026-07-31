@@ -4,6 +4,5 @@
 *.ttf binary
 *.woff2 binary
 research/papers/LICENSE-*.html -diff
-resources/fonts/IOSEVKA-LICENSE.md -whitespace
 resources/icons/iconoir/LICENSE -whitespace
 resources/models/licenses/*.txt -whitespace
