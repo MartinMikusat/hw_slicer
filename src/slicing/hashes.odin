@@ -290,20 +290,27 @@ snapped_segment_result_hash :: proc(
 	}
 	if expected_offset != u64(segment_count) {return {}, false}
 	for segment_index in 0..<segment_count {
+		point_a := Snapped_Point{
+			result.segments.x0[segment_index],
+			result.segments.y0[segment_index],
+		}
+		point_b := Snapped_Point{
+			result.segments.x1[segment_index],
+			result.segments.y1[segment_index],
+		}
 		if result.segments.segment_ids[segment_index] ==
 		   	contracts.INVALID_STABLE_ID ||
 		   result.segments.triangle_ids[segment_index] ==
 		   	contracts.INVALID_STABLE_ID ||
-		   result.segments.edge_a[segment_index] == .Invalid ||
-		   result.segments.edge_b[segment_index] == .Invalid ||
-		   geometry.point_2_validate({
-		   	result.segments.x0[segment_index],
-		   	result.segments.y0[segment_index],
-		   }) != .None ||
-		   geometry.point_2_validate({
-		   	result.segments.x1[segment_index],
-		   	result.segments.y1[segment_index],
-		   }) != .None {
+		   !slicing_hash_triangle_edge_valid(
+				result.segments.edge_a[segment_index],
+		   ) ||
+		   !slicing_hash_triangle_edge_valid(
+				result.segments.edge_b[segment_index],
+		   ) ||
+		   geometry.point_2_validate(geometry.Point_2(point_a)) != .None ||
+		   geometry.point_2_validate(geometry.Point_2(point_b)) != .None ||
+		   !snapped_point_less(point_a, point_b) {
 			return {}, false
 		}
 	}

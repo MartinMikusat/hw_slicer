@@ -219,6 +219,23 @@ intersection_and_snapped_segment_hashes_are_stable_test :: proc(
 		0x57, 0xd2, 0x4f, 0x11, 0x22, 0x4f, 0xfb, 0xd1,
 	}
 	testing.expect_value(t, snapped_hash, expected_snapped_hash)
+
+	original_snapped_edge := snapped.segments.edge_a[0]
+	snapped.segments.edge_a[0] = Triangle_Edge(255)
+	_, mutated_ok =
+		snapped_segment_result_hash(intersection_hash, snapped)
+	testing.expect(t, !mutated_ok)
+	snapped.segments.edge_a[0] = original_snapped_edge
+
+	original_snapped_x0 := snapped.segments.x0[0]
+	original_snapped_y0 := snapped.segments.y0[0]
+	snapped.segments.x0[0] = snapped.segments.x1[0]
+	snapped.segments.y0[0] = snapped.segments.y1[0]
+	_, mutated_ok =
+		snapped_segment_result_hash(intersection_hash, snapped)
+	testing.expect(t, !mutated_ok)
+	snapped.segments.x0[0] = original_snapped_x0
+	snapped.segments.y0[0] = original_snapped_y0
 }
 
 @(test)
