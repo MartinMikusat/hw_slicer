@@ -42,6 +42,11 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	tangent_pairs:          ^u64  `json:"tangent_pairs,omitempty"`,
 	degenerate_pairs:       ^u64  `json:"degenerate_pairs,omitempty"`,
 	exact_predicates:       ^u64  `json:"exact_predicates,omitempty"`,
+	snapped_loaded:         ^bool `json:"snapped_loaded,omitempty"`,
+	snapped_layers:         ^u64  `json:"snapped_layers,omitempty"`,
+	snapped_segments:       ^u64  `json:"snapped_segments,omitempty"`,
+	collapsed_segments:     ^u64  `json:"collapsed_segments,omitempty"`,
+	maximum_snap_error_um:  ^f64  `json:"maximum_snap_error_um,omitempty"`,
 	topology_loaded:       bool,
 	topology_layers:       u64,
 	topology_vertices:     u64,
@@ -208,6 +213,10 @@ main :: proc() {
 	tangent_pairs: u64
 	degenerate_pairs: u64
 	exact_predicates: u64
+	snapped_layers: u64
+	snapped_segments: u64
+	collapsed_segments: u64
+	maximum_snap_error_um: f64
 	decoded := Evidence_Inspect_Decoded_Wire{
 		topology_loaded = replay.topology_loaded,
 		regions_loaded = replay.regions_loaded,
@@ -280,6 +289,19 @@ main :: proc() {
 		decoded.tangent_pairs = &tangent_pairs
 		decoded.degenerate_pairs = &degenerate_pairs
 		decoded.exact_predicates = &exact_predicates
+	}
+	if replay.snapped_loaded {
+		snapped_layers = u64(len(replay.snapped.result.layers))
+		snapped_segments =
+			u64(len(replay.snapped.result.segments.segment_ids))
+		collapsed_segments = replay.snapped.result.collapsed_count
+		maximum_snap_error_um =
+			replay.snapped.result.maximum_snap_error_um
+		decoded.snapped_loaded = &replay.snapped_loaded
+		decoded.snapped_layers = &snapped_layers
+		decoded.snapped_segments = &snapped_segments
+		decoded.collapsed_segments = &collapsed_segments
+		decoded.maximum_snap_error_um = &maximum_snap_error_um
 	}
 	if replay.topology_loaded {
 		decoded.topology_layers = u64(len(replay.topology.result.layers))

@@ -954,6 +954,12 @@ ui_evidence_graph_state :: proc(
 			return "LAYER-SPAN GRAPH RETAINED"
 		}
 	case "intersect":
+		if replay.intersections_loaded && replay.snapped_loaded {
+			return "INTERSECTION + SNAPPED GRAPHS RETAINED"
+		}
+		if replay.snapped_loaded {
+			return "SNAPPED-SEGMENT GRAPH RETAINED"
+		}
 		if replay.intersections_loaded {
 			return "INTERSECTION GRAPH RETAINED"
 		}
