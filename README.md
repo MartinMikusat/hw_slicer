@@ -56,10 +56,10 @@ selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
 package or published evidence directory in the stage timeline and inspector.
 The inspector retains the layer schedule, triangle layer-span index, CPU
 intersection graph, planar ownership graph, snapped segments, topology, region,
-exposed-surface, perimeter, sparse-infill, unified feature-source, current
-unified path-plan, legacy path-plan, extrusion, motion, and G-code graphs
-without the source model. Pointer, Flash, and Accessibility input select one
-stage record.
+exposed-surface, skin-propagation, perimeter, sparse-infill, unified
+feature-source, current unified path-plan, legacy path-plan, extrusion, motion,
+and G-code graphs without the source model. Pointer, Flash, and Accessibility
+input select one stage record.
 
 The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
 light and dark themes, Flash navigation, and Accessibility actions. The
@@ -111,6 +111,8 @@ The G0 foundation provides:
 - A preflighted little-endian path-plan artifact with hash-validated replay.
 - A preflighted little-endian exposed-surface artifact with source-independent
   replay.
+- A preflighted little-endian skin-propagation artifact with dependency-checked
+  source-independent replay.
 - A preflighted little-endian perimeter artifact with source-independent
   replay.
 - A preflighted little-endian sparse-infill artifact with source-independent
@@ -196,6 +198,9 @@ The current engine implementation provides:
   counts, including one disjoint role for simultaneous top and bottom skin.
 - Exact skin-to-surface provenance with target-region clipping and a canonical
   stage hash.
+- A bounded little-endian skin-propagation artifact that retains layer heights,
+  masks, paths, points, source references, configuration values, dependency
+  hashes, and the canonical result hash.
 - Perimeter bead coverage, uncovered-region, printable-center, over-wide-core,
   and unprinted-remainder masks for thin-wall and gap diagnosis.
 - Conservative half-width rounding recorded in a canonical gap-evidence hash.
@@ -433,9 +438,9 @@ Inspect all retained bundle records from either container:
 
 The inspector validates each descriptor once, retains the stage manifests, and
 decodes each supported graph, including declared layer schedules, span indexes,
-CPU intersections, planar ownership, and snapped segments. It emits retained
-schedule, span, intersection, ownership, and snapping counters without reading
-the source model.
+CPU intersections, planar ownership, snapped segments, exposed surfaces, and
+skin propagation. It emits retained schedule, intersection, feature, and
+provenance counters without reading the source model.
 
 Replay topology and rebuild regions without the source model:
 

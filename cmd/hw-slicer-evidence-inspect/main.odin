@@ -87,6 +87,15 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	surface_points:        ^u64  `json:"surface_points,omitempty"`,
 	surface_bottom_masks:  ^u64  `json:"surface_bottom_masks,omitempty"`,
 	surface_top_masks:     ^u64  `json:"surface_top_masks,omitempty"`,
+	skins_loaded:          ^bool `json:"skins_loaded,omitempty"`,
+	skin_layers:           ^u64  `json:"skin_layers,omitempty"`,
+	skin_masks:            ^u64  `json:"skin_masks,omitempty"`,
+	skin_paths:            ^u64  `json:"skin_paths,omitempty"`,
+	skin_points:           ^u64  `json:"skin_points,omitempty"`,
+	skin_source_references: ^u64 `json:"skin_source_references,omitempty"`,
+	skin_bottom_masks:     ^u64  `json:"skin_bottom_masks,omitempty"`,
+	skin_top_masks:        ^u64  `json:"skin_top_masks,omitempty"`,
+	skin_top_bottom_masks: ^u64  `json:"skin_top_bottom_masks,omitempty"`,
 	unified_sources_loaded: ^bool `json:"unified_sources_loaded,omitempty"`,
 	unified_source_layers: ^u64 `json:"unified_source_layers,omitempty"`,
 	unified_sources:       ^u64 `json:"unified_sources,omitempty"`,
@@ -191,6 +200,11 @@ main :: proc() {
 	surface_masks: u64
 	surface_paths: u64
 	surface_points: u64
+	skin_layers: u64
+	skin_masks: u64
+	skin_paths: u64
+	skin_points: u64
+	skin_source_references: u64
 	unified_source_layers: u64
 	unified_sources: u64
 	unified_source_points: u64
@@ -412,6 +426,25 @@ main :: proc() {
 			&replay.surfaces.result.bottom_mask_count
 		decoded.surface_top_masks =
 			&replay.surfaces.result.top_mask_count
+	}
+	if replay.skins_loaded {
+		skin_layers = u64(len(replay.skins.result.layers))
+		skin_masks = u64(len(replay.skins.result.masks))
+		skin_paths = u64(len(replay.skins.result.paths))
+		skin_points = u64(len(replay.skins.result.points))
+		skin_source_references =
+			u64(len(replay.skins.result.source_references))
+		decoded.skins_loaded = &replay.skins_loaded
+		decoded.skin_layers = &skin_layers
+		decoded.skin_masks = &skin_masks
+		decoded.skin_paths = &skin_paths
+		decoded.skin_points = &skin_points
+		decoded.skin_source_references = &skin_source_references
+		decoded.skin_bottom_masks =
+			&replay.skins.result.bottom_mask_count
+		decoded.skin_top_masks = &replay.skins.result.top_mask_count
+		decoded.skin_top_bottom_masks =
+			&replay.skins.result.top_bottom_mask_count
 	}
 	if replay.unified_sources_loaded {
 		unified_source_layers =

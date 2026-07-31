@@ -962,6 +962,39 @@ ui_evidence_graph_state :: proc(
 	case "calculate-regions":
 		if replay.regions_loaded {return "REGION GRAPH RETAINED"}
 	case "generate-features":
+		if replay.skins_loaded &&
+		   replay.perimeters_loaded &&
+		   replay.infill_loaded &&
+		   replay.unified_sources_loaded {
+			return "SURFACE + SKIN + PERIMETER + INFILL + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.skins_loaded &&
+		   replay.perimeters_loaded &&
+		   replay.infill_loaded {
+			return "SURFACE + SKIN + PERIMETER + INFILL GRAPHS RETAINED"
+		}
+		if replay.skins_loaded &&
+		   replay.perimeters_loaded &&
+		   replay.unified_sources_loaded {
+			return "SURFACE + SKIN + PERIMETER + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.skins_loaded &&
+		   replay.infill_loaded &&
+		   replay.unified_sources_loaded {
+			return "SURFACE + SKIN + INFILL + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.skins_loaded && replay.perimeters_loaded {
+			return "SURFACE + SKIN + PERIMETER GRAPHS RETAINED"
+		}
+		if replay.skins_loaded && replay.infill_loaded {
+			return "SURFACE + SKIN + INFILL GRAPHS RETAINED"
+		}
+		if replay.skins_loaded && replay.unified_sources_loaded {
+			return "SURFACE + SKIN + FEATURE SOURCE GRAPHS RETAINED"
+		}
+		if replay.skins_loaded {
+			return "SURFACE + SKIN GRAPHS RETAINED"
+		}
 		if replay.surfaces_loaded &&
 		   replay.perimeters_loaded &&
 		   replay.infill_loaded &&

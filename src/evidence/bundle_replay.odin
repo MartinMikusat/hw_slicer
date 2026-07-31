@@ -24,6 +24,7 @@ Evidence_Bundle_Replay :: struct {
 	infill:           features.Infill_Artifact,
 	perimeters:       features.Perimeter_Artifact,
 	surfaces:         features.Surface_Artifact,
+	skins:            features.Skin_Artifact,
 	unified_sources:  features.Unified_Path_Source_Artifact,
 	unified_plan:     features.Unified_Path_Plan_Artifact,
 	extrusion:        features.Extrusion_Artifact,
@@ -40,6 +41,7 @@ Evidence_Bundle_Replay :: struct {
 	infill_loaded:    bool,
 	perimeters_loaded: bool,
 	surfaces_loaded:  bool,
+	skins_loaded:     bool,
 	unified_sources_loaded: bool,
 	unified_plan_loaded: bool,
 	extrusion_loaded: bool,
@@ -111,6 +113,9 @@ evidence_bundle_replay_destroy :: proc(
 	}
 	if replay.surfaces_loaded {
 		features.surface_artifact_destroy(&replay.surfaces, allocator)
+	}
+	if replay.skins_loaded {
+		features.skin_artifact_destroy(&replay.skins, allocator)
 	}
 	if replay.unified_sources_loaded {
 		features.unified_path_source_artifact_destroy(
@@ -677,6 +682,7 @@ evidence_bundle_replay_primitive_supported :: proc(
 		return format == REGION_ARTIFACT_FORMAT
 	case "generate-features":
 		return format == features.SURFACE_ARTIFACT_FORMAT ||
+			format == features.SKIN_ARTIFACT_FORMAT ||
 			format == features.PERIMETER_ARTIFACT_FORMAT ||
 			format == features.INFILL_ARTIFACT_FORMAT ||
 			format == features.UNIFIED_PATH_SOURCE_ARTIFACT_FORMAT
@@ -954,6 +960,43 @@ evidence_bundle_replay_stage_decode :: proc(
 			}
 			replay.surfaces = artifact
 			replay.surfaces_loaded = true
+		case features.SKIN_ARTIFACT_FORMAT:
+			if replay.skins_loaded ||
+			   !replay.layer_schedule_loaded ||
+			   !replay.regions_loaded ||
+			   !replay.surfaces_loaded {
+				return .Invalid_Content
+			}
+			expectations, preflight_error := skin_manifest_preflight(
+				manifest,
+				primitive.path,
+				artifact_bytes,
+			)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error := features.skin_artifact_decode(
+				artifact_bytes,
+				replay.surfaces.result_hash,
+				replay.layer_schedule.result_hash,
+				replay.regions.result,
+				replay.surfaces.result,
+				features.DEFAULT_SKIN_ARTIFACT_LIMITS,
+				allocator,
+			)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
+			}
+			if skin_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				features.skin_artifact_destroy(&artifact, allocator)
+				return .Invalid_Content
+			}
+			replay.skins = artifact
+			replay.skins_loaded = true
 		case features.PERIMETER_ARTIFACT_FORMAT:
 			if replay.perimeters_loaded {return .Invalid_Content}
 			expectations, preflight_error :=
@@ -1271,6 +1314,22 @@ evidence_bundle_replay_dependencies_valid :: proc(
 	if replay.regions_loaded && replay.surfaces_loaded &&
 	   replay.surfaces.region_hash != replay.regions.result_hash {
 		return false
+	}
+	if replay.skins_loaded {
+		if !replay.layer_schedule_loaded ||
+		   !replay.regions_loaded ||
+		   !replay.surfaces_loaded ||
+		   replay.skins.layer_schedule_hash !=
+		    replay.layer_schedule.result_hash ||
+		   replay.skins.surface_hash != replay.surfaces.result_hash ||
+		   len(replay.skins.result.layers) !=
+		    len(replay.layer_schedule.result.layer_z) ||
+		   len(replay.skins.result.layers) !=
+		    len(replay.regions.result.layers) ||
+		   len(replay.skins.result.layers) !=
+		    len(replay.surfaces.result.layers) {
+			return false
+		}
 	}
 	if replay.regions_loaded && replay.perimeters_loaded &&
 	   replay.perimeters.region_hash != replay.regions.result_hash {

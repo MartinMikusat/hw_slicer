@@ -300,6 +300,27 @@ ui_evidence_graph_state_reports_retained_feature_sources_test :: proc(
 }
 
 @(test)
+ui_evidence_graph_state_reports_retained_skins_test :: proc(t: ^testing.T) {
+	replay := evidence.Evidence_Bundle_Replay{
+		surfaces_loaded = true,
+		skins_loaded = true,
+	}
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"SURFACE + SKIN GRAPHS RETAINED",
+	)
+	replay.perimeters_loaded = true
+	replay.infill_loaded = true
+	replay.unified_sources_loaded = true
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("generate-features", &replay),
+		"SURFACE + SKIN + PERIMETER + INFILL + FEATURE SOURCE GRAPHS RETAINED",
+	)
+}
+
+@(test)
 ui_evidence_graph_state_reports_retained_unified_plan_test :: proc(
 	t: ^testing.T,
 ) {
