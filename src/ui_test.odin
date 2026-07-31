@@ -141,13 +141,32 @@ ui_evidence_graph_state_reports_retained_intersections_test :: proc(
 		ui_evidence_graph_state("intersect", &replay),
 		"INTERSECTION GRAPH RETAINED",
 	)
+	replay.planar_ownership_loaded = true
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("intersect", &replay),
+		"INTERSECTION + OWNERSHIP GRAPHS RETAINED",
+	)
 	replay.snapped_loaded = true
 	testing.expect_value(
 		t,
 		ui_evidence_graph_state("intersect", &replay),
-		"INTERSECTION + SNAPPED GRAPHS RETAINED",
+		"INTERSECTION + OWNERSHIP + SNAPPED GRAPHS RETAINED",
 	)
 	replay.intersections_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("intersect", &replay),
+		"OWNERSHIP + SNAPPED GRAPHS RETAINED",
+	)
+	replay.snapped_loaded = false
+	testing.expect_value(
+		t,
+		ui_evidence_graph_state("intersect", &replay),
+		"PLANAR-OWNERSHIP GRAPH RETAINED",
+	)
+	replay.planar_ownership_loaded = false
+	replay.snapped_loaded = true
 	testing.expect_value(
 		t,
 		ui_evidence_graph_state("intersect", &replay),

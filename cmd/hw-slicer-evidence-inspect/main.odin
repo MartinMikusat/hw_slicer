@@ -42,6 +42,14 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	tangent_pairs:          ^u64  `json:"tangent_pairs,omitempty"`,
 	degenerate_pairs:       ^u64  `json:"degenerate_pairs,omitempty"`,
 	exact_predicates:       ^u64  `json:"exact_predicates,omitempty"`,
+	planar_ownership_loaded: ^bool `json:"planar_ownership_loaded,omitempty"`,
+	ownership_layers:       ^u64  `json:"ownership_layers,omitempty"`,
+	owned_segments:         ^u64  `json:"owned_segments,omitempty"`,
+	planar_incidences:      ^u64  `json:"planar_incidences,omitempty"`,
+	unresolved_groups:      ^u64  `json:"unresolved_groups,omitempty"`,
+	suppressed_groups:      ^u64  `json:"suppressed_groups,omitempty"`,
+	collapsed_incidences:   ^u64  `json:"collapsed_incidences,omitempty"`,
+	ownership_exact_predicates: ^u64 `json:"ownership_exact_predicates,omitempty"`,
 	snapped_loaded:         ^bool `json:"snapped_loaded,omitempty"`,
 	snapped_layers:         ^u64  `json:"snapped_layers,omitempty"`,
 	snapped_segments:       ^u64  `json:"snapped_segments,omitempty"`,
@@ -213,6 +221,13 @@ main :: proc() {
 	tangent_pairs: u64
 	degenerate_pairs: u64
 	exact_predicates: u64
+	ownership_layers: u64
+	owned_segments: u64
+	planar_incidences: u64
+	unresolved_groups: u64
+	suppressed_groups: u64
+	collapsed_incidences: u64
+	ownership_exact_predicates: u64
 	snapped_layers: u64
 	snapped_segments: u64
 	collapsed_segments: u64
@@ -289,6 +304,35 @@ main :: proc() {
 		decoded.tangent_pairs = &tangent_pairs
 		decoded.degenerate_pairs = &degenerate_pairs
 		decoded.exact_predicates = &exact_predicates
+	}
+	if replay.planar_ownership_loaded {
+		ownership_layers =
+			u64(len(replay.planar_ownership.result.layers))
+		owned_segments = u64(
+			len(
+				replay.planar_ownership.result.segments.segment_ids,
+			),
+		)
+		planar_incidences =
+			replay.planar_ownership.result.incidence_count
+		unresolved_groups =
+			replay.planar_ownership.result.unresolved_group_count
+		suppressed_groups =
+			replay.planar_ownership.result.suppressed_group_count
+		collapsed_incidences =
+			replay.planar_ownership.result.collapsed_incidence_count
+		ownership_exact_predicates =
+			replay.planar_ownership.result.exact_predicate_count
+		decoded.planar_ownership_loaded =
+			&replay.planar_ownership_loaded
+		decoded.ownership_layers = &ownership_layers
+		decoded.owned_segments = &owned_segments
+		decoded.planar_incidences = &planar_incidences
+		decoded.unresolved_groups = &unresolved_groups
+		decoded.suppressed_groups = &suppressed_groups
+		decoded.collapsed_incidences = &collapsed_incidences
+		decoded.ownership_exact_predicates =
+			&ownership_exact_predicates
 	}
 	if replay.snapped_loaded {
 		snapped_layers = u64(len(replay.snapped.result.layers))

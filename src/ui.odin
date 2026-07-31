@@ -954,8 +954,24 @@ ui_evidence_graph_state :: proc(
 			return "LAYER-SPAN GRAPH RETAINED"
 		}
 	case "intersect":
+		if replay.intersections_loaded &&
+		   replay.planar_ownership_loaded &&
+		   replay.snapped_loaded {
+			return "INTERSECTION + OWNERSHIP + SNAPPED GRAPHS RETAINED"
+		}
+		if replay.intersections_loaded &&
+		   replay.planar_ownership_loaded {
+			return "INTERSECTION + OWNERSHIP GRAPHS RETAINED"
+		}
+		if replay.planar_ownership_loaded &&
+		   replay.snapped_loaded {
+			return "OWNERSHIP + SNAPPED GRAPHS RETAINED"
+		}
 		if replay.intersections_loaded && replay.snapped_loaded {
 			return "INTERSECTION + SNAPPED GRAPHS RETAINED"
+		}
+		if replay.planar_ownership_loaded {
+			return "PLANAR-OWNERSHIP GRAPH RETAINED"
 		}
 		if replay.snapped_loaded {
 			return "SNAPPED-SEGMENT GRAPH RETAINED"
