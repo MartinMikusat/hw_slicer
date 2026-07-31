@@ -16,6 +16,7 @@ Evidence_Bundle_Replay :: struct {
 	layer_schedule:   Layer_Schedule_Artifact,
 	layer_spans:      Layer_Span_Artifact,
 	intersections:    CPU_Intersection_Artifact,
+	planar_ownership: Planar_Ownership_Artifact,
 	snapped:          Snapped_Segment_Artifact,
 	topology:         Topology_Artifact,
 	regions:          Region_Artifact,
@@ -31,6 +32,7 @@ Evidence_Bundle_Replay :: struct {
 	layer_schedule_loaded: bool,
 	layer_spans_loaded: bool,
 	intersections_loaded: bool,
+	planar_ownership_loaded: bool,
 	snapped_loaded:    bool,
 	topology_loaded:  bool,
 	regions_loaded:   bool,
@@ -80,6 +82,12 @@ evidence_bundle_replay_destroy :: proc(
 	if replay.intersections_loaded {
 		cpu_intersection_artifact_destroy(
 			&replay.intersections,
+			allocator,
+		)
+	}
+	if replay.planar_ownership_loaded {
+		planar_ownership_artifact_destroy(
+			&replay.planar_ownership,
 			allocator,
 		)
 	}
@@ -661,6 +669,7 @@ evidence_bundle_replay_primitive_supported :: proc(
 		return format == LAYER_SPAN_ARTIFACT_FORMAT
 	case "intersect":
 		return format == CPU_INTERSECTION_ARTIFACT_FORMAT ||
+			format == PLANAR_OWNERSHIP_ARTIFACT_FORMAT ||
 			format == SNAPPED_SEGMENT_ARTIFACT_FORMAT
 	case "reconstruct-topology":
 		return format == TOPOLOGY_ARTIFACT_FORMAT
@@ -789,6 +798,41 @@ evidence_bundle_replay_stage_decode :: proc(
 			}
 			replay.intersections = artifact
 			replay.intersections_loaded = true
+		case PLANAR_OWNERSHIP_ARTIFACT_FORMAT:
+			if replay.planar_ownership_loaded {
+				return .Invalid_Content
+			}
+			expectations, preflight_error :=
+				planar_ownership_manifest_preflight(
+					manifest,
+					primitive.path,
+					artifact_bytes,
+				)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error :=
+				planar_ownership_artifact_decode(
+					artifact_bytes,
+					DEFAULT_PLANAR_OWNERSHIP_ARTIFACT_LIMITS,
+					allocator,
+				)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
+			}
+			if planar_ownership_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				planar_ownership_artifact_destroy(
+					&artifact,
+					allocator,
+				)
+				return .Invalid_Content
+			}
+			replay.planar_ownership = artifact
+			replay.planar_ownership_loaded = true
 		case SNAPPED_SEGMENT_ARTIFACT_FORMAT:
 			if replay.snapped_loaded {return .Invalid_Content}
 			expectations, preflight_error :=
@@ -1191,6 +1235,25 @@ evidence_bundle_replay_dependencies_valid :: proc(
 	   len(replay.intersections.result.layers) !=
 		len(replay.snapped.result.layers) {
 		return false
+	}
+	if replay.intersections_loaded &&
+	   replay.planar_ownership_loaded {
+		hash_mismatch :=
+			replay.planar_ownership.intersection_hash !=
+			replay.intersections.result_hash
+		layer_count_mismatch :=
+			len(replay.planar_ownership.result.layers) !=
+			len(replay.intersections.result.layers)
+		if hash_mismatch || layer_count_mismatch {return false}
+	}
+	if replay.planar_ownership_loaded && replay.snapped_loaded {
+		hash_mismatch :=
+			replay.snapped.parent_hash !=
+			replay.planar_ownership.result_hash
+		layer_count_mismatch :=
+			len(replay.snapped.result.layers) !=
+			len(replay.planar_ownership.result.layers)
+		if hash_mismatch || layer_count_mismatch {return false}
 	}
 	if replay.snapped_loaded && replay.topology_loaded {
 		hash_mismatch :=
