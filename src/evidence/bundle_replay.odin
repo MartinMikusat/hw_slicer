@@ -16,6 +16,7 @@ Evidence_Bundle_Replay :: struct {
 	layer_schedule:   Layer_Schedule_Artifact,
 	layer_spans:      Layer_Span_Artifact,
 	intersections:    CPU_Intersection_Artifact,
+	snapped:          Snapped_Segment_Artifact,
 	topology:         Topology_Artifact,
 	regions:          Region_Artifact,
 	path_plan:        Path_Plan_Artifact,
@@ -30,6 +31,7 @@ Evidence_Bundle_Replay :: struct {
 	layer_schedule_loaded: bool,
 	layer_spans_loaded: bool,
 	intersections_loaded: bool,
+	snapped_loaded:    bool,
 	topology_loaded:  bool,
 	regions_loaded:   bool,
 	path_plan_loaded: bool,
@@ -80,6 +82,9 @@ evidence_bundle_replay_destroy :: proc(
 			&replay.intersections,
 			allocator,
 		)
+	}
+	if replay.snapped_loaded {
+		snapped_segment_artifact_destroy(&replay.snapped, allocator)
 	}
 	if replay.topology_loaded {
 		topology_artifact_destroy(&replay.topology, allocator)
@@ -655,7 +660,8 @@ evidence_bundle_replay_primitive_supported :: proc(
 	case "build-acceleration":
 		return format == LAYER_SPAN_ARTIFACT_FORMAT
 	case "intersect":
-		return format == CPU_INTERSECTION_ARTIFACT_FORMAT
+		return format == CPU_INTERSECTION_ARTIFACT_FORMAT ||
+			format == SNAPPED_SEGMENT_ARTIFACT_FORMAT
 	case "reconstruct-topology":
 		return format == TOPOLOGY_ARTIFACT_FORMAT
 	case "calculate-regions":
@@ -749,34 +755,74 @@ evidence_bundle_replay_stage_decode :: proc(
 		replay.layer_spans = artifact
 		replay.layer_spans_loaded = true
 	case "intersect":
-		if replay.intersections_loaded {return .Invalid_Content}
-		expectations, preflight_error :=
-			cpu_intersection_manifest_preflight(
-				manifest,
-				primitive.path,
-				artifact_bytes,
-			)
-		if preflight_error != .None {return .Invalid_Content}
-		artifact, decode_error := cpu_intersection_artifact_decode(
-			artifact_bytes,
-			DEFAULT_CPU_INTERSECTION_ARTIFACT_LIMITS,
-			allocator,
-		)
-		if decode_error != .None {
-			if decode_error == .Allocation_Failed {
-				return .Allocation_Failed
+		switch primitive.format {
+		case CPU_INTERSECTION_ARTIFACT_FORMAT:
+			if replay.intersections_loaded {return .Invalid_Content}
+			expectations, preflight_error :=
+				cpu_intersection_manifest_preflight(
+					manifest,
+					primitive.path,
+					artifact_bytes,
+				)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error :=
+				cpu_intersection_artifact_decode(
+					artifact_bytes,
+					DEFAULT_CPU_INTERSECTION_ARTIFACT_LIMITS,
+					allocator,
+				)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
 			}
-			return .Invalid_Content
+			if cpu_intersection_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				cpu_intersection_artifact_destroy(
+					&artifact,
+					allocator,
+				)
+				return .Invalid_Content
+			}
+			replay.intersections = artifact
+			replay.intersections_loaded = true
+		case SNAPPED_SEGMENT_ARTIFACT_FORMAT:
+			if replay.snapped_loaded {return .Invalid_Content}
+			expectations, preflight_error :=
+				snapped_segment_manifest_preflight(
+					manifest,
+					primitive.path,
+					artifact_bytes,
+				)
+			if preflight_error != .None {return .Invalid_Content}
+			artifact, decode_error :=
+				snapped_segment_artifact_decode(
+					artifact_bytes,
+					DEFAULT_SNAPPED_SEGMENT_ARTIFACT_LIMITS,
+					allocator,
+				)
+			if decode_error != .None {
+				if decode_error == .Allocation_Failed {
+					return .Allocation_Failed
+				}
+				return .Invalid_Content
+			}
+			if snapped_segment_manifest_replay_verify(
+				expectations,
+				artifact,
+			) != .None {
+				snapped_segment_artifact_destroy(
+					&artifact,
+					allocator,
+				)
+				return .Invalid_Content
+			}
+			replay.snapped = artifact
+			replay.snapped_loaded = true
 		}
-		if cpu_intersection_manifest_replay_verify(
-			expectations,
-			artifact,
-		) != .None {
-			cpu_intersection_artifact_destroy(&artifact, allocator)
-			return .Invalid_Content
-		}
-		replay.intersections = artifact
-		replay.intersections_loaded = true
 	case "reconstruct-topology":
 		if replay.topology_loaded {return .Invalid_Content}
 		expectations, preflight_error := topology_manifest_preflight(
@@ -1140,6 +1186,19 @@ evidence_bundle_replay_dependencies_valid :: proc(
 			len(replay.intersections.result.layers) !=
 			len(replay.layer_spans.result.layers)
 		if span_mismatch || layer_count_mismatch {return false}
+	}
+	if replay.intersections_loaded && replay.snapped_loaded &&
+	   len(replay.intersections.result.layers) !=
+		len(replay.snapped.result.layers) {
+		return false
+	}
+	if replay.snapped_loaded && replay.topology_loaded {
+		hash_mismatch :=
+			replay.topology.snapped_hash != replay.snapped.result_hash
+		layer_count_mismatch :=
+			len(replay.topology.result.layers) !=
+			len(replay.snapped.result.layers)
+		if hash_mismatch || layer_count_mismatch {return false}
 	}
 	if replay.layer_schedule_loaded && replay.extrusion_loaded &&
 	   replay.extrusion.dependencies.layer_schedule_hash !=
