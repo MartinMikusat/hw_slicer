@@ -108,6 +108,24 @@ planar_ownership_emits_one_boundary_for_each_bottom_face_edge_test :: proc(
 		0x33, 0x27, 0x12, 0x3e, 0xf6, 0x71, 0xeb, 0xe6,
 	}
 	testing.expect_value(t, ownership_hash, expected_ownership_hash)
+
+	original_edge_b := owned.segments.edge_b[0]
+	owned.segments.edge_b[0] =
+		.BC if original_edge_b == .AB else .AB
+	_, mutated_ok := planar_ownership_result_hash({}, owned)
+	testing.expect(t, !mutated_ok)
+	owned.segments.edge_b[0] = original_edge_b
+
+	owned.segments.x0_error_um[0] = 0.25
+	_, mutated_ok = planar_ownership_result_hash({}, owned)
+	testing.expect(t, !mutated_ok)
+	owned.segments.x0_error_um[0] = 0
+
+	original_incidence_count := owned.incidence_count
+	owned.incidence_count = 2
+	_, mutated_ok = planar_ownership_result_hash({}, owned)
+	testing.expect(t, !mutated_ok)
+	owned.incidence_count = original_incidence_count
 }
 
 @(test)

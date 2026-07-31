@@ -811,6 +811,31 @@ planar_ownership_result_hash :: proc(
 	intersection_hash: contracts.Content_Hash,
 	result: Planar_Ownership_Result,
 ) -> (contracts.Content_Hash, bool) {
+	segment_count := len(result.segments.segment_ids)
+	minimum_group_count := u64(segment_count)
+	if minimum_group_count >
+	   max(u64)-result.unresolved_group_count {
+		return {}, false
+	}
+	minimum_group_count += result.unresolved_group_count
+	if minimum_group_count >
+	   max(u64)-result.suppressed_group_count {
+		return {}, false
+	}
+	minimum_group_count += result.suppressed_group_count
+	if minimum_group_count > result.incidence_count {
+		return {}, false
+	}
+	for segment_index in 0..<segment_count {
+		if result.segments.edge_a[segment_index] !=
+			result.segments.edge_b[segment_index] ||
+		   transmute(u64)result.segments.x0_error_um[segment_index] != 0 ||
+		   transmute(u64)result.segments.y0_error_um[segment_index] != 0 ||
+		   transmute(u64)result.segments.x1_error_um[segment_index] != 0 ||
+		   transmute(u64)result.segments.y1_error_um[segment_index] != 0 {
+			return {}, false
+		}
+	}
 	segment_result := Snapped_Segment_Result{
 		layers = result.layers,
 		segments = result.segments,
