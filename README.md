@@ -608,10 +608,11 @@ sibling checkout.
 See [`resources/models/LICENSES.md`](resources/models/LICENSES.md) for model
 attribution and license checksums.
 
-## Project TODO
+## Project details
 
-Execute the staged plan through the release gate. Preserve the versioned stage
-contracts and debug-evidence protocol when an implementation is replaced.
+The current project tasks are tracked in [TODO.md](TODO.md). Execute the staged
+plan through the release gate. Preserve the versioned stage contracts and
+debug-evidence protocol when an implementation is replaced.
 
 Extend retained evidence through the remaining intermediate feature graphs.
 Add geometric rendering and cross-stage selection for the retained records.
