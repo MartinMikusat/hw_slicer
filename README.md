@@ -24,7 +24,7 @@ The [technical implementation plan](PLAN.md) defines the subsystem contracts,
 CPU and Metal execution paths, visual-debug protocol, delivery gates,
 benchmarks, and research curriculum.
 
-The [roadmap progress note](../notes/hw-slicer-roadmap-progress.md) separates
+The [roadmap progress note](notes/hw-slicer-roadmap-progress.md) separates
 implemented gates, measured bottlenecks, settled contracts, and open product
 decisions.
 
@@ -482,16 +482,16 @@ Measure complete capture encoding and source-independent replay:
 Each benchmark performs two warmups and 20 alternating capture and replay
 samples. Every release lane requires a p95 below three seconds.
 
-The [path-plan evidence artifact contract](../notes/hw-slicer-path-plan-evidence-artifact.md)
+The [path-plan evidence artifact contract](notes/hw-slicer-path-plan-evidence-artifact.md)
 defines the binary layout, validation sequence, production fixture, and
 performance gate. The
-[topology evidence artifact contract](../notes/hw-slicer-topology-evidence-artifact.md)
+[topology evidence artifact contract](notes/hw-slicer-topology-evidence-artifact.md)
 defines the complete graph layout, manifest binding, source-free region replay,
 and performance gate. The
-[region evidence artifact contract](../notes/hw-slicer-region-evidence-artifact.md)
+[region evidence artifact contract](notes/hw-slicer-region-evidence-artifact.md)
 defines the topology-dependent region graph, production fixture, and
 performance gate. The
-[`.hwsdebug` bundle contract](../notes/hw-slicer-evidence-bundle-contract.md)
+[`.hwsdebug` bundle contract](notes/hw-slicer-evidence-bundle-contract.md)
 defines the implemented root schema, transfer ZIP, validation order, and open
 publication policy.
 
@@ -557,17 +557,11 @@ degeneracy corpora remain open.
 ## Development dependencies
 
 The project requires Apple Silicon macOS, Xcode 26.6 with its C++17 compiler,
-and Odin `dev-2026-01:393fec2f6`.
+and the workspace-global compiler managed by `hw_odin_toolchain`.
 
-The build selects the pinned compiler from `HW_SLICER_ODIN`,
-`/opt/homebrew/bin/odin`, or `PATH`, in that order. This keeps an older Odin
-earlier in the interactive shell path from changing the build. Set
-`HW_SLICER_ODIN=/path/to/odin` to use another installation of the pinned
-version.
-
-The project compiler wrapper disables the pinned compiler's threaded semantic
-checker because concurrent checks can crash on these packages. Test execution
-and optimized code generation remain parallel.
+The project compiler wrapper forwards every command to `hw-odin` and disables
+the threaded semantic checker because concurrent checks can crash on these
+packages. Test execution and optimized code generation remain parallel.
 
 `dependencies.lock` pins `hw_odin_ui_flash` to repository
 `https://github.com/MartinMikusat/hw_odin_ui_flash.git` at commit
@@ -618,4 +612,4 @@ Extend retained evidence through the remaining intermediate feature graphs.
 Add geometric rendering and cross-stage selection for the retained records.
 Connect those stages to the production slice action before physical printer
 calibration. Preserve the profile provenance and invalidation rules from the
-[process-profile decision contract](../notes/hw-slicer-process-profile-decisions.md).
+[process-profile decision contract](notes/hw-slicer-process-profile-decisions.md).

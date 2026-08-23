@@ -2,8 +2,15 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
-EXPECTED_ODIN=$(tr -d '\r\n' < "$ROOT/odin-version")
+if [ -d "$ROOT/../hw_odin_ui_flash" ]; then
+  FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
+elif [ -d "$ROOT/../main/hw_odin_ui_flash" ]; then
+  FLASH_ROOT="$ROOT/../main/hw_odin_ui_flash"
+elif [ -d "$ROOT/../hw/hw_odin_ui_flash" ]; then
+  FLASH_ROOT="$ROOT/../hw/hw_odin_ui_flash"
+else
+  FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
+fi
 EXPECTED_FLASH_URL="https://github.com/MartinMikusat/hw_odin_ui_flash.git"
 EXPECTED_FLASH_COMMIT="d06e98a40640b13eea5b979319022aad0a470d72"
 
@@ -12,12 +19,10 @@ if [ "${1:-}" != "check" ]; then
   exit 2
 fi
 
-ODIN="$ROOT/scripts/odin.sh"
-ACTUAL_ODIN=$("$ODIN" version | awk '{print $NF}')
-if [ "$ACTUAL_ODIN" != "$EXPECTED_ODIN" ]; then
-  echo "[hw_slicer] Odin version mismatch: expected $EXPECTED_ODIN, got $ACTUAL_ODIN" >&2
+hw-odin toolchain doctor >/dev/null || {
+  echo "[hw_slicer] global Odin toolchain is unavailable" >&2
   exit 1
-fi
+}
 
 if [ ! -d "$FLASH_ROOT/.git" ]; then
   echo "[hw_slicer] missing sibling dependency: $FLASH_ROOT" >&2

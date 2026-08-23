@@ -2,7 +2,15 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
+if [ -d "$ROOT/../hw_odin_ui_flash" ]; then
+  FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
+elif [ -d "$ROOT/../main/hw_odin_ui_flash" ]; then
+  FLASH_ROOT="$ROOT/../main/hw_odin_ui_flash"
+elif [ -d "$ROOT/../hw/hw_odin_ui_flash" ]; then
+  FLASH_ROOT="$ROOT/../hw/hw_odin_ui_flash"
+else
+  FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
+fi
 "$ROOT/scripts/dependencies.sh" check
 ODIN="$ROOT/scripts/odin.sh"
 "$ROOT/scripts/clipper2-build.sh" debug >/dev/null
