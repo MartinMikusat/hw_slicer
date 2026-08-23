@@ -154,7 +154,7 @@ evidence_bundle_path_replay :: proc(
 	info, stat_error := os.stat(path, allocator)
 	if stat_error != nil {return {}, .Unknown, .Invalid_Path}
 	defer os.file_info_delete(info, allocator)
-	if info.is_dir {
+	if info.type == .Directory {
 		directory_replay, directory_error :=
 			evidence_bundle_directory_replay(path, limits, allocator)
 		if directory_error != .None {

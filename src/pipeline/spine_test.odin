@@ -143,11 +143,11 @@ f 3 1 4
 equivalent_mesh_formats_emit_identical_snapped_geometry_test :: proc(
 	t: ^testing.T,
 ) {
-	ascii, ascii_read_ok :=
-		os.read_entire_file("testdata/ascii-stl/tetrahedron.stl")
+	ascii, ascii_read_error :=
+		os.read_entire_file("testdata/ascii-stl/tetrahedron.stl", context.allocator)
 	defer delete(ascii)
-	obj, obj_read_ok :=
-		os.read_entire_file("testdata/obj/tetrahedron.obj")
+	obj, obj_read_error :=
+		os.read_entire_file("testdata/obj/tetrahedron.obj", context.allocator)
 	defer delete(obj)
 	binary := pipeline_test_binary_tetrahedron()
 	model :=
@@ -156,9 +156,9 @@ equivalent_mesh_formats_emit_identical_snapped_geometry_test :: proc(
 		`</object></resources><build><item objectid="1"/></build></model>`
 	three_mf := formats.three_mf_test_package(model = model)
 	defer delete(three_mf)
-	testing.expect(t, ascii_read_ok)
-	testing.expect(t, obj_read_ok)
-	if !ascii_read_ok || !obj_read_ok {return}
+	testing.expect(t, ascii_read_error == nil)
+	testing.expect(t, obj_read_error == nil)
+	if ascii_read_error != nil || obj_read_error != nil {return}
 	config := Slice_Spine_Config{
 		source_units = .Millimetres,
 		first_layer_height = 1000,

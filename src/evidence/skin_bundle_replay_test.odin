@@ -2,7 +2,7 @@ package evidence
 
 import "core:encoding/hex"
 import "core:fmt"
-import "core:os/os2"
+import "core:os"
 import "core:testing"
 
 import contracts "../contracts"
@@ -584,7 +584,7 @@ skin_bundle_replays_dependent_graph_from_package_and_directory_test :: proc(
 
 	directory_root := directory_test_root(t)
 	defer {
-		os2.remove_all(directory_root)
+		os.remove_all(directory_root)
 		delete(directory_root)
 	}
 	destination := directory_test_join(t, {directory_root, "skin-evidence"})

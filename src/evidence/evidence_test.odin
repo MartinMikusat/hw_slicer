@@ -84,11 +84,11 @@ evidence_manifest_matches_golden_fixture_test :: proc(t: ^testing.T) {
 		context.temp_allocator,
 	)
 	testing.expect_value(t, encode_error, Evidence_Error.None)
-	expected, read_ok := os.read_entire_file(
+	expected, read_error := os.read_entire_file(
 		"testdata/evidence/stage-manifest-v1.json",
 		context.temp_allocator,
 	)
-	testing.expect(t, read_ok)
+	testing.expect(t, read_error == nil)
 	testing.expect_value(t, string(encoded), string(expected))
 }
 

@@ -110,8 +110,8 @@ main :: proc() {
 			)
 			os.exit(2)
 		}
-		if info, error := os.lstat(os.args[2]); error == nil {
-			os.file_info_delete(info)
+		if info, error := os.lstat(os.args[2], context.allocator); error == nil {
+			os.file_info_delete(info, context.allocator)
 			fmt.eprintln(
 				"[hw_slicer] topology artifact destination already exists",
 			)
@@ -167,7 +167,7 @@ main :: proc() {
 			os.exit(1)
 		}
 		defer evidence.topology_capture_destroy(&topology_capture)
-		if !os.write_entire_file(os.args[2], topology_capture.bytes) {
+		if os.write_entire_file(os.args[2], topology_capture.bytes) != nil {
 			fmt.eprintln("[hw_slicer] topology artifact write failed")
 			os.exit(1)
 		}

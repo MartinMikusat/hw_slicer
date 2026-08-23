@@ -73,9 +73,9 @@ obj_assimp_bsd_fixtures_decode_with_pinned_counts_and_hashes_test :: proc(
 		},
 	}
 	for test_case in cases {
-		bytes, read_ok := os.read_entire_file(test_case.path)
-		testing.expect(t, read_ok)
-		if !read_ok {continue}
+		bytes, read_error := os.read_entire_file(test_case.path, context.allocator)
+		testing.expect(t, read_error == nil)
+		if read_error != nil {continue}
 		result, error := obj_decode(bytes, .Millimetres)
 		testing.expect_value(t, error, Decode_Error.None)
 		testing.expect_value(t, len(bytes), test_case.source_bytes)
@@ -113,9 +113,9 @@ obj_assimp_non_simple_and_malformed_numeric_fixtures_are_documented_rejections_t
 		"testdata/assimp-obj/number_formats.obj",
 	}
 	for path in paths {
-		bytes, read_ok := os.read_entire_file(path)
-		testing.expect(t, read_ok)
-		if !read_ok {continue}
+		bytes, read_error := os.read_entire_file(path, context.allocator)
+		testing.expect(t, read_error == nil)
+		if read_error != nil {continue}
 		result, error := obj_decode(bytes, .Millimetres)
 		testing.expect_value(t, error, Decode_Error.Invalid_Syntax)
 		obj_decoded_mesh_destroy(&result)

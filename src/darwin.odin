@@ -1,6 +1,6 @@
 package main
 
-import "core:os"
+import "core:dynlib"
 import "core:strings"
 
 Id :: rawptr
@@ -28,10 +28,10 @@ objc_send_address: rawptr
 
 objc_initialize :: proc() -> bool {
 	if objc_send_address != nil {return true}
-	handle := os.dlopen("/usr/lib/libobjc.A.dylib", os.RTLD_NOW)
-	if handle == nil {return false}
-	objc_send_address = os.dlsym(handle, "objc_msgSend")
-	return objc_send_address != nil
+	handle, loaded := dynlib.load_library("/usr/lib/libobjc.A.dylib")
+	if !loaded {return false}
+	objc_send_address, loaded = dynlib.symbol_address(handle, "objc_msgSend")
+	return loaded
 }
 
 msg_id :: proc(receiver: Id, selector: Sel) -> Id {

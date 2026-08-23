@@ -77,11 +77,11 @@ evidence_bundle_manifest_matches_golden_fixture_test :: proc(t: ^testing.T) {
 		context.temp_allocator,
 	)
 	testing.expect_value(t, encode_error, Evidence_Bundle_Error.None)
-	expected, read_ok := os.read_entire_file(
+	expected, read_error := os.read_entire_file(
 		"testdata/evidence/bundle-manifest-v1.json",
 		context.temp_allocator,
 	)
-	testing.expect(t, read_ok)
+	testing.expect(t, read_error == nil)
 	testing.expect_value(t, string(encoded), string(expected))
 }
 
@@ -187,11 +187,11 @@ evidence_bundle_summary_round_trip_and_validation_test :: proc(t: ^testing.T) {
 	bytes, encode_error := evidence_bundle_summary_encode(summary)
 	defer delete(bytes)
 	testing.expect_value(t, encode_error, Evidence_Bundle_Error.None)
-	expected, read_ok := os.read_entire_file(
+	expected, read_error := os.read_entire_file(
 		"testdata/evidence/bundle-summary-v1.json",
 		context.temp_allocator,
 	)
-	testing.expect(t, read_ok)
+	testing.expect(t, read_error == nil)
 	testing.expect_value(t, string(bytes), string(expected))
 	decoded, decode_error := evidence_bundle_summary_decode(bytes)
 	defer evidence_bundle_summary_destroy(&decoded)

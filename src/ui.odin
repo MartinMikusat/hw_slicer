@@ -1502,5 +1502,5 @@ ui_snapshot_text :: proc(ui: ^UI_State) -> string {
 ui_write_snapshot :: proc(ui: ^UI_State, path: string) -> bool {
 	text := ui_snapshot_text(ui)
 	defer delete(text)
-	return os.write_entire_file(path, transmute([]u8)text)
+	return os.write_entire_file(path, transmute([]u8)text) == nil
 }

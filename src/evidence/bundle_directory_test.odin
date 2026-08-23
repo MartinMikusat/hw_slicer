@@ -2,7 +2,6 @@ package evidence
 
 import "core:fmt"
 import "core:os"
-import "core:os/os2"
 import "core:path/filepath"
 import "core:strings"
 import "core:testing"
@@ -129,7 +128,7 @@ directory_test_fixture_destroy :: proc(fixture: ^Directory_Test_Fixture) {
 }
 
 directory_test_root :: proc(t: ^testing.T) -> string {
-	path, error := os2.make_directory_temp(
+	path, error := os.make_directory_temp(
 		"/tmp",
 		"hw-slicer-evidence-directory-*",
 		context.allocator,
@@ -145,9 +144,9 @@ directory_test_join :: proc(t: ^testing.T, parts: []string) -> string {
 }
 
 directory_test_path_exists :: proc(path: string) -> bool {
-	info, error := os.lstat(path)
+	info, error := os.lstat(path, context.allocator)
 	if error != nil {return false}
-	os.file_info_delete(info)
+	os.file_info_delete(info, context.allocator)
 	return true
 }
 
@@ -156,10 +155,10 @@ directory_test_staging_count :: proc(t: ^testing.T, path: string) -> int {
 	testing.expect(t, open_error == nil)
 	if open_error != nil {return -1}
 	defer os.close(handle)
-	infos, read_error := os.read_dir(handle, -1)
+	infos, read_error := os.read_dir(handle, -1, context.allocator)
 	testing.expect(t, read_error == nil)
 	if read_error != nil {return -1}
-	defer os.file_info_slice_delete(infos)
+	defer os.file_info_slice_delete(infos, context.allocator)
 	count := 0
 	for info in infos {
 		if strings.has_prefix(info.name, EVIDENCE_BUNDLE_STAGING_PREFIX) {
@@ -178,7 +177,7 @@ evidence_bundle_directory_publishes_and_validates_exact_tree_test :: proc(
 	defer directory_test_fixture_destroy(&fixture)
 	root := directory_test_root(t)
 	defer {
-		os2.remove_all(root)
+		os.remove_all(root)
 		delete(root)
 	}
 	destination := directory_test_join(t, {root, "bundle"})
@@ -227,9 +226,9 @@ evidence_bundle_directory_publishes_and_validates_exact_tree_test :: proc(
 			t,
 			{reordered_destination, content.path},
 		)
-		first_bytes, first_ok := os.read_entire_file(first_path)
-		second_bytes, second_ok := os.read_entire_file(second_path)
-		testing.expect(t, first_ok && second_ok)
+		first_bytes, first_error := os.read_entire_file(first_path, context.allocator)
+		second_bytes, second_error := os.read_entire_file(second_path, context.allocator)
+		testing.expect(t, first_error == nil && second_error == nil)
 		testing.expect(
 			t,
 			evidence_bundle_bytes_equal(first_bytes, second_bytes),
@@ -250,17 +249,17 @@ evidence_bundle_directory_preserves_existing_destination_test :: proc(
 	defer directory_test_fixture_destroy(&fixture)
 	root := directory_test_root(t)
 	defer {
-		os2.remove_all(root)
+		os.remove_all(root)
 		delete(root)
 	}
 	destination := directory_test_join(t, {root, "bundle"})
 	defer delete(destination)
-	testing.expect(t, os.make_directory(destination, 0o700) == nil)
+	testing.expect(t, os.make_directory(destination, os.perm(0o700)) == nil)
 	marker_path := directory_test_join(t, {destination, "marker"})
 	defer delete(marker_path)
 	marker_text := "preserve"
 	marker_bytes := transmute([]u8)marker_text
-	testing.expect(t, os.write_entire_file(marker_path, marker_bytes))
+	testing.expect(t, os.write_entire_file(marker_path, marker_bytes) == nil)
 	testing.expect_value(
 		t,
 		evidence_bundle_directory_publish(
@@ -270,9 +269,9 @@ evidence_bundle_directory_preserves_existing_destination_test :: proc(
 		),
 		Evidence_Bundle_Directory_Error.Destination_Exists,
 	)
-	actual_marker, marker_ok := os.read_entire_file(marker_path)
+	actual_marker, marker_error := os.read_entire_file(marker_path, context.allocator)
 	defer delete(actual_marker)
-	testing.expect(t, marker_ok)
+	testing.expect(t, marker_error == nil)
 	testing.expect(
 		t,
 		evidence_bundle_bytes_equal(actual_marker, marker_bytes),
@@ -289,7 +288,7 @@ evidence_bundle_directory_cleans_every_injected_failure_test :: proc(
 	defer directory_test_fixture_destroy(&fixture)
 	root := directory_test_root(t)
 	defer {
-		os2.remove_all(root)
+		os.remove_all(root)
 		delete(root)
 	}
 	for file_count in 1..=u64(5) {
@@ -336,7 +335,7 @@ evidence_bundle_directory_rejects_invalid_content_before_staging_test :: proc(
 	defer directory_test_fixture_destroy(&fixture)
 	root := directory_test_root(t)
 	defer {
-		os2.remove_all(root)
+		os.remove_all(root)
 		delete(root)
 	}
 	destination := directory_test_join(t, {root, "bundle"})
@@ -387,7 +386,7 @@ evidence_bundle_directory_validator_rejects_tree_mutations_test :: proc(
 	defer directory_test_fixture_destroy(&fixture)
 	root := directory_test_root(t)
 	defer {
-		os2.remove_all(root)
+		os.remove_all(root)
 		delete(root)
 	}
 	for mutation in 0..<4 {
@@ -415,7 +414,7 @@ evidence_bundle_directory_validator_rejects_tree_mutations_test :: proc(
 				os.write_entire_file(
 					unlisted,
 					transmute([]u8)hidden_text,
-				),
+				) == nil,
 			)
 			delete(unlisted)
 		case 1:
@@ -425,7 +424,7 @@ evidence_bundle_directory_validator_rejects_tree_mutations_test :: proc(
 				os.write_entire_file(
 					primitive_path,
 					transmute([]u8)changed_text,
-				),
+				) == nil,
 			)
 		case 2:
 			testing.expect(t, os.remove(primitive_path) == nil)
@@ -433,7 +432,7 @@ evidence_bundle_directory_validator_rejects_tree_mutations_test :: proc(
 			testing.expect(t, os.remove(primitive_path) == nil)
 			testing.expect(
 				t,
-				os2.symlink("/tmp", primitive_path) == nil,
+				os.symlink("/tmp", primitive_path) == nil,
 			)
 		}
 		testing.expect(
@@ -455,7 +454,7 @@ evidence_bundle_directory_validator_verifies_manifest_descriptors_test :: proc(
 	defer directory_test_fixture_destroy(&fixture)
 	root := directory_test_root(t)
 	defer {
-		os2.remove_all(root)
+		os.remove_all(root)
 		delete(root)
 	}
 	descriptor_kinds := [2]bool{false, true}
@@ -473,8 +472,8 @@ evidence_bundle_directory_validator_verifies_manifest_descriptors_test :: proc(
 		)
 		root_manifest_path :=
 			directory_test_join(t, {destination, "manifest.json"})
-		root_bytes, read_ok := os.read_entire_file(root_manifest_path)
-		testing.expect(t, read_ok)
+		root_bytes, read_error := os.read_entire_file(root_manifest_path, context.allocator)
+		testing.expect(t, read_error == nil)
 		decoded, decode_error := evidence_bundle_manifest_decode(root_bytes)
 		delete(root_bytes)
 		testing.expect_value(
@@ -496,7 +495,7 @@ evidence_bundle_directory_validator_verifies_manifest_descriptors_test :: proc(
 		)
 		testing.expect(
 			t,
-			os.write_entire_file(root_manifest_path, changed_root_bytes),
+			os.write_entire_file(root_manifest_path, changed_root_bytes) == nil,
 		)
 		delete(changed_root_bytes)
 		testing.expect_value(
@@ -518,7 +517,7 @@ evidence_bundle_directory_rejects_invalid_destinations_and_limits_test :: proc(
 	defer directory_test_fixture_destroy(&fixture)
 	root := directory_test_root(t)
 	defer {
-		os2.remove_all(root)
+		os.remove_all(root)
 		delete(root)
 	}
 	reserved := directory_test_join(

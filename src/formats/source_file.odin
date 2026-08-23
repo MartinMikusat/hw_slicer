@@ -39,7 +39,7 @@ source_file_read_bounded :: proc(
 	}
 	extra: [1]u8
 	extra_count, extra_error := os.read(handle, extra[:])
-	if extra_error != nil || extra_count != 0 {
+	if extra_count != 0 || (extra_error != nil && extra_error != .EOF) {
 		delete(bytes, allocator)
 		return nil, .Changed_During_Read
 	}

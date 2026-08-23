@@ -44,9 +44,9 @@ three_mf_official_core_examples_decode_and_flatten_test :: proc(
 		},
 	}
 	for test_case in cases {
-		bytes, read_ok := os.read_entire_file(test_case.path)
-		testing.expect(t, read_ok)
-		if !read_ok {continue}
+		bytes, read_error := os.read_entire_file(test_case.path, context.allocator)
+		testing.expect(t, read_error == nil)
+		if read_error != nil {continue}
 
 		package_result, package_error := three_mf_package_open(bytes)
 		scene, model_error := three_mf_model_decode(package_result)
@@ -97,9 +97,9 @@ three_mf_official_archived_must_pass_cases_decode_and_flatten_test :: proc(
 	}
 	expected_triangle_counts := [?]int{12, 12, 60, 12, 12, 60, 12}
 	for path, case_index in paths {
-		bytes, read_ok := os.read_entire_file(path)
-		testing.expect(t, read_ok)
-		if !read_ok {continue}
+		bytes, read_error := os.read_entire_file(path, context.allocator)
+		testing.expect(t, read_error == nil)
+		if read_error != nil {continue}
 
 		package_result, package_error := three_mf_package_open(bytes)
 		scene, model_error := three_mf_model_decode(package_result)
@@ -125,11 +125,10 @@ three_mf_official_archived_must_pass_cases_decode_and_flatten_test :: proc(
 three_mf_official_archived_must_fail_cases_are_rejected_test :: proc(
 	t: ^testing.T,
 ) {
-	external_bytes, external_read_ok := os.read_entire_file(
-		"testdata/3mf-consortium/archive-must-fail/MUSTFAIL_Chapter2.1.1b_PartsRelationships_LinkToExternal.3mf",
-	)
+	external_bytes, external_read_error := os.read_entire_file(
+		"testdata/3mf-consortium/archive-must-fail/MUSTFAIL_Chapter2.1.1b_PartsRelationships_LinkToExternal.3mf", context.allocator)
 	defer delete(external_bytes)
-	testing.expect(t, external_read_ok)
+	testing.expect(t, external_read_error == nil)
 	external_package, external_error :=
 		three_mf_package_open(external_bytes)
 	defer three_mf_package_destroy(&external_package)
@@ -139,11 +138,10 @@ three_mf_official_archived_must_fail_cases_are_rejected_test :: proc(
 		Three_MF_Package_Error.External_Relationship,
 	)
 
-	roots_bytes, roots_read_ok := os.read_entire_file(
-		"testdata/3mf-consortium/archive-must-fail/MUSTFAIL_Chapter3.4a_MoreThanOneModel.3mf",
-	)
+	roots_bytes, roots_read_error := os.read_entire_file(
+		"testdata/3mf-consortium/archive-must-fail/MUSTFAIL_Chapter3.4a_MoreThanOneModel.3mf", context.allocator)
 	defer delete(roots_bytes)
-	testing.expect(t, roots_read_ok)
+	testing.expect(t, roots_read_error == nil)
 	roots_package, roots_error := three_mf_package_open(roots_bytes)
 	defer three_mf_package_destroy(&roots_package)
 	testing.expect_value(
@@ -152,11 +150,10 @@ three_mf_official_archived_must_fail_cases_are_rejected_test :: proc(
 		Three_MF_Package_Error.XML_Invalid,
 	)
 
-	metadata_bytes, metadata_read_ok := os.read_entire_file(
-		"testdata/3mf-consortium/archive-must-fail/MUSTFAIL_Chapter3.4.1b_DuplicatedMetadataName.3mf",
-	)
+	metadata_bytes, metadata_read_error := os.read_entire_file(
+		"testdata/3mf-consortium/archive-must-fail/MUSTFAIL_Chapter3.4.1b_DuplicatedMetadataName.3mf", context.allocator)
 	defer delete(metadata_bytes)
-	testing.expect(t, metadata_read_ok)
+	testing.expect(t, metadata_read_error == nil)
 	metadata_package, metadata_package_error :=
 		three_mf_package_open(metadata_bytes)
 	defer three_mf_package_destroy(&metadata_package)

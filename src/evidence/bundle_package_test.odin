@@ -4,7 +4,7 @@ import "core:crypto/sha2"
 import "core:encoding/hex"
 import "core:fmt"
 import "core:mem"
-import "core:os/os2"
+import "core:os"
 import "core:testing"
 
 import contracts "../contracts"
@@ -648,7 +648,7 @@ evidence_bundle_package_replays_path_plan_stage_test :: proc(
 	)
 	directory_root := directory_test_root(t)
 	defer {
-		os2.remove_all(directory_root)
+		os.remove_all(directory_root)
 		delete(directory_root)
 	}
 	directory_destination :=
@@ -938,7 +938,7 @@ evidence_bundle_package_replays_topology_stage_test :: proc(
 	)
 	directory_root := directory_test_root(t)
 	defer {
-		os2.remove_all(directory_root)
+		os.remove_all(directory_root)
 		delete(directory_root)
 	}
 	directory_destination :=
@@ -1346,7 +1346,7 @@ evidence_bundle_package_replays_region_after_topology_test :: proc(
 	)
 	directory_root := directory_test_root(t)
 	defer {
-		os2.remove_all(directory_root)
+		os.remove_all(directory_root)
 		delete(directory_root)
 	}
 	directory_destination :=

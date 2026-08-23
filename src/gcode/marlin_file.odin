@@ -198,8 +198,8 @@ marlin_file_destination_split :: proc(
 		return "", "", .Invalid_Destination
 	}
 	if parent == "" {parent = "."}
-	absolute_parent, absolute_ok := filepath.abs(parent, allocator)
-	if !absolute_ok || absolute_parent == "" {
+	absolute_parent, absolute_error := filepath.abs(parent, allocator)
+	if absolute_error != nil || absolute_parent == "" {
 		return "", "", .Parent_Missing
 	}
 	return absolute_parent, name, .None

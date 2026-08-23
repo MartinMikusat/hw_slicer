@@ -257,10 +257,10 @@ Its official documentation describes the foreign system and explicit
 memory-layout controls.[^1] Those mechanisms match generation arenas, SoA
 buffers, and C-compatible platform shims.
 
-The project will pin one compiler revision in `odin-version`. It will not depend
-on a global package manager because Odin does not provide an official one.
-Sibling libraries and vendored C or C++ sources receive exact origins, commits,
-licenses, and checksums in `dependencies.lock` and the README.
+The project uses the single verified monthly compiler selected by the workspace
+`hw_odin_toolchain` manager. Sibling libraries and vendored C or C++ sources
+receive exact origins, commits, licenses, and checksums in `dependencies.lock`
+and the README.
 
 Use Odin for the engine, scheduler, file validation, test harness, CLI, UI
 model, and most macOS bindings. Use small Objective-C or C shims where typed

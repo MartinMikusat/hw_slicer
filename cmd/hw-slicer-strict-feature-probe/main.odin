@@ -355,11 +355,11 @@ main :: proc() {
 		}
 		manifest_path := fmt.aprintf("%s.manifest.json", artifact_path)
 		defer delete(manifest_path)
-		if !os.write_entire_file(artifact_path, path_plan_capture.bytes) ||
-		   !os.write_entire_file(
+		if os.write_entire_file(artifact_path, path_plan_capture.bytes) != nil ||
+		   os.write_entire_file(
 		   	string(manifest_path),
 		   	path_plan_manifest_bytes,
-		   ) {
+		   ) != nil {
 			fmt.eprintln(
 				"[hw_slicer] strict feature probe capture write failed",
 			)
@@ -508,7 +508,7 @@ main :: proc() {
 			)
 			os.exit(1)
 		}
-		if !os.write_entire_file(bundle_path, bundle_bytes) {
+		if os.write_entire_file(bundle_path, bundle_bytes) != nil {
 			fmt.eprintln(
 				"[hw_slicer] strict feature probe bundle write failed",
 			)
@@ -575,13 +575,12 @@ strict_feature_probe_output_paths_valid :: proc(
 strict_feature_probe_normalized_path :: proc(
 	path: string,
 ) -> (string, bool) {
-	absolute, absolute_ok := filepath.abs(path)
-	if absolute_ok {return absolute, true}
+	absolute, absolute_error := filepath.abs(path)
+	if absolute_error == nil {return absolute, true}
 	directory := filepath.dir(path)
 	if directory == "" {return "", false}
-	defer delete(directory)
-	absolute_directory, directory_ok := filepath.abs(directory)
-	if !directory_ok {return "", false}
+	absolute_directory, directory_error := filepath.abs(directory)
+	if directory_error != nil {return "", false}
 	defer delete(absolute_directory)
 	parts := [2]string{absolute_directory, filepath.base(path)}
 	normalized, normalize_error := filepath.join(parts[:])
@@ -590,16 +589,16 @@ strict_feature_probe_normalized_path :: proc(
 }
 
 strict_feature_probe_path_is_directory :: proc(path: string) -> bool {
-	info, error := os.stat(path)
+	info, error := os.stat(path, context.allocator)
 	if error != nil {return false}
-	defer os.file_info_delete(info)
-	return info.is_dir
+	defer os.file_info_delete(info, context.allocator)
+	return info.type == .Directory
 }
 
 strict_feature_probe_path_exists :: proc(path: string) -> bool {
-	info, error := os.lstat(path)
+	info, error := os.lstat(path, context.allocator)
 	if error != nil {return false}
-	defer os.file_info_delete(info)
+	defer os.file_info_delete(info, context.allocator)
 	return true
 }
 

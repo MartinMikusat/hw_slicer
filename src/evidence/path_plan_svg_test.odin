@@ -25,11 +25,11 @@ path_plan_svg_layer_matches_golden_and_enforces_limits_test :: proc(
 	svg, render_error := path_plan_svg_render_layer(artifact, 0)
 	defer delete(svg)
 	testing.expect_value(t, render_error, Path_Plan_SVG_Error.None)
-	expected, read_ok := os.read_entire_file(
+	expected, read_error := os.read_entire_file(
 		"testdata/evidence/path-plan-layer-v1.svg",
 		context.temp_allocator,
 	)
-	testing.expect(t, read_ok)
+	testing.expect(t, read_error == nil)
 	testing.expect_value(t, string(svg), string(expected))
 
 	_, layer_error := path_plan_svg_render_layer(artifact, 1)

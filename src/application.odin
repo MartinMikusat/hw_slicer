@@ -60,17 +60,20 @@ app_frame_camera :: proc() {
 app_model_path :: proc(index: int) -> (string, string) {
 	switch index {
 	case 0:
-		return filepath.join(
+		path, _ := filepath.join(
 			{app.resource_root, "Models", "benchy.stl"},
-		), "3DBenchy"
+		)
+		return path, "3DBenchy"
 	case 1:
-		return filepath.join(
+		path, _ := filepath.join(
 			{app.resource_root, "Models", "all-in-one-test.stl"},
-		), "All In One 3D Printer Test"
+		)
+		return path, "All In One 3D Printer Test"
 	case 2:
-		return filepath.join(
+		path, _ := filepath.join(
 			{app.resource_root, "Models", "stanford-bunny.stl"},
-		), "Stanford Bunny"
+		)
+		return path, "Stanford Bunny"
 	case:
 		return app.external_path, filepath.base(app.external_path)
 	}

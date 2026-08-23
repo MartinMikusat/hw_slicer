@@ -1,5 +1,6 @@
 package evidence
 
+import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:os"
@@ -296,8 +297,8 @@ evidence_bundle_directory_destination_split :: proc(
 		return "", "", .Invalid_Destination
 	}
 	if parent == "" {parent = "."}
-	absolute_parent, absolute_ok := filepath.abs(parent, allocator)
-	if !absolute_ok || absolute_parent == "" {
+	absolute_parent, absolute_error := filepath.abs(parent, allocator)
+	if absolute_error != nil || absolute_parent == "" {
 		return "", "", .Parent_Missing
 	}
 	return absolute_parent, name, .None
@@ -507,9 +508,9 @@ evidence_bundle_directory_walk_validate :: proc(
 	max_path_bytes: u32,
 	allocator := context.allocator,
 ) -> Evidence_Bundle_Directory_Error {
-	infos, read_error :=
-		os.read_dir(transmute(os.Handle)directory_fd, -1, allocator)
-	if read_error != nil {return .Invalid_Content}
+	infos, read_ok :=
+		evidence_bundle_directory_read_dir(directory_fd, allocator)
+	if !read_ok {return .Invalid_Content}
 	defer os.file_info_slice_delete(infos, allocator)
 	for info in infos {
 		node_count^ += 1
@@ -660,12 +661,12 @@ evidence_bundle_directory_sync_tree :: proc(
 	directory_fd: posix.FD,
 	allocator := context.allocator,
 ) -> bool {
-	infos, read_error :=
-		os.read_dir(transmute(os.Handle)directory_fd, -1, allocator)
-	if read_error != nil {return false}
+	infos, read_ok :=
+		evidence_bundle_directory_read_dir(directory_fd, allocator)
+	if !read_ok {return false}
 	defer os.file_info_slice_delete(infos, allocator)
 	for info in infos {
-		if !info.is_dir {continue}
+		if info.type != .Directory {continue}
 		name_cstring :=
 			strings.clone_to_cstring(info.name, context.temp_allocator)
 		child_fd := posix.openat(
@@ -712,9 +713,9 @@ evidence_bundle_directory_remove_children :: proc(
 	directory_fd: posix.FD,
 	allocator := context.allocator,
 ) -> bool {
-	infos, read_error :=
-		os.read_dir(transmute(os.Handle)directory_fd, -1, allocator)
-	if read_error != nil {return false}
+	infos, read_ok :=
+		evidence_bundle_directory_read_dir(directory_fd, allocator)
+	if !read_ok {return false}
 	defer os.file_info_slice_delete(infos, allocator)
 	for info in infos {
 		name_cstring :=
@@ -753,6 +754,18 @@ evidence_bundle_directory_remove_children :: proc(
 		}
 	}
 	return true
+}
+
+evidence_bundle_directory_read_dir :: proc(
+	directory_fd: posix.FD,
+	allocator: runtime.Allocator,
+) -> ([]os.File_Info, bool) {
+	duplicate_fd := posix.dup(directory_fd)
+	if duplicate_fd < 0 {return nil, false}
+	directory := os.new_file(uintptr(duplicate_fd), ".")
+	defer os.close(directory)
+	infos, read_error := os.read_dir(directory, -1, allocator)
+	return infos, read_error == nil
 }
 
 evidence_bundle_bytes_equal :: proc(left, right: []u8) -> bool {
