@@ -4,6 +4,8 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -d "$ROOT/../hw_odin_ui_flash" ]; then
   FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
+elif [ -d "$ROOT/../odin_libraries/hw_odin_ui_flash" ]; then
+  FLASH_ROOT="$ROOT/../odin_libraries/hw_odin_ui_flash"
 elif [ -d "$ROOT/../main/hw_odin_ui_flash" ]; then
   FLASH_ROOT="$ROOT/../main/hw_odin_ui_flash"
 elif [ -d "$ROOT/../hw/hw_odin_ui_flash" ]; then
