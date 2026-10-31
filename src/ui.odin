@@ -391,26 +391,48 @@ ui_evidence_detail_lines :: proc(ui: ^UI_State, view: ^UI_Evidence_View) -> [dyn
 		ui_evidence_graph_state(stage.stage.name, replay),
 		"Stage summary",
 	}
-	columns := max(1, int(ui_evidence_detail_rect(ui).w/7))
-	for value in values {ui_evidence_wrap_line(&lines, value, columns)}
+	font := ui_font("JetBrainsMono-Regular", BASE_FONT_SIZE)
+	assert(font != nil)
+	defer CFRelease(font)
+	width := ui_evidence_detail_rect(ui).w
+	tracking := -0.8*BASE_FONT_SIZE/f64(ui.font_size)
+	for value in values {ui_evidence_wrap_line(&lines, value, font, width, tracking)}
 	for counter in manifest.summary {
-		ui_evidence_wrap_line(&lines, fmt.tprintf("%s: %d", counter.name, counter.value), columns)
+		ui_evidence_wrap_line(&lines, fmt.tprintf("%s: %d", counter.name, counter.value), font, width, tracking)
 	}
 	return lines
 }
 
-ui_evidence_wrap_line :: proc(lines: ^[dynamic]string, value: string, columns: int) {
+ui_evidence_wrap_line :: proc(
+	lines: ^[dynamic]string,
+	value: string,
+	font: rawptr,
+	width, tracking: f64,
+) {
 	if len(value) == 0 {append(lines, ""); return}
-	start, count := 0, 0
-	for _, offset in value {
-		if count == columns {
-			append(lines, value[start:offset])
-			start = offset
-			count = 0
+	offsets := make([dynamic]int, context.temp_allocator)
+	for _, offset in value {append(&offsets, offset)}
+	append(&offsets, len(value))
+	start := 0
+	for start < len(offsets)-1 {
+		low, high := start+1, min(len(offsets)-1, start+max(1, int(width)))
+		best := low
+		for low <= high {
+			middle := (low+high)/2
+			run := ui_text_run(font, value[offsets[start]:offsets[middle]], tracking)
+			assert(run.line != nil)
+			advance := run.advance
+			CFRelease(run.line)
+			if advance <= width {
+				best = middle
+				low = middle+1
+			} else {
+				high = middle-1
+			}
 		}
-		count += 1
+		append(lines, value[offsets[start]:offsets[best]])
+		start = best
 	}
-	append(lines, value[start:])
 }
 
 ui_evidence_stage_action :: proc(index: int) -> UI_Action {
@@ -1318,6 +1340,8 @@ ui_draw_evidence_overlay :: proc(
 			action := panes[index]
 			ui_draw_text(ctx, font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
 		}
+		position := ui.evidence_scroll
+		total := len(replay.root.stages)
 		if ui.evidence_pane == .Stages {
 			for stage, index in replay.root.stages {
 				if index < ui.evidence_scroll || index >= ui.evidence_scroll+ui_evidence_visible_stages(ui) {continue}
@@ -1328,16 +1352,12 @@ ui_draw_evidence_overlay :: proc(
 			lines := ui_evidence_detail_lines(ui, view)
 			visible := ui_evidence_detail_rows(ui)
 			ui.evidence_detail_scroll = clamp(ui.evidence_detail_scroll, 0, max(0, len(lines)-visible))
+			position = ui.evidence_detail_scroll
+			total = len(lines)
 			for line, index in lines {
 				if index < ui.evidence_detail_scroll || index >= ui.evidence_detail_scroll+visible {continue}
 				ui_draw_text(ctx, mono, ui, line, {modal.x+20, modal.y+80+f64(index-ui.evidence_detail_scroll)*20, modal.w-40, 20}, theme.text, 0, tracked = true)
 			}
-		}
-		position := ui.evidence_scroll
-		total := len(replay.root.stages)
-		if ui.evidence_pane == .Details {
-			position = ui.evidence_detail_scroll
-			total = len(ui_evidence_detail_lines(ui, view))
 		}
 		ui_draw_text(ctx, font, ui, fmt.tprintf("Scroll %d / %d", min(position+1, total), total), {modal.x+20, modal.y+modal.h-40, modal.w-160, 24}, theme.text, 0)
 		ui_draw_text(ctx, font, ui, "1  CLOSE", ui_control_rect(ui, .Close_Evidence), ui_control_ink(ui, .Close_Evidence), 0, .Center)
@@ -1763,7 +1783,7 @@ ui_build_text_overlay :: proc(
 				"SECTION drags a cutting plane; its contour draws over the mesh.",
 			}
 			line_y, line_step, line_height := f64(66), f64(30), f64(26)
-			if modal.h < 320 {
+			if modal.h < 320 || modal.w < 470 {
 				help_lines = [7]string{
 					"Left drag: orbit the model.",
 					"Right or middle drag: pan.",
