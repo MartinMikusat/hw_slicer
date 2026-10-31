@@ -369,36 +369,91 @@ ui_evidence_detail_rows :: proc(ui: ^UI_State) -> int {
 	return max(1, int(ui_evidence_detail_rect(ui).h/20))
 }
 
-ui_evidence_detail_lines :: proc(ui: ^UI_State, view: ^UI_Evidence_View) -> [dynamic]string {
-	lines := make([dynamic]string, context.temp_allocator)
+UI_Evidence_Line :: struct {
+	label: string,
+	value: string,
+	value_offset: f64,
+	value_mono: bool,
+}
+
+ui_evidence_detail_field :: proc(
+	lines: ^[dynamic]UI_Evidence_Line,
+	label, value: string,
+	label_font, value_font: rawptr,
+	width, tracking: f64,
+	value_mono: bool,
+) {
+	label := label
+	label_width := f64(90)
+	label_advance := f64(0)
+	if label != "" {
+		label_run := ui_text_run(label_font, label)
+		assert(label_run.line != nil)
+		label_advance = label_run.advance
+		CFRelease(label_run.line)
+	} else {
+		label_width = 0
+	}
+	if value == "" {
+		wrapped := make([dynamic]string, context.temp_allocator)
+		ui_evidence_wrap_line(&wrapped, label, label_font, width, 0)
+		for part in wrapped {append(lines, UI_Evidence_Line{label = part})}
+		return
+	}
+	if label_advance > label_width-7 {
+		wrapped := make([dynamic]string, context.temp_allocator)
+		ui_evidence_wrap_line(&wrapped, label, label_font, width, 0)
+		for part in wrapped {append(lines, UI_Evidence_Line{label = part})}
+		label = ""
+		label_width = 0
+	}
+	wrapped := make([dynamic]string, context.temp_allocator)
+	ui_evidence_wrap_line(&wrapped, value, value_font, width-label_width, tracking)
+	for part, index in wrapped {
+		append(lines, UI_Evidence_Line{
+			label = label if index == 0 else "",
+			value = part,
+			value_offset = label_width,
+			value_mono = value_mono,
+		})
+	}
+}
+
+ui_evidence_detail_lines :: proc(ui: ^UI_State, view: ^UI_Evidence_View) -> [dynamic]UI_Evidence_Line {
+	lines := make([dynamic]UI_Evidence_Line, context.temp_allocator)
 	if !ui_evidence_available(view) {return lines}
 	replay := view.replay
 	index := clamp(ui.evidence_stage_index, 0, len(replay.root.stages)-1)
 	stage := replay.root.stages[index]
 	manifest := replay.stage_manifests[index]
 	items, bytes := ui_evidence_stage_totals(manifest)
-	values := [12]string{
-		fmt.tprintf("File: %s", filepath.base(view.source)),
-		fmt.tprintf("Container: %s", view.container),
-		fmt.tprintf("Request: %s", replay.root.request_hash),
-		fmt.tprintf("Stage: %02d %s", stage.ordinal, stage.stage.name),
-		fmt.tprintf("Provider: %s / %s", stage.provider.name, stage.provider.version),
-		fmt.tprintf("Schema: %d / Revision: %d", stage.stage.schema_version, stage.stage.revision),
-		fmt.tprintf("Primitives: %d", len(manifest.primitives)),
-		fmt.tprintf("Renders: %d", len(manifest.renders)),
-		fmt.tprintf("Items: %d", items),
-		fmt.tprintf("Bytes: %d", bytes),
-		ui_evidence_graph_state(stage.stage.name, replay),
-		"Stage summary",
+	fields := [13]struct {label, value: string, mono: bool}{
+		{"File", filepath.base(view.source), true},
+		{"Container", view.container, false},
+		{"Request", replay.root.request_hash, true},
+		{"Stage", fmt.tprintf("%02d %s", stage.ordinal, stage.stage.name), true},
+		{"Provider", fmt.tprintf("%s / %s", stage.provider.name, stage.provider.version), true},
+		{"Schema", fmt.tprintf("%d", stage.stage.schema_version), true},
+		{"Revision", fmt.tprintf("%d", stage.stage.revision), true},
+		{"Primitives", fmt.tprintf("%d", len(manifest.primitives)), true},
+		{"Renders", fmt.tprintf("%d", len(manifest.renders)), true},
+		{"Items", fmt.tprintf("%d", items), true},
+		{"Bytes", fmt.tprintf("%d", bytes), true},
+		{"Graphs", ui_evidence_graph_state(stage.stage.name, replay), false},
+		{"Stage summary", "", false},
 	}
-	font := ui_font("JetBrainsMono-Regular", BASE_FONT_SIZE)
-	assert(font != nil)
-	defer CFRelease(font)
+	label_font := ui_font("Inter-Regular", BASE_FONT_SIZE)
+	mono := ui_font("JetBrainsMono-Regular", BASE_FONT_SIZE)
+	assert(label_font != nil && mono != nil)
+	defer CFRelease(label_font)
+	defer CFRelease(mono)
 	width := ui_evidence_detail_rect(ui).w
 	tracking := -0.8*BASE_FONT_SIZE/f64(ui.font_size)
-	for value in values {ui_evidence_wrap_line(&lines, value, font, width, tracking)}
+	for field in fields {
+		ui_evidence_detail_field(&lines, field.label, field.value, label_font, mono if field.mono else label_font, width, tracking if field.mono else 0, field.mono)
+	}
 	for counter in manifest.summary {
-		ui_evidence_wrap_line(&lines, fmt.tprintf("%s: %d", counter.name, counter.value), font, width, tracking)
+		ui_evidence_detail_field(&lines, counter.name, fmt.tprintf("%d", counter.value), label_font, mono, width, tracking, true)
 	}
 	return lines
 }
@@ -1072,6 +1127,16 @@ ui_draw_text :: proc(
 	CGContextRestoreGState(ctx)
 }
 
+ui_draw_evidence_line :: proc(ctx, font, mono: rawptr, ui: ^UI_State, line: UI_Evidence_Line, rect: UI_Rect) {
+	color := ui_theme(ui).text
+	label_width := rect.w if line.value == "" else line.value_offset
+	ui_draw_text(ctx, font, ui, line.label, {rect.x, rect.y, label_width, rect.h}, color, 0)
+	if line.value != "" {
+		ui_draw_text(ctx, mono if line.value_mono else font, ui, line.value,
+			{rect.x+line.value_offset, rect.y, rect.w-line.value_offset, rect.h}, color, 0, tracked = line.value_mono)
+	}
+}
+
 ui_draw_measurement :: proc(
 	ctx, font, mono: rawptr,
 	ui: ^UI_State,
@@ -1368,7 +1433,7 @@ ui_draw_evidence_overlay :: proc(
 			total = len(lines)
 			for line, index in lines {
 				if index < ui.evidence_detail_scroll || index >= ui.evidence_detail_scroll+visible {continue}
-				ui_draw_text(ctx, mono, ui, line, {modal.x+20, modal.y+80+f64(index-ui.evidence_detail_scroll)*20, modal.w-40, 20}, theme.text, 0, tracked = true)
+				ui_draw_evidence_line(ctx, font, mono, ui, line, {modal.x+20, modal.y+80+f64(index-ui.evidence_detail_scroll)*20, modal.w-40, 20})
 			}
 		}
 		ui_draw_text(ctx, font, ui, fmt.tprintf("Scroll %d / %d", min(position+1, total), total), {modal.x+20, modal.y+modal.h-40, modal.w-160, 24}, theme.text, 0)
@@ -1377,29 +1442,7 @@ ui_draw_evidence_overlay :: proc(
 		return
 	}
 
-	ui_draw_text(
-		ctx,
-		mono,
-		ui,
-		fmt.tprintf(
-			"%s / %s / %d STAGES",
-			filepath.base(view.source),
-			view.container,
-			len(replay.root.stages),
-		),
-		{modal.x+20, modal.y+36, modal.w-40, 22},
-		theme.muted,
-		0, tracked = true,
-	)
-	ui_draw_text(
-		ctx,
-		mono,
-		ui,
-		fmt.tprintf("REQUEST %s", replay.root.request_hash),
-		{modal.x+20, modal.y+54, modal.w-40, 20},
-		theme.muted,
-		0, tracked = true,
-	)
+	ui_draw_text(ctx, font, ui, "Select a stage", {modal.x+20, modal.y+42, 270, 22}, theme.text, 0)
 
 	for stage, stage_index in replay.root.stages {
 		if stage_index < ui.evidence_scroll || stage_index >= ui.evidence_scroll+ui_evidence_visible_stages(ui) {continue}
@@ -1426,7 +1469,7 @@ ui_draw_evidence_overlay :: proc(
 	ui.evidence_detail_scroll = clamp(ui.evidence_detail_scroll, 0, max(0, len(lines)-visible))
 	for line, index in lines {
 		if index < ui.evidence_detail_scroll || index >= ui.evidence_detail_scroll+visible {continue}
-		ui_draw_text(ctx, mono, ui, line, {detail.x, detail.y+f64(index-ui.evidence_detail_scroll)*20, detail.w, 20}, theme.text, 0, tracked = true)
+		ui_draw_evidence_line(ctx, font, mono, ui, line, {detail.x, detail.y+f64(index-ui.evidence_detail_scroll)*20, detail.w, 20})
 	}
 	ui_draw_text(ctx, font, ui, fmt.tprintf("Scroll %d / %d", min(ui.evidence_detail_scroll+1, len(lines)), len(lines)), {detail.x, modal.y+modal.h-40, max(1, detail.w-140), 24}, theme.text, 0)
 
