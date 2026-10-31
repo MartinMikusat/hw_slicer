@@ -966,14 +966,42 @@ ui_shadow_layer :: proc(
 	}
 }
 
+ui_style_scale :: proc(ui: ^UI_State) -> f64 {
+	return f64(ui.font_size)/BASE_FONT_SIZE
+}
+
+ui_style_row_height :: proc(ui: ^UI_State) -> f64 {
+	return math.ceil(f64(ui.font_size)*1.2)
+}
+
+ui_pill_rect :: proc(ui: ^UI_State, hit: UI_Rect) -> UI_Rect {
+	scale := ui_style_scale(ui)
+	height := min(hit.h, (ui_style_row_height(ui)+6)/scale)
+	inset := ui_character_width(ui)/4
+	return {hit.x+inset, hit.y+(hit.h-height)/2, hit.w-2*inset, height}
+}
+
 ui_pill_shadow :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect) {
-	ui_shadow_layer(vertices, ui, rect, 6, 20, 3, 0.05)
-	ui_shadow_layer(vertices, ui, rect, 6, 2, 1, 55.0/255.0)
+	scale := ui_style_scale(ui)
+	row := ui_style_row_height(ui)
+	radius := 6/scale
+	outer := 5*math.round(row*0.25)
+	ui_shadow_layer(vertices, ui, rect, radius, outer/scale, math.round(outer/6)/scale, 0.05)
+	ui_shadow_layer(vertices, ui, rect, radius, math.round(row*0.15)/scale, 1/scale, 55.0/255.0)
+}
+
+ui_menu_shadow :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect) {
+	scale := ui_style_scale(ui)
+	blur := math.round(ui_style_row_height(ui)*0.15)/scale
+	ui_shadow_layer(vertices, ui, rect, 6/scale, blur, 1/scale, 60.0/255.0)
 }
 
 ui_modal_shadow :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect) {
-	ui_shadow_layer(vertices, ui, rect, 12, 75, 15, 0.07)
-	ui_shadow_layer(vertices, ui, rect, 12, 23, 6, 80.0/255.0)
+	scale := ui_style_scale(ui)
+	row := ui_style_row_height(ui)
+	radius := 12/scale
+	ui_shadow_layer(vertices, ui, rect, radius, math.round(row*5)/scale, math.round(row)/scale, 0.07)
+	ui_shadow_layer(vertices, ui, rect, radius, math.round(row*1.5)/scale, 6/scale, 80.0/255.0)
 }
 
 ui_theme_blend :: proc(theme: Theme, amount: f32) -> Vec4 {
@@ -1034,11 +1062,14 @@ ui_build_geometry :: proc(
 		if ui.evidence_open && ui_evidence_available(evidence_view) {modal = ui_evidence_modal_rect(ui)}
 		ui_add_rect(&vertices, ui, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.8})
 		ui_modal_shadow(&vertices, ui, modal)
+		scale := ui_style_scale(ui)
+		radius := 12/scale
+		edge := 1/scale
 		if ui.dark {
-			ui_add_round_rect(&vertices, ui, modal, 12, {0.192, 0.192, 0.192, 1})
-			ui_add_round_rect(&vertices, ui, {modal.x+1, modal.y+1, modal.w-2, modal.h-2}, 11, theme.overlay)
+			ui_add_round_rect(&vertices, ui, modal, radius, {0.192, 0.192, 0.192, 1})
+			ui_add_round_rect(&vertices, ui, {modal.x+edge, modal.y+edge, modal.w-2*edge, modal.h-2*edge}, radius-edge, theme.overlay)
 		} else {
-			ui_add_round_rect(&vertices, ui, modal, 12, theme.overlay)
+			ui_add_round_rect(&vertices, ui, modal, radius, theme.overlay)
 		}
 	} else {
 		ui_add_rect(&vertices, ui, {0, 0, ui.width, 40}, theme.header)
@@ -1069,32 +1100,40 @@ ui_build_geometry :: proc(
 		}
 		if control.action == .Toggle_Section {
 			if control.id == ui.focused_id {ui_add_border(&vertices, ui, control.rect, theme.text)}
-			track := UI_Rect{control.rect.x+8, control.rect.y+(control.rect.h-14)/2, 25, 14}
+			scale := ui_style_scale(ui)
+			height_px := math.round(ui_style_row_height(ui)*0.85)
+			height := height_px/scale
+			width := math.round(height_px*1.8)/scale
+			inset := 2/scale
+			track := UI_Rect{control.rect.x+8, control.rect.y+(control.rect.h-height)/2, width, height}
 			track_color := ui_theme_blend(theme, 0.22 if hovered else 0.16)
 			if !control.enabled {track_color = ui_theme_blend(theme, 0.04)}
 			if ui.section_enabled && control.enabled {track_color = theme.text}
-			ui_add_round_rect(&vertices, ui, track, 7, track_color)
-			thumb_x := track.x+2
-			if ui.section_enabled {thumb_x = track.x+track.w-12}
+			ui_add_round_rect(&vertices, ui, track, height/2, track_color)
+			thumb_size := height-2*inset
+			thumb_x := track.x+inset
+			if ui.section_enabled {thumb_x = track.x+track.w-inset-thumb_size}
 			thumb := theme.raised
 			if ui.section_enabled || !control.enabled {thumb = theme.canvas}
-			ui_add_round_rect(&vertices, ui, {thumb_x, track.y+2, 10, 10}, 5, thumb)
+			ui_add_round_rect(&vertices, ui, {thumb_x, track.y+inset, thumb_size, thumb_size}, thumb_size/2, thumb)
 			continue
 		}
 		menu := control.action == .Evidence_Stages || control.action == .Evidence_Details || control.action == .Panel_Models || control.action == .Panel_Section || control.action == .Panel_Mesh || control.action == .Select_Benchy || control.action == .Select_All_In_One || control.action == .Select_Bunny
 		if _, stage := ui_evidence_stage_action_index(control.action, len(evidence_view.replay.root.stages) if ui_evidence_available(evidence_view) else 0); stage {menu = true}
-		inset := ui_character_width(ui)/4
-		rect := UI_Rect{control.rect.x+inset, control.rect.y+4, control.rect.w-2*inset, control.rect.h-8}
+		rect := ui_pill_rect(ui, control.rect)
 		if rect.w <= 0 || rect.h <= 0 {continue}
 		fill := theme.raised
 		if hovered {fill = ui_theme_blend(theme, 0.04)}
 		if standing {fill = theme.text}
 		if menu && !hovered && !standing {continue}
 		if !menu {ui_pill_shadow(&vertices, ui, rect)}
-		ui_add_round_rect(&vertices, ui, rect, 6, fill)
+		if menu && standing {ui_menu_shadow(&vertices, ui, rect)}
+		scale := ui_style_scale(ui)
+		radius := 6/scale
+		ui_add_round_rect(&vertices, ui, rect, radius, fill)
 		if !menu && !standing {
 			highlight_alpha := (f32(0.24) if hovered else f32(0.14)) if ui.dark else (f32(0.45) if hovered else f32(0.9))
-			ui_add_rect(&vertices, ui, {rect.x+6, rect.y+1, max(0, rect.w-12), 0.5}, {1, 1, 1, highlight_alpha})
+			ui_add_rect(&vertices, ui, {rect.x+radius, rect.y+1/scale, max(0, rect.w-2*radius), 0.75/scale}, {1, 1, 1, highlight_alpha})
 		}
 	}
 	for hint in flash.visible_hints(&ui.flash_state) {
