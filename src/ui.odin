@@ -130,6 +130,8 @@ UI_Action :: enum u64 {
 	Panel_Models,
 	Panel_Section,
 	Panel_Mesh,
+	Evidence_Stages,
+	Evidence_Details,
 	Evidence_Stage_Base = 1000,
 }
 
@@ -192,6 +194,7 @@ FLASH_SELECTED_BG :: Vec4{0.98, 0.35, 0.09, 1}
 FLASH_SELECTED_BORDER :: Vec4{1.0, 0.55, 0.18, 1}
 
 UI_Panel :: enum {Models, Section, Mesh}
+UI_Evidence_Pane :: enum {Stages, Details}
 
 UI_State :: struct {
 	controls: [dynamic]UI_Control,
@@ -200,6 +203,8 @@ UI_State :: struct {
 	evidence_open: bool,
 	evidence_stage_index: int,
 	evidence_scroll: int,
+	evidence_detail_scroll: int,
+	evidence_pane: UI_Evidence_Pane,
 	width: f64,
 	height: f64,
 	scale: f64,
@@ -347,9 +352,63 @@ ui_evidence_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	}
 }
 
+ui_evidence_compact :: proc(ui: ^UI_State) -> bool {
+	modal := ui_evidence_modal_rect(ui)
+	return modal.w < 700 || modal.h < 340
+}
+
 ui_evidence_visible_stages :: proc(ui: ^UI_State) -> int {
 	modal := ui_evidence_modal_rect(ui)
+	if ui_evidence_compact(ui) {return max(1, int((modal.h-136)/24))}
 	return max(1, int((modal.h-126)/30))
+}
+
+ui_evidence_detail_rows :: proc(ui: ^UI_State) -> int {
+	return max(1, int((ui_evidence_modal_rect(ui).h-136)/20))
+}
+
+ui_evidence_detail_lines :: proc(ui: ^UI_State, view: ^UI_Evidence_View) -> [dynamic]string {
+	lines := make([dynamic]string, context.temp_allocator)
+	if !ui_evidence_available(view) {return lines}
+	replay := view.replay
+	index := clamp(ui.evidence_stage_index, 0, len(replay.root.stages)-1)
+	stage := replay.root.stages[index]
+	manifest := replay.stage_manifests[index]
+	items, bytes := ui_evidence_stage_totals(manifest)
+	values := [12]string{
+		fmt.tprintf("File: %s", filepath.base(view.source)),
+		fmt.tprintf("Container: %s", view.container),
+		fmt.tprintf("Request: %s", replay.root.request_hash),
+		fmt.tprintf("Stage: %02d %s", stage.ordinal, stage.stage.name),
+		fmt.tprintf("Provider: %s / %s", stage.provider.name, stage.provider.version),
+		fmt.tprintf("Schema: %d / Revision: %d", stage.stage.schema_version, stage.stage.revision),
+		fmt.tprintf("Primitives: %d", len(manifest.primitives)),
+		fmt.tprintf("Renders: %d", len(manifest.renders)),
+		fmt.tprintf("Items: %d", items),
+		fmt.tprintf("Bytes: %d", bytes),
+		ui_evidence_graph_state(stage.stage.name, replay),
+		"Stage summary",
+	}
+	columns := max(1, int((ui_evidence_modal_rect(ui).w-40)/7))
+	for value in values {ui_evidence_wrap_line(&lines, value, columns)}
+	for counter in manifest.summary {
+		ui_evidence_wrap_line(&lines, fmt.tprintf("%s: %d", counter.name, counter.value), columns)
+	}
+	return lines
+}
+
+ui_evidence_wrap_line :: proc(lines: ^[dynamic]string, value: string, columns: int) {
+	if len(value) == 0 {append(lines, ""); return}
+	start, count := 0, 0
+	for _, offset in value {
+		if count == columns {
+			append(lines, value[start:offset])
+			start = offset
+			count = 0
+		}
+		count += 1
+	}
+	append(lines, value[start:])
 }
 
 ui_evidence_stage_action :: proc(index: int) -> UI_Action {
@@ -434,6 +493,11 @@ ui_build_controls :: proc(
 			modal,
 			.Modal_Surface,
 		)
+		compact := ui_evidence_compact(ui)
+		if compact {
+			ui_add_control(ui, "evidence stages", "evidence stages", {modal.x+20, modal.y+44, 90, 28}, .Evidence_Stages, true, 1, ui.evidence_pane == .Stages)
+			ui_add_control(ui, "evidence details", "evidence details", {modal.x+116, modal.y+44, 90, 28}, .Evidence_Details, true, 1, ui.evidence_pane == .Details)
+		}
 		stage_count := len(evidence_view.replay.root.stages)
 		if ui.evidence_stage_index < 0 ||
 		   ui.evidence_stage_index >= stage_count {
@@ -442,7 +506,10 @@ ui_build_controls :: proc(
 		visible := ui_evidence_visible_stages(ui)
 		ui.evidence_scroll = clamp(ui.evidence_scroll, 0, max(0, stage_count-visible))
 		for stage, stage_index in evidence_view.replay.root.stages {
+			if compact && ui.evidence_pane != .Stages {continue}
 			if stage_index < ui.evidence_scroll || stage_index >= ui.evidence_scroll+visible {continue}
+			rect := UI_Rect{modal.x+20, modal.y+72+f64(stage_index-ui.evidence_scroll)*30, 270, 28}
+			if compact {rect = {modal.x+20, modal.y+80+f64(stage_index-ui.evidence_scroll)*24, modal.w-40, 22}}
 			ui_add_control(
 				ui,
 				stage.stage.name,
@@ -451,12 +518,7 @@ ui_build_controls :: proc(
 					stage.ordinal,
 					stage.stage.name,
 				),
-				{
-					modal.x+20,
-					modal.y+72+f64(stage_index-ui.evidence_scroll)*30,
-					270,
-					28,
-				},
+				rect,
 				ui_evidence_stage_action(stage_index),
 				true,
 				1,
@@ -839,7 +901,7 @@ ui_build_geometry :: proc(
 			ui_add_round_rect(&vertices, ui, {thumb_x, track.y+2, 10, 10}, 5, theme.canvas)
 			continue
 		}
-		menu := control.action == .Panel_Models || control.action == .Panel_Section || control.action == .Panel_Mesh || control.action == .Select_Benchy || control.action == .Select_All_In_One || control.action == .Select_Bunny
+		menu := control.action == .Evidence_Stages || control.action == .Evidence_Details || control.action == .Panel_Models || control.action == .Panel_Section || control.action == .Panel_Mesh || control.action == .Select_Benchy || control.action == .Select_All_In_One || control.action == .Select_Bunny
 		if _, stage := ui_evidence_stage_action_index(control.action, len(evidence_view.replay.root.stages) if ui_evidence_available(evidence_view) else 0); stage {menu = true}
 		rect := UI_Rect{control.rect.x+3, control.rect.y+4, control.rect.w-6, control.rect.h-8}
 		if rect.w <= 0 || rect.h <= 0 {continue}
@@ -1244,6 +1306,40 @@ ui_draw_evidence_overlay :: proc(
 		theme.text,
 		0,
 	)
+	if ui_evidence_compact(ui) {
+		panes := [2]UI_Action{.Evidence_Stages, .Evidence_Details}
+		labels := [2]string{"Stages", "Details"}
+		for label, index in labels {
+			action := panes[index]
+			ui_draw_text(ctx, font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
+		}
+		if ui.evidence_pane == .Stages {
+			for stage, index in replay.root.stages {
+				if index < ui.evidence_scroll || index >= ui.evidence_scroll+ui_evidence_visible_stages(ui) {continue}
+				action := ui_evidence_stage_action(index)
+				ui_draw_text(ctx, mono, ui, fmt.tprintf("%02d  %s", stage.ordinal, stage.stage.name), ui_control_rect(ui, action), ui_control_ink(ui, action), 8, tracked = true)
+			}
+		} else {
+			lines := ui_evidence_detail_lines(ui, view)
+			visible := ui_evidence_detail_rows(ui)
+			ui.evidence_detail_scroll = clamp(ui.evidence_detail_scroll, 0, max(0, len(lines)-visible))
+			for line, index in lines {
+				if index < ui.evidence_detail_scroll || index >= ui.evidence_detail_scroll+visible {continue}
+				ui_draw_text(ctx, mono, ui, line, {modal.x+20, modal.y+80+f64(index-ui.evidence_detail_scroll)*20, modal.w-40, 20}, theme.text, 0, tracked = true)
+			}
+		}
+		position := ui.evidence_scroll
+		total := len(replay.root.stages)
+		if ui.evidence_pane == .Details {
+			position = ui.evidence_detail_scroll
+			total = len(ui_evidence_detail_lines(ui, view))
+		}
+		ui_draw_text(ctx, font, ui, fmt.tprintf("Scroll %d / %d", min(position+1, total), total), {modal.x+20, modal.y+modal.h-40, modal.w-160, 24}, theme.text, 0)
+		ui_draw_text(ctx, font, ui, "1  CLOSE", ui_control_rect(ui, .Close_Evidence), ui_control_ink(ui, .Close_Evidence), 0, .Center)
+		ui_draw_flash_hint_text(ctx, font, ui)
+		return
+	}
+
 	ui_draw_text(
 		ctx,
 		mono,
@@ -1719,13 +1815,26 @@ ui_build_text_overlay :: proc(
 				"OPEN accepts exact STL files and validated evidence bundles.",
 				"SECTION drags a cutting plane; its contour draws over the mesh.",
 			}
+			line_y, line_step, line_height := f64(66), f64(30), f64(26)
+			if modal.h < 320 {
+				help_lines = [7]string{
+					"Left drag: orbit the model.",
+					"Right or middle drag: pan.",
+					"Scroll: zoom.",
+					"Frame: fit the placed model.",
+					"Wireframe: change triangle fill.",
+					"Open: load STL or evidence.",
+					"Section: move the cutting plane.",
+				}
+				line_y, line_step, line_height = 54, 20, 18
+			}
 			for line, index in help_lines {
 				ui_draw_text(
 					ctx,
 					font,
 					ui,
 					line,
-					{modal.x+20, modal.y+66+f64(index*30), modal.w-40, 26},
+					{modal.x+20, modal.y+line_y+f64(index)*line_step, modal.w-40, line_height},
 					theme.text,
 					0,
 				)

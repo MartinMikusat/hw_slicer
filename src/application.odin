@@ -219,6 +219,8 @@ app_load_evidence :: proc(path: string) -> bool {
 	app.ui.evidence_open = true
 	app.ui.evidence_stage_index = 0
 	app.ui.evidence_scroll = 0
+	app.ui.evidence_detail_scroll = 0
+	app.ui.evidence_pane = .Stages
 	app_set_status(
 		fmt.tprintf(
 			"EVIDENCE: %d STAGES",
@@ -257,12 +259,17 @@ app_activate :: proc(action: UI_Action) -> bool {
 	); is_stage {
 		if !app.ui.evidence_open {return false}
 		app.ui.evidence_stage_index = stage_index
+		app.ui.evidence_detail_scroll = 0
+		if ui_evidence_compact(&app.ui) {app.ui.evidence_pane = .Details}
 		app.needs_redraw = true
 		return true
 	}
 	switch action {
 	case .Modal_Surface:
 		return false
+	case .Evidence_Stages, .Evidence_Details:
+		app.ui.evidence_pane = .Stages if action == .Evidence_Stages else .Details
+		app.needs_redraw = true
 	case .Panel_Models, .Panel_Section, .Panel_Mesh:
 		if action == .Panel_Models {app.ui.panel = .Models}
 		if action == .Panel_Section {app.ui.panel = .Section}
@@ -698,11 +705,18 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 	context = app_context()
 	_ = delta_x
 	if app.ui.evidence_open {
-		stage_count := len(app.evidence_replay.root.stages)
-		maximum := max(0, stage_count-ui_evidence_visible_stages(&app.ui))
 		step := -1 if delta_y > 0 else 1
 		if delta_y != 0 {
-			app.ui.evidence_scroll = clamp(app.ui.evidence_scroll+step, 0, maximum)
+			if ui_evidence_compact(&app.ui) && app.ui.evidence_pane == .Details {
+				view := app_evidence_view()
+				lines := ui_evidence_detail_lines(&app.ui, &view)
+				maximum := max(0, len(lines)-ui_evidence_detail_rows(&app.ui))
+				app.ui.evidence_detail_scroll = clamp(app.ui.evidence_detail_scroll+step, 0, maximum)
+			} else {
+				stage_count := len(app.evidence_replay.root.stages)
+				maximum := max(0, stage_count-ui_evidence_visible_stages(&app.ui))
+				app.ui.evidence_scroll = clamp(app.ui.evidence_scroll+step, 0, maximum)
+			}
 			app.needs_redraw = true
 		}
 		return
@@ -797,6 +811,10 @@ application_key :: proc "c" (
 		return
 	}
 	if app.ui.evidence_open {
+		if key_code == 126 || key_code == 125 {
+			application_scroll(0, 1 if key_code == 126 else -1)
+			return
+		}
 		if text == "1" {_ = app_activate(.Close_Evidence)}
 		return
 	}

@@ -15,9 +15,8 @@ Settings_Document :: struct {
 }
 
 DEFAULT_FONT_SIZE :: 13
-FONT_SIZE_MIN :: 10
-// The dense fixed workspace fits through 18 pt without reflow.
-FONT_SIZE_MAX :: 18
+FONT_SIZE_MIN :: 12
+FONT_SIZE_MAX :: 24
 BASE_FONT_SIZE :: 12
 
 settings_defaults :: proc() -> Settings {
