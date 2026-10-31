@@ -1151,7 +1151,10 @@ ui_build_geometry :: proc(
 		}
 		if rect.w <= 0 || rect.h <= 0 {continue}
 		fill := theme.raised
-		if hovered {fill = ui_theme_blend(theme, 0.04)}
+		if hovered {
+			amount := f32(0.12) if ui.dark else f32(0.55)
+			fill = {fill.x+(1-fill.x)*amount, fill.y+(1-fill.y)*amount, fill.z+(1-fill.z)*amount, 1}
+		}
 		if standing {fill = theme.text}
 		if window_control {
 			#partial switch control.action {
@@ -1159,7 +1162,15 @@ ui_build_geometry :: proc(
 			case .Window_Zoom: fill = {0.157, 0.788, 0.251, 1}
 			case .Window_Close: fill = {1.0, 0.373, 0.341, 1}
 			}
-			if hovered || standing {fill = {fill.x*0.85, fill.y*0.85, fill.z*0.85, 1}}
+			if standing {
+				fill = {fill.x*0.85, fill.y*0.85, fill.z*0.85, 1}
+			} else if hovered {
+				#partial switch control.action {
+				case .Window_Minimize: fill = {1.0, 0.81, 0.12, 1}
+				case .Window_Zoom: fill = {0.12, 0.90, 0.22, 1}
+				case .Window_Close: fill = {1.0, 0.45, 0.30, 1}
+				}
+			}
 		}
 		if menu && !hovered && !standing {continue}
 		if !menu {ui_pill_shadow(&vertices, ui, rect)}
