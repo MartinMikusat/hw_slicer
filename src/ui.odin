@@ -284,7 +284,7 @@ ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
 }
 
 ui_compact :: proc(ui: ^UI_State) -> bool {
-	return ui.width < 800 || ui_action_bar_rect(ui).y < 420
+	return ui.width < 800 || ui_action_bar_rect(ui).y < 473
 }
 
 ui_viewport_rect :: proc(ui: ^UI_State) -> UI_Rect {
@@ -630,7 +630,7 @@ ui_build_controls :: proc(
 
 	viewport := ui_viewport_rect(ui)
 	lay_rect := UI_Rect{viewport.x+204, viewport.y+12, 126, 30}
-	if compact {lay_rect = {viewport.x+12, viewport.y+46, 126, 30}}
+	if viewport.w < 342 {lay_rect = {viewport.x+12, viewport.y+46, 126, 30}}
 	ui_add_control(ui, "lay on face", "Lay on face", lay_rect, .Lay_On_Face, true, 1, ui.lay_on_face)
 	ui_add_control(
 		ui,
