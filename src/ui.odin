@@ -1474,7 +1474,7 @@ ui_draw_evidence_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"EVIDENCE INSPECTOR",
+		"Evidence inspector",
 		{modal.x+20, modal.y+12, modal.w-40, 26},
 		theme.text,
 		0,
@@ -1506,7 +1506,7 @@ ui_draw_evidence_overlay :: proc(
 			}
 		}
 		ui_draw_text(ctx, font, ui, fmt.tprintf("Scroll %d / %d", min(position+1, total), total), {modal.x+20, modal.y+modal.h-40, modal.w-160, 24}, theme.text, 0)
-		ui_draw_text(ctx, font, ui, "1  CLOSE", ui_control_rect(ui, .Close_Evidence), ui_control_ink(ui, .Close_Evidence), 0, .Center)
+		ui_draw_text(ctx, font, ui, "1  Close", ui_control_rect(ui, .Close_Evidence), ui_control_ink(ui, .Close_Evidence), 0, .Center)
 		ui_draw_flash_hint_text(ctx, font, ui)
 		return
 	}
@@ -1546,7 +1546,7 @@ ui_draw_evidence_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"1  CLOSE",
+		"1  Close",
 		{modal.x+modal.w-132, modal.y+modal.h-48, 112, 32},
 		ui_control_ink(ui, .Close_Evidence),
 		0,
@@ -1565,7 +1565,7 @@ ui_draw_settings_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"SETTINGS",
+		"Settings",
 		{modal.x+20, modal.y+14, modal.w-40, 32},
 		theme.text,
 		0,
@@ -1574,7 +1574,7 @@ ui_draw_settings_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"FONT SIZE",
+		"Font size",
 		{modal.x+24, modal.y+54, modal.w-48, 24},
 		theme.muted,
 		0,
@@ -1612,7 +1612,7 @@ ui_draw_settings_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"CLOSE",
+		"Close",
 		{modal.x+modal.w-120, modal.y+modal.h-52, 96, 36},
 		ui_control_ink(ui, .Close_Settings),
 		0,
@@ -1670,7 +1670,7 @@ ui_build_text_overlay :: proc(
 		CGContextSetAlpha(ctx, 0.2)
 	}
 	title_width := max(0.0, ui.width-383)
-	title := "HW SLICER / MESH VIEWER" if title_width >= 180 else "SLICER"
+	title := "HW Slicer / Mesh viewer" if title_width >= 180 else "Slicer"
 	ui_draw_text(ctx, font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
 	window_labels := [3]string{"[_]", "[+]", "[x]"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
@@ -1682,7 +1682,7 @@ ui_build_text_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"DARK" if !ui.dark else "LIGHT",
+		"Dark" if !ui.dark else "Light",
 		{ui.width-255, 5, 74, 30},
 		ui_control_ink(ui, .Toggle_Theme),
 		0,
@@ -1692,13 +1692,13 @@ ui_build_text_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"SETTINGS",
+		"Settings",
 		{ui.width-359, 5, 97, 30},
 		ui_control_ink(ui, .Open_Settings),
 		0,
 		.Center,
 	)
-	ui_draw_text(ctx, font, ui, "HELP", ui_control_rect(ui, .Show_Help), ui_control_ink(ui, .Show_Help), 0, .Center)
+	ui_draw_text(ctx, font, ui, "Help", ui_control_rect(ui, .Show_Help), ui_control_ink(ui, .Show_Help), 0, .Center)
 
 	compact := ui_compact(ui)
 	if compact {
@@ -1721,8 +1721,8 @@ ui_build_text_overlay :: proc(
 			ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 158, 156, 18}, 70)
 		}
 	} else {
-		ui_draw_text(ctx, font, ui, "REFERENCE MODELS", {20, 58, 190, 24}, theme.muted, 0)
-		model_labels := [3]string{"3DBENCHY", "ALL IN ONE TEST", "STANFORD BUNNY"}
+		ui_draw_text(ctx, font, ui, "Reference models", {20, 58, 190, 24}, theme.muted, 0)
+		model_labels := [3]string{"3DBenchy", "All in one test", "Stanford Bunny"}
 		model_actions := [3]UI_Action{.Select_Benchy, .Select_All_In_One, .Select_Bunny}
 		for label, index in model_labels {
 			color := ui_control_ink(ui, model_actions[index])
@@ -1736,12 +1736,12 @@ ui_build_text_overlay :: proc(
 				8,
 			)
 		}
-		ui_draw_text(ctx, font, ui, "SECTION", {20, 180, 190, 24}, theme.muted, 0)
+		ui_draw_text(ctx, font, ui, "Section", {20, 180, 190, 24}, theme.muted, 0)
 		ui_draw_text(
 			ctx,
 			font,
 			ui,
-			"ENABLED" if ui.section_enabled else "DISABLED",
+			"Enabled" if ui.section_enabled else "Disabled",
 			{64, 208, 152, 30},
 			ui_control_ink(ui, .Toggle_Section),
 			0,
@@ -1755,7 +1755,7 @@ ui_build_text_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"FRAME",
+		"Frame",
 		ui_control_rect(ui, .Frame_Mesh),
 		ui_control_ink(ui, .Frame_Mesh),
 		0,
@@ -1765,7 +1765,7 @@ ui_build_text_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"WIREFRAME",
+		"Wireframe",
 		ui_control_rect(ui, .Toggle_Wireframe),
 		ui_control_ink(ui, .Toggle_Wireframe),
 		0,
@@ -1776,7 +1776,7 @@ ui_build_text_overlay :: proc(
 		ctx,
 		font,
 		ui,
-		"LAY ON FACE",
+		"Lay on face",
 		ui_control_rect(ui, .Lay_On_Face),
 		ui_control_ink(ui, .Lay_On_Face),
 		0,
@@ -1804,7 +1804,7 @@ ui_build_text_overlay :: proc(
 		}
 	} else {
 		right := ui_right_rect(ui)
-		ui_draw_text(ctx, font, ui, "MESH EVIDENCE", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
+		ui_draw_text(ctx, font, ui, "Mesh evidence", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
 		ui_draw_text(ctx, font, ui, model_name, {right.x+12, right.y+42, 252, 32}, theme.text, 0)
 		if mesh != nil && mesh.triangle_count > 0 {
 			size := mesh_size(mesh.bounds)
@@ -1818,26 +1818,21 @@ ui_build_text_overlay :: proc(
 			for label, index in labels {
 				ui_draw_measurement(ctx, font, mono, ui, label, values[index], {right.x+12, right.y+86+f64(index*26), 252, 24}, 90)
 			}
-			ui_draw_text(ctx, font, ui, "BINARY STL / EXPANDED VERTICES", {right.x+12, right.y+190, 252, 24}, theme.text, 0)
+			ui_draw_text(ctx, font, ui, "Binary STL / expanded vertices", {right.x+12, right.y+190, 252, 24}, theme.text, 0)
 		}
-		ui_draw_text(ctx, font, ui, "CAMERA", {right.x+12, right.y+242, 240, 24}, theme.muted, 0)
-		camera_lines := [4]string{
-			"LEFT DRAG   ORBIT",
-			"RIGHT DRAG  PAN",
-			"SCROLL      ZOOM",
-			"/           FLASH",
+		ui_draw_text(ctx, font, ui, "Camera", {right.x+12, right.y+242, 240, 24}, theme.muted, 0)
+		camera_lines := [4]struct {input, action: string}{
+			{"Left drag", "Orbit"},
+			{"Right drag", "Pan"},
+			{"Scroll", "Zoom"},
+			{"/", "Flash"},
 		}
 		for line, index in camera_lines {
-			ui_draw_text(
-				ctx,
-				font,
-				ui,
-				line,
-				{right.x+12, right.y+270+f64(index*25), 252, 22},
-				theme.text,
-				0,
-			)
+			rect := UI_Rect{right.x+12, right.y+270+f64(index*25), 252, 22}
+			ui_draw_text(ctx, font, ui, line.input, {rect.x, rect.y, 100, rect.h}, theme.text, 0)
+			ui_draw_text(ctx, font, ui, line.action, {rect.x+100, rect.y, rect.w-100, rect.h}, theme.text, 0)
 		}
+
 		if status != "" {
 			ui_draw_text(
 				ctx,
@@ -1871,19 +1866,19 @@ ui_build_text_overlay :: proc(
 				ctx,
 				font,
 				ui,
-				"MESH VIEWER HELP",
+				"Mesh viewer help",
 				{modal.x+20, modal.y+14, 440, 32},
 				theme.text,
 				0,
 			)
 			help_lines := [7]string{
-				"LEFT DRAG rotates the camera around the mesh target.",
-				"RIGHT OR MIDDLE DRAG translates the camera target.",
-				"SCROLL changes camera distance.",
-				"FRAME recalculates the target and distance from the placed model bounds.",
-				"WIREFRAME changes Metal triangle fill mode.",
-				"OPEN accepts exact STL files and validated evidence bundles.",
-				"SECTION drags a cutting plane; its contour draws over the mesh.",
+				"Left drag rotates the camera around the mesh target.",
+				"Right or middle drag translates the camera target.",
+				"Scroll changes camera distance.",
+				"Frame recalculates the target and distance from the placed model bounds.",
+				"Wireframe changes Metal triangle fill mode.",
+				"Open accepts exact STL files and validated evidence bundles.",
+				"Section drags a cutting plane; its contour draws over the mesh.",
 			}
 			line_y, line_step, line_height := f64(66), f64(30), f64(26)
 			if modal.h < 320 || modal.w < 470 {
@@ -1913,7 +1908,7 @@ ui_build_text_overlay :: proc(
 				ctx,
 				font,
 				ui,
-				"01  CLOSE",
+				"1  Close",
 				{modal.x+modal.w-132, modal.y+modal.h-54, 112, 36},
 				ui_control_ink(ui, .Close_Help),
 				0,
