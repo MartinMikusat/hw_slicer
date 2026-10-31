@@ -35,8 +35,7 @@ static char *g_resource_root_bytes;
 @end
 
 static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
-    NSPoint point = [view convertPoint:event.locationInWindow fromView:nil];
-    return NSMakePoint(point.x, view.bounds.size.height - point.y);
+    return [view convertPoint:event.locationInWindow fromView:nil];
 }
 
 @implementation HWSlicerView
@@ -118,7 +117,7 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
     NSPoint point = slicer_event_point(self, event);
     if (g_application) {
         g_application->mouse(
-            1, 0, point.x, point.y, event.deltaX, -event.deltaY
+            1, 0, point.x, point.y, event.deltaX, event.deltaY
         );
     }
 }
@@ -138,7 +137,7 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
     NSPoint point = slicer_event_point(self, event);
     if (g_application) {
         g_application->mouse(
-            1, 1, point.x, point.y, event.deltaX, -event.deltaY
+            1, 1, point.x, point.y, event.deltaX, event.deltaY
         );
     }
 }
@@ -158,7 +157,7 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
     NSPoint point = slicer_event_point(self, event);
     if (g_application) {
         g_application->mouse(
-            1, 2, point.x, point.y, event.deltaX, -event.deltaY
+            1, 2, point.x, point.y, event.deltaX, event.deltaY
         );
     }
 }
