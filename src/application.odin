@@ -224,6 +224,7 @@ app_activate :: proc(action: UI_Action) -> bool {
 		return true
 	case .Open:
 		app_open_document()
+		app.needs_redraw = true
 	case .Slice, .Cancel, .Capture, .Compare, .Export:
 		return false
 	case .None, .Evidence_Stage_Base:

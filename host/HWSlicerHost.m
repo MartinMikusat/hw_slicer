@@ -202,6 +202,9 @@ static void slicer_window_zoom(void) {
 }
 
 static bool slicer_open_document(char *path, size_t capacity) {
+    NSWindow *window = (__bridge NSWindow *)g_host.window;
+    [NSApp activateIgnoringOtherApps:YES];
+    [window makeKeyAndOrderFront:nil];
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.canChooseFiles = YES;
     panel.canChooseDirectories = YES;
@@ -211,7 +214,10 @@ static bool slicer_open_document(char *path, size_t capacity) {
         [UTType typeWithFilenameExtension:@"hwsdebug"],
         [UTType typeWithIdentifier:@"public.folder"]
     ];
-    if ([panel runModal] != NSModalResponseOK) { return false; }
+    NSModalResponse response = [panel runModal];
+    [window makeKeyAndOrderFront:nil];
+    [(__bridge NSView *)g_host.view setNeedsDisplay:YES];
+    if (response != NSModalResponseOK) { return false; }
     const char *selected = panel.URL.path.fileSystemRepresentation;
     if (!selected || strlen(selected) + 1 > capacity) { return false; }
     strlcpy(path, selected, capacity);
@@ -305,6 +311,7 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
                 bounds.size.width * scale,
                 bounds.size.height * scale
             );
+            if ([NSApp modalWindow] != nil) { return; }
             g_application->frame(bounds.size.width, bounds.size.height, scale);
             if (g_snapshot_path && ++snapshotTick % 30 == 0) {
                 g_application->write_ui_snapshot(
