@@ -34,6 +34,10 @@ App_State :: struct {
 	evidence_replay: evidence.Evidence_Bundle_Replay,
 	evidence_kind: evidence.Evidence_Bundle_Source_Kind,
 	camera:        Camera,
+	camera_goal: Camera,
+	camera_velocity: Camera,
+	camera_tick: time.Tick,
+	camera_initialized: bool,
 	resource_root: string,
 	external_path: string,
 	evidence_path: string,
@@ -66,11 +70,15 @@ app_set_status :: proc(text: string) {
 app_frame_camera :: proc() {
 	if app.mesh.triangle_count == 0 {return}
 	size := mesh_size(app.placement.bounds)
-	app.camera.target = {0, 0, size.z*0.5}
-	app.camera.yaw = 0.82
-	app.camera.pitch = 0.62
-	app.camera.distance = max(max(size.x, size.y), size.z)*2.25
-	app.camera.distance = max(app.camera.distance, 4)
+	app.camera_goal.target = {0, 0, size.z*0.5}
+	app.camera_goal.yaw = 0.82
+	app.camera_goal.pitch = 0.62
+	app.camera_goal.distance = max(max(size.x, size.y), size.z)*2.25
+	app.camera_goal.distance = max(app.camera_goal.distance, 4)
+	if !app.camera_initialized {
+		app.camera = app.camera_goal
+		app.camera_initialized = true
+	}
 	app.needs_redraw = true
 }
 
@@ -454,13 +462,13 @@ app_camera_eye :: proc(camera: Camera) -> Vec3 {
 }
 
 app_pan_camera :: proc(delta_x, delta_y: f64) {
-	eye := app_camera_eye(app.camera)
-	forward := vec3_normalize(vec3_sub(app.camera.target, eye))
+	eye := app_camera_eye(app.camera_goal)
+	forward := vec3_normalize(vec3_sub(app.camera_goal.target, eye))
 	right := vec3_normalize(vec3_cross(forward, {0, 0, 1}))
 	up := vec3_normalize(vec3_cross(right, forward))
-	scale := app.camera.distance*0.0015
-	app.camera.target = vec3_add(
-		app.camera.target,
+	scale := app.camera_goal.distance*0.0015
+	app.camera_goal.target = vec3_add(
+		app.camera_goal.target,
 		vec3_add(
 			vec3_mul(right, f32(-delta_x)*scale),
 			vec3_mul(up, f32(delta_y)*scale),
@@ -541,6 +549,7 @@ application_frame :: proc "c" (width, height, scale: f64) {
 		app.ui.height = height/app.ui.ui_scale
 		app.needs_redraw = true
 	}
+	app_animate_camera()
 	if app.needs_redraw {
 		result := renderer_draw_application()
 		switch result {
@@ -642,9 +651,9 @@ application_mouse :: proc "c" (
 			app.needs_redraw = true
 		} else if app.dragging {
 			if app.drag_button == 0 {
-				app.camera.yaw -= f32(delta_x)*0.008
-				app.camera.pitch = clamp_f32(
-					app.camera.pitch+f32(delta_y)*0.008,
+				app.camera_goal.yaw -= f32(delta_x)*0.008
+				app.camera_goal.pitch = clamp_f32(
+					app.camera_goal.pitch+f32(delta_y)*0.008,
 					-1.45,
 					1.45,
 				)
@@ -678,8 +687,8 @@ application_mouse :: proc "c" (
 application_scroll :: proc "c" (delta_x, delta_y: f64) {
 	context = app_context()
 	_ = delta_x
-	app.camera.distance *= math.exp(f32(delta_y)*0.035)
-	app.camera.distance = clamp_f32(app.camera.distance, 0.1, 100000)
+	app.camera_goal.distance *= math.exp(f32(delta_y)*0.008)
+	app.camera_goal.distance = clamp_f32(app.camera_goal.distance, 0.1, 100000)
 	app.needs_redraw = true
 }
 
