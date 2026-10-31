@@ -62,6 +62,7 @@ launch_app() {
   APP_PID=$!
   printf '%s\n' "$APP_PID" > "$PID_FILE"
   printf '[hw_slicer] launched pid %s (%s)\n' "$APP_PID" "$MODE"
+  printf '[hw_slicer] dev log: %s\n' "$HW_DEVLOG_DIR"
 }
 
 rebuild_and_launch() {
