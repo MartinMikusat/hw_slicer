@@ -78,3 +78,27 @@ section_height_pointer_clamps_to_model_height_test :: proc(t: ^testing.T) {
 	)
 	testing.expect_value(t, section_height_from_pointer(track.x, track, 0), f32(0))
 }
+
+@(test)
+section_slider_drag_clears_after_lost_release_test :: proc(t: ^testing.T) {
+	app = {}
+	ui_initialize(&app.ui)
+	defer {
+		ui_destroy(&app.ui)
+		app = {}
+	}
+	app.ui.width = 1280
+	app.ui.height = 800
+	app.ui.scale = 2
+	app.ui.section_max = 10
+	app.ui.section_z = 5
+	ui_build_controls(&app.ui)
+	rect := ui_section_slider_rect(&app.ui)
+	application_mouse(0, 0, rect.x+rect.w/2, rect.y+12, 0, 0)
+	testing.expect(t, app.ui.section_dragging)
+	application_mouse(1, 0, rect.x+rect.w*0.75, rect.y+12, 1, 0)
+	testing.expect(t, app.ui.section_z > 5 && app.ui.section_z < 10)
+	application_mouse(0, 0, 600, 400, 0, 0)
+	testing.expect(t, !app.ui.section_dragging)
+	testing.expect(t, app.dragging)
+}

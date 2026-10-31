@@ -280,11 +280,13 @@ app_destroy :: proc() {
 app_set_section_z :: proc(x: f64) {
 	if app.ui.section_max <= 0 {return}
 	rect := ui_section_slider_rect(&app.ui)
-	app.ui.section_z = section_height_from_pointer(
+	next := section_height_from_pointer(
 		x,
 		rect,
 		app.ui.section_max,
 	)
+	if next == app.ui.section_z {return}
+	app.ui.section_z = next
 	app.section_dirty = true
 }
 
@@ -398,9 +400,12 @@ application_mouse :: proc "c" (
 			app.ui.section_dragging = true
 			app_set_section_z(x)
 			app.needs_redraw = true
-		} else if id == 0 && ui_contains(ui_viewport_rect(&app.ui), x, y) {
-			app.dragging = true
-			app.drag_button = button
+		} else {
+			app.ui.section_dragging = false
+			if id == 0 && ui_contains(ui_viewport_rect(&app.ui), x, y) {
+				app.dragging = true
+				app.drag_button = button
+			}
 		}
 	case 1:
 		if app.ui.section_dragging {
