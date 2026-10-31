@@ -470,10 +470,10 @@ renderer_build_grid :: proc(renderer: ^Renderer) -> bool {
 	normal := Vec3{0, 0, 1}
 	for index in -11..=11 {
 		position := f32(index*10)
-		append(&vertices, Mesh_Vertex{{position, -110, 0}, normal})
-		append(&vertices, Mesh_Vertex{{position, 110, 0}, normal})
-		append(&vertices, Mesh_Vertex{{-110, position, 0}, normal})
-		append(&vertices, Mesh_Vertex{{110, position, 0}, normal})
+		append(&vertices, Mesh_Vertex{{position, -BUILD_PLATE_HALF_EXTENT, 0}, normal})
+		append(&vertices, Mesh_Vertex{{position, BUILD_PLATE_HALF_EXTENT, 0}, normal})
+		append(&vertices, Mesh_Vertex{{-BUILD_PLATE_HALF_EXTENT, position, 0}, normal})
+		append(&vertices, Mesh_Vertex{{BUILD_PLATE_HALF_EXTENT, position, 0}, normal})
 	}
 	renderer.grid_buffer = msg_id_ptr_u_u(
 		renderer.device,
