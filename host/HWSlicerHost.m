@@ -14,6 +14,9 @@ static char *g_resource_root_bytes;
 static void slicer_window_zoom(void);
 
 @interface HWSlicerWindow : NSWindow
+@property(nonatomic) NSRect restoreFrame;
+@property(nonatomic) NSRect zoomFrame;
+@property(nonatomic) BOOL hasRestoreFrame;
 @end
 
 @implementation HWSlicerWindow
@@ -234,11 +237,18 @@ static void slicer_window_minimize(void) {
 }
 
 static void slicer_window_zoom(void) {
-    NSWindow *window = (__bridge NSWindow *)g_host.window;
-    NSWindowStyleMask style = window.styleMask;
-    window.styleMask = style | NSWindowStyleMaskTitled;
-    [window zoom:nil];
-    window.styleMask = style;
+    HWSlicerWindow *window = (__bridge HWSlicerWindow *)g_host.window;
+    NSScreen *screen = window.screen;
+    if (!screen) { return; }
+    if (window.hasRestoreFrame && NSEqualRects(window.frame, window.zoomFrame)) {
+        [window setFrame:window.restoreFrame display:YES];
+        window.hasRestoreFrame = NO;
+    } else {
+        window.restoreFrame = window.frame;
+        window.zoomFrame = screen.visibleFrame;
+        window.hasRestoreFrame = YES;
+        [window setFrame:window.zoomFrame display:YES];
+    }
 }
 
 static bool slicer_open_document(char *path, size_t capacity) {
