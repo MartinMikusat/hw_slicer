@@ -616,6 +616,9 @@ application_mouse :: proc "c" (
 	if ui_scale <= 0 {ui_scale = 1}
 	point_x := x/ui_scale
 	point_y := y/ui_scale
+	app.ui.pointer_x = point_x
+	app.ui.pointer_y = point_y
+	if phase == 4 {return}
 	if app.ui.lay_on_face && !app.ui.settings_open && !app.ui.help_open && !app.ui.evidence_open &&
 	   ui_hit_test(&app.ui, point_x, point_y) == 0 && ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
 		if phase == 3 || (phase == 0 && button == 0) || (phase == 2 && button == 0) {
@@ -707,7 +710,11 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 	if app.ui.evidence_open {
 		step := -1 if delta_y > 0 else 1
 		if delta_y != 0 {
-			if ui_evidence_compact(&app.ui) && app.ui.evidence_pane == .Details {
+			detail_scroll := ui_evidence_compact(&app.ui) && app.ui.evidence_pane == .Details
+			if !ui_evidence_compact(&app.ui) {
+				detail_scroll = ui_contains(ui_evidence_detail_rect(&app.ui), app.ui.pointer_x, app.ui.pointer_y)
+			}
+			if detail_scroll {
 				view := app_evidence_view()
 				lines := ui_evidence_detail_lines(&app.ui, &view)
 				maximum := max(0, len(lines)-ui_evidence_detail_rows(&app.ui))

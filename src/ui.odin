@@ -187,11 +187,6 @@ DARK_THEME :: Theme{
 
 COLOR_COFFEE :: Vec4{0.698039, 0.490196, 0.341176, 1}
 COLOR_SECTION :: Vec4{0.980392, 0.427451, 0.121569, 1}
-FLASH_BG     :: Vec4{0.96, 0.94, 0.85, 1}
-FLASH_FG     :: Vec4{0.025, 0.027, 0.026, 1}
-FLASH_BORDER :: Vec4{0.02, 0.02, 0.02, 1}
-FLASH_SELECTED_BG :: Vec4{0.98, 0.35, 0.09, 1}
-FLASH_SELECTED_BORDER :: Vec4{1.0, 0.55, 0.18, 1}
 
 UI_Panel :: enum {Models, Section, Mesh}
 UI_Evidence_Pane :: enum {Stages, Details}
@@ -225,6 +220,7 @@ UI_State :: struct {
 	section_dragging: bool,
 	pressed_id: u64,
 	hovered_id: u64,
+	pointer_x, pointer_y: f64,
 }
 
 ui_initialize :: proc(ui: ^UI_State) {
@@ -363,8 +359,14 @@ ui_evidence_visible_stages :: proc(ui: ^UI_State) -> int {
 	return max(1, int((modal.h-126)/30))
 }
 
+ui_evidence_detail_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	modal := ui_evidence_modal_rect(ui)
+	if ui_evidence_compact(ui) {return {modal.x+20, modal.y+80, modal.w-40, modal.h-136}}
+	return {modal.x+316, modal.y+80, modal.w-336, modal.h-136}
+}
+
 ui_evidence_detail_rows :: proc(ui: ^UI_State) -> int {
-	return max(1, int((ui_evidence_modal_rect(ui).h-136)/20))
+	return max(1, int(ui_evidence_detail_rect(ui).h/20))
 }
 
 ui_evidence_detail_lines :: proc(ui: ^UI_State, view: ^UI_Evidence_View) -> [dynamic]string {
@@ -389,7 +391,7 @@ ui_evidence_detail_lines :: proc(ui: ^UI_State, view: ^UI_Evidence_View) -> [dyn
 		ui_evidence_graph_state(stage.stage.name, replay),
 		"Stage summary",
 	}
-	columns := max(1, int((ui_evidence_modal_rect(ui).w-40)/7))
+	columns := max(1, int(ui_evidence_detail_rect(ui).w/7))
 	for value in values {ui_evidence_wrap_line(&lines, value, columns)}
 	for counter in manifest.summary {
 		ui_evidence_wrap_line(&lines, fmt.tprintf("%s: %d", counter.name, counter.value), columns)
@@ -921,11 +923,8 @@ ui_build_geometry :: proc(
 		rect := UI_Rect{hint.target.rect.x+2, hint.target.rect.y+2, width, 18}
 		rect.x = min(rect.x, ui.width-rect.w)
 		rect.y = min(rect.y, ui.height-rect.h)
-		background := FLASH_SELECTED_BG if hint.selected else FLASH_BG
-		border := FLASH_SELECTED_BORDER if hint.selected else FLASH_BORDER
-		ui_add_rect(&vertices, ui, rect, background)
-		ui_add_border(&vertices, ui, rect, border)
-		if hint.selected {ui_add_border(&vertices, ui, {hint.target.rect.x, hint.target.rect.y, hint.target.rect.w, hint.target.rect.h}, FLASH_SELECTED_BORDER)}
+		ui_add_rect(&vertices, ui, rect, theme.text)
+		if hint.selected {ui_add_border(&vertices, ui, {hint.target.rect.x, hint.target.rect.y, hint.target.rect.w, hint.target.rect.h}, theme.text)}
 	}
 	return vertices
 }
@@ -1090,7 +1089,7 @@ ui_draw_flash_hint_text :: proc(
 			ui,
 			hint.label,
 			rect,
-			FLASH_FG,
+			ui_theme(ui).canvas,
 			0,
 			.Center,
 		)
@@ -1288,13 +1287,6 @@ ui_draw_evidence_overlay :: proc(
 	if !ui_evidence_available(view) {return}
 	modal := ui_evidence_modal_rect(ui)
 	replay := view.replay
-	selected_index := ui.evidence_stage_index
-	if selected_index < 0 || selected_index >= len(replay.root.stages) {
-		selected_index = 0
-	}
-	selected := replay.root.stages[selected_index]
-	manifest := replay.stage_manifests[selected_index]
-	item_count, byte_count := ui_evidence_stage_totals(manifest)
 	theme := ui_theme(ui)
 
 	ui_draw_text(
@@ -1383,74 +1375,16 @@ ui_draw_evidence_overlay :: proc(
 		)
 	}
 
-	detail_x := modal.x+316
-	detail_width := modal.w-336
-	graph_state := ui_evidence_graph_state(selected.stage.name, replay)
-	detail_lines := [7]string{
-		fmt.tprintf("STAGE      %02d %s", selected.ordinal, selected.stage.name),
-		fmt.tprintf(
-			"PROVIDER   %s / %s",
-			selected.provider.name,
-			selected.provider.version,
-		),
-		fmt.tprintf(
-			"SCHEMA     %d / REVISION %d",
-			selected.stage.schema_version,
-			selected.stage.revision,
-		),
-		fmt.tprintf(
-			"RECORDS    %d PRIMITIVES / %d RENDERS",
-			len(manifest.primitives),
-			len(manifest.renders),
-		),
-		fmt.tprintf("ITEMS      %d", item_count),
-		fmt.tprintf("BYTES      %d", byte_count),
-		graph_state,
+	detail := ui_evidence_detail_rect(ui)
+	lines := ui_evidence_detail_lines(ui, view)
+	visible := ui_evidence_detail_rows(ui)
+	ui.evidence_detail_scroll = clamp(ui.evidence_detail_scroll, 0, max(0, len(lines)-visible))
+	for line, index in lines {
+		if index < ui.evidence_detail_scroll || index >= ui.evidence_detail_scroll+visible {continue}
+		ui_draw_text(ctx, mono, ui, line, {detail.x, detail.y+f64(index-ui.evidence_detail_scroll)*20, detail.w, 20}, theme.text, 0, tracked = true)
 	}
-	for line, line_index in detail_lines {
-		ui_draw_text(
-			ctx,
-			mono,
-			ui,
-			line,
-			{
-				detail_x,
-				modal.y+82+f64(line_index)*24,
-				detail_width,
-				22,
-			},
-			theme.text,
-			0, tracked = true,
-		)
-	}
-	summary_y := modal.y+264
-	ui_draw_text(
-		ctx,
-		font,
-		ui,
-		"STAGE SUMMARY",
-		{detail_x, summary_y, detail_width, 22},
-		theme.muted,
-		0,
-	)
-	counter_limit := int((modal.y+modal.h-70-summary_y)/22)
-	for counter, counter_index in manifest.summary {
-		if counter_index >= counter_limit {break}
-		ui_draw_text(
-			ctx,
-			mono,
-			ui,
-			fmt.tprintf("%-28s %d", counter.name, counter.value),
-			{
-				detail_x,
-				summary_y+24+f64(counter_index)*22,
-				detail_width,
-				20,
-			},
-			theme.text,
-			0, tracked = true,
-		)
-	}
+	ui_draw_text(ctx, font, ui, fmt.tprintf("Scroll %d / %d", min(ui.evidence_detail_scroll+1, len(lines)), len(lines)), {detail.x, modal.y+modal.h-40, max(1, detail.w-140), 24}, theme.text, 0)
+
 	ui_draw_text(
 		ctx,
 		font,

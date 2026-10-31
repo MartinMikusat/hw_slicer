@@ -169,6 +169,8 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
 }
 - (void)scrollWheel:(NSEvent *)event {
     if (g_application) {
+        NSPoint point = slicer_event_point(self, event);
+        g_application->mouse(4, -1, point.x, point.y, 0, 0);
         g_application->scroll(event.scrollingDeltaX, event.scrollingDeltaY);
     }
 }
