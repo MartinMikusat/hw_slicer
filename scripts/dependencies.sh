@@ -14,7 +14,7 @@ else
   FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
 fi
 EXPECTED_FLASH_URL="https://github.com/MartinMikusat/hw_odin_ui_flash.git"
-EXPECTED_FLASH_COMMIT="d06e98a40640b13eea5b979319022aad0a470d72"
+EXPECTED_FLASH_COMMIT="f4744a6e76c04e99e54fa8e4205de416b612f1db"
 
 if [ "${1:-}" != "check" ]; then
   echo "usage: scripts/dependencies.sh check" >&2
