@@ -893,25 +893,27 @@ renderer_draw :: proc(
 		uint(renderer.mesh_vertex_count),
 	)
 
-	floor_vertices := [6]Mesh_Vertex{
-		{{-BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-		{{ BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-		{{ BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-		{{-BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-		{{ BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-		{{-BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+	if eye.z > -0.01 {
+		floor_vertices := [6]Mesh_Vertex{
+			{{-BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+			{{ BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+			{{ BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+			{{-BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+			{{ BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+			{{-BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+		}
+		floor_uniforms := mesh_uniforms
+		floor_uniforms.model = mat4_identity()
+		floor_uniforms.mvp = mesh_uniforms.view_projection
+		floor_uniforms.color = {theme.canvas.x, theme.canvas.y, theme.canvas.z, 1}
+		msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
+		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.floor_pipeline)
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(floor_vertices[:]), size_of(floor_vertices), 0)
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &floor_uniforms, size_of(Scene_Uniforms), 1)
+		msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &floor_uniforms, size_of(Scene_Uniforms), 1)
+		msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.scene_texture, 2)
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 6)
 	}
-	floor_uniforms := mesh_uniforms
-	floor_uniforms.model = mat4_identity()
-	floor_uniforms.mvp = mesh_uniforms.view_projection
-	floor_uniforms.color = {theme.canvas.x, theme.canvas.y, theme.canvas.z, 1}
-	msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
-	msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.floor_pipeline)
-	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(floor_vertices[:]), size_of(floor_vertices), 0)
-	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &floor_uniforms, size_of(Scene_Uniforms), 1)
-	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &floor_uniforms, size_of(Scene_Uniforms), 1)
-	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.scene_texture, 2)
-	msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 6)
 
 	if face_hover >= 0 {
 		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
