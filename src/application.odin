@@ -218,6 +218,7 @@ app_load_evidence :: proc(path: string) -> bool {
 	app.ui.help_open = false
 	app.ui.evidence_open = true
 	app.ui.evidence_stage_index = 0
+	app.ui.evidence_scroll = 0
 	app_set_status(
 		fmt.tprintf(
 			"EVIDENCE: %d STAGES",
@@ -691,7 +692,17 @@ application_mouse :: proc "c" (
 application_scroll :: proc "c" (delta_x, delta_y: f64) {
 	context = app_context()
 	_ = delta_x
-	if app.ui.settings_open || app.ui.help_open || app.ui.evidence_open {return}
+	if app.ui.evidence_open {
+		stage_count := len(app.evidence_replay.root.stages)
+		maximum := max(0, stage_count-ui_evidence_visible_stages(&app.ui))
+		step := -1 if delta_y > 0 else 1
+		if delta_y != 0 {
+			app.ui.evidence_scroll = clamp(app.ui.evidence_scroll+step, 0, maximum)
+			app.needs_redraw = true
+		}
+		return
+	}
+	if app.ui.settings_open || app.ui.help_open {return}
 	app.camera_goal.distance *= math.exp(-f32(delta_y)*0.008)
 	app.camera_goal.distance = clamp_f32(app.camera_goal.distance, 0.1, camera_distance_max(app.camera_goal, ui_viewport_rect(&app.ui)))
 	app.needs_redraw = true

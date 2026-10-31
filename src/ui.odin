@@ -26,6 +26,7 @@ foreign core_graphics {
 	) -> rawptr ---
 	CGContextRelease :: proc "c" (ctx: rawptr) ---
 	CGContextClearRect :: proc "c" (ctx: rawptr, rect: NS_Rect) ---
+	CGContextSetAlpha :: proc "c" (ctx: rawptr, alpha: f64) ---
 	CGContextSetRGBFillColor :: proc "c" (
 		ctx: rawptr,
 		red, green, blue, alpha: f64,
@@ -193,6 +194,7 @@ UI_State :: struct {
 	help_open: bool,
 	evidence_open: bool,
 	evidence_stage_index: int,
+	evidence_scroll: int,
 	width: f64,
 	height: f64,
 	scale: f64,
@@ -296,6 +298,11 @@ ui_evidence_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	}
 }
 
+ui_evidence_visible_stages :: proc(ui: ^UI_State) -> int {
+	modal := ui_evidence_modal_rect(ui)
+	return max(1, int((modal.h-126)/30))
+}
+
 ui_evidence_stage_action :: proc(index: int) -> UI_Action {
 	return UI_Action(u64(UI_Action.Evidence_Stage_Base)+u64(index))
 }
@@ -383,7 +390,10 @@ ui_build_controls :: proc(
 		   ui.evidence_stage_index >= stage_count {
 			ui.evidence_stage_index = 0
 		}
+		visible := ui_evidence_visible_stages(ui)
+		ui.evidence_scroll = clamp(ui.evidence_scroll, 0, max(0, stage_count-visible))
 		for stage, stage_index in evidence_view.replay.root.stages {
+			if stage_index < ui.evidence_scroll || stage_index >= ui.evidence_scroll+visible {continue}
 			ui_add_control(
 				ui,
 				stage.stage.name,
@@ -394,7 +404,7 @@ ui_build_controls :: proc(
 				),
 				{
 					modal.x+20,
-					modal.y+72+f64(stage_index)*30,
+					modal.y+72+f64(stage_index-ui.evidence_scroll)*30,
 					270,
 					28,
 				},
@@ -715,11 +725,19 @@ ui_build_geometry :: proc(
 ) -> [dynamic]Solid_Vertex {
 	vertices := make([dynamic]Solid_Vertex, context.temp_allocator)
 	theme := ui_theme(ui)
-	ui_add_rect(&vertices, ui, {0, 0, ui.width, 40}, theme.header)
-	ui_add_rect(&vertices, ui, ui_left_rect(ui), theme.surface)
-	ui_add_rect(&vertices, ui, ui_right_rect(ui), theme.surface)
-	ui_add_rect(&vertices, ui, ui_action_bar_rect(ui), theme.header)
-	if ui.help_open || (ui.evidence_open && ui_evidence_available(evidence_view)) || ui.settings_open {
+	modal_open := ui.help_open || (ui.evidence_open && ui_evidence_available(evidence_view)) || ui.settings_open
+	if modal_open {
+		underlay := ui^
+		underlay.controls = make([dynamic]UI_Control)
+		underlay.help_open = false
+		underlay.evidence_open = false
+		underlay.settings_open = false
+		underlay.hovered_id = 0
+		underlay.pressed_id = 0
+		ui_build_controls(&underlay)
+		base := ui_build_geometry(&underlay)
+		append(&vertices, ..base[:])
+		delete(underlay.controls)
 		modal := ui_settings_modal_rect(ui)
 		if ui.help_open {modal = ui_help_modal_rect(ui)}
 		if ui.evidence_open && ui_evidence_available(evidence_view) {modal = ui_evidence_modal_rect(ui)}
@@ -731,6 +749,11 @@ ui_build_geometry :: proc(
 		} else {
 			ui_add_round_rect(&vertices, ui, modal, 12, theme.overlay)
 		}
+	} else {
+		ui_add_rect(&vertices, ui, {0, 0, ui.width, 40}, theme.header)
+		ui_add_rect(&vertices, ui, ui_left_rect(ui), theme.surface)
+		ui_add_rect(&vertices, ui, ui_right_rect(ui), theme.surface)
+		ui_add_rect(&vertices, ui, ui_action_bar_rect(ui), theme.header)
 	}
 
 	for control in ui.controls {
@@ -1190,6 +1213,7 @@ ui_draw_evidence_overlay :: proc(
 	)
 
 	for stage, stage_index in replay.root.stages {
+		if stage_index < ui.evidence_scroll || stage_index >= ui.evidence_scroll+ui_evidence_visible_stages(ui) {continue}
 		color := ui_control_ink(ui, ui_evidence_stage_action(stage_index))
 		ui_draw_text(
 			ctx,
@@ -1198,7 +1222,7 @@ ui_draw_evidence_overlay :: proc(
 			fmt.tprintf("%02d  %s", stage.ordinal, stage.stage.name),
 			{
 				modal.x+28,
-				modal.y+72+f64(stage_index)*30,
+				modal.y+72+f64(stage_index-ui.evidence_scroll)*30,
 				250,
 				28,
 			},
@@ -1384,57 +1408,22 @@ ui_build_text_overlay :: proc(
 	defer CFRelease(mono)
 	theme := ui_theme(ui)
 
-	if ui.help_open {
-		modal := ui_help_modal_rect(ui)
-		ui_draw_text(
-			ctx,
-			font,
-			ui,
-			"MESH VIEWER HELP",
-			{modal.x+20, modal.y+14, 440, 32},
-			theme.text,
-			0,
-		)
-		help_lines := [7]string{
-			"LEFT DRAG rotates the camera around the mesh target.",
-			"RIGHT OR MIDDLE DRAG translates the camera target.",
-			"SCROLL changes camera distance.",
-			"FRAME recalculates the target and distance from the placed model bounds.",
-			"WIREFRAME changes Metal triangle fill mode.",
-			"OPEN accepts exact STL files and validated evidence bundles.",
-			"SECTION drags a cutting plane; its contour draws over the mesh.",
-		}
-		for line, index in help_lines {
-			ui_draw_text(
-				ctx,
-				font,
-				ui,
-				line,
-				{modal.x+20, modal.y+66+f64(index*30), modal.w-40, 26},
-				theme.text,
-				0,
-			)
-		}
-		ui_draw_text(
-			ctx,
-			font,
-			ui,
-			"01  CLOSE",
-			{modal.x+modal.w-132, modal.y+modal.h-54, 112, 36},
-			ui_control_ink(ui, .Close_Help),
-			0,
-			.Center,
-		)
-		ui_draw_flash_hint_text(ctx, font, ui)
-		return pixels
-	}
-	if ui.evidence_open && ui_evidence_available(evidence_view) {
-		ui_draw_evidence_overlay(ctx, font, mono, ui, evidence_view)
-		return pixels
-	}
-	if ui.settings_open {
-		ui_draw_settings_overlay(ctx, font, mono, ui)
-		return pixels
+	ui := ui
+	modal_ui := ui
+	modal_open := ui.help_open || ui.settings_open || (ui.evidence_open && ui_evidence_available(evidence_view))
+	underlay: UI_State
+	defer delete(underlay.controls)
+	if modal_open {
+		underlay = ui^
+		underlay.controls = make([dynamic]UI_Control)
+		underlay.help_open = false
+		underlay.evidence_open = false
+		underlay.settings_open = false
+		underlay.hovered_id = 0
+		underlay.pressed_id = 0
+		ui_build_controls(&underlay)
+		ui = &underlay
+		CGContextSetAlpha(ctx, 0.2)
 	}
 	ui_draw_text(ctx, font, ui, "HW SLICER / MESH VIEWER", {12, 0, 360, 40}, theme.text, 0)
 	window_labels := [3]string{"[_]", "[+]", "[x]"}
@@ -1599,6 +1588,67 @@ ui_build_text_overlay :: proc(
 	for label, index in labels {
 		action := actions[index]
 		ui_draw_text(ctx, font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
+	}
+
+	if modal_open {
+		ui = modal_ui
+		modal := ui_settings_modal_rect(ui)
+		if ui.help_open {modal = ui_help_modal_rect(ui)}
+		if ui.evidence_open && ui_evidence_available(evidence_view) {modal = ui_evidence_modal_rect(ui)}
+		CGContextClearRect(ctx, ui_cg_rect(ui, modal))
+		CGContextSetAlpha(ctx, 1)
+		if ui.help_open {
+			modal := ui_help_modal_rect(ui)
+			ui_draw_text(
+				ctx,
+				font,
+				ui,
+				"MESH VIEWER HELP",
+				{modal.x+20, modal.y+14, 440, 32},
+				theme.text,
+				0,
+			)
+			help_lines := [7]string{
+				"LEFT DRAG rotates the camera around the mesh target.",
+				"RIGHT OR MIDDLE DRAG translates the camera target.",
+				"SCROLL changes camera distance.",
+				"FRAME recalculates the target and distance from the placed model bounds.",
+				"WIREFRAME changes Metal triangle fill mode.",
+				"OPEN accepts exact STL files and validated evidence bundles.",
+				"SECTION drags a cutting plane; its contour draws over the mesh.",
+			}
+			for line, index in help_lines {
+				ui_draw_text(
+					ctx,
+					font,
+					ui,
+					line,
+					{modal.x+20, modal.y+66+f64(index*30), modal.w-40, 26},
+					theme.text,
+					0,
+				)
+			}
+			ui_draw_text(
+				ctx,
+				font,
+				ui,
+				"01  CLOSE",
+				{modal.x+modal.w-132, modal.y+modal.h-54, 112, 36},
+				ui_control_ink(ui, .Close_Help),
+				0,
+				.Center,
+			)
+			ui_draw_flash_hint_text(ctx, font, ui)
+			return pixels
+		}
+		if ui.evidence_open && ui_evidence_available(evidence_view) {
+			ui_draw_evidence_overlay(ctx, font, mono, ui, evidence_view)
+			return pixels
+		}
+		if ui.settings_open {
+			ui_draw_settings_overlay(ctx, font, mono, ui)
+			return pixels
+		}
 	}
 
 	ui_draw_flash_hint_text(ctx, font, ui)
