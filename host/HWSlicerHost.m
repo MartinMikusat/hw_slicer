@@ -11,6 +11,8 @@ static NSString *g_snapshot_path;
 static NSString *g_resource_root;
 static char *g_resource_root_bytes;
 
+static void slicer_window_zoom(void);
+
 @interface HWSlicerWindow : NSWindow
 @end
 
@@ -120,7 +122,7 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
     if (g_application && point.y < 40 &&
         g_application->hit_test(point.x, point.y) == 0) {
         if (event.clickCount == 2) {
-            [self.window zoom:nil];
+            slicer_window_zoom();
         } else {
             [self.window performWindowDragWithEvent:event];
         }
@@ -199,7 +201,18 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
 }
 - (void)keyDown:(NSEvent *)event {
     if (!g_application) { return; }
-    const char *characters = event.charactersIgnoringModifiers.UTF8String ?: "";
+    NSString *text = event.charactersIgnoringModifiers ?: @"";
+    if (event.modifierFlags & NSEventModifierFlagCommand) {
+        if ([text caseInsensitiveCompare:@"w"] == NSOrderedSame) {
+            [self.window close];
+            return;
+        }
+        if ([text caseInsensitiveCompare:@"q"] == NSOrderedSame) {
+            [NSApp terminate:nil];
+            return;
+        }
+    }
+    const char *characters = text.UTF8String ?: "";
     g_application->key(event.keyCode, characters, event.modifierFlags);
 }
 @end
@@ -213,11 +226,19 @@ static void slicer_window_close(void) {
 }
 
 static void slicer_window_minimize(void) {
-    [(__bridge NSWindow *)g_host.window miniaturize:nil];
+    NSWindow *window = (__bridge NSWindow *)g_host.window;
+    NSWindowStyleMask style = window.styleMask;
+    window.styleMask = style | NSWindowStyleMaskTitled;
+    [window miniaturize:nil];
+    window.styleMask = style;
 }
 
 static void slicer_window_zoom(void) {
-    [(__bridge NSWindow *)g_host.window zoom:nil];
+    NSWindow *window = (__bridge NSWindow *)g_host.window;
+    NSWindowStyleMask style = window.styleMask;
+    window.styleMask = style | NSWindowStyleMaskTitled;
+    [window zoom:nil];
+    window.styleMask = style;
 }
 
 static bool slicer_open_document(char *path, size_t capacity) {
@@ -266,7 +287,7 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
     NSRect frame = NSMakeRect(0, 0, 1280, 800);
     HWSlicerWindow *window = [[HWSlicerWindow alloc]
         initWithContentRect:frame
-        styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskResizable
+        styleMask:NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered
         defer:NO];
     window.title = @"HW Slicer";
