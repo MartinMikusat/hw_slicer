@@ -312,7 +312,7 @@ ui_right_rect :: proc(ui: ^UI_State) -> UI_Rect {
 
 ui_section_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	if ui_compact(ui) {return {20, 116, 156, 20}}
-	return {20, 306, 204, 24}
+	return {20, 246, 204, 24}
 }
 
 ui_help_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
@@ -688,7 +688,7 @@ ui_build_controls :: proc(
 	}
 	for row, index in rows {
 		if compact && ui.panel != .Models {continue}
-		rect := UI_Rect{20, f64(86+index*48), 204, 40}
+		rect := UI_Rect{20, f64(82+index*30), 204, 28}
 		if compact {rect = {16, f64(82+index*30), 164, 28}}
 		ui_add_control(
 			ui,
@@ -722,7 +722,7 @@ ui_build_controls :: proc(
 		true, 1, ui.wireframe,
 	)
 	if !compact || ui.panel == .Section {
-		section_rect := UI_Rect{20, 258, 204, 36}
+		section_rect := UI_Rect{20, 208, 204, 30}
 		if compact {section_rect = {20, 84, 156, 28}}
 		ui_add_control(
 			ui,
@@ -1731,23 +1731,23 @@ ui_build_text_overlay :: proc(
 				font,
 				ui,
 				label,
-				{28, f64(86+index*48), 188, 40},
+				ui_control_rect(ui, model_actions[index]),
 				color,
-				0,
+				8,
 			)
 		}
-		ui_draw_text(ctx, font, ui, "SECTION", {20, 230, 190, 24}, theme.muted, 0)
+		ui_draw_text(ctx, font, ui, "SECTION", {20, 180, 190, 24}, theme.muted, 0)
 		ui_draw_text(
 			ctx,
 			font,
 			ui,
 			"ENABLED" if ui.section_enabled else "DISABLED",
-			{64, 258, 152, 36},
+			{64, 208, 152, 30},
 			ui_control_ink(ui, .Toggle_Section),
 			0,
 		)
-		ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 334, 204, 22}, 90)
-		ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 358, 204, 22}, 90)
+		ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 274, 204, 22}, 90)
+		ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 298, 204, 22}, 90)
 	}
 
 	viewport := ui_viewport_rect(ui)

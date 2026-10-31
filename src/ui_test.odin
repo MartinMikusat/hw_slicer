@@ -371,12 +371,15 @@ ui_help_transition_exposes_only_window_and_modal_actions_test :: proc(t: ^testin
 	ui_build_controls(&ui)
 	ui.help_open = true
 	ui_build_controls(&ui)
-	testing.expect_value(t, len(ui.controls), 4)
+	testing.expect_value(t, len(ui.controls), 6)
 	testing.expect_value(
 		t,
 		ui.controls[len(ui.controls)-1].action,
 		UI_Action.Close_Help,
 	)
+	modal := ui_help_modal_rect(&ui)
+	testing.expect_value(t, ui_hit_test(&ui, modal.x+20, modal.y+20), u64(UI_Action.Modal_Surface))
+	testing.expect_value(t, ui_hit_test(&ui, 20, 60), u64(UI_Action.Dismiss_Help))
 }
 
 @(test)
