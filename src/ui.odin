@@ -699,7 +699,7 @@ ui_build_geometry :: proc(
 				{control.rect.x, control.rect.y, 4, control.rect.h},
 				COLOR_COFFEE,
 			)
-		case .Toggle_Wireframe:
+		case .Toggle_Wireframe, .Lay_On_Face:
 			ui_add_rect(&vertices, ui, control.rect, fill)
 			ui_add_border(&vertices, ui, control.rect, COLOR_COFFEE)
 			ui_add_rect(
@@ -742,7 +742,7 @@ ui_build_geometry :: proc(
 				{track.x+track.w*fraction-4, control.rect.y+4, 8, control.rect.h-8},
 				COLOR_SECTION,
 			)
-		case .Show_Help, .Frame_Mesh, .Lay_On_Face:
+		case .Show_Help, .Frame_Mesh:
 			ui_add_rect(&vertices, ui, control.rect, fill)
 		case .Open_Settings:
 			ui_add_rect(&vertices, ui, control.rect, fill)
@@ -1655,7 +1655,16 @@ ui_build_text_overlay :: proc(
 		.Center,
 	)
 
-	ui_draw_text(ctx, font, ui, "[Lay on face]", {viewport.x+204, viewport.y+12, 126, 30}, theme.text, 0, .Center)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"LAY ON FACE",
+		{viewport.x+204, viewport.y+12, 126, 30},
+		COLOR_COFFEE if ui.lay_on_face else theme.text,
+		0,
+		.Center,
+	)
 	right := ui_right_rect(ui)
 	ui_draw_text(ctx, font, ui, "MESH EVIDENCE", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
 	ui_draw_text(ctx, font, ui, model_name, {right.x+12, right.y+42, 252, 32}, theme.text, 0)
