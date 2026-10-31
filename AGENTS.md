@@ -34,8 +34,11 @@ The journal records startup, model and evidence loads, renderer presentation,
 window visibility and activation, and handled failures. `hw-devlog check`
 reports whether a run ended cleanly. `./test.sh` runs the devlog lint.
 
-Capture the live window for visual inspection:
+Capture the app's own render output without screen recording:
 
 ```sh
 ./scripts/capture.sh /tmp/hw-slicer.png
 ```
+
+The capture renders the first frame to an offscreen Metal texture and writes a
+PNG, so it works with the window hidden and without screen-recording permission.

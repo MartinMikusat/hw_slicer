@@ -2,31 +2,38 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-OUTPUT=${1:-"$ROOT/.hw-slicer-runtime/capture.png"}
-mkdir -p "$(dirname "$OUTPUT")"
+APP="$ROOT/build/HWSlicer.app/Contents/MacOS/HWSlicer"
+OUTPUT=${1:-"$ROOT/.hw-slicer-runtime/render.png"}
+BMP="${OUTPUT%.png}.bmp"
+LOG="$ROOT/.dev-logs/capture"
 
-WINDOW_ID=$(
-  swift - <<'SWIFT'
-import CoreGraphics
-import Foundation
-
-let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
-for window in windows {
-    let owner = window[kCGWindowOwnerName as String] as? String ?? ""
-    let layer = window[kCGWindowLayer as String] as? Int ?? -1
-    guard layer == 0, owner == "HWSlicer" || owner == "HW Slicer" else { continue }
-    if let number = window[kCGWindowNumber as String] as? Int {
-        print(number)
-        exit(0)
-    }
-}
-exit(1)
-SWIFT
-) || {
-  echo "[hw_slicer] no visible HWSlicer window" >&2
+if [ ! -x "$APP" ]; then
+  echo "[hw_slicer] missing build: run ./build.sh debug" >&2
   exit 1
-}
+fi
 
-screencapture -x -o -l"$WINDOW_ID" "$OUTPUT"
-printf '[hw_slicer] captured window %s to %s\n' "$WINDOW_ID" "$OUTPUT"
+mkdir -p "$(dirname "$OUTPUT")" "$LOG"
+rm -f "$BMP"
+
+env \
+  HW_SLICER_ACTIVATE_ON_LAUNCH=0 \
+  HW_SLICER_CAPTURE="$BMP" \
+  HW_DEVLOG_DIR="$LOG" \
+  HW_DEVLOG_PROFILE=dev \
+  "$APP" >/dev/null 2>&1 &
+pid=$!
+trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT INT TERM
+
+attempt=0
+while [ ! -f "$BMP" ]; do
+  attempt=$((attempt+1))
+  if [ "$attempt" -ge 100 ]; then
+    echo "[hw_slicer] render capture timed out" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+
+sips -s format png "$BMP" --out "$OUTPUT" >/dev/null
+rm -f "$BMP"
+printf '[hw_slicer] captured render to %s\n' "$OUTPUT"

@@ -332,8 +332,10 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 		ui_destroy(&app.ui)
 		return false
 	}
-	if !app_load_model(app.ui.selected_model, true) {
-		if app.ui.selected_model != 0 && app_load_model(0, true) {
+	if capture := os.get_env("HW_SLICER_CAPTURE", context.allocator); len(capture) > 0 {
+		app.renderer.capture_path = capture
+	}
+	if !app_load_model(app.ui.selected_model, true) {		if app.ui.selected_model != 0 && app_load_model(0, true) {
 			app_set_status("FALLBACK: LOADED 3DBENCHY")
 		} else {
 			fmt.eprintln("HW Slicer failed while loading its mesh")
@@ -474,7 +476,7 @@ application_frame :: proc "c" (width, height, scale: f64) {
 	if app.needs_redraw {
 		result := renderer_draw_application()
 		switch result {
-		case .Presented:
+		case .Presented, .Captured:
 			if !app.first_frame_logged {
 				devlog.succeeded(
 					devlog.global(),
@@ -484,8 +486,19 @@ application_frame :: proc "c" (width, height, scale: f64) {
 				)
 				app.first_frame_logged = true
 			}
+		case .Capture_Failed:
+			devlog.failed(
+				devlog.global(),
+				{feature = "renderer", operation = "capture"},
+				{
+					reason = "render capture failed",
+					severity = .Warning,
+				},
+				{scope = "renderer", stage = "capture"},
+			)
 		case .No_Layer, .Empty_Viewport, .No_Depth_Texture,
-		     .No_Drawable, .No_Command_Buffer, .No_Encoder:
+		     .No_Drawable, .No_Command_Buffer, .No_Encoder,
+		     .No_Capture_Texture:
 			if !app.first_frame_logged {
 				devlog.failed(
 					devlog.global(),

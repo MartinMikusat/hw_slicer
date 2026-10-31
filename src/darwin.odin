@@ -39,6 +39,7 @@ msg_id :: proc(receiver: Id, selector: Sel) -> Id {
 	return p(receiver, selector)
 }
 
+
 msg_cstring :: proc(receiver: Id, selector: Sel) -> cstring {
 	p := transmute(proc "c" (Id, Sel) -> cstring)objc_send_address
 	return p(receiver, selector)
@@ -189,6 +190,25 @@ msg_void_region :: proc(
 		uint,
 	))objc_send_address
 	p(receiver, selector, region, level, bytes, bytes_per_row)
+}
+
+msg_void_read_region :: proc(
+	receiver: Id,
+	selector: Sel,
+	bytes: rawptr,
+	bytes_per_row: uint,
+	region: MTL_Region,
+	level: uint,
+) {
+	p := transmute(proc "c" (
+		Id,
+		Sel,
+		rawptr,
+		uint,
+		MTL_Region,
+		uint,
+	))objc_send_address
+	p(receiver, selector, bytes, bytes_per_row, region, level)
 }
 
 msg_void_size :: proc(receiver: Id, selector: Sel, value: NS_Size) {

@@ -38,6 +38,11 @@ Renderer :: struct {
 	mesh_buffer:      Id,
 	section_buffer:   Id,
 	grid_buffer:      Id,
+	capture_texture:  Id,
+	capture_path:     string,
+	capture_written:  bool,
+	capture_width:    uint,
+	capture_height:   uint,
 	text_texture:     Id,
 	depth_texture:    Id,
 	mesh_vertex_count: int,
@@ -173,9 +178,10 @@ renderer_initialize :: proc(renderer: ^Renderer, layer: Id) -> bool {
 }
 
 renderer_shutdown :: proc(renderer: ^Renderer) {
-	objects := [13]Id{
+	objects := [14]Id{
 		renderer.depth_texture,
 		renderer.text_texture,
+		renderer.capture_texture,
 		renderer.grid_buffer,
 		renderer.section_buffer,
 		renderer.mesh_buffer,
@@ -191,6 +197,7 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 	for object in objects {
 		if object != nil {msg_void(object, sel_registerName("release"))}
 	}
+	delete(renderer.capture_path)
 	renderer^ = {}
 }
 
@@ -422,6 +429,42 @@ renderer_set_section :: proc(renderer: ^Renderer, vertices: []Mesh_Vertex) -> bo
 	return true
 }
 
+renderer_ensure_capture_texture :: proc(
+	renderer: ^Renderer,
+	width, height: uint,
+) -> Id {
+	if renderer.capture_texture != nil &&
+	   renderer.capture_width == width &&
+	   renderer.capture_height == height {
+		return renderer.capture_texture
+	}
+	descriptor := msg_id_u_u_u_bool(
+		objc_getClass("MTLTextureDescriptor"),
+		sel_registerName(
+			"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+		),
+		80,
+		width,
+		height,
+		false,
+	)
+	msg_void_u(descriptor, sel_registerName("setStorageMode:"), 0)
+	msg_void_u(descriptor, sel_registerName("setUsage:"), 5)
+	next := msg_id_id(
+		renderer.device,
+		sel_registerName("newTextureWithDescriptor:"),
+		descriptor,
+	)
+	if next == nil {return nil}
+	if renderer.capture_texture != nil {
+		msg_void(renderer.capture_texture, sel_registerName("release"))
+	}
+	renderer.capture_texture = next
+	renderer.capture_width = width
+	renderer.capture_height = height
+	return next
+}
+
 renderer_ensure_depth :: proc(
 	renderer: ^Renderer,
 	width, height: uint,
@@ -494,23 +537,29 @@ renderer_ensure_text_texture :: proc(
 
 Render_Result :: enum u8 {
 	Presented,
+	Captured,
+	Capture_Failed,
 	No_Layer,
 	Empty_Viewport,
 	No_Depth_Texture,
 	No_Drawable,
 	No_Command_Buffer,
 	No_Encoder,
+	No_Capture_Texture,
 }
 
 render_result_text :: proc(result: Render_Result) -> string {
 	switch result {
-	case .Presented:         return "presented"
-	case .No_Layer:          return "no metal layer"
-	case .Empty_Viewport:    return "empty viewport"
-	case .No_Depth_Texture:  return "no depth texture"
-	case .No_Drawable:       return "no drawable"
-	case .No_Command_Buffer: return "no command buffer"
-	case .No_Encoder:        return "no render encoder"
+	case .Presented:          return "presented"
+	case .Captured:           return "captured"
+	case .Capture_Failed:     return "capture write failed"
+	case .No_Layer:           return "no metal layer"
+	case .Empty_Viewport:     return "empty viewport"
+	case .No_Depth_Texture:   return "no depth texture"
+	case .No_Drawable:        return "no drawable"
+	case .No_Command_Buffer:  return "no command buffer"
+	case .No_Encoder:         return "no render encoder"
+	case .No_Capture_Texture: return "no capture texture"
 	}
 	return "unknown"
 }
@@ -533,9 +582,21 @@ renderer_draw :: proc(
 	if !renderer_ensure_depth(renderer, pixel_width, pixel_height) {
 		return .No_Depth_Texture
 	}
-	drawable := msg_id(renderer.layer, sel_registerName("nextDrawable"))
-	if drawable == nil {return .No_Drawable}
-	texture := msg_id(drawable, sel_registerName("texture"))
+	capture := len(renderer.capture_path) > 0 && !renderer.capture_written
+	drawable: Id
+	texture: Id
+	if capture {
+		texture = renderer_ensure_capture_texture(
+			renderer,
+			pixel_width,
+			pixel_height,
+		)
+		if texture == nil {return .No_Capture_Texture}
+	} else {
+		drawable = msg_id(renderer.layer, sel_registerName("nextDrawable"))
+		if drawable == nil {return .No_Drawable}
+		texture = msg_id(drawable, sel_registerName("texture"))
+	}
 	command_buffer := msg_id(renderer.queue, sel_registerName("commandBuffer"))
 	if command_buffer == nil {return .No_Command_Buffer}
 	pass := msg_id(
@@ -807,6 +868,31 @@ renderer_draw :: proc(
 		)
 	}
 	msg_void(encoder, sel_registerName("endEncoding"))
+	if capture {
+		msg_void(command_buffer, sel_registerName("commit"))
+		msg_void(command_buffer, sel_registerName("waitUntilCompleted"))
+		bytes := make([]u8, int(pixel_width*pixel_height*4))
+		defer delete(bytes)
+		region := MTL_Region{
+			origin = {0, 0, 0},
+			size = {pixel_width, pixel_height, 1},
+		}
+		msg_void_read_region(
+			texture,
+			sel_registerName(
+				"getBytes:bytesPerRow:fromRegion:mipmapLevel:",
+			),
+			raw_data(bytes),
+			pixel_width*4,
+			region,
+			0,
+		)
+		if !bmp_write(renderer.capture_path, bytes, pixel_width, pixel_height) {
+			return .Capture_Failed
+		}
+		renderer.capture_written = true
+		return .Captured
+	}
 	msg_void_id(
 		command_buffer,
 		sel_registerName("presentDrawable:"),
