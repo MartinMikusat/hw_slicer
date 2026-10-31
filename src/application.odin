@@ -263,6 +263,11 @@ app_activate :: proc(action: UI_Action) -> bool {
 	switch action {
 	case .Modal_Surface:
 		return false
+	case .Panel_Models, .Panel_Section, .Panel_Mesh:
+		if action == .Panel_Models {app.ui.panel = .Models}
+		if action == .Panel_Section {app.ui.panel = .Section}
+		if action == .Panel_Mesh {app.ui.panel = .Mesh}
+		app.needs_redraw = true
 	case .Window_Close:
 		app.host.window_close()
 	case .Window_Minimize:
