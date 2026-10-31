@@ -561,7 +561,6 @@ ui_build_geometry :: proc(
 	}
 	ui_add_rect(&vertices, ui, {0, 0, ui.width, 40}, theme.header)
 	ui_add_rect(&vertices, ui, ui_left_rect(ui), theme.surface)
-	ui_add_rect(&vertices, ui, ui_viewport_rect(ui), theme.raised)
 	ui_add_rect(&vertices, ui, ui_right_rect(ui), theme.surface)
 	bar := ui_action_bar_rect(ui)
 	ui_add_rect(&vertices, ui, bar, theme.header)
