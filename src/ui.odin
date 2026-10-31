@@ -1876,6 +1876,8 @@ ui_snapshot_text :: proc(ui: ^UI_State) -> string {
 		modal = "help"
 	} else if ui.evidence_open {
 		modal = "evidence"
+	} else if ui.settings_open {
+		modal = "settings"
 	}
 	fmt.sbprintf(
 		&builder,

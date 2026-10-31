@@ -19,9 +19,9 @@ An Apple Silicon macOS slicer that converts 3D models into deterministic FFF too
 6. **Surgical Changes:** Modify only files directly required for the task. Match existing code formatting, naming conventions, and lifetime management (explicit allocators, defer cleanups).
 7. **Commit Style:** Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `perf:`, `test:`, `chore:`). Commit complete units of work autonomously.
 
-## Button styling
+## UI styling
 
-Use the existing button styles in `src/ui.odin` as the visual contract. New mode buttons must share the Wireframe drawing path: uppercase labels, rectangular fill, coffee-colour border and left accent, and the same hover, pressed, and active colours. Use plain labels without square brackets. This project rule overrides the generic bracketed-button defaults in the app-authoring skill.
+Follow the shared visual rules in `../hw_delta_support/DESIGN.md` for applicable controls and surfaces. Implement them in `src/ui.odin`.
 
 ## Model placement
 
