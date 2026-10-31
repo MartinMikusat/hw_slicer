@@ -249,6 +249,21 @@ ui_contains :: proc(rect: UI_Rect, x, y: f64) -> bool {
 
 UI_ACTION_LABELS :: [6]string{"1  Open", "2  Slice", "3  Cancel", "4  Capture", "5  Compare", "6  Export"}
 ui_action_widths: [6]f64
+ui_character_widths: [FONT_SIZE_MAX+1]f64
+
+ui_character_width :: proc(ui: ^UI_State) -> f64 {
+	size := settings_font_size_clamped(ui.font_size)
+	if ui_character_widths[size] == 0 {
+		font := ui_font("JetBrainsMono-Regular", f64(size))
+		assert(font != nil)
+		run := ui_text_run(font, "0", -0.8)
+		assert(run.line != nil)
+		ui_character_widths[size] = math.ceil(run.advance)/(f64(size)/BASE_FONT_SIZE)
+		CFRelease(run.line)
+		CFRelease(font)
+	}
+	return ui_character_widths[size]
+}
 
 ui_action_layout :: proc(ui: ^UI_State) -> (bar: UI_Rect, buttons: [6]UI_Rect) {
 	if ui_action_widths[0] == 0 {
@@ -258,20 +273,21 @@ ui_action_layout :: proc(ui: ^UI_State) -> (bar: UI_Rect, buttons: [6]UI_Rect) {
 		for label, index in UI_ACTION_LABELS {
 			run := ui_text_run(font, label)
 			assert(run.line != nil)
-			ui_action_widths[index] = math.ceil(run.advance)+28
+			ui_action_widths[index] = run.advance
 			CFRelease(run.line)
 		}
 	}
 	available := max(1.0, ui.width-24)
+	ch := ui_character_width(ui)
 	x, y := f64(0), f64(0)
-	for width, index in ui_action_widths {
-		width := min(width, available)
+	for text_width, index in ui_action_widths {
+		width := min(text_width+4.5*ch, available)
 		if x > 0 && x+width > available {
 			x = 0
 			y += 40
 		}
 		buttons[index] = {12+x, y, width, 32}
-		x += width+10.5
+		x += width+ch
 	}
 	height := y+52
 	bar = {12, ui.height-height-12, available, height}
@@ -541,9 +557,12 @@ ui_build_controls :: proc(
 	evidence_view: ^UI_Evidence_View = nil,
 ) {
 	clear(&ui.controls)
-	ui_add_control(ui, "window close", "close window", {ui.width-33, 12, 21, 16}, .Window_Close)
-	ui_add_control(ui, "window minimize", "minimize window", {ui.width-75, 12, 21, 16}, .Window_Minimize)
-	ui_add_control(ui, "window zoom", "zoom window", {ui.width-54, 12, 21, 16}, .Window_Zoom)
+	ch := ui_character_width(ui)
+	window_width := 3*ch
+	window_height := math.ceil(f64(ui.font_size)*1.2)/(f64(ui.font_size)/BASE_FONT_SIZE)
+	ui_add_control(ui, "window close", "close window", {ui.width-12-window_width, 12, window_width, window_height}, .Window_Close)
+	ui_add_control(ui, "window minimize", "minimize window", {ui.width-12-3*window_width, 12, window_width, window_height}, .Window_Minimize)
+	ui_add_control(ui, "window zoom", "zoom window", {ui.width-12-2*window_width, 12, window_width, window_height}, .Window_Zoom)
 	if ui.help_open {
 		modal := ui_help_modal_rect(ui)
 		ui_add_control(ui, "help scrim", "close viewer help", {0, 0, ui.width, ui.height}, .Dismiss_Help)
@@ -1064,7 +1083,8 @@ ui_build_geometry :: proc(
 		}
 		menu := control.action == .Evidence_Stages || control.action == .Evidence_Details || control.action == .Panel_Models || control.action == .Panel_Section || control.action == .Panel_Mesh || control.action == .Select_Benchy || control.action == .Select_All_In_One || control.action == .Select_Bunny
 		if _, stage := ui_evidence_stage_action_index(control.action, len(evidence_view.replay.root.stages) if ui_evidence_available(evidence_view) else 0); stage {menu = true}
-		rect := UI_Rect{control.rect.x+3, control.rect.y+4, control.rect.w-6, control.rect.h-8}
+		inset := ui_character_width(ui)/4
+		rect := UI_Rect{control.rect.x+inset, control.rect.y+4, control.rect.w-2*inset, control.rect.h-8}
 		if rect.w <= 0 || rect.h <= 0 {continue}
 		fill := theme.raised
 		if hovered {fill = ui_theme_blend(theme, 0.04)}
