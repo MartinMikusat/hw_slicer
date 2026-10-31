@@ -217,6 +217,7 @@ app_load_evidence :: proc(path: string) -> bool {
 	app.evidence_path = strings.clone(path)
 	app.ui.help_open = false
 	app.ui.evidence_open = true
+	app.ui.focused_id = 0
 	app.ui.evidence_stage_index = 0
 	app.ui.evidence_scroll = 0
 	app.ui.evidence_detail_scroll = 0
@@ -289,16 +290,20 @@ app_activate :: proc(action: UI_Action) -> bool {
 		)
 		app.needs_redraw = true
 	case .Show_Help:
+		app.ui.focused_id = 0
 		app.ui.evidence_open = false
 		app.ui.help_open = true
 		app.needs_redraw = true
 	case .Close_Help, .Dismiss_Help:
+		app.ui.focused_id = 0
 		app.ui.help_open = false
 		app.needs_redraw = true
 	case .Close_Evidence:
+		app.ui.focused_id = 0
 		app.ui.evidence_open = false
 		app.needs_redraw = true
 	case .Dismiss_Evidence:
+		app.ui.focused_id = 0
 		app.ui.evidence_open = false
 		app.needs_redraw = true
 	case .Select_Benchy:
@@ -322,9 +327,11 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.section_dirty = true
 		app.needs_redraw = true
 	case .Open_Settings:
+		app.ui.focused_id = 0
 		app.ui.settings_open = true
 		app.needs_redraw = true
 	case .Close_Settings, .Dismiss_Settings:
+		app.ui.focused_id = 0
 		app.ui.settings_open = false
 		app.needs_redraw = true
 	case .Font_Decrease:
@@ -649,6 +656,7 @@ application_mouse :: proc "c" (
 	}
 	switch phase {
 	case 0:
+		if app.ui.focused_id != 0 {app.ui.focused_id = 0; app.needs_redraw = true}
 		app.face_pressed = -1
 		id := ui_hit_test(&app.ui, point_x, point_y)
 		app.ui.pressed_id = id
@@ -752,12 +760,15 @@ application_key :: proc "c" (
 			flash.cancel(&app.ui.flash_state)
 			app.needs_redraw = true
 		} else if app.ui.settings_open {
+			app.ui.focused_id = 0
 			app.ui.settings_open = false
 			app.needs_redraw = true
 		} else if app.ui.help_open {
+			app.ui.focused_id = 0
 			app.ui.help_open = false
 			app.needs_redraw = true
 		} else if app.ui.evidence_open {
+			app.ui.focused_id = 0
 			app.ui.evidence_open = false
 			app.needs_redraw = true
 		}
@@ -767,10 +778,45 @@ application_key :: proc "c" (
 	command := (modifiers & (1 << 20)) != 0
 	if command && text == "," {
 		if app.ui.settings_open || (!app.ui.help_open && !app.ui.evidence_open) {
+			if flash.is_active(&app.ui.flash_state) {flash.cancel(&app.ui.flash_state)}
 			app.ui.settings_open = !app.ui.settings_open
+			app.ui.focused_id = 0
 			app.needs_redraw = true
 		}
 		return
+	}
+	if !flash.is_active(&app.ui.flash_state) {
+		if key_code == 48 {
+			view := app_evidence_view()
+			ui_build_controls(&app.ui, &view)
+			ui_focus_next(&app.ui, (modifiers & (1 << 17)) != 0)
+			app.needs_redraw = true
+			return
+		}
+		if key_code == 36 || key_code == 76 || key_code == 49 {
+			view := app_evidence_view()
+			ui_build_controls(&app.ui, &view)
+			for control in app.ui.controls {
+				if control.id == app.ui.focused_id && ui_control_focusable(&app.ui, control) {
+					_ = app_activate(control.action)
+					app.needs_redraw = true
+					return
+				}
+			}
+		}
+		if app.ui.focused_id == u64(UI_Action.Section_Height) && (key_code == 123 || key_code == 124) {
+			view := app_evidence_view()
+			ui_build_controls(&app.ui, &view)
+			for control in app.ui.controls {
+				if control.action == .Section_Height && ui_control_focusable(&app.ui, control) {
+					step := app.ui.section_max/100
+					app.ui.section_z = clamp(app.ui.section_z+(step if key_code == 124 else -step), 0, app.ui.section_max)
+					app.section_dirty = true
+					app.needs_redraw = true
+					return
+				}
+			}
+		}
 	}
 	if app.ui.settings_open {
 		if text == "-" {
@@ -782,6 +828,7 @@ application_key :: proc "c" (
 			return
 		}
 		if text == "1" {
+			app.ui.focused_id = 0
 			app.ui.settings_open = false
 			app.needs_redraw = true
 		}

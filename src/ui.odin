@@ -219,6 +219,7 @@ UI_State :: struct {
 	section_segments: int,
 	section_dragging: bool,
 	pressed_id: u64,
+	focused_id: u64,
 	hovered_id: u64,
 	pointer_x, pointer_y: f64,
 }
@@ -778,12 +779,39 @@ ui_hit_test :: proc(ui: ^UI_State, x, y: f64) -> u64 {
 	return 0
 }
 
+ui_control_focusable :: proc(ui: ^UI_State, control: UI_Control) -> bool {
+	if !control.enabled {return false}
+	#partial switch control.action {
+	case .None, .Modal_Surface, .Dismiss_Help, .Dismiss_Evidence, .Dismiss_Settings:
+		return false
+	case .Window_Close, .Window_Minimize, .Window_Zoom:
+		return !ui.settings_open && !ui.help_open && !ui.evidence_open
+	case:
+		return true
+	}
+}
+
+ui_focus_next :: proc(ui: ^UI_State, reverse: bool) {
+	count := len(ui.controls)
+	if count == 0 {ui.focused_id = 0; return}
+	current := -1
+	for control, index in ui.controls {
+		if control.id == ui.focused_id && ui_control_focusable(ui, control) {current = index; break}
+	}
+	step := -1 if reverse else 1
+	if current < 0 {current = 0 if reverse else -1}
+	for _ in 0..<count {
+		current = (current+step+count)%count
+		control := ui.controls[current]
+		if ui_control_focusable(ui, control) {ui.focused_id = control.id; return}
+	}
+	ui.focused_id = 0
+}
+
 ui_begin_flash :: proc(ui: ^UI_State) {
 	targets := make([dynamic]flash.Target, context.temp_allocator)
 	for control in ui.controls {
-		if !control.enabled || control.action == .Modal_Surface ||
-		   control.action == .Dismiss_Help || control.action == .Dismiss_Evidence ||
-		   control.action == .Dismiss_Settings {continue}
+		if !ui_control_focusable(ui, control) {continue}
 		append(
 			&targets,
 			flash.Target{
@@ -902,7 +930,7 @@ ui_theme_blend :: proc(theme: Theme, amount: f32) -> Vec4 {
 }
 
 ui_control_standing :: proc(ui: ^UI_State, control: UI_Control) -> bool {
-	return control.enabled && (control.selected || control.id == ui.pressed_id)
+	return control.enabled && (control.selected || control.id == ui.pressed_id || control.id == ui.focused_id)
 }
 
 ui_control_rect :: proc(ui: ^UI_State, action: UI_Action) -> UI_Rect {
@@ -940,6 +968,7 @@ ui_build_geometry :: proc(
 		underlay.settings_open = false
 		underlay.hovered_id = 0
 		underlay.pressed_id = 0
+		underlay.focused_id = 0
 		ui_build_controls(&underlay)
 		base := ui_build_geometry(&underlay)
 		append(&vertices, ..base[:])
@@ -967,10 +996,12 @@ ui_build_geometry :: proc(
 		standing := ui_control_standing(ui, control)
 		if control.action == .None || control.action == .Modal_Surface || control.action == .Dismiss_Settings || control.action == .Dismiss_Evidence || control.action == .Dismiss_Help {continue}
 		if control.action == .Window_Close || control.action == .Window_Minimize || control.action == .Window_Zoom {
+			if modal_open {continue}
 			if hovered || standing {ui_add_rect(&vertices, ui, control.rect, theme.text)}
 			continue
 		}
 		if control.action == .Section_Height {
+			if control.id == ui.focused_id {ui_add_border(&vertices, ui, control.rect, theme.text)}
 			track := UI_Rect{control.rect.x+4, control.rect.y+control.rect.h/2-2, control.rect.w-8, 4}
 			ui_add_round_rect(&vertices, ui, track, 2, ui_theme_blend(theme, 0.2))
 			fraction := 0.0
@@ -981,6 +1012,7 @@ ui_build_geometry :: proc(
 			continue
 		}
 		if control.action == .Toggle_Section {
+			if control.id == ui.focused_id {ui_add_border(&vertices, ui, control.rect, theme.text)}
 			track := UI_Rect{control.rect.x+8, control.rect.y+(control.rect.h-14)/2, 25, 14}
 			track_color := ui_theme_blend(theme, 0.22 if hovered else 0.16)
 			if !control.enabled {track_color = ui_theme_blend(theme, 0.04)}
@@ -1595,6 +1627,7 @@ ui_build_text_overlay :: proc(
 		underlay.settings_open = false
 		underlay.hovered_id = 0
 		underlay.pressed_id = 0
+		underlay.focused_id = 0
 		ui_build_controls(&underlay)
 		ui = &underlay
 		CGContextSetAlpha(ctx, 0.2)
