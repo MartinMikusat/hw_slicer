@@ -22,6 +22,8 @@ App_State :: struct {
 	renderer:      Renderer,
 	ui:            UI_State,
 	mesh:          Mesh,
+	section_vertices: [dynamic]Mesh_Vertex,
+	section_dirty: bool,
 	evidence_replay: evidence.Evidence_Bundle_Replay,
 	evidence_kind: evidence.Evidence_Bundle_Source_Kind,
 	camera:        Camera,
@@ -103,6 +105,9 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 	mesh_destroy(&app.mesh)
 	app.mesh = next
 	app.ui.selected_model = index
+	app.ui.section_max = mesh_size(app.mesh.bounds).z
+	app.ui.section_z = app.ui.section_max/2
+	app.section_dirty = true
 	delete(app.model_name)
 	app.model_name = strings.clone(name)
 	app_set_status(fmt.tprintf("LOADED %d TRIANGLES", app.mesh.triangle_count))
@@ -211,6 +216,12 @@ app_activate :: proc(action: UI_Action) -> bool {
 	case .Toggle_Wireframe:
 		app.ui.wireframe = !app.ui.wireframe
 		app.needs_redraw = true
+	case .Toggle_Section:
+		app.ui.section_enabled = !app.ui.section_enabled
+		app.section_dirty = true
+		app.needs_redraw = true
+	case .Section_Height:
+		return true
 	case .Open:
 		app_open_document()
 	case .Slice, .Cancel, .Capture, .Compare, .Export:
@@ -254,6 +265,7 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 
 app_destroy :: proc() {
 	mesh_destroy(&app.mesh)
+	delete(app.section_vertices)
 	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
 	renderer_shutdown(&app.renderer)
 	ui_destroy(&app.ui)
@@ -263,6 +275,28 @@ app_destroy :: proc() {
 	delete(app.model_name)
 	delete(app.status)
 	app = {}
+}
+
+app_set_section_z :: proc(x: f64) {
+	if app.ui.section_max <= 0 {return}
+	rect := ui_section_slider_rect(&app.ui)
+	app.ui.section_z = section_height_from_pointer(
+		x,
+		rect,
+		app.ui.section_max,
+	)
+	app.section_dirty = true
+}
+
+app_rebuild_section :: proc() {
+	if !app.ui.section_enabled || app.mesh.triangle_count == 0 {
+		clear(&app.section_vertices)
+		app.ui.section_segments = 0
+		return
+	}
+	z := app.mesh.bounds.minimum.z+app.ui.section_z
+	stats := section_mesh_at_z(&app.mesh, z, &app.section_vertices)
+	app.ui.section_segments = stats.segments
 }
 
 app_camera_eye :: proc(camera: Camera) -> Vec3 {
@@ -291,6 +325,11 @@ app_pan_camera :: proc(delta_x, delta_y: f64) {
 }
 
 renderer_draw_application :: proc() {
+	if app.section_dirty {
+		app_rebuild_section()
+		_ = renderer_set_section(&app.renderer, app.section_vertices[:])
+		app.section_dirty = false
+	}
 	evidence_view := app_evidence_view()
 	ui_build_controls(&app.ui, &evidence_view)
 	solids := ui_build_geometry(&app.ui, &evidence_view)
@@ -355,12 +394,19 @@ application_mouse :: proc "c" (
 	case 0:
 		id := ui_hit_test(&app.ui, x, y)
 		app.ui.pressed_id = id
-		if id == 0 && ui_contains(ui_viewport_rect(&app.ui), x, y) {
+		if id == u64(UI_Action.Section_Height) {
+			app.ui.section_dragging = true
+			app_set_section_z(x)
+			app.needs_redraw = true
+		} else if id == 0 && ui_contains(ui_viewport_rect(&app.ui), x, y) {
 			app.dragging = true
 			app.drag_button = button
 		}
 	case 1:
-		if app.dragging {
+		if app.ui.section_dragging {
+			app_set_section_z(x)
+			app.needs_redraw = true
+		} else if app.dragging {
 			if app.drag_button == 0 {
 				app.camera.yaw -= f32(delta_x)*0.008
 				app.camera.pitch = clamp_f32(
@@ -374,12 +420,17 @@ application_mouse :: proc "c" (
 			app.needs_redraw = true
 		}
 	case 2:
-		id := ui_hit_test(&app.ui, x, y)
-		if !app.dragging && id != 0 && id == app.ui.pressed_id {
-			_ = app_activate(UI_Action(id))
+		if app.ui.section_dragging {
+			app.ui.section_dragging = false
+			app.ui.pressed_id = 0
+		} else {
+			id := ui_hit_test(&app.ui, x, y)
+			if !app.dragging && id != 0 && id == app.ui.pressed_id {
+				_ = app_activate(UI_Action(id))
+			}
+			app.dragging = false
+			app.ui.pressed_id = 0
 		}
-		app.dragging = false
-		app.ui.pressed_id = 0
 	case 3:
 		hovered := ui_hit_test(&app.ui, x, y)
 		if hovered != app.ui.hovered_id {

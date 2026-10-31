@@ -62,9 +62,10 @@ and G-code graphs without the source model. Pointer, Flash, and Accessibility
 input select one stage record.
 
 The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
-light and dark themes, Flash navigation, and Accessibility actions. The
-remaining numbered action slots stay visible and disabled until their slicing
-stages exist.
+light and dark themes, Flash navigation, and Accessibility actions. The SECTION
+control drags a cutting plane through the loaded mesh and draws the resulting
+plane contour in the scene. The remaining numbered action slots stay visible and
+disabled until their slicing stages exist.
 
 Build and run the development app:
 

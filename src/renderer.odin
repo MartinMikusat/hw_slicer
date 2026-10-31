@@ -36,10 +36,12 @@ Renderer :: struct {
 	depth_state:      Id,
 	ui_depth_state:   Id,
 	mesh_buffer:      Id,
+	section_buffer:   Id,
 	grid_buffer:      Id,
 	text_texture:     Id,
 	depth_texture:    Id,
 	mesh_vertex_count: int,
+	section_vertex_count: int,
 	grid_vertex_count: int,
 	texture_width:    uint,
 	texture_height:   uint,
@@ -171,10 +173,11 @@ renderer_initialize :: proc(renderer: ^Renderer, layer: Id) -> bool {
 }
 
 renderer_shutdown :: proc(renderer: ^Renderer) {
-	objects := [12]Id{
+	objects := [13]Id{
 		renderer.depth_texture,
 		renderer.text_texture,
 		renderer.grid_buffer,
+		renderer.section_buffer,
 		renderer.mesh_buffer,
 		renderer.ui_depth_state,
 		renderer.depth_state,
@@ -396,6 +399,26 @@ renderer_set_mesh :: proc(renderer: ^Renderer, mesh: ^Mesh) -> bool {
 	}
 	renderer.mesh_buffer = next
 	renderer.mesh_vertex_count = len(mesh.vertices)
+	return true
+}
+
+renderer_set_section :: proc(renderer: ^Renderer, vertices: []Mesh_Vertex) -> bool {
+	next: Id
+	if len(vertices) > 0 {
+		next = msg_id_ptr_u_u(
+			renderer.device,
+			sel_registerName("newBufferWithBytes:length:options:"),
+			raw_data(vertices),
+			uint(len(vertices))*size_of(Mesh_Vertex),
+			0,
+		)
+		if next == nil {return false}
+	}
+	if renderer.section_buffer != nil {
+		msg_void(renderer.section_buffer, sel_registerName("release"))
+	}
+	renderer.section_buffer = next
+	renderer.section_vertex_count = len(vertices)
 	return true
 }
 
@@ -635,6 +658,46 @@ renderer_draw :: proc(
 		0,
 		uint(renderer.grid_vertex_count),
 	)
+
+	if renderer.section_vertex_count > 0 {
+		section_uniforms := Scene_Uniforms{
+			mvp = mesh_uniforms.mvp,
+			model = model,
+			color = COLOR_SECTION,
+			light_dir = {0, 0, 1, 0},
+		}
+		msg_void_id(
+			encoder,
+			sel_registerName("setDepthStencilState:"),
+			renderer.ui_depth_state,
+		)
+		msg_void_id(
+			encoder,
+			sel_registerName("setRenderPipelineState:"),
+			renderer.line_pipeline,
+		)
+		msg_void_id_u_u(
+			encoder,
+			sel_registerName("setVertexBuffer:offset:atIndex:"),
+			renderer.section_buffer,
+			0,
+			0,
+		)
+		msg_void_ptr_u_u(
+			encoder,
+			sel_registerName("setVertexBytes:length:atIndex:"),
+			&section_uniforms,
+			size_of(Scene_Uniforms),
+			1,
+		)
+		msg_void_u_u_u(
+			encoder,
+			sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
+			1,
+			0,
+			uint(renderer.section_vertex_count),
+		)
+	}
 
 	msg_void_viewport(
 		encoder,

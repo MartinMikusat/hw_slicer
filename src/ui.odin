@@ -106,6 +106,8 @@ UI_Action :: enum u64 {
 	Compare,
 	Export,
 	Close_Evidence,
+	Toggle_Section,
+	Section_Height,
 	Evidence_Stage_Base = 1000,
 }
 
@@ -160,6 +162,7 @@ DARK_THEME :: Theme{
 }
 
 COLOR_COFFEE :: Vec4{0.698039, 0.490196, 0.341176, 1}
+COLOR_SECTION :: Vec4{0.980392, 0.427451, 0.121569, 1}
 COLOR_GUM    :: Vec4{0.490196, 0.529412, 0.411765, 1}
 FLASH_BG     :: Vec4{0.96, 0.94, 0.85, 1}
 FLASH_FG     :: Vec4{0.025, 0.027, 0.026, 1}
@@ -179,12 +182,18 @@ UI_State :: struct {
 	dark: bool,
 	selected_model: int,
 	wireframe: bool,
+	section_enabled:  bool,
+	section_z:        f32,
+	section_max:      f32,
+	section_segments: int,
+	section_dragging: bool,
 	pressed_id: u64,
 	hovered_id: u64,
 }
 
 ui_initialize :: proc(ui: ^UI_State) {
 	ui.controls = make([dynamic]UI_Control)
+	ui.section_enabled = true
 	flash.state_init(&ui.flash_state)
 }
 
@@ -222,6 +231,10 @@ ui_right_rect :: proc(ui: ^UI_State) -> UI_Rect {
 
 ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	return {12, ui.height-64, ui.width-24, 52}
+}
+
+ui_section_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	return {20, 306, 204, 24}
 }
 
 ui_evidence_available :: proc(view: ^UI_Evidence_View) -> bool {
@@ -392,6 +405,22 @@ ui_build_controls :: proc(
 		"toggle mesh wireframe",
 		{viewport.x+98, viewport.y+12, 98, 30},
 		.Toggle_Wireframe,
+	)
+	ui_add_control(
+		ui,
+		"section enabled",
+		"toggle layer section",
+		{20, 258, 204, 36},
+		.Toggle_Section,
+		ui.section_max > 0,
+	)
+	ui_add_control(
+		ui,
+		"section height",
+		"layer section height",
+		ui_section_slider_rect(ui),
+		.Section_Height,
+		ui.section_max > 0,
 	)
 
 	names := [6]string{
@@ -586,6 +615,40 @@ ui_build_geometry :: proc(
 				ui,
 				{control.rect.x, control.rect.y, 4, control.rect.h},
 				COLOR_COFFEE,
+			)
+		case .Toggle_Section:
+			ui_add_rect(&vertices, ui, control.rect, fill)
+			ui_add_border(&vertices, ui, control.rect, COLOR_SECTION)
+			ui_add_rect(
+				&vertices,
+				ui,
+				{control.rect.x, control.rect.y, 4, control.rect.h},
+				COLOR_SECTION if ui.section_enabled else theme.muted,
+			)
+		case .Section_Height:
+			ui_add_rect(&vertices, ui, control.rect, theme.surface)
+			track := UI_Rect{
+				control.rect.x+4,
+				control.rect.y+control.rect.h/2-2,
+				control.rect.w-8,
+				4,
+			}
+			ui_add_rect(&vertices, ui, track, theme.muted)
+			fraction := 0.0
+			if ui.section_max > 0 {
+				fraction = min(max(f64(ui.section_z/ui.section_max), 0), 1)
+			}
+			ui_add_rect(
+				&vertices,
+				ui,
+				{track.x, track.y, track.w*fraction, track.h},
+				COLOR_SECTION,
+			)
+			ui_add_rect(
+				&vertices,
+				ui,
+				{track.x+track.w*fraction-4, control.rect.y+4, 8, control.rect.h-8},
+				COLOR_SECTION,
 			)
 		case .Show_Help, .Frame_Mesh:
 			ui_add_rect(&vertices, ui, control.rect, fill)
@@ -1296,7 +1359,7 @@ ui_build_text_overlay :: proc(
 			"FRAME recalculates the target and distance from STL bounds.",
 			"WIREFRAME changes Metal triangle fill mode.",
 			"OPEN accepts exact STL files and validated evidence bundles.",
-			"The 220 x 220 mm grid uses direct Metal line primitives.",
+			"SECTION drags a cutting plane; its contour draws over the mesh.",
 		}
 		for line, index in help_lines {
 			ui_draw_text(
@@ -1357,6 +1420,34 @@ ui_build_text_overlay :: proc(
 			0,
 		)
 	}
+	ui_draw_text(ctx, font, ui, "SECTION", {20, 230, 190, 24}, theme.muted, 0)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"ENABLED" if ui.section_enabled else "DISABLED",
+		{28, 258, 188, 36},
+		COLOR_SECTION if ui.section_enabled else theme.muted,
+		0,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		fmt.tprintf("Z %.2f MM", ui.section_z),
+		{20, 334, 204, 22},
+		theme.text,
+		0,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		fmt.tprintf("%d SEGMENTS", ui.section_segments),
+		{20, 358, 204, 22},
+		theme.muted,
+		0,
+	)
 	viewport := ui_viewport_rect(ui)
 	ui_draw_text(
 		ctx,
