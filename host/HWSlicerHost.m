@@ -190,7 +190,7 @@ static void slicer_request_redraw(void) {
 }
 
 static void slicer_window_close(void) {
-    [(__bridge NSWindow *)g_host.window performClose:nil];
+    [(__bridge NSWindow *)g_host.window close];
 }
 
 static void slicer_window_minimize(void) {
