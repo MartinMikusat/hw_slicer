@@ -178,8 +178,8 @@ DARK_THEME :: Theme{
 	canvas  = {0.090196, 0.090196, 0.090196, 1},
 	header  = {0.090196, 0.090196, 0.090196, 1},
 	surface = {0.090196, 0.090196, 0.090196, 1},
-	raised  = {0.156078, 0.156078, 0.156078, 1},
-	control = {0.156078, 0.156078, 0.156078, 1},
+	raised  = {0.141255, 0.141255, 0.141255, 1},
+	control = {0.141255, 0.141255, 0.141255, 1},
 	overlay = {0.090196, 0.090196, 0.090196, 1},
 	text    = {0.819608, 0.819608, 0.819608, 1},
 	muted   = {0.819608, 0.819608, 0.819608, 1},
@@ -815,6 +815,15 @@ ui_add_shadow :: proc(
 	}
 }
 
+ui_theme_blend :: proc(theme: Theme, amount: f32) -> Vec4 {
+	return {
+		theme.canvas.x+(theme.text.x-theme.canvas.x)*amount,
+		theme.canvas.y+(theme.text.y-theme.canvas.y)*amount,
+		theme.canvas.z+(theme.text.z-theme.canvas.z)*amount,
+		1,
+	}
+}
+
 ui_control_standing :: proc(ui: ^UI_State, control: UI_Control) -> bool {
 	return control.enabled && (control.selected || control.id == ui.pressed_id)
 }
@@ -886,21 +895,25 @@ ui_build_geometry :: proc(
 		}
 		if control.action == .Section_Height {
 			track := UI_Rect{control.rect.x+4, control.rect.y+control.rect.h/2-2, control.rect.w-8, 4}
-			ui_add_round_rect(&vertices, ui, track, 2, {0.5, 0.5, 0.5, 1})
+			ui_add_round_rect(&vertices, ui, track, 2, ui_theme_blend(theme, 0.2))
 			fraction := 0.0
 			if ui.section_max > 0 {fraction = clamp(f64(ui.section_z/ui.section_max), 0, 1)}
-			ui_add_round_rect(&vertices, ui, {track.x, track.y, max(1, track.w*fraction), track.h}, 2, theme.text)
-			ui_add_round_rect(&vertices, ui, {track.x+track.w*fraction-6, control.rect.y+6, 12, 12}, 6, theme.text)
+			ink := theme.text if control.enabled else Vec4{0.501961, 0.501961, 0.501961, 1}
+			ui_add_round_rect(&vertices, ui, {track.x, track.y, max(1, track.w*fraction), track.h}, 2, ink)
+			ui_add_round_rect(&vertices, ui, {track.x+track.w*fraction-6, control.rect.y+(control.rect.h-12)/2, 12, 12}, 6, ink)
 			continue
 		}
 		if control.action == .Toggle_Section {
 			track := UI_Rect{control.rect.x+8, control.rect.y+(control.rect.h-14)/2, 25, 14}
-			track_color := Vec4{0.5, 0.5, 0.5, 1}
+			track_color := ui_theme_blend(theme, 0.22 if hovered else 0.16)
+			if !control.enabled {track_color = ui_theme_blend(theme, 0.04)}
 			if ui.section_enabled && control.enabled {track_color = theme.text}
 			ui_add_round_rect(&vertices, ui, track, 7, track_color)
 			thumb_x := track.x+2
 			if ui.section_enabled {thumb_x = track.x+track.w-12}
-			ui_add_round_rect(&vertices, ui, {thumb_x, track.y+2, 10, 10}, 5, theme.canvas)
+			thumb := theme.raised
+			if ui.section_enabled || !control.enabled {thumb = theme.canvas}
+			ui_add_round_rect(&vertices, ui, {thumb_x, track.y+2, 10, 10}, 5, thumb)
 			continue
 		}
 		menu := control.action == .Evidence_Stages || control.action == .Evidence_Details || control.action == .Panel_Models || control.action == .Panel_Section || control.action == .Panel_Mesh || control.action == .Select_Benchy || control.action == .Select_All_In_One || control.action == .Select_Bunny
@@ -908,7 +921,7 @@ ui_build_geometry :: proc(
 		rect := UI_Rect{control.rect.x+3, control.rect.y+4, control.rect.w-6, control.rect.h-8}
 		if rect.w <= 0 || rect.h <= 0 {continue}
 		fill := theme.raised
-		if hovered {fill = {0.87, 0.87, 0.87, 1} if !ui.dark else {0.24, 0.24, 0.24, 1}}
+		if hovered {fill = ui_theme_blend(theme, 0.04)}
 		if standing {fill = theme.text}
 		if menu && !hovered && !standing {continue}
 		if !menu {ui_add_shadow(&vertices, ui, rect, 6, 4, 1)}

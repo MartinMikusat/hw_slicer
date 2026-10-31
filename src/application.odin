@@ -766,8 +766,10 @@ application_key :: proc "c" (
 	text := string(characters)
 	command := (modifiers & (1 << 20)) != 0
 	if command && text == "," {
-		app.ui.settings_open = !app.ui.settings_open
-		app.needs_redraw = true
+		if app.ui.settings_open || (!app.ui.help_open && !app.ui.evidence_open) {
+			app.ui.settings_open = !app.ui.settings_open
+			app.needs_redraw = true
+		}
 		return
 	}
 	if app.ui.settings_open {
