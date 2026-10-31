@@ -207,12 +207,11 @@ static bool slicer_open_document(char *path, size_t capacity) {
     [window makeKeyAndOrderFront:nil];
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.canChooseFiles = YES;
-    panel.canChooseDirectories = YES;
+    panel.canChooseDirectories = NO;
     panel.allowsMultipleSelection = NO;
     panel.allowedContentTypes = @[
         [UTType typeWithFilenameExtension:@"stl"],
-        [UTType typeWithFilenameExtension:@"hwsdebug"],
-        [UTType typeWithIdentifier:@"public.folder"]
+        [UTType typeWithFilenameExtension:@"hwsdebug"]
     ];
     NSModalResponse response = [panel runModal];
     [window makeKeyAndOrderFront:nil];

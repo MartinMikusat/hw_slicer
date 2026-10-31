@@ -55,21 +55,21 @@ ui_evidence_transition_registers_stage_selection_test :: proc(t: ^testing.T) {
 	ui.evidence_stage_index = 2
 	ui_build_controls(&ui, &view)
 
-	testing.expect_value(t, len(ui.controls), 7)
+	testing.expect_value(t, len(ui.controls), 9)
 	testing.expect_value(
 		t,
-		ui.controls[3].action,
+		ui.controls[5].action,
 		ui_evidence_stage_action(0),
 	)
-	testing.expect(t, !ui.controls[3].selected)
-	testing.expect(t, ui.controls[5].selected)
+	testing.expect(t, !ui.controls[5].selected)
+	testing.expect(t, ui.controls[7].selected)
 	testing.expect_value(
 		t,
-		ui.controls[6].action,
+		ui.controls[8].action,
 		UI_Action.Close_Evidence,
 	)
 	stage_index, stage_ok := ui_evidence_stage_action_index(
-		ui.controls[5].action,
+		ui.controls[7].action,
 		len(stages),
 	)
 	testing.expect(t, stage_ok)
@@ -78,10 +78,21 @@ ui_evidence_transition_registers_stage_selection_test :: proc(t: ^testing.T) {
 		t,
 		ui_hit_test(
 			&ui,
-			ui.controls[5].rect.x+10,
-			ui.controls[5].rect.y+10,
+			ui.controls[7].rect.x+10,
+			ui.controls[7].rect.y+10,
 		),
 		u64(ui_evidence_stage_action(2)),
+	)
+	modal := ui_evidence_modal_rect(&ui)
+	testing.expect_value(
+		t,
+		ui_hit_test(&ui, modal.x+modal.w/2, modal.y+modal.h/2),
+		u64(0),
+	)
+	testing.expect_value(
+		t,
+		ui_hit_test(&ui, 20, 60),
+		u64(UI_Action.Dismiss_Evidence),
 	)
 	snapshot := ui_snapshot_text(&ui)
 	defer delete(snapshot)

@@ -53,7 +53,8 @@ or GUI framework.
 
 The viewer loads the three bundled reference models or an exact binary STL
 selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
-package or published evidence directory in the stage timeline and inspector.
+package in the stage timeline and inspector, which dismisses with Escape or a
+click outside the inspector.
 The inspector retains the layer schedule, triangle layer-span index, CPU
 intersection graph, planar ownership graph, snapped segments, topology, region,
 exposed-surface, skin-propagation, perimeter, sparse-infill, unified

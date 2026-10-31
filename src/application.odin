@@ -205,6 +205,9 @@ app_activate :: proc(action: UI_Action) -> bool {
 	case .Close_Evidence:
 		app.ui.evidence_open = false
 		app.needs_redraw = true
+	case .Dismiss_Evidence:
+		app.ui.evidence_open = false
+		app.needs_redraw = true
 	case .Select_Benchy:
 		_ = app_load_model(0)
 	case .Select_All_In_One:

@@ -106,6 +106,7 @@ UI_Action :: enum u64 {
 	Compare,
 	Export,
 	Close_Evidence,
+	Dismiss_Evidence,
 	Toggle_Section,
 	Section_Height,
 	Evidence_Stage_Base = 1000,
@@ -326,6 +327,20 @@ ui_build_controls :: proc(
 	}
 	if ui.evidence_open && ui_evidence_available(evidence_view) {
 		modal := ui_evidence_modal_rect(ui)
+		ui_add_control(
+			ui,
+			"evidence scrim",
+			"close evidence inspector",
+			{0, 40, ui.width, ui.height-40},
+			.Dismiss_Evidence,
+		)
+		ui_add_control(
+			ui,
+			"evidence surface",
+			"evidence inspector",
+			modal,
+			.None,
+		)
 		stage_count := len(evidence_view.replay.root.stages)
 		if ui.evidence_stage_index < 0 ||
 		   ui.evidence_stage_index >= stage_count {
@@ -695,7 +710,7 @@ ui_build_geometry :: proc(
 		case .Close_Help, .Close_Evidence:
 			ui_add_rect(&vertices, ui, control.rect, fill)
 			ui_add_border(&vertices, ui, control.rect, COLOR_GUM)
-		case .None, .Evidence_Stage_Base:
+		case .None, .Dismiss_Evidence, .Evidence_Stage_Base:
 		}
 	}
 	for hint in flash.visible_hints(&ui.flash_state) {
