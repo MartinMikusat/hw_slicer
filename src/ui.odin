@@ -1072,6 +1072,18 @@ ui_draw_text :: proc(
 	CGContextRestoreGState(ctx)
 }
 
+ui_draw_measurement :: proc(
+	ctx, font, mono: rawptr,
+	ui: ^UI_State,
+	label, value: string,
+	rect: UI_Rect,
+	label_width: f64,
+) {
+	color := ui_theme(ui).text
+	ui_draw_text(ctx, font, ui, label, {rect.x, rect.y, label_width, rect.h}, color, 0)
+	ui_draw_text(ctx, mono, ui, value, {rect.x+label_width, rect.y, rect.w-label_width, rect.h}, color, 0, tracked = true)
+}
+
 UI_INTER_FONT :: #load("../resources/fonts/Inter-Regular.woff2")
 UI_MONO_FONT :: #load("../resources/fonts/JetBrainsMono-Regular.woff2")
 ui_fonts_registered: bool
@@ -1592,8 +1604,8 @@ ui_build_text_overlay :: proc(
 			}
 		} else if ui.panel == .Section {
 			ui_draw_text(ctx, font, ui, "Enabled" if ui.section_enabled else "Disabled", {64, 84, 112, 28}, ui_control_ink(ui, .Toggle_Section), 0)
-			ui_draw_text(ctx, mono, ui, fmt.tprintf("Z %.2f mm", ui.section_z), {20, 138, 156, 18}, theme.text, 0, tracked = true)
-			ui_draw_text(ctx, mono, ui, fmt.tprintf("%d segments", ui.section_segments), {20, 158, 156, 18}, theme.text, 0, tracked = true)
+			ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 138, 156, 18}, 70)
+			ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 158, 156, 18}, 70)
 		}
 	} else {
 		ui_draw_text(ctx, font, ui, "REFERENCE MODELS", {20, 58, 190, 24}, theme.muted, 0)
@@ -1621,24 +1633,8 @@ ui_build_text_overlay :: proc(
 			ui_control_ink(ui, .Toggle_Section),
 			0,
 		)
-		ui_draw_text(
-			ctx,
-			mono,
-			ui,
-			fmt.tprintf("Z %.2f MM", ui.section_z),
-			{20, 334, 204, 22},
-			theme.text,
-			0, tracked = true,
-		)
-		ui_draw_text(
-			ctx,
-			mono,
-			ui,
-			fmt.tprintf("%d SEGMENTS", ui.section_segments),
-			{20, 358, 204, 22},
-			theme.muted,
-			0, tracked = true,
-		)
+		ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 334, 204, 22}, 90)
+		ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 358, 204, 22}, 90)
 	}
 
 	viewport := ui_viewport_rect(ui)
@@ -1678,14 +1674,15 @@ ui_build_text_overlay :: proc(
 			ui_draw_text(ctx, font, ui, model_name, {20, 82, 156, 20}, theme.text, 0)
 			if mesh != nil && mesh.triangle_count > 0 {
 				size := mesh_size(mesh.bounds)
-				lines := [4]string{
-					fmt.tprintf("Triangles %d", mesh.triangle_count),
-					fmt.tprintf("Width %.2f mm", size.x),
-					fmt.tprintf("Depth %.2f mm", size.y),
-					fmt.tprintf("Height %.2f mm", size.z),
+				labels := [4]string{"Triangles", "Width", "Depth", "Height"}
+				values := [4]string{
+					fmt.tprintf("%d", mesh.triangle_count),
+					fmt.tprintf("%.2f mm", size.x),
+					fmt.tprintf("%.2f mm", size.y),
+					fmt.tprintf("%.2f mm", size.z),
 				}
-				for line, index in lines {
-					ui_draw_text(ctx, mono, ui, line, {20, f64(102+index*18), 156, 18}, theme.text, 0, tracked = true)
+				for label, index in labels {
+					ui_draw_measurement(ctx, font, mono, ui, label, values[index], {20, f64(102+index*18), 156, 18}, 70)
 				}
 			}
 		}
@@ -1698,24 +1695,17 @@ ui_build_text_overlay :: proc(
 		ui_draw_text(ctx, font, ui, model_name, {right.x+12, right.y+42, 252, 32}, theme.text, 0)
 		if mesh != nil && mesh.triangle_count > 0 {
 			size := mesh_size(mesh.bounds)
-			lines := [5]string{
-				fmt.tprintf("TRIANGLES  %d", mesh.triangle_count),
-				fmt.tprintf("WIDTH      %.2f mm", size.x),
-				fmt.tprintf("DEPTH      %.2f mm", size.y),
-				fmt.tprintf("HEIGHT     %.2f mm", size.z),
-				"BINARY STL / EXPANDED VERTICES",
+			labels := [4]string{"Triangles", "Width", "Depth", "Height"}
+			values := [4]string{
+				fmt.tprintf("%d", mesh.triangle_count),
+				fmt.tprintf("%.2f mm", size.x),
+				fmt.tprintf("%.2f mm", size.y),
+				fmt.tprintf("%.2f mm", size.z),
 			}
-			for line, index in lines {
-				ui_draw_text(
-					ctx,
-					mono,
-					ui,
-					line,
-					{right.x+12, right.y+86+f64(index*26), 252, 24},
-					theme.text if index < 4 else theme.muted,
-					0, tracked = true,
-				)
+			for label, index in labels {
+				ui_draw_measurement(ctx, font, mono, ui, label, values[index], {right.x+12, right.y+86+f64(index*26), 252, 24}, 90)
 			}
+			ui_draw_text(ctx, font, ui, "BINARY STL / EXPANDED VERTICES", {right.x+12, right.y+190, 252, 24}, theme.text, 0)
 		}
 		ui_draw_text(ctx, font, ui, "CAMERA", {right.x+12, right.y+242, 240, 24}, theme.muted, 0)
 		camera_lines := [4]string{
