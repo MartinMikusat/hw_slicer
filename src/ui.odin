@@ -114,6 +114,7 @@ UI_Action :: enum u64 {
 	Font_Increase,
 	Toggle_Section,
 	Section_Height,
+	Lay_On_Face,
 	Evidence_Stage_Base = 1000,
 }
 
@@ -188,6 +189,7 @@ UI_State :: struct {
 	dark: bool,
 	selected_model: int,
 	wireframe: bool,
+	lay_on_face: bool,
 	font_size:   int,
 	ui_scale:    f64,
 	physical_width:  f64,
@@ -478,6 +480,7 @@ ui_build_controls :: proc(
 	}
 
 	viewport := ui_viewport_rect(ui)
+	ui_add_control(ui, "lay on face", "Lay on face", {viewport.x+204, viewport.y+12, 126, 30}, .Lay_On_Face, true, 1, ui.lay_on_face)
 	ui_add_control(
 		ui,
 		"frame mesh",
@@ -739,7 +742,7 @@ ui_build_geometry :: proc(
 				{track.x+track.w*fraction-4, control.rect.y+4, 8, control.rect.h-8},
 				COLOR_SECTION,
 			)
-		case .Show_Help, .Frame_Mesh:
+		case .Show_Help, .Frame_Mesh, .Lay_On_Face:
 			ui_add_rect(&vertices, ui, control.rect, fill)
 		case .Open_Settings:
 			ui_add_rect(&vertices, ui, control.rect, fill)
@@ -1524,7 +1527,7 @@ ui_build_text_overlay :: proc(
 			"LEFT DRAG rotates the camera around the mesh target.",
 			"RIGHT OR MIDDLE DRAG translates the camera target.",
 			"SCROLL changes camera distance.",
-			"FRAME recalculates the target and distance from STL bounds.",
+			"FRAME recalculates the target and distance from the placed model bounds.",
 			"WIREFRAME changes Metal triangle fill mode.",
 			"OPEN accepts exact STL files and validated evidence bundles.",
 			"SECTION drags a cutting plane; its contour draws over the mesh.",
@@ -1652,6 +1655,7 @@ ui_build_text_overlay :: proc(
 		.Center,
 	)
 
+	ui_draw_text(ctx, font, ui, "[Lay on face]", {viewport.x+204, viewport.y+12, 126, 30}, theme.text, 0, .Center)
 	right := ui_right_rect(ui)
 	ui_draw_text(ctx, font, ui, "MESH EVIDENCE", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
 	ui_draw_text(ctx, font, ui, model_name, {right.x+12, right.y+42, 252, 32}, theme.text, 0)

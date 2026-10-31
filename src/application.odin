@@ -25,6 +25,9 @@ App_State :: struct {
 	renderer:      Renderer,
 	ui:            UI_State,
 	mesh:          Mesh,
+	placement: Model_Placement,
+	face_hover: int,
+	face_pressed: int,
 	section_vertices: [dynamic]Mesh_Vertex,
 	section_dirty: bool,
 	first_frame_logged: bool,
@@ -62,7 +65,7 @@ app_set_status :: proc(text: string) {
 
 app_frame_camera :: proc() {
 	if app.mesh.triangle_count == 0 {return}
-	size := mesh_size(app.mesh.bounds)
+	size := mesh_size(app.placement.bounds)
 	app.camera.target = {0, 0, size.z*0.5}
 	app.camera.yaw = 0.82
 	app.camera.pitch = 0.62
@@ -141,6 +144,10 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 	}
 	mesh_destroy(&app.mesh)
 	app.mesh = next
+	app.placement = placement_on_bed(&app.mesh, mat4_identity())
+	app.ui.lay_on_face = false
+	app.face_hover = -1
+	app.face_pressed = -1
 	app.ui.selected_model = index
 	app.ui.section_max = mesh_size(app.mesh.bounds).z
 	app.ui.section_z = app.ui.section_max/2
@@ -275,6 +282,11 @@ app_activate :: proc(action: UI_Action) -> bool {
 		_ = app_load_model(1)
 	case .Select_Bunny:
 		_ = app_load_model(2)
+	case .Lay_On_Face:
+		app.ui.lay_on_face = !app.ui.lay_on_face
+		app.face_hover = -1
+		app.face_pressed = -1
+		app_set_status("SELECT A FACE TO PLACE ON THE BED; ESC CANCELS" if app.ui.lay_on_face else "FACE SELECTION CANCELLED")
 	case .Frame_Mesh:
 		app_frame_camera()
 	case .Toggle_Wireframe:
@@ -425,8 +437,7 @@ app_rebuild_section :: proc() {
 		app.ui.section_segments = 0
 		return
 	}
-	z := app.mesh.bounds.minimum.z+app.ui.section_z
-	stats := section_mesh_at_z(&app.mesh, z, &app.section_vertices)
+	stats := section_mesh_at_z(&app.mesh, app.ui.section_z, &app.section_vertices, app.placement.transform)
 	app.ui.section_segments = stats.segments
 }
 
@@ -480,6 +491,8 @@ renderer_draw_application :: proc() -> Render_Result {
 	result := renderer_draw(
 		&app.renderer,
 		&app.mesh,
+		app.placement,
+		app.face_hover,
 		app.camera,
 		viewport,
 		ui_theme(&app.ui),
@@ -577,8 +590,37 @@ application_mouse :: proc "c" (
 	if ui_scale <= 0 {ui_scale = 1}
 	point_x := x/ui_scale
 	point_y := y/ui_scale
+	if app.ui.lay_on_face && !app.ui.settings_open && !app.ui.help_open && !app.ui.evidence_open &&
+	   ui_hit_test(&app.ui, point_x, point_y) == 0 && ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
+		if phase == 3 || (phase == 0 && button == 0) || (phase == 2 && button == 0) {
+			face := placement_pick(&app.mesh, app.placement, app.camera, ui_viewport_rect(&app.ui), point_x, point_y)
+			rotation, valid := placement_face(&app.mesh, face)
+			app.face_hover = face if valid else -1
+			app.needs_redraw = true
+			if phase == 0 {
+				app.face_pressed = app.face_hover
+				if !valid {app_set_status("SELECT AN OUTER FLAT FACE")}
+			}
+			if phase == 2 && valid && app.face_pressed == face {
+				app.placement = placement_on_bed(&app.mesh, rotation)
+				app.ui.section_max = mesh_size(app.placement.bounds).z
+				app.ui.section_z = min(app.ui.section_z, app.ui.section_max)
+				app.section_dirty = true
+				app.ui.lay_on_face = false
+				app.face_hover = -1
+				app_frame_camera()
+				app_set_status("FACE PLACED ON BED")
+			}
+			if phase == 2 {app.face_pressed = -1}
+			return
+		}
+	} else if app.face_hover >= 0 {
+		app.face_hover = -1
+		app.needs_redraw = true
+	}
 	switch phase {
 	case 0:
+		app.face_pressed = -1
 		id := ui_hit_test(&app.ui, point_x, point_y)
 		app.ui.pressed_id = id
 		if id == u64(UI_Action.Section_Height) {
@@ -646,6 +688,13 @@ application_key :: proc "c" (
 ) {
 	context = app_context()
 	if key_code == 53 {
+		if app.ui.lay_on_face && !app.ui.settings_open && !app.ui.help_open &&
+		   !app.ui.evidence_open && !flash.is_active(&app.ui.flash_state) {
+			app.ui.lay_on_face = false
+			app.face_hover = -1
+			app_set_status("FACE SELECTION CANCELLED")
+			return
+		}
 		if flash.is_active(&app.ui.flash_state) {
 			flash.cancel(&app.ui.flash_state)
 			app.needs_redraw = true

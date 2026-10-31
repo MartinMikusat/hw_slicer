@@ -567,6 +567,8 @@ render_result_text :: proc(result: Render_Result) -> string {
 renderer_draw :: proc(
 	renderer: ^Renderer,
 	mesh: ^Mesh,
+	placement: Model_Placement,
+	face_hover: int,
 	camera: Camera,
 	viewport: UI_Rect,
 	theme: Theme,
@@ -651,9 +653,8 @@ renderer_draw :: proc(
 		sel_registerName("setViewport:"),
 		mesh_viewport,
 	)
-	size := mesh_size(mesh.bounds)
-	center := mesh_center(mesh.bounds)
-	model := mat4_translation({-center.x, -center.y, -mesh.bounds.minimum.z})
+	size := mesh_size(placement.bounds)
+	model := placement.transform
 	eye := app_camera_eye(camera)
 	view := mat4_look_at(eye, camera.target, {0, 0, 1})
 	near_z := max(0.01, camera.distance*0.001)
@@ -708,6 +709,35 @@ renderer_draw :: proc(
 		uint(renderer.mesh_vertex_count),
 	)
 
+	if face_hover >= 0 {
+		a := mesh.vertices[face_hover*3].position
+		n := vec3_normalize(vec3_cross(vec3_sub(mesh.vertices[face_hover*3+1].position,a), vec3_sub(mesh.vertices[face_hover*3+2].position,a)))
+		tolerance := max(f32(0.00001),vec3_length(mesh_size(mesh.bounds))*0.000001)
+		highlight := mesh_uniforms
+		highlight.color = COLOR_SECTION
+		depth_bias := transmute(proc "c" (Id, Sel, f32, f32, f32))objc_send_address
+		depth_bias(encoder, sel_registerName("setDepthBias:slopeScale:clamp:"), -1, -1, 0)
+		msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &highlight, size_of(Scene_Uniforms), 1)
+		run_start := -1
+		for triangle in 0..<int(mesh.triangle_count) {
+			coplanar := true
+			for corner in 0..<3 {
+				if abs(vec3_dot(n,vec3_sub(mesh.vertices[triangle*3+corner].position,a))) > tolerance {coplanar = false}
+			}
+			if coplanar && run_start < 0 {run_start = triangle}
+			if !coplanar && run_start >= 0 {
+				msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
+				                  3, uint(run_start*3), uint((triangle-run_start)*3))
+				run_start = -1
+			}
+		}
+		if run_start >= 0 {
+			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
+			                  3, uint(run_start*3), uint((int(mesh.triangle_count)-run_start)*3))
+		}
+		depth_bias(encoder, sel_registerName("setDepthBias:slopeScale:clamp:"), 0, 0, 0)
+	}
 	grid_uniforms := Scene_Uniforms{
 		mvp = mat4_mul(projection, view),
 		model = mat4_identity(),
@@ -748,8 +778,8 @@ renderer_draw :: proc(
 
 	if renderer.section_vertex_count > 0 {
 		section_uniforms := Scene_Uniforms{
-			mvp = mesh_uniforms.mvp,
-			model = model,
+			mvp = mat4_mul(projection, view),
+			model = mat4_identity(),
 			color = COLOR_SECTION,
 			light_dir = {0, 0, 1, 0},
 		}

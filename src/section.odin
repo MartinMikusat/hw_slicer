@@ -25,6 +25,7 @@ section_mesh_at_z :: proc(
 	mesh: ^Mesh,
 	z_mm: f32,
 	vertices: ^[dynamic]Mesh_Vertex,
+	transform: Mat4,
 ) -> Section_Stats {
 	clear(vertices)
 	stats: Section_Stats
@@ -35,9 +36,9 @@ section_mesh_at_z :: proc(
 	if plane_error != .None {return stats}
 	for triangle in 0..<int(mesh.triangle_count) {
 		base := triangle*3
-		a := mesh.vertices[base+0].position
-		b := mesh.vertices[base+1].position
-		c := mesh.vertices[base+2].position
+		a := placement_point(transform, mesh.vertices[base+0].position)
+		b := placement_point(transform, mesh.vertices[base+1].position)
+		c := placement_point(transform, mesh.vertices[base+2].position)
 		if (a.z > z_mm && b.z > z_mm && c.z > z_mm) ||
 		   (a.z < z_mm && b.z < z_mm && c.z < z_mm) {
 			continue

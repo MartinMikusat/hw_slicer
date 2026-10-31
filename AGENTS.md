@@ -19,6 +19,10 @@ An Apple Silicon macOS slicer that converts 3D models into deterministic FFF too
 6. **Surgical Changes:** Modify only files directly required for the task. Match existing code formatting, naming conventions, and lifetime management (explicit allocators, defer cleanups).
 7. **Commit Style:** Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `perf:`, `test:`, `chore:`). Commit complete units of work autonomously.
 
+## Model placement
+
+Lay on face uses one placement transform for rendering, face selection, and layer sections. The imported mesh stays unchanged.
+
 ## Diagnostics
 
 Every run writes the shared dev log. `./dev.sh` exports
