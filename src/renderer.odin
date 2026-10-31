@@ -33,6 +33,8 @@ Renderer :: struct {
 	environment: Id,
 	harmonics: [9]Vec4,
 	ao_depth: Id,
+	scene_texture: Id,
+	floor_pipeline: Id,
 	layer:            Id,
 	device:           Id,
 	queue:            Id,
@@ -187,6 +189,40 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     return float4(pow(color, float3(1.0 / 2.2)), in.color.a);
 }
 
+fragment float4 floor_fragment(MeshOut in [[stage_in]],
+    constant SceneUniforms &scene [[buffer(1)]],
+    depth2d<float> depth [[texture(1)]],
+    texture2d<float> scene_color [[texture(2)]]) {
+    constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
+    constexpr sampler linear_sampler(filter::linear, address::clamp_to_edge);
+    float3 normal = float3(0, 0, 1);
+    float shade = ambient_occlusion(in, normal, scene, depth);
+    float3 color = in.color.rgb * shade;
+    float3 direction = reflect(normalize(in.world - in.camera), normal);
+    float radius = scene.params.z;
+    for (int i = 1; i <= 160; i++) {
+        float distance = radius * 0.16 * float(i);
+        float4 clip = scene.view_projection * float4(in.world + direction * distance, 1.0);
+        if (clip.w <= 0.0) {break;}
+        float2 local = float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+        if (any(local < 0.0) || any(local >= 1.0)) {break;}
+        float2 uv = scene.viewport.xy + local * scene.viewport.zw;
+        float stored = depth.sample(nearest, uv);
+        if (stored >= 1.0) {continue;}
+        float near_z = scene.params.x, far_z = scene.params.y;
+        float surface_distance = near_z * far_z / (far_z - stored * (far_z - near_z));
+        float gap = clip.w - surface_distance;
+        float thickness = radius * 0.4;
+        if (gap > 0.0 && gap < thickness) {
+            float edge = saturate(min(min(local.x, local.y), min(1.0-local.x, 1.0-local.y)) * 8.0);
+            float fade = edge * (1.0 - float(i) / 160.0) * 0.24;
+            color = mix(color, scene_color.sample(linear_sampler, uv).rgb, fade);
+            break;
+        }
+    }
+    return float4(color, 1.0);
+}
+
 fragment float4 depth_fragment(MeshOut in [[stage_in]]) {return float4(0);}
 
 fragment float4 line_fragment(MeshOut in [[stage_in]]) {
@@ -270,6 +306,8 @@ renderer_initialize :: proc(renderer: ^Renderer, layer: Id) -> bool {
 renderer_shutdown :: proc(renderer: ^Renderer) {
 	objects := [?]Id{
 		renderer.environment,
+		renderer.scene_texture,
+		renderer.floor_pipeline,
 		renderer.depth_pipeline,
 		renderer.ao_depth,
 		renderer.depth_texture,
@@ -385,6 +423,8 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 		false,
 		false,
 	)
+	renderer.floor_pipeline = renderer_build_pipeline(renderer, library, "mesh_vertex", "floor_fragment", true, false)
+	if renderer.floor_pipeline == nil {return false}
 	renderer.depth_pipeline = renderer_build_pipeline(renderer, library, "mesh_vertex", "depth_fragment", true, false)
 	if renderer.depth_pipeline == nil {return false}
 	renderer.line_pipeline = renderer_build_pipeline(
@@ -587,14 +627,23 @@ renderer_ensure_depth :: proc(
 		descriptor,
 	)
 	if next == nil {return false}
-	if renderer.depth_texture != nil {
-		msg_void(renderer.depth_texture, sel_registerName("release"))
-	}
 	msg_void_u(descriptor, sel_registerName("setUsage:"), 5)
 	ao_depth := msg_id_id(renderer.device, sel_registerName("newTextureWithDescriptor:"), descriptor)
-	if ao_depth == nil {msg_void(next, sel_registerName("release")); renderer.depth_texture = nil; return false}
+	if ao_depth == nil {msg_void(next, sel_registerName("release")); return false}
+	color_descriptor := msg_id_u_u_u_bool(objc_getClass("MTLTextureDescriptor"), sel_registerName("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 80, width, height, false)
+	msg_void_u(color_descriptor, sel_registerName("setStorageMode:"), 2)
+	msg_void_u(color_descriptor, sel_registerName("setUsage:"), 5)
+	scene_texture := msg_id_id(renderer.device, sel_registerName("newTextureWithDescriptor:"), color_descriptor)
+	if scene_texture == nil {
+		msg_void(next, sel_registerName("release"))
+		msg_void(ao_depth, sel_registerName("release"))
+		return false
+	}
+	if renderer.depth_texture != nil {msg_void(renderer.depth_texture, sel_registerName("release"))}
 	if renderer.ao_depth != nil {msg_void(renderer.ao_depth, sel_registerName("release"))}
 	renderer.ao_depth = ao_depth
+	if renderer.scene_texture != nil {msg_void(renderer.scene_texture, sel_registerName("release"))}
+	renderer.scene_texture = scene_texture
 	renderer.depth_texture = next
 	renderer.depth_width = width
 	renderer.depth_height = height
@@ -768,6 +817,21 @@ renderer_draw :: proc(
 	msg_void(prepass, sel_registerName("endEncoding"))
 	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.depth_texture)
 	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0)
+	msg_void_id(color_attachment, sel_registerName("setTexture:"), renderer.scene_texture)
+	scene_encoder := msg_id_id(command_buffer, sel_registerName("renderCommandEncoderWithDescriptor:"), pass)
+	if scene_encoder == nil {return .No_Encoder}
+	msg_void_viewport(scene_encoder, sel_registerName("setViewport:"), {viewport.x*scale, viewport.y*scale, viewport.w*scale, viewport.h*scale, 0, 1})
+	msg_void_id(scene_encoder, sel_registerName("setDepthStencilState:"), renderer.depth_state)
+	msg_void_u(scene_encoder, sel_registerName("setTriangleFillMode:"), 1 if wireframe else 0)
+	msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.mesh_pipeline)
+	msg_void_id_u_u(scene_encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
+	msg_void_ptr_u_u(scene_encoder, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
+	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
+	msg_void_u_u_u(scene_encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(renderer.mesh_vertex_count))
+	msg_void(scene_encoder, sel_registerName("endEncoding"))
+	msg_void_id(color_attachment, sel_registerName("setTexture:"), texture)
 	encoder := msg_id_id(
 		command_buffer,
 		sel_registerName("renderCommandEncoderWithDescriptor:"),
@@ -829,7 +893,28 @@ renderer_draw :: proc(
 		uint(renderer.mesh_vertex_count),
 	)
 
+	floor_vertices := [6]Mesh_Vertex{
+		{{-BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+		{{ BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+		{{ BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+		{{-BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+		{{ BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+		{{-BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+	}
+	floor_uniforms := mesh_uniforms
+	floor_uniforms.model = mat4_identity()
+	floor_uniforms.mvp = mesh_uniforms.view_projection
+	floor_uniforms.color = {theme.canvas.x, theme.canvas.y, theme.canvas.z, 1}
+	msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
+	msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.floor_pipeline)
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(floor_vertices[:]), size_of(floor_vertices), 0)
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &floor_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &floor_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.scene_texture, 2)
+	msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 6)
+
 	if face_hover >= 0 {
+		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.line_pipeline)
 		a := mesh.vertices[face_hover*3].position
 		n := vec3_normalize(vec3_cross(vec3_sub(mesh.vertices[face_hover*3+1].position,a), vec3_sub(mesh.vertices[face_hover*3+2].position,a)))
