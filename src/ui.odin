@@ -1118,6 +1118,10 @@ ui_build_geometry :: proc(
 		menu := control.action == .Evidence_Stages || control.action == .Evidence_Details || control.action == .Panel_Models || control.action == .Panel_Section || control.action == .Panel_Mesh || control.action == .Select_Benchy || control.action == .Select_All_In_One || control.action == .Select_Bunny
 		if _, stage := ui_evidence_stage_action_index(control.action, len(evidence_view.replay.root.stages) if ui_evidence_available(evidence_view) else 0); stage {menu = true}
 		rect := ui_pill_rect(ui, control.rect)
+		if window_control {
+			size := min(rect.w, rect.h)
+			rect = {rect.x+(rect.w-size)/2, rect.y+(rect.h-size)/2, size, size}
+		}
 		if rect.w <= 0 || rect.h <= 0 {continue}
 		fill := theme.raised
 		if hovered {fill = ui_theme_blend(theme, 0.04)}
@@ -1138,7 +1142,9 @@ ui_build_geometry :: proc(
 		ui_add_round_rect(&vertices, ui, rect, radius, fill)
 		if !menu && !standing {
 			highlight_alpha := (f32(0.24) if hovered else f32(0.14)) if ui.dark else (f32(0.45) if hovered else f32(0.9))
-			ui_add_rect(&vertices, ui, {rect.x+radius, rect.y+1/scale, max(0, rect.w-2*radius), 0.75/scale}, {1, 1, 1, highlight_alpha})
+			highlight := Vec4{1, 1, 1, highlight_alpha}
+			if window_control {highlight = {fill.x+(1-fill.x)*0.35, fill.y+(1-fill.y)*0.35, fill.z+(1-fill.z)*0.35, 1}}
+			ui_add_rect(&vertices, ui, {rect.x+radius, rect.y+1/scale, max(0, rect.w-2*radius), 0.75/scale}, highlight)
 		}
 	}
 	for hint in flash.visible_hints(&ui.flash_state) {
