@@ -260,6 +260,8 @@ app_activate :: proc(action: UI_Action) -> bool {
 		return true
 	}
 	switch action {
+	case .Modal_Surface:
+		return false
 	case .Window_Close:
 		app.host.window_close()
 	case .Window_Minimize:
@@ -634,6 +636,7 @@ application_mouse :: proc "c" (
 		app.face_pressed = -1
 		id := ui_hit_test(&app.ui, point_x, point_y)
 		app.ui.pressed_id = id
+		if id != 0 {app.needs_redraw = true}
 		if id == u64(UI_Action.Section_Height) {
 			app.ui.section_dragging = true
 			app_set_section_z(point_x)
@@ -663,6 +666,7 @@ application_mouse :: proc "c" (
 			app.needs_redraw = true
 		}
 	case 2:
+		if app.ui.pressed_id != 0 {app.needs_redraw = true}
 		if app.ui.section_dragging {
 			app.ui.section_dragging = false
 			app.ui.pressed_id = 0
@@ -687,6 +691,7 @@ application_mouse :: proc "c" (
 application_scroll :: proc "c" (delta_x, delta_y: f64) {
 	context = app_context()
 	_ = delta_x
+	if app.ui.settings_open || app.ui.help_open || app.ui.evidence_open {return}
 	app.camera_goal.distance *= math.exp(-f32(delta_y)*0.008)
 	app.camera_goal.distance = clamp_f32(app.camera_goal.distance, 0.1, camera_distance_max(app.camera_goal, ui_viewport_rect(&app.ui)))
 	app.needs_redraw = true
@@ -771,12 +776,12 @@ application_key :: proc "c" (
 		app.needs_redraw = true
 		return
 	}
-	if app.ui.help_open && text == "1" {
-		_ = app_activate(.Close_Help)
+	if app.ui.help_open {
+		if text == "1" {_ = app_activate(.Close_Help)}
 		return
 	}
-	if app.ui.evidence_open && text == "1" {
-		_ = app_activate(.Close_Evidence)
+	if app.ui.evidence_open {
+		if text == "1" {_ = app_activate(.Close_Evidence)}
 		return
 	}
 	if len(text) == 1 && text[0] >= '1' && text[0] <= '6' {

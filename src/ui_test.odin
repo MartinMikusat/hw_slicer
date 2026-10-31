@@ -88,7 +88,7 @@ ui_evidence_transition_registers_stage_selection_test :: proc(t: ^testing.T) {
 	testing.expect_value(
 		t,
 		ui_hit_test(&ui, modal.x+modal.w/2, modal.y+modal.h/2),
-		u64(0),
+		u64(UI_Action.Modal_Surface),
 	)
 	testing.expect_value(
 		t,
