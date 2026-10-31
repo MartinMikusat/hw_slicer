@@ -26,6 +26,7 @@ foreign core_graphics {
 	) -> rawptr ---
 	CGContextRelease :: proc "c" (ctx: rawptr) ---
 	CGContextClearRect :: proc "c" (ctx: rawptr, rect: NS_Rect) ---
+	CGContextFillRect :: proc "c" (ctx: rawptr, rect: NS_Rect) ---
 	CGContextSetAlpha :: proc "c" (ctx: rawptr, alpha: f64) ---
 	CGContextSetRGBFillColor :: proc "c" (
 		ctx: rawptr,
@@ -301,7 +302,7 @@ ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
 }
 
 ui_compact :: proc(ui: ^UI_State) -> bool {
-	return ui.width < 800 || ui_action_bar_rect(ui).y < 473
+	return ui.width < 800 || ui_action_bar_rect(ui).y < 484
 }
 
 ui_viewport_rect :: proc(ui: ^UI_State) -> UI_Rect {
@@ -413,19 +414,19 @@ ui_evidence_detail_field :: proc(
 	}
 	if value == "" {
 		wrapped := make([dynamic]string, context.temp_allocator)
-		ui_evidence_wrap_line(&wrapped, label, label_font, width, 0)
+		ui_wrap_text(&wrapped, label, label_font, width, 0)
 		for part in wrapped {append(lines, UI_Evidence_Line{label = part})}
 		return
 	}
 	if label_advance > label_width-7 {
 		wrapped := make([dynamic]string, context.temp_allocator)
-		ui_evidence_wrap_line(&wrapped, label, label_font, width, 0)
+		ui_wrap_text(&wrapped, label, label_font, width, 0)
 		for part in wrapped {append(lines, UI_Evidence_Line{label = part})}
 		label = ""
 		label_width = 0
 	}
 	wrapped := make([dynamic]string, context.temp_allocator)
-	ui_evidence_wrap_line(&wrapped, value, value_font, width-label_width, tracking)
+	ui_wrap_text(&wrapped, value, value_font, width-label_width, tracking)
 	for part, index in wrapped {
 		append(lines, UI_Evidence_Line{
 			label = label if index == 0 else "",
@@ -475,7 +476,7 @@ ui_evidence_detail_lines :: proc(ui: ^UI_State, view: ^UI_Evidence_View) -> [dyn
 	return lines
 }
 
-ui_evidence_wrap_line :: proc(
+ui_wrap_text :: proc(
 	lines: ^[dynamic]string,
 	value: string,
 	font: rawptr,
@@ -1265,6 +1266,33 @@ ui_draw_evidence_line :: proc(ctx, font, mono: rawptr, ui: ^UI_State, line: UI_E
 	}
 }
 
+ui_draw_status :: proc(ctx, font: rawptr, ui: ^UI_State, status: string, failed: bool) {
+	if status == "" {return}
+	compact := ui_compact(ui)
+	area := ui_right_rect(ui)
+	if compact {area = ui_viewport_rect(ui)}
+	width := area.w-16 if compact else 252.0
+	x := area.x+8 if compact else area.x+12
+	measure_font := ui_font("Inter-Regular", BASE_FONT_SIZE)
+	assert(measure_font != nil)
+	defer CFRelease(measure_font)
+	lines := make([dynamic]string, context.temp_allocator)
+	ui_wrap_text(&lines, status, measure_font, width, 0)
+	row := ui_style_row_height(ui)/ui_style_scale(ui)
+	height := f64(len(lines))*row
+	y := area.y+area.h-8-height
+	if compact {
+		background := ui_theme(ui).canvas
+		CGContextSetRGBFillColor(ctx, f64(background.x), f64(background.y), f64(background.z), 1)
+		CGContextFillRect(ctx, ui_cg_rect(ui, {x-4, y-2, width+8, height+4}))
+	}
+	color := ui_theme(ui).text
+	if failed {color = {0.956863, 0.203922, 0.203922, 1} if ui.dark else {0.768627, 0.145098, 0.145098, 1}}
+	for line, index in lines {
+		ui_draw_text(ctx, font, ui, line, {x, y+f64(index)*row, width, row}, color, 0)
+	}
+}
+
 ui_draw_measurement :: proc(
 	ctx, font, mono: rawptr,
 	ui: ^UI_State,
@@ -1684,6 +1712,7 @@ ui_build_text_overlay :: proc(
 	mesh: ^Mesh,
 	model_name, status: string,
 	evidence_view: ^UI_Evidence_View = nil,
+	status_failed := false,
 ) -> []u8 {
 	width := uint(max(1, ui.physical_width*ui.scale))
 	height := uint(max(1, ui.physical_height*ui.scale))
@@ -1858,9 +1887,6 @@ ui_build_text_overlay :: proc(
 				}
 			}
 		}
-		if status != "" {
-			ui_draw_text(ctx, font, ui, status, {viewport.x+8, viewport.y+viewport.h-20, viewport.w-16, 18}, theme.text, 0)
-		}
 	} else {
 		right := ui_right_rect(ui)
 		ui_draw_text(ctx, font, ui, "Mesh evidence", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
@@ -1892,19 +1918,9 @@ ui_build_text_overlay :: proc(
 			ui_draw_text(ctx, font, ui, line.action, {rect.x+100, rect.y, rect.w-100, rect.h}, theme.text, 0)
 		}
 
-		if status != "" {
-			ui_draw_text(
-				ctx,
-				font,
-				ui,
-				status,
-				{right.x+12, right.y+right.h-42, 252, 30},
-				theme.text,
-				0,
-			)
-		}
-
 	}
+
+	ui_draw_status(ctx, font, ui, status, status_failed)
 
 	actions := [6]UI_Action{.Open, .Slice, .Cancel, .Capture, .Compare, .Export}
 	for label, index in UI_ACTION_LABELS {

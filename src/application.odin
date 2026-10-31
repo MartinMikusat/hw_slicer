@@ -43,6 +43,7 @@ App_State :: struct {
 	evidence_path: string,
 	model_name:    string,
 	status:        string,
+	status_failed: bool,
 	needs_redraw:  bool,
 	dragging:      bool,
 	drag_button:   i32,
@@ -61,9 +62,10 @@ app_context :: proc() -> runtime.Context {
 	return result
 }
 
-app_set_status :: proc(text: string) {
+app_set_status :: proc(text: string, failed := false) {
 	delete(app.status)
 	app.status = strings.clone(text)
+	app.status_failed = failed
 	app.needs_redraw = true
 }
 
@@ -133,7 +135,7 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 			path,
 			mesh_error_text(error),
 		)
-		app_set_status(fmt.tprintf("LOAD FAILED: %s", mesh_error_text(error)))
+		app_set_status(fmt.tprintf("LOAD FAILED: %s", mesh_error_text(error)), true)
 		return false
 	}
 	if !renderer_set_mesh(&app.renderer, &next) {
@@ -147,7 +149,7 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 			},
 			{scope = "model", stage = "upload"},
 		)
-		app_set_status("LOAD FAILED: METAL BUFFER")
+		app_set_status("LOAD FAILED: METAL BUFFER", true)
 		return false
 	}
 	mesh_destroy(&app.mesh)
@@ -207,7 +209,7 @@ app_load_evidence :: proc(path: string) -> bool {
 			path,
 			load_error,
 		)
-		app_set_status(fmt.tprintf("EVIDENCE FAILED: %v", load_error))
+		app_set_status(fmt.tprintf("EVIDENCE FAILED: %v", load_error), true)
 		return false
 	}
 	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
@@ -513,6 +515,7 @@ renderer_draw_application :: proc() -> Render_Result {
 		app.model_name,
 		app.status,
 		&evidence_view,
+		app.status_failed,
 	)
 	defer delete(pixels)
 	viewport := ui_viewport_rect(&app.ui)
