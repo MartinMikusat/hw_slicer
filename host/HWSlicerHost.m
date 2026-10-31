@@ -27,6 +27,12 @@ static char *g_resource_root_bytes;
 - (BOOL)accessibilityPerformPress {
     return g_application && g_application->activate_control(self.controlID);
 }
+- (BOOL)accessibilityPerformIncrement {
+    return g_application && g_application->adjust_control(self.controlID, 1);
+}
+- (BOOL)accessibilityPerformDecrement {
+    return g_application && g_application->adjust_control(self.controlID, -1);
+}
 @end
 
 @interface HWSlicerView : NSView
@@ -70,19 +76,30 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
     for (size_t index = 0; index < count; ++index) {
         HW_Slicer_Control control = {0};
         if (!g_application->control_at(index, &control)) { continue; }
+        NSString *name = [[NSString alloc] initWithBytes:control.name
+            length:control.name_length encoding:NSUTF8StringEncoding];
+        NSString *label = [[NSString alloc] initWithBytes:control.label
+            length:control.label_length encoding:NSUTF8StringEncoding];
+        NSAssert(name && label, @"Control labels must be valid UTF-8");
+        if (!name || !label) { continue; }
         HWSlicerAXElement *element = [HWSlicerAXElement new];
         element.controlID = control.id;
         element.accessibilityParent = self;
-        element.accessibilityRole = control.role == 1
-            ? NSAccessibilityRadioButtonRole
-            : NSAccessibilityButtonRole;
-        element.accessibilityLabel = [NSString
-            stringWithUTF8String:control.label ? control.label : control.name];
-        element.accessibilityIdentifier = [NSString
-            stringWithUTF8String:control.name ? control.name : ""];
+        switch (control.role) {
+        case 1: element.accessibilityRole = NSAccessibilityRadioButtonRole; break;
+        case 2: element.accessibilityRole = NSAccessibilityCheckBoxRole; break;
+        case 3: element.accessibilityRole = NSAccessibilitySliderRole; break;
+        default: element.accessibilityRole = NSAccessibilityButtonRole; break;
+        }
+        element.accessibilityLabel = label;
+        element.accessibilityIdentifier = name;
         element.accessibilityEnabled = control.enabled;
-        if (control.role == 1) {
+        if (control.role == 1 || control.role == 2) {
             element.accessibilityValue = @(control.selected);
+        } else if (control.role == 3) {
+            element.accessibilityValue = @(control.value);
+            element.accessibilityMinValue = @(control.minimum);
+            element.accessibilityMaxValue = @(control.maximum);
         }
         NSRect local = NSMakeRect(
             control.rect.x,
@@ -356,7 +373,7 @@ int32_t hw_slicer_host_run(const HW_Slicer_Application_API *applicationAPI) {
         !applicationAPI->mouse || !applicationAPI->scroll ||
         !applicationAPI->key || !applicationAPI->control_count ||
         !applicationAPI->control_at || !applicationAPI->hit_test ||
-        !applicationAPI->activate_control ||
+        !applicationAPI->activate_control || !applicationAPI->adjust_control ||
         !applicationAPI->write_ui_snapshot ||
         !applicationAPI->window_state) {
         return 2;

@@ -742,6 +742,22 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 	app.needs_redraw = true
 }
 
+app_adjust_section_height :: proc(direction: i32) -> bool {
+	if direction != -1 && direction != 1 {return false}
+	view := app_evidence_view()
+	ui_build_controls(&app.ui, &view)
+	for control in app.ui.controls {
+		if control.action == .Section_Height && ui_control_focusable(&app.ui, control) {
+			step := app.ui.section_max/100
+			app.ui.section_z = clamp(app.ui.section_z+step*f32(direction), 0, app.ui.section_max)
+			app.section_dirty = true
+			app.needs_redraw = true
+			return true
+		}
+	}
+	return false
+}
+
 application_key :: proc "c" (
 	key_code: u16,
 	characters: cstring,
@@ -805,17 +821,7 @@ application_key :: proc "c" (
 			}
 		}
 		if app.ui.focused_id == u64(UI_Action.Section_Height) && (key_code == 123 || key_code == 124) {
-			view := app_evidence_view()
-			ui_build_controls(&app.ui, &view)
-			for control in app.ui.controls {
-				if control.action == .Section_Height && ui_control_focusable(&app.ui, control) {
-					step := app.ui.section_max/100
-					app.ui.section_z = clamp(app.ui.section_z+(step if key_code == 124 else -step), 0, app.ui.section_max)
-					app.section_dirty = true
-					app.needs_redraw = true
-					return
-				}
-			}
+			if app_adjust_section_height(1 if key_code == 124 else -1) {return}
 		}
 	}
 	if app.ui.settings_open {
@@ -889,22 +895,32 @@ application_control_at :: proc "c" (
 	index: uint,
 	output: ^Host_Control,
 ) -> bool {
+	context = app_context()
 	if output == nil || index >= uint(len(app.ui.controls)) {return false}
 	control := app.ui.controls[index]
+	if !ui_control_accessible(&app.ui, control) {return false}
 	ui_scale := app.ui.ui_scale
+	role := control.role
+	if control.action == .Toggle_Section {role = 2}
+	if control.action == .Section_Height {role = 3}
 	output^ = {
 		id = control.id,
-		name = cstring(raw_data(transmute([]u8)control.name)),
-		label = cstring(raw_data(transmute([]u8)control.label)),
+		name = raw_data(transmute([]u8)control.name),
+		name_length = uint(len(control.name)),
+		label = raw_data(transmute([]u8)control.label),
+		label_length = uint(len(control.label)),
 		rect = {
 			control.rect.x*ui_scale,
 			control.rect.y*ui_scale,
 			control.rect.w*ui_scale,
 			control.rect.h*ui_scale,
 		},
-		role = control.role,
+		role = role,
 		enabled = control.enabled,
-		selected = control.selected,
+		selected = app.ui.section_enabled if role == 2 else control.selected,
+		value = f64(app.ui.section_z) if role == 3 else 0,
+		minimum = 0,
+		maximum = f64(app.ui.section_max) if role == 3 else 0,
 	}
 	return true
 }
@@ -918,7 +934,20 @@ application_hit_test :: proc "c" (x, y: f64) -> u64 {
 
 application_activate_control :: proc "c" (control_id: u64) -> bool {
 	context = app_context()
-	return app_activate(UI_Action(control_id))
+	view := app_evidence_view()
+	ui_build_controls(&app.ui, &view)
+	for control in app.ui.controls {
+		if control.id == control_id && ui_control_focusable(&app.ui, control) {
+			return app_activate(control.action)
+		}
+	}
+	return false
+}
+
+application_adjust_control :: proc "c" (control_id: u64, direction: i32) -> bool {
+	context = app_context()
+	if control_id != u64(UI_Action.Section_Height) {return false}
+	return app_adjust_section_height(direction)
 }
 
 application_window_state :: proc "c" (visible, active: bool) {
@@ -975,6 +1004,7 @@ application_api := Application_API{
 	control_at = application_control_at,
 	hit_test = application_hit_test,
 	activate_control = application_activate_control,
+	adjust_control = application_adjust_control,
 	write_ui_snapshot = application_write_ui_snapshot,
 	window_state = application_window_state,
 }

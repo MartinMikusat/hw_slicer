@@ -593,11 +593,7 @@ ui_build_controls :: proc(
 			ui_add_control(
 				ui,
 				stage.stage.name,
-				fmt.tprintf(
-					"stage %02d %s",
-					stage.ordinal,
-					stage.stage.name,
-				),
+				stage.stage.name,
 				rect,
 				ui_evidence_stage_action(stage_index),
 				true,
@@ -779,8 +775,7 @@ ui_hit_test :: proc(ui: ^UI_State, x, y: f64) -> u64 {
 	return 0
 }
 
-ui_control_focusable :: proc(ui: ^UI_State, control: UI_Control) -> bool {
-	if !control.enabled {return false}
+ui_control_accessible :: proc(ui: ^UI_State, control: UI_Control) -> bool {
 	#partial switch control.action {
 	case .None, .Modal_Surface, .Dismiss_Help, .Dismiss_Evidence, .Dismiss_Settings:
 		return false
@@ -789,6 +784,10 @@ ui_control_focusable :: proc(ui: ^UI_State, control: UI_Control) -> bool {
 	case:
 		return true
 	}
+}
+
+ui_control_focusable :: proc(ui: ^UI_State, control: UI_Control) -> bool {
+	return control.enabled && ui_control_accessible(ui, control)
 }
 
 ui_focus_next :: proc(ui: ^UI_State, reverse: bool) {

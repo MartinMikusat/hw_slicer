@@ -6,12 +6,15 @@ Host_Rect :: struct {
 
 Host_Control :: struct {
 	id:      u64,
-	name:    cstring,
-	label:   cstring,
+	name:    [^]u8,
+	name_length: uint,
+	label:   [^]u8,
+	label_length: uint,
 	rect:    Host_Rect,
 	role:    i32,
 	enabled: bool,
 	selected: bool,
+	value, minimum, maximum: f64,
 }
 
 Host_Services :: struct {
@@ -46,6 +49,7 @@ Application_API :: struct {
 	control_at: proc "c" (index: uint, control: ^Host_Control) -> bool,
 	hit_test: proc "c" (x, y: f64) -> u64,
 	activate_control: proc "c" (control_id: u64) -> bool,
+	adjust_control: proc "c" (control_id: u64, direction: i32) -> bool,
 	write_ui_snapshot: proc "c" (path: cstring) -> bool,
 	window_state: proc "c" (visible, active: bool),
 }

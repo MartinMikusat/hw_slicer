@@ -15,11 +15,16 @@ typedef struct HW_Slicer_Rect {
 typedef struct HW_Slicer_Control {
     uint64_t id;
     const char *name;
+    size_t name_length;
     const char *label;
+    size_t label_length;
     HW_Slicer_Rect rect;
     int32_t role;
     bool enabled;
     bool selected;
+    double value;
+    double minimum;
+    double maximum;
 } HW_Slicer_Control;
 
 typedef struct HW_Slicer_Host {
@@ -59,6 +64,7 @@ typedef struct HW_Slicer_Application_API {
     bool (*control_at)(size_t index, HW_Slicer_Control *control);
     uint64_t (*hit_test)(double x, double y);
     bool (*activate_control)(uint64_t control_id);
+    bool (*adjust_control)(uint64_t control_id, int32_t direction);
     bool (*write_ui_snapshot)(const char *path);
     void (*window_state)(bool visible, bool active);
 } HW_Slicer_Application_API;
