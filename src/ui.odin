@@ -560,10 +560,9 @@ ui_build_controls :: proc(
 	clear(&ui.controls)
 	ch := ui_character_width(ui)
 	window_width := 3*ch
-	window_height := math.ceil(f64(ui.font_size)*1.2)/(f64(ui.font_size)/BASE_FONT_SIZE)
-	ui_add_control(ui, "window close", "close window", {ui.width-12-window_width, 12, window_width, window_height}, .Window_Close)
-	ui_add_control(ui, "window minimize", "minimize window", {ui.width-12-3*window_width, 12, window_width, window_height}, .Window_Minimize)
-	ui_add_control(ui, "window zoom", "zoom window", {ui.width-12-2*window_width, 12, window_width, window_height}, .Window_Zoom)
+	ui_add_control(ui, "window close", "close window", {ui.width-12-window_width, 5, window_width, 30}, .Window_Close)
+	ui_add_control(ui, "window minimize", "minimize window", {ui.width-12-3*window_width, 5, window_width, 30}, .Window_Minimize)
+	ui_add_control(ui, "window zoom", "zoom window", {ui.width-12-2*window_width, 5, window_width, 30}, .Window_Zoom)
 	if ui.help_open {
 		modal := ui_help_modal_rect(ui)
 		ui_add_control(ui, "help scrim", "close viewer help", {0, 0, ui.width, ui.height}, .Dismiss_Help)
@@ -1031,8 +1030,8 @@ ui_control_ink :: proc(ui: ^UI_State, action: UI_Action) -> Vec4 {
 		if control.action != action {continue}
 		if !control.enabled {return {0.501961, 0.501961, 0.501961, 1}}
 		if action == .Toggle_Section {return theme.text}
-		window_control := action == .Window_Close || action == .Window_Minimize || action == .Window_Zoom
-		if ui_control_standing(ui, control) || (window_control && control.id == ui.hovered_id) {return theme.canvas}
+		if action == .Window_Close || action == .Window_Minimize || action == .Window_Zoom {return {0.1, 0.1, 0.1, 1}}
+		if ui_control_standing(ui, control) {return theme.canvas}
 		break
 	}
 	return theme.text
@@ -1083,11 +1082,8 @@ ui_build_geometry :: proc(
 		hovered := control.enabled && control.id == ui.hovered_id
 		standing := ui_control_standing(ui, control)
 		if control.action == .None || control.action == .Modal_Surface || control.action == .Dismiss_Settings || control.action == .Dismiss_Evidence || control.action == .Dismiss_Help {continue}
-		if control.action == .Window_Close || control.action == .Window_Minimize || control.action == .Window_Zoom {
-			if modal_open {continue}
-			if hovered || standing {ui_add_rect(&vertices, ui, control.rect, theme.text)}
-			continue
-		}
+		window_control := control.action == .Window_Close || control.action == .Window_Minimize || control.action == .Window_Zoom
+		if window_control && modal_open {continue}
 		if control.action == .Section_Height {
 			if control.id == ui.focused_id {ui_add_border(&vertices, ui, control.rect, theme.text)}
 			track := UI_Rect{control.rect.x+4, control.rect.y+control.rect.h/2-2, control.rect.w-8, 4}
@@ -1126,6 +1122,14 @@ ui_build_geometry :: proc(
 		fill := theme.raised
 		if hovered {fill = ui_theme_blend(theme, 0.04)}
 		if standing {fill = theme.text}
+		if window_control {
+			#partial switch control.action {
+			case .Window_Minimize: fill = {1.0, 0.741, 0.18, 1}
+			case .Window_Zoom: fill = {0.157, 0.788, 0.251, 1}
+			case .Window_Close: fill = {1.0, 0.373, 0.341, 1}
+			}
+			if hovered || standing {fill = {fill.x*0.85, fill.y*0.85, fill.z*0.85, 1}}
+		}
 		if menu && !hovered && !standing {continue}
 		if !menu {ui_pill_shadow(&vertices, ui, rect)}
 		if menu && standing {ui_menu_shadow(&vertices, ui, rect)}
@@ -1760,7 +1764,7 @@ ui_build_text_overlay :: proc(
 	title_width := max(0.0, ui.width-383)
 	title := "HW Slicer / Mesh viewer" if title_width >= 180 else "Slicer"
 	ui_draw_text(ctx, font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
-	window_labels := [3]string{"[_]", "[+]", "[x]"}
+	window_labels := [3]string{"−", "+", "×"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
 	for label, index in window_labels {
 		action := window_actions[index]
