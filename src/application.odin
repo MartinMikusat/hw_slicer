@@ -59,21 +59,24 @@ app_frame_camera :: proc() {
 	app.needs_redraw = true
 }
 
+// ponytail: dev-only absolute model directory; use resource_root when packaging.
+DEV_MODEL_DIRECTORY :: "/Users/martin/projects/hw_slicer/resources/models"
+
 app_model_path :: proc(index: int) -> (string, string) {
 	switch index {
 	case 0:
 		path, _ := filepath.join(
-			{app.resource_root, "Models", "benchy.stl"},
+			{DEV_MODEL_DIRECTORY, "benchy.stl"},
 		)
 		return path, "3DBenchy"
 	case 1:
 		path, _ := filepath.join(
-			{app.resource_root, "Models", "all-in-one-test.stl"},
+			{DEV_MODEL_DIRECTORY, "all-in-one-test.stl"},
 		)
 		return path, "All In One 3D Printer Test"
 	case 2:
 		path, _ := filepath.join(
-			{app.resource_root, "Models", "stanford-bunny.stl"},
+			{DEV_MODEL_DIRECTORY, "stanford-bunny.stl"},
 		)
 		return path, "Stanford Bunny"
 	case:

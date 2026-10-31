@@ -44,6 +44,7 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
 - (CALayer *)makeBackingLayer { return [CAMetalLayer layer]; }
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
 - (BOOL)isOpaque { return YES; }
 - (BOOL)isAccessibilityElement { return YES; }
 - (NSString *)accessibilityRole { return NSAccessibilityGroupRole; }
@@ -269,6 +270,7 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
     if (activate && strcmp(activate, "0") == 0) {
         [window orderBack:nil];
     } else {
+        [NSApp activateIgnoringOtherApps:YES];
         [window makeKeyAndOrderFront:nil];
     }
     [window makeFirstResponder:view];

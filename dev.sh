@@ -47,13 +47,11 @@ launch_app() {
     )/lib/darwin/libclang_rt.asan_osx_dynamic.dylib
     env \
       DYLD_INSERT_LIBRARIES="$asan_runtime" \
-      HW_SLICER_ACTIVATE_ON_LAUNCH=0 \
       HW_SLICER_UI_SNAPSHOT="$SNAPSHOT" \
       MTL_DEBUG_LAYER=1 \
       "$HOST" &
   else
     env \
-      HW_SLICER_ACTIVATE_ON_LAUNCH=0 \
       HW_SLICER_UI_SNAPSHOT="$SNAPSHOT" \
       MTL_DEBUG_LAYER=1 \
       "$HOST" &
