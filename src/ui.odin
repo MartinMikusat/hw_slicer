@@ -107,6 +107,11 @@ UI_Action :: enum u64 {
 	Export,
 	Close_Evidence,
 	Dismiss_Evidence,
+	Open_Settings,
+	Close_Settings,
+	Dismiss_Settings,
+	Font_Decrease,
+	Font_Increase,
 	Toggle_Section,
 	Section_Height,
 	Evidence_Stage_Base = 1000,
@@ -183,6 +188,11 @@ UI_State :: struct {
 	dark: bool,
 	selected_model: int,
 	wireframe: bool,
+	font_size:   int,
+	ui_scale:    f64,
+	physical_width:  f64,
+	physical_height: f64,
+	settings_open: bool,
 	section_enabled:  bool,
 	section_z:        f32,
 	section_max:      f32,
@@ -194,6 +204,8 @@ UI_State :: struct {
 
 ui_initialize :: proc(ui: ^UI_State) {
 	ui.controls = make([dynamic]UI_Control)
+	ui.font_size = DEFAULT_FONT_SIZE
+	ui.ui_scale = f64(ui.font_size)/BASE_FONT_SIZE
 	ui.section_enabled = true
 	flash.state_init(&ui.flash_state)
 }
@@ -236,6 +248,17 @@ ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
 
 ui_section_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	return {20, 306, 204, 24}
+}
+
+ui_settings_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	width := min(420.0, ui.width-48)
+	height := 260.0
+	return {
+		ui.width/2-width/2,
+		ui.height/2-height/2,
+		width,
+		height,
+	}
 }
 
 ui_evidence_available :: proc(view: ^UI_Evidence_View) -> bool {
@@ -376,6 +399,47 @@ ui_build_controls :: proc(
 		)
 		return
 	}
+	if ui.settings_open {
+		modal := ui_settings_modal_rect(ui)
+		ui_add_control(
+			ui,
+			"settings scrim",
+			"close settings",
+			{0, 0, ui.width, ui.height},
+			.Dismiss_Settings,
+		)
+		ui_add_control(
+			ui,
+			"settings surface",
+			"settings",
+			modal,
+			.None,
+		)
+		ui_add_control(
+			ui,
+			"font smaller",
+			"decrease font size",
+			{modal.x+24, modal.y+96, 48, 40},
+			.Font_Decrease,
+			ui.font_size > FONT_SIZE_MIN,
+		)
+		ui_add_control(
+			ui,
+			"font larger",
+			"increase font size",
+			{modal.x+82, modal.y+96, 48, 40},
+			.Font_Increase,
+			ui.font_size < FONT_SIZE_MAX,
+		)
+		ui_add_control(
+			ui,
+			"settings close",
+			"close settings",
+			{modal.x+modal.w-120, modal.y+modal.h-52, 96, 36},
+			.Close_Settings,
+		)
+		return
+	}
 	ui_add_control(
 		ui,
 		"theme",
@@ -384,6 +448,13 @@ ui_build_controls :: proc(
 		.Toggle_Theme,
 	)
 	ui_add_control(ui, "help", "viewer help", {ui.width-66, 5, 54, 30}, .Show_Help)
+	ui_add_control(
+		ui,
+		"settings",
+		"open settings",
+		{ui.width-246, 5, 82, 30},
+		.Open_Settings,
+	)
 
 	rows := [3]struct {
 		name, label: string,
@@ -578,6 +649,10 @@ ui_build_geometry :: proc(
 		modal := ui_evidence_modal_rect(ui)
 		ui_add_rect(&vertices, ui, {0, 40, ui.width, ui.height-40}, {0, 0, 0, 0.58})
 		ui_add_rect(&vertices, ui, modal, theme.overlay)
+	} else if ui.settings_open {
+		modal := ui_settings_modal_rect(ui)
+		ui_add_rect(&vertices, ui, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.58})
+		ui_add_rect(&vertices, ui, modal, theme.overlay)
 	}
 
 	for control in ui.controls {
@@ -666,6 +741,18 @@ ui_build_geometry :: proc(
 			)
 		case .Show_Help, .Frame_Mesh:
 			ui_add_rect(&vertices, ui, control.rect, fill)
+		case .Open_Settings:
+			ui_add_rect(&vertices, ui, control.rect, fill)
+			ui_add_border(&vertices, ui, control.rect, COLOR_COFFEE)
+			ui_add_rect(
+				&vertices,
+				ui,
+				{control.rect.x, control.rect.y, 4, control.rect.h},
+				COLOR_COFFEE,
+			)
+		case .Font_Decrease, .Font_Increase, .Close_Settings:
+			ui_add_rect(&vertices, ui, control.rect, fill)
+			ui_add_border(&vertices, ui, control.rect, COLOR_GUM)
 		case .Select_Benchy, .Select_All_In_One, .Select_Bunny:
 			ui_add_rect(
 				&vertices,
@@ -709,7 +796,7 @@ ui_build_geometry :: proc(
 		case .Close_Help, .Close_Evidence:
 			ui_add_rect(&vertices, ui, control.rect, fill)
 			ui_add_border(&vertices, ui, control.rect, COLOR_GUM)
-		case .None, .Dismiss_Evidence, .Evidence_Stage_Base:
+		case .None, .Dismiss_Evidence, .Dismiss_Settings, .Evidence_Stage_Base:
 		}
 	}
 	for hint in flash.visible_hints(&ui.flash_state) {
@@ -793,9 +880,10 @@ ui_text_run :: proc(font: rawptr, text: string) -> Text_Run {
 Text_Alignment :: enum {Start, Center, End}
 
 ui_cg_rect :: proc(ui: ^UI_State, rect: UI_Rect) -> NS_Rect {
+	scale := ui.ui_scale*ui.scale
 	return {
-		{rect.x*ui.scale, (ui.height-rect.y-rect.h)*ui.scale},
-		{rect.w*ui.scale, rect.h*ui.scale},
+		{rect.x*scale, (ui.height*ui.ui_scale-(rect.y+rect.h)*ui.ui_scale)*ui.scale},
+		{rect.w*scale, rect.h*scale},
 	}
 }
 
@@ -821,12 +909,13 @@ ui_draw_text :: proc(
 		f64(color.z),
 		f64(color.w),
 	)
-	x := (rect.x+inset)*ui.scale
+	inset_scaled := inset*ui.ui_scale*ui.scale
+	x := cg_rect.origin.x+inset_scaled
 	switch alignment {
 	case .Center:
-		x = rect.x*ui.scale+(rect.w*ui.scale-run.advance)/2
+		x = cg_rect.origin.x+(cg_rect.size.width-run.advance)/2
 	case .End:
-		x = (rect.x+rect.w-inset)*ui.scale-run.advance
+		x = cg_rect.origin.x+cg_rect.size.width-inset_scaled-run.advance
 	case .Start:
 	}
 	y := cg_rect.origin.y+
@@ -839,8 +928,8 @@ ui_draw_text :: proc(
 
 ui_icon_point :: proc(ui: ^UI_State, rect: UI_Rect, x, y: f64) -> NS_Point {
 	return {
-		(rect.x+x/24*rect.w)*ui.scale,
-		(ui.height-(rect.y+y/24*rect.h))*ui.scale,
+		(rect.x+x/24*rect.w)*ui.ui_scale*ui.scale,
+		(ui.height*ui.ui_scale-(rect.y+y/24*rect.h)*ui.ui_scale)*ui.scale,
 	}
 }
 
@@ -1312,14 +1401,79 @@ ui_draw_evidence_overlay :: proc(
 	ui_draw_flash_hint_text(ctx, font, ui)
 }
 
+ui_draw_settings_overlay :: proc(
+	ctx, font: rawptr,
+	ui: ^UI_State,
+) {
+	theme := ui_theme(ui)
+	modal := ui_settings_modal_rect(ui)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"SETTINGS",
+		{modal.x+20, modal.y+14, modal.w-40, 32},
+		theme.text,
+		0,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"FONT SIZE",
+		{modal.x+24, modal.y+54, modal.w-48, 24},
+		theme.muted,
+		0,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"[-]",
+		{modal.x+24, modal.y+96, 48, 40},
+		theme.text if ui.font_size > FONT_SIZE_MIN else theme.muted,
+		0,
+		.Center,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"[+]",
+		{modal.x+82, modal.y+96, 48, 40},
+		theme.text if ui.font_size < FONT_SIZE_MAX else theme.muted,
+		0,
+		.Center,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		fmt.tprintf("%d PT", ui.font_size),
+		{modal.x+142, modal.y+96, modal.w-166, 40},
+		theme.text,
+		0,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"CLOSE",
+		{modal.x+modal.w-120, modal.y+modal.h-52, 96, 36},
+		COLOR_GUM,
+		0,
+		.Center,
+	)
+}
+
 ui_build_text_overlay :: proc(
 	ui: ^UI_State,
 	mesh: ^Mesh,
 	model_name, status: string,
 	evidence_view: ^UI_Evidence_View = nil,
 ) -> []u8 {
-	width := uint(max(1, ui.width*ui.scale))
-	height := uint(max(1, ui.height*ui.scale))
+	width := uint(max(1, ui.physical_width*ui.scale))
+	height := uint(max(1, ui.physical_height*ui.scale))
 	pixels := make([]u8, int(width*height*4))
 	space := CGColorSpaceCreateDeviceRGB()
 	ctx := CGBitmapContextCreate(
@@ -1335,7 +1489,7 @@ ui_build_text_overlay :: proc(
 	if ctx == nil {return pixels}
 	defer CGContextRelease(ctx)
 	CGContextClearRect(ctx, {{0, 0}, {f64(width), f64(height)}})
-	font := ui_system_monospaced_font(12*ui.scale)
+	font := ui_system_monospaced_font(f64(ui.font_size)*ui.scale)
 	if font == nil {return pixels}
 	defer CFRelease(font)
 	theme := ui_theme(ui)
@@ -1403,12 +1557,26 @@ ui_build_text_overlay :: proc(
 		ui_draw_evidence_overlay(ctx, font, ui, evidence_view)
 		return pixels
 	}
+	if ui.settings_open {
+		ui_draw_settings_overlay(ctx, font, ui)
+		return pixels
+	}
 	ui_draw_text(
 		ctx,
 		font,
 		ui,
 		"DARK" if !ui.dark else "LIGHT",
 		{ui.width-156, 5, 82, 30},
+		COLOR_COFFEE,
+		0,
+		.Center,
+	)
+	ui_draw_text(
+		ctx,
+		font,
+		ui,
+		"SETTINGS",
+		{ui.width-246, 5, 82, 30},
 		COLOR_COFFEE,
 		0,
 		.Center,

@@ -92,6 +92,7 @@ section_slider_drag_clears_after_lost_release_test :: proc(t: ^testing.T) {
 	app.ui.scale = 2
 	app.ui.section_max = 10
 	app.ui.section_z = 5
+	app.ui.ui_scale = 1
 	ui_build_controls(&app.ui)
 	rect := ui_section_slider_rect(&app.ui)
 	application_mouse(0, 0, rect.x+rect.w/2, rect.y+12, 0, 0)

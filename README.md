@@ -65,8 +65,10 @@ input select one stage record.
 The viewer supports orbit, pan, zoom, frame-to-bounds, wireframe rendering,
 light and dark themes, Flash navigation, and Accessibility actions. The SECTION
 control drags a cutting plane through the loaded mesh and draws the resulting
-plane contour in the scene. The remaining numbered action slots stay visible and
-disabled until their slicing stages exist.
+plane contour in the scene. The top-right `SETTINGS` entry opens the settings
+modal; `⌘,` toggles it, and the font size (12–18 pt) scales the whole interface.
+The remaining numbered action slots stay visible and disabled until their
+slicing stages exist.
 
 Build and run the development app:
 

@@ -20,7 +20,7 @@ env \
   HW_SLICER_CAPTURE="$BMP" \
   HW_DEVLOG_DIR="$LOG" \
   HW_DEVLOG_PROFILE=dev \
-  "$APP" >/dev/null 2>&1 &
+  "$APP" "$@" >/dev/null 2>&1 &
 pid=$!
 trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT INT TERM
 

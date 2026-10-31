@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:math"
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:time"
 import flash "flash:."
@@ -44,6 +45,8 @@ App_State :: struct {
 }
 
 app: App_State
+startup_font_size: int
+startup_settings_open: bool
 
 app_context :: proc() -> runtime.Context {
 	result := runtime.default_context()
@@ -281,6 +284,18 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.ui.section_enabled = !app.ui.section_enabled
 		app.section_dirty = true
 		app.needs_redraw = true
+	case .Open_Settings:
+		app.ui.settings_open = true
+		app.needs_redraw = true
+	case .Close_Settings, .Dismiss_Settings:
+		app.ui.settings_open = false
+		app.needs_redraw = true
+	case .Font_Decrease:
+		app_apply_font_size(-1)
+		return true
+	case .Font_Increase:
+		app_apply_font_size(1)
+		return true
 	case .Section_Height:
 		return true
 	case .Open:
@@ -317,6 +332,14 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 	app.ui.dark = host.preference_get_int("theme-dark", 1) != 0
 	app.ui.selected_model = 0
 	ui_initialize(&app.ui)
+	settings := settings_defaults()
+	_ = settings_load(settings_path(context.temp_allocator), &settings)
+	if startup_font_size != 0 {
+		settings.font_size = settings_font_size_clamped(startup_font_size)
+	}
+	app.ui.font_size = settings.font_size
+	app.ui.ui_scale = f64(app.ui.font_size)/BASE_FONT_SIZE
+	app.ui.settings_open = startup_settings_open
 	if !renderer_initialize(&app.renderer, Id(host.layer)) {
 		devlog.failed(
 			devlog.global(),
@@ -365,6 +388,22 @@ app_destroy :: proc() {
 	delete(app.model_name)
 	delete(app.status)
 	app = {}
+}
+
+app_apply_font_size :: proc(delta: int) {
+	next := settings_font_size_clamped(app.ui.font_size+delta)
+	if next == app.ui.font_size {return}
+	app.ui.font_size = next
+	app.ui.ui_scale = f64(next)/BASE_FONT_SIZE
+	if app.ui.physical_width > 0 && app.ui.physical_height > 0 {
+		app.ui.width = app.ui.physical_width/app.ui.ui_scale
+		app.ui.height = app.ui.physical_height/app.ui.ui_scale
+	}
+	_ = settings_save(
+		settings_path(context.temp_allocator),
+		{font_size = next},
+	)
+	app.needs_redraw = true
 }
 
 app_set_section_z :: proc(x: f64) {
@@ -433,17 +472,22 @@ renderer_draw_application :: proc() -> Render_Result {
 		&evidence_view,
 	)
 	defer delete(pixels)
+	viewport := ui_viewport_rect(&app.ui)
+	viewport.x *= app.ui.ui_scale
+	viewport.y *= app.ui.ui_scale
+	viewport.w *= app.ui.ui_scale
+	viewport.h *= app.ui.ui_scale
 	result := renderer_draw(
 		&app.renderer,
 		&app.mesh,
 		app.camera,
-		ui_viewport_rect(&app.ui),
+		viewport,
 		ui_theme(&app.ui),
 		app.ui.wireframe,
 		solids[:],
 		pixels,
-		app.ui.width,
-		app.ui.height,
+		app.ui.physical_width,
+		app.ui.physical_height,
 		app.ui.scale,
 	)
 	app.needs_redraw = false
@@ -457,6 +501,12 @@ application_initialize :: proc "c" (host: ^Host_Services) -> bool {
 
 application_shutdown :: proc "c" () {
 	context = app_context()
+	devlog.stopped(
+		devlog.global(),
+		{feature = "app", operation = "shutdown"},
+		{scope = "app"},
+	)
+	devlog.global_destroy()
 	app_destroy()
 }
 
@@ -468,9 +518,12 @@ application_frame :: proc "c" (width, height, scale: f64) {
 		app.last_width = width
 		app.last_height = height
 		app.last_scale = scale
-		app.ui.width = width
-		app.ui.height = height
+		app.ui.physical_width = width
+		app.ui.physical_height = height
 		app.ui.scale = scale
+		app.ui.ui_scale = f64(app.ui.font_size)/BASE_FONT_SIZE
+		app.ui.width = width/app.ui.ui_scale
+		app.ui.height = height/app.ui.ui_scale
 		app.needs_redraw = true
 	}
 	if app.needs_redraw {
@@ -520,24 +573,28 @@ application_mouse :: proc "c" (
 	x, y, delta_x, delta_y: f64,
 ) {
 	context = app_context()
+	ui_scale := app.ui.ui_scale
+	if ui_scale <= 0 {ui_scale = 1}
+	point_x := x/ui_scale
+	point_y := y/ui_scale
 	switch phase {
 	case 0:
-		id := ui_hit_test(&app.ui, x, y)
+		id := ui_hit_test(&app.ui, point_x, point_y)
 		app.ui.pressed_id = id
 		if id == u64(UI_Action.Section_Height) {
 			app.ui.section_dragging = true
-			app_set_section_z(x)
+			app_set_section_z(point_x)
 			app.needs_redraw = true
 		} else {
 			app.ui.section_dragging = false
-			if id == 0 && ui_contains(ui_viewport_rect(&app.ui), x, y) {
+			if id == 0 && ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
 				app.dragging = true
 				app.drag_button = button
 			}
 		}
 	case 1:
 		if app.ui.section_dragging {
-			app_set_section_z(x)
+			app_set_section_z(point_x)
 			app.needs_redraw = true
 		} else if app.dragging {
 			if app.drag_button == 0 {
@@ -557,7 +614,7 @@ application_mouse :: proc "c" (
 			app.ui.section_dragging = false
 			app.ui.pressed_id = 0
 		} else {
-			id := ui_hit_test(&app.ui, x, y)
+			id := ui_hit_test(&app.ui, point_x, point_y)
 			if !app.dragging && id != 0 && id == app.ui.pressed_id {
 				_ = app_activate(UI_Action(id))
 			}
@@ -565,7 +622,7 @@ application_mouse :: proc "c" (
 			app.ui.pressed_id = 0
 		}
 	case 3:
-		hovered := ui_hit_test(&app.ui, x, y)
+		hovered := ui_hit_test(&app.ui, point_x, point_y)
 		if hovered != app.ui.hovered_id {
 			app.ui.hovered_id = hovered
 			app.needs_redraw = true
@@ -588,10 +645,12 @@ application_key :: proc "c" (
 	modifiers: u64,
 ) {
 	context = app_context()
-	_ = modifiers
 	if key_code == 53 {
 		if flash.is_active(&app.ui.flash_state) {
 			flash.cancel(&app.ui.flash_state)
+			app.needs_redraw = true
+		} else if app.ui.settings_open {
+			app.ui.settings_open = false
 			app.needs_redraw = true
 		} else if app.ui.help_open {
 			app.ui.help_open = false
@@ -603,6 +662,27 @@ application_key :: proc "c" (
 		return
 	}
 	text := string(characters)
+	command := (modifiers & (1 << 20)) != 0
+	if command && text == "," {
+		app.ui.settings_open = !app.ui.settings_open
+		app.needs_redraw = true
+		return
+	}
+	if app.ui.settings_open {
+		if text == "-" {
+			app_apply_font_size(-1)
+			return
+		}
+		if text == "=" || text == "+" {
+			app_apply_font_size(1)
+			return
+		}
+		if text == "1" {
+			app.ui.settings_open = false
+			app.needs_redraw = true
+		}
+		return
+	}
 	if flash.is_active(&app.ui.flash_state) {
 		if key_code == 48 && flash.has_group_selection(&app.ui.flash_state) {
 			_ = flash.cycle_selection(&app.ui.flash_state, .Next)
@@ -656,15 +736,16 @@ application_control_at :: proc "c" (
 ) -> bool {
 	if output == nil || index >= uint(len(app.ui.controls)) {return false}
 	control := app.ui.controls[index]
+	ui_scale := app.ui.ui_scale
 	output^ = {
 		id = control.id,
 		name = cstring(raw_data(transmute([]u8)control.name)),
 		label = cstring(raw_data(transmute([]u8)control.label)),
 		rect = {
-			control.rect.x,
-			control.rect.y,
-			control.rect.w,
-			control.rect.h,
+			control.rect.x*ui_scale,
+			control.rect.y*ui_scale,
+			control.rect.w*ui_scale,
+			control.rect.h*ui_scale,
 		},
 		role = control.role,
 		enabled = control.enabled,
@@ -675,7 +756,9 @@ application_control_at :: proc "c" (
 
 application_hit_test :: proc "c" (x, y: f64) -> u64 {
 	context = app_context()
-	return ui_hit_test(&app.ui, x, y)
+	ui_scale := app.ui.ui_scale
+	if ui_scale <= 0 {ui_scale = 1}
+	return ui_hit_test(&app.ui, x/ui_scale, y/ui_scale)
 }
 
 application_activate_control :: proc "c" (control_id: u64) -> bool {
@@ -742,6 +825,16 @@ application_api := Application_API{
 }
 
 main :: proc() {
+	for argument in os.args[1:] {
+		if strings.has_prefix(argument, "--font-size=") {
+			value := argument[len("--font-size="):]
+			if parsed, ok := strconv.parse_int(value, 10); ok {
+				startup_font_size = parsed
+			}
+		} else if argument == "--settings" {
+			startup_settings_open = true
+		}
+	}
 	config := devlog.DEFAULT_CONFIG
 	config.profile = devlog.profile_from_env()
 	started := devlog.global_start(

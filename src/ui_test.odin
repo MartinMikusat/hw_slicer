@@ -16,16 +16,17 @@ ui_registry_preserves_numbered_action_slots_test :: proc(t: ^testing.T) {
 	ui.dark = true
 	ui_build_controls(&ui)
 
-	testing.expect_value(t, len(ui.controls), 18)
-	testing.expect(t, ui.controls[5].selected)
-	testing.expect(t, !ui.controls[6].selected)
-	first_action := ui.controls[12]
+	testing.expect_value(t, len(ui.controls), 19)
+	testing.expect_value(t, ui.controls[5].action, UI_Action.Open_Settings)
+	testing.expect(t, ui.controls[6].selected)
+	testing.expect(t, !ui.controls[7].selected)
+	first_action := ui.controls[13]
 	testing.expect_value(t, first_action.action, UI_Action.Open)
 	testing.expect(t, first_action.enabled)
-	for index in 13..<18 {
+	for index in 14..<19 {
 		testing.expect(t, !ui.controls[index].enabled)
 	}
-	testing.expect_value(t, ui.controls[17].action, UI_Action.Export)
+	testing.expect_value(t, ui.controls[18].action, UI_Action.Export)
 }
 
 @(test)
@@ -388,8 +389,8 @@ ui_hit_test_ignores_disabled_numbered_actions_test :: proc(t: ^testing.T) {
 	ui.scale = 2
 	ui_build_controls(&ui)
 
-	open := ui.controls[12]
-	slice := ui.controls[13]
+	open := ui.controls[13]
+	slice := ui.controls[14]
 	testing.expect_value(
 		t,
 		ui_hit_test(&ui, open.rect.x+10, open.rect.y+10),
