@@ -906,17 +906,55 @@ ui_add_round_rect :: proc(
 	}
 }
 
-ui_add_shadow :: proc(
+ui_shadow_vertex :: proc(ui: ^UI_State, point: [2]f64, alpha: f32) -> Solid_Vertex {
+	return {position = {f32(point[0]/ui.width*2-1), f32(1-point[1]/ui.height*2)}, color = {0, 0, 0, alpha}}
+}
+
+ui_shadow_layer :: proc(
 	vertices: ^[dynamic]Solid_Vertex,
 	ui: ^UI_State,
 	rect: UI_Rect,
-	radius, spread, offset_y: f64,
+	radius, blur, offset_y: f64,
+	opacity: f32,
 ) {
-	for layer := 4; layer > 0; layer -= 1 {
-		extent := spread*f64(layer)/4
-		shadow := UI_Rect{rect.x-extent, rect.y-extent+offset_y, rect.w+2*extent, rect.h+2*extent}
-		ui_add_round_rect(vertices, ui, shadow, radius+extent, {0, 0, 0, 0.035})
+	assert(blur > 0 && opacity >= 0 && opacity <= 1)
+	rect := rect
+	rect.y += offset_y
+	r := min(radius, min(rect.w, rect.h)/2)
+	if r <= 0 {return}
+	ui_add_round_rect(vertices, ui, rect, r, {0, 0, 0, opacity})
+	centers := [4][2]f64{
+		{rect.x+r, rect.y+r}, {rect.x+rect.w-r, rect.y+r},
+		{rect.x+rect.w-r, rect.y+rect.h-r}, {rect.x+r, rect.y+rect.h-r},
 	}
+	inner, outer: [36][2]f64
+	for center, corner in centers {
+		for segment in 0..=8 {
+			angle := math.PI*(1+f64(corner)/2)+f64(segment)*math.PI/16
+			direction := [2]f64{math.cos(angle), math.sin(angle)}
+			index := corner*9+segment
+			inner[index] = {center[0]+r*direction[0], center[1]+r*direction[1]}
+			outer[index] = {center[0]+(r+blur)*direction[0], center[1]+(r+blur)*direction[1]}
+		}
+	}
+	for index in 0..<len(inner) {
+		next := (index+1)%len(inner)
+		a := ui_shadow_vertex(ui, inner[index], opacity)
+		b := ui_shadow_vertex(ui, inner[next], opacity)
+		c := ui_shadow_vertex(ui, outer[next], 0)
+		d := ui_shadow_vertex(ui, outer[index], 0)
+		append(vertices, a, b, c, a, c, d)
+	}
+}
+
+ui_pill_shadow :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect) {
+	ui_shadow_layer(vertices, ui, rect, 6, 20, 3, 0.05)
+	ui_shadow_layer(vertices, ui, rect, 6, 2, 1, 55.0/255.0)
+}
+
+ui_modal_shadow :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect) {
+	ui_shadow_layer(vertices, ui, rect, 12, 75, 15, 0.07)
+	ui_shadow_layer(vertices, ui, rect, 12, 23, 6, 80.0/255.0)
 }
 
 ui_theme_blend :: proc(theme: Theme, amount: f32) -> Vec4 {
@@ -976,7 +1014,7 @@ ui_build_geometry :: proc(
 		if ui.help_open {modal = ui_help_modal_rect(ui)}
 		if ui.evidence_open && ui_evidence_available(evidence_view) {modal = ui_evidence_modal_rect(ui)}
 		ui_add_rect(&vertices, ui, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.8})
-		ui_add_shadow(&vertices, ui, modal, 12, 18, 4)
+		ui_modal_shadow(&vertices, ui, modal)
 		if ui.dark {
 			ui_add_round_rect(&vertices, ui, modal, 12, {0.192, 0.192, 0.192, 1})
 			ui_add_round_rect(&vertices, ui, {modal.x+1, modal.y+1, modal.w-2, modal.h-2}, 11, theme.overlay)
@@ -1032,10 +1070,10 @@ ui_build_geometry :: proc(
 		if hovered {fill = ui_theme_blend(theme, 0.04)}
 		if standing {fill = theme.text}
 		if menu && !hovered && !standing {continue}
-		if !menu {ui_add_shadow(&vertices, ui, rect, 6, 4, 1)}
+		if !menu {ui_pill_shadow(&vertices, ui, rect)}
 		ui_add_round_rect(&vertices, ui, rect, 6, fill)
 		if !menu && !standing {
-			highlight_alpha := f32(0.14) if ui.dark else f32(0.9)
+			highlight_alpha := (f32(0.24) if hovered else f32(0.14)) if ui.dark else (f32(0.45) if hovered else f32(0.9))
 			ui_add_rect(&vertices, ui, {rect.x+6, rect.y+1, max(0, rect.w-12), 0.5}, {1, 1, 1, highlight_alpha})
 		}
 	}
