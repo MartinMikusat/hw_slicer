@@ -13,8 +13,17 @@ elif [ -d "$ROOT/../hw/hw_odin_ui_flash" ]; then
 else
   FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
 fi
+if [ -d "$ROOT/../hw_odin_devlog" ]; then
+  DEVLOG_ROOT="$ROOT/../hw_odin_devlog"
+elif [ -d "$ROOT/../odin_libraries/hw_odin_devlog" ]; then
+  DEVLOG_ROOT="$ROOT/../odin_libraries/hw_odin_devlog"
+else
+  DEVLOG_ROOT="$ROOT/../hw_odin_devlog"
+fi
 EXPECTED_FLASH_URL="https://github.com/MartinMikusat/hw_odin_ui_flash.git"
 EXPECTED_FLASH_COMMIT="f4744a6e76c04e99e54fa8e4205de416b612f1db"
+EXPECTED_DEVLOG_URL="https://github.com/MartinMikusat/hw_odin_devlog.git"
+EXPECTED_DEVLOG_COMMIT="4488d49fad236bf0e887972525ba5308ab8b691c"
 
 if [ "${1:-}" != "check" ]; then
   echo "usage: scripts/dependencies.sh check" >&2
@@ -26,21 +35,29 @@ hw-odin toolchain doctor >/dev/null || {
   exit 1
 }
 
-if [ ! -d "$FLASH_ROOT/.git" ]; then
-  echo "[hw_slicer] missing sibling dependency: $FLASH_ROOT" >&2
-  exit 1
-fi
+check_pin() {
+  name=$1
+  root=$2
+  expected_url=$3
+  expected_commit=$4
+  if [ ! -d "$root/.git" ]; then
+    echo "[hw_slicer] missing sibling dependency: $root" >&2
+    exit 1
+  fi
+  actual_url=$(git -C "$root" remote get-url origin)
+  actual_commit=$(git -C "$root" rev-parse HEAD)
+  if [ "$actual_url" != "$expected_url" ]; then
+    echo "[hw_slicer] $name URL mismatch: expected $expected_url, got $actual_url" >&2
+    exit 1
+  fi
+  if [ "$actual_commit" != "$expected_commit" ]; then
+    echo "[hw_slicer] $name commit mismatch: expected $expected_commit, got $actual_commit" >&2
+    exit 1
+  fi
+}
 
-ACTUAL_FLASH_URL=$(git -C "$FLASH_ROOT" remote get-url origin)
-ACTUAL_FLASH_COMMIT=$(git -C "$FLASH_ROOT" rev-parse HEAD)
-if [ "$ACTUAL_FLASH_URL" != "$EXPECTED_FLASH_URL" ]; then
-  echo "[hw_slicer] Flash URL mismatch: expected $EXPECTED_FLASH_URL, got $ACTUAL_FLASH_URL" >&2
-  exit 1
-fi
-if [ "$ACTUAL_FLASH_COMMIT" != "$EXPECTED_FLASH_COMMIT" ]; then
-  echo "[hw_slicer] Flash commit mismatch: expected $EXPECTED_FLASH_COMMIT, got $ACTUAL_FLASH_COMMIT" >&2
-  exit 1
-fi
+check_pin "Flash" "$FLASH_ROOT" "$EXPECTED_FLASH_URL" "$EXPECTED_FLASH_COMMIT"
+check_pin "devlog" "$DEVLOG_ROOT" "$EXPECTED_DEVLOG_URL" "$EXPECTED_DEVLOG_COMMIT"
 
 (
   cd "$ROOT"

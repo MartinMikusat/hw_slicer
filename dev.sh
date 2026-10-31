@@ -17,6 +17,9 @@ case "$MODE" in
     ;;
 esac
 
+HW_DEVLOG_DIR=${HW_DEVLOG_DIR:-"$ROOT/.dev-logs/$MODE"}
+HW_DEVLOG_PROFILE=${HW_DEVLOG_PROFILE:-dev}
+export HW_DEVLOG_DIR HW_DEVLOG_PROFILE
 HOST="$APP/Contents/MacOS/HWSlicer"
 RUNTIME="$ROOT/.hw-slicer-runtime"
 LOCK="$ROOT/build/dev-watcher.lock"

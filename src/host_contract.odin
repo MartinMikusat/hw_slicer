@@ -47,6 +47,7 @@ Application_API :: struct {
 	hit_test: proc "c" (x, y: f64) -> u64,
 	activate_control: proc "c" (control_id: u64) -> bool,
 	write_ui_snapshot: proc "c" (path: cstring) -> bool,
+	window_state: proc "c" (visible, active: bool),
 }
 
 foreign {

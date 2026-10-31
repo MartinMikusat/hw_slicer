@@ -60,6 +60,7 @@ typedef struct HW_Slicer_Application_API {
     uint64_t (*hit_test)(double x, double y);
     bool (*activate_control)(uint64_t control_id);
     bool (*write_ui_snapshot)(const char *path);
+    void (*window_state)(bool visible, bool active);
 } HW_Slicer_Application_API;
 
 int32_t hw_slicer_host_run(const HW_Slicer_Application_API *application);

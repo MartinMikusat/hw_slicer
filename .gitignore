@@ -4,3 +4,4 @@ build/
 *.o
 *.dylib
 .hw-slicer-runtime/
+.dev-logs/

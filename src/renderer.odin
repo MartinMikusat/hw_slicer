@@ -492,6 +492,29 @@ renderer_ensure_text_texture :: proc(
 	return true
 }
 
+Render_Result :: enum u8 {
+	Presented,
+	No_Layer,
+	Empty_Viewport,
+	No_Depth_Texture,
+	No_Drawable,
+	No_Command_Buffer,
+	No_Encoder,
+}
+
+render_result_text :: proc(result: Render_Result) -> string {
+	switch result {
+	case .Presented:         return "presented"
+	case .No_Layer:          return "no metal layer"
+	case .Empty_Viewport:    return "empty viewport"
+	case .No_Depth_Texture:  return "no depth texture"
+	case .No_Drawable:       return "no drawable"
+	case .No_Command_Buffer: return "no command buffer"
+	case .No_Encoder:        return "no render encoder"
+	}
+	return "unknown"
+}
+
 renderer_draw :: proc(
 	renderer: ^Renderer,
 	mesh: ^Mesh,
@@ -502,16 +525,19 @@ renderer_draw :: proc(
 	solids: []Solid_Vertex,
 	text_pixels: []u8,
 	width, height, scale: f64,
-) {
-	if renderer.layer == nil || width <= 0 || height <= 0 {return}
+) -> Render_Result {
+	if renderer.layer == nil {return .No_Layer}
+	if width <= 0 || height <= 0 {return .Empty_Viewport}
 	pixel_width := uint(max(1, width*scale))
 	pixel_height := uint(max(1, height*scale))
-	if !renderer_ensure_depth(renderer, pixel_width, pixel_height) {return}
+	if !renderer_ensure_depth(renderer, pixel_width, pixel_height) {
+		return .No_Depth_Texture
+	}
 	drawable := msg_id(renderer.layer, sel_registerName("nextDrawable"))
-	if drawable == nil {return}
+	if drawable == nil {return .No_Drawable}
 	texture := msg_id(drawable, sel_registerName("texture"))
 	command_buffer := msg_id(renderer.queue, sel_registerName("commandBuffer"))
-	if command_buffer == nil {return}
+	if command_buffer == nil {return .No_Command_Buffer}
 	pass := msg_id(
 		objc_getClass("MTLRenderPassDescriptor"),
 		sel_registerName("renderPassDescriptor"),
@@ -549,7 +575,7 @@ renderer_draw :: proc(
 		sel_registerName("renderCommandEncoderWithDescriptor:"),
 		pass,
 	)
-	if encoder == nil {return}
+	if encoder == nil {return .No_Encoder}
 
 	mesh_viewport := MTL_Viewport{
 		viewport.x*scale,
@@ -787,4 +813,5 @@ renderer_draw :: proc(
 		drawable,
 	)
 	msg_void(command_buffer, sel_registerName("commit"))
+	return .Presented
 }

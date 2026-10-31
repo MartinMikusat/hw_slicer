@@ -6,7 +6,9 @@ import "core:math"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:time"
 import flash "flash:."
+import devlog "devlog:."
 
 import evidence "./evidence"
 
@@ -24,6 +26,7 @@ App_State :: struct {
 	mesh:          Mesh,
 	section_vertices: [dynamic]Mesh_Vertex,
 	section_dirty: bool,
+	first_frame_logged: bool,
 	evidence_replay: evidence.Evidence_Bundle_Replay,
 	evidence_kind: evidence.Evidence_Bundle_Source_Kind,
 	camera:        Camera,
@@ -41,6 +44,12 @@ App_State :: struct {
 }
 
 app: App_State
+
+app_context :: proc() -> runtime.Context {
+	result := runtime.default_context()
+	result.assertion_failure_proc = devlog.fatal_hook()
+	return result
+}
 
 app_set_status :: proc(text: string) {
 	delete(app.status)
@@ -90,8 +99,21 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 	defer {
 		if path_is_owned {delete(path)}
 	}
+	site := devlog.Site{feature = "model", operation = "load"}
+	devlog.started(devlog.global(), site, {scope = "model", stage = "read"})
 	next, error := mesh_load_stl(path)
 	if error != .None {
+		devlog.failed(
+			devlog.global(),
+			site,
+			{
+				reason = "model load failed",
+				detail = mesh_error_text(error),
+				code = i32(error),
+				severity = .Error,
+			},
+			{scope = "model", stage = "read"},
+		)
 		fmt.eprintf(
 			"HW Slicer could not load %s: %s\n",
 			path,
@@ -102,6 +124,15 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 	}
 	if !renderer_set_mesh(&app.renderer, &next) {
 		mesh_destroy(&next)
+		devlog.failed(
+			devlog.global(),
+			site,
+			{
+				reason = "renderer mesh upload failed",
+				severity = .Critical,
+			},
+			{scope = "model", stage = "upload"},
+		)
 		app_set_status("LOAD FAILED: METAL BUFFER")
 		return false
 	}
@@ -114,6 +145,12 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 	delete(app.model_name)
 	app.model_name = strings.clone(name)
 	app_set_status(fmt.tprintf("LOADED %d TRIANGLES", app.mesh.triangle_count))
+	devlog.succeeded(
+		devlog.global(),
+		site,
+		{scope = "model", stage = "loaded"},
+		{rows = i64(app.mesh.triangle_count)},
+	)
 	if frame_camera {app_frame_camera()}
 	return true
 }
@@ -131,8 +168,20 @@ app_evidence_view :: proc() -> UI_Evidence_View {
 }
 
 app_load_evidence :: proc(path: string) -> bool {
+	site := devlog.Site{feature = "evidence", operation = "load"}
+	devlog.started(devlog.global(), site, {scope = "evidence", stage = "read"})
 	next, kind, load_error := evidence.evidence_bundle_path_replay(path)
 	if load_error != .None {
+		devlog.failed(
+			devlog.global(),
+			site,
+			{
+				reason = "evidence load failed",
+				code = i32(load_error),
+				severity = .Error,
+			},
+			{scope = "evidence", stage = "read"},
+		)
 		fmt.eprintf(
 			"HW Slicer could not load evidence %s: %v\n",
 			path,
@@ -154,6 +203,12 @@ app_load_evidence :: proc(path: string) -> bool {
 			"EVIDENCE: %d STAGES",
 			len(app.evidence_replay.root.stages),
 		),
+	)
+	devlog.succeeded(
+		devlog.global(),
+		site,
+		{scope = "evidence", stage = "loaded"},
+		{rows = i64(len(app.evidence_replay.root.stages))},
 	)
 	return true
 }
@@ -240,7 +295,19 @@ app_activate :: proc(action: UI_Action) -> bool {
 }
 
 app_initialize :: proc(host: ^Host_Services) -> bool {
+	site := devlog.Site{feature = "app", operation = "initialize"}
+	devlog.started(devlog.global(), site, {scope = "app", stage = "window"})
 	if host == nil || !objc_initialize() {
+		devlog.failed(
+			devlog.global(),
+			site,
+			{
+				reason = "initialization failed",
+				detail = "objective-c unavailable",
+				severity = .Critical,
+			},
+			{scope = "app", stage = "window"},
+		)
 		fmt.eprintln("HW Slicer failed before Objective-C initialization")
 		return false
 	}
@@ -251,6 +318,15 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 	app.ui.selected_model = 0
 	ui_initialize(&app.ui)
 	if !renderer_initialize(&app.renderer, Id(host.layer)) {
+		devlog.failed(
+			devlog.global(),
+			site,
+			{
+				reason = "metal initialization failed",
+				severity = .Critical,
+			},
+			{scope = "app", stage = "renderer"},
+		)
 		fmt.eprintln("HW Slicer failed during Metal initialization")
 		renderer_shutdown(&app.renderer)
 		ui_destroy(&app.ui)
@@ -267,6 +343,11 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 		}
 	}
 	app.needs_redraw = true
+	devlog.succeeded(
+		devlog.global(),
+		site,
+		{scope = "app", stage = "ready"},
+	)
 	return true
 }
 
@@ -333,7 +414,7 @@ app_pan_camera :: proc(delta_x, delta_y: f64) {
 	)
 }
 
-renderer_draw_application :: proc() {
+renderer_draw_application :: proc() -> Render_Result {
 	if app.section_dirty {
 		app_rebuild_section()
 		_ = renderer_set_section(&app.renderer, app.section_vertices[:])
@@ -350,7 +431,7 @@ renderer_draw_application :: proc() {
 		&evidence_view,
 	)
 	defer delete(pixels)
-	renderer_draw(
+	result := renderer_draw(
 		&app.renderer,
 		&app.mesh,
 		app.camera,
@@ -364,20 +445,21 @@ renderer_draw_application :: proc() {
 		app.ui.scale,
 	)
 	app.needs_redraw = false
+	return result
 }
 
 application_initialize :: proc "c" (host: ^Host_Services) -> bool {
-	context = runtime.default_context()
+	context = app_context()
 	return app_initialize(host)
 }
 
 application_shutdown :: proc "c" () {
-	context = runtime.default_context()
+	context = app_context()
 	app_destroy()
 }
 
 application_frame :: proc "c" (width, height, scale: f64) {
-	context = runtime.default_context()
+	context = app_context()
 	if width <= 0 || height <= 0 {return}
 	if width != app.last_width || height != app.last_height ||
 	   scale != app.last_scale {
@@ -390,7 +472,33 @@ application_frame :: proc "c" (width, height, scale: f64) {
 		app.needs_redraw = true
 	}
 	if app.needs_redraw {
-		renderer_draw_application()
+		result := renderer_draw_application()
+		switch result {
+		case .Presented:
+			if !app.first_frame_logged {
+				devlog.succeeded(
+					devlog.global(),
+					{feature = "renderer", operation = "first_frame"},
+					{scope = "renderer", stage = "draw"},
+					{rows = 1},
+				)
+				app.first_frame_logged = true
+			}
+		case .No_Layer, .Empty_Viewport, .No_Depth_Texture,
+		     .No_Drawable, .No_Command_Buffer, .No_Encoder:
+			if !app.first_frame_logged {
+				devlog.failed(
+					devlog.global(),
+					{feature = "renderer", operation = "draw"},
+					{
+						reason = "renderer draw failed",
+						detail = render_result_text(result),
+						severity = .Warning,
+					},
+					{scope = "renderer", stage = "draw"},
+				)
+			}
+		}
 	}
 }
 
@@ -398,7 +506,7 @@ application_mouse :: proc "c" (
 	phase, button: i32,
 	x, y, delta_x, delta_y: f64,
 ) {
-	context = runtime.default_context()
+	context = app_context()
 	switch phase {
 	case 0:
 		id := ui_hit_test(&app.ui, x, y)
@@ -454,7 +562,7 @@ application_mouse :: proc "c" (
 }
 
 application_scroll :: proc "c" (delta_x, delta_y: f64) {
-	context = runtime.default_context()
+	context = app_context()
 	_ = delta_x
 	app.camera.distance *= math.exp(f32(delta_y)*0.035)
 	app.camera.distance = clamp_f32(app.camera.distance, 0.1, 100000)
@@ -466,7 +574,7 @@ application_key :: proc "c" (
 	characters: cstring,
 	modifiers: u64,
 ) {
-	context = runtime.default_context()
+	context = app_context()
 	_ = modifiers
 	if key_code == 53 {
 		if flash.is_active(&app.ui.flash_state) {
@@ -553,19 +661,56 @@ application_control_at :: proc "c" (
 }
 
 application_hit_test :: proc "c" (x, y: f64) -> u64 {
-	context = runtime.default_context()
+	context = app_context()
 	return ui_hit_test(&app.ui, x, y)
 }
 
 application_activate_control :: proc "c" (control_id: u64) -> bool {
-	context = runtime.default_context()
+	context = app_context()
 	return app_activate(UI_Action(control_id))
 }
 
+application_window_state :: proc "c" (visible, active: bool) {
+	context = app_context()
+	site := devlog.Site{feature = "window", operation = "show"}
+	switch {
+	case visible && active:
+		devlog.succeeded(devlog.global(), site, {scope = "window", stage = "active"})
+	case visible:
+		devlog.failed(
+			devlog.global(),
+			site,
+			{reason = "window not active", severity = .Warning},
+			{scope = "window"},
+		)
+	case:
+		devlog.failed(
+			devlog.global(),
+			site,
+			{reason = "window not visible", severity = .Critical},
+			{scope = "window"},
+		)
+	}
+}
+
 application_write_ui_snapshot :: proc "c" (path: cstring) -> bool {
-	context = runtime.default_context()
+	context = app_context()
 	if path == nil {return false}
-	return ui_write_snapshot(&app.ui, string(path))
+	text := string(path)
+	if !ui_write_snapshot(&app.ui, text) {
+		devlog.failed(
+			devlog.global(),
+			{feature = "ui", operation = "write_snapshot"},
+			{
+				reason = "ui snapshot write failed",
+				detail = filepath.base(text),
+				severity = .Warning,
+			},
+			{scope = "ui"},
+		)
+		return false
+	}
+	return true
 }
 
 application_api := Application_API{
@@ -580,10 +725,45 @@ application_api := Application_API{
 	hit_test = application_hit_test,
 	activate_control = application_activate_control,
 	write_ui_snapshot = application_write_ui_snapshot,
+	window_state = application_window_state,
 }
 
 main :: proc() {
+	config := devlog.DEFAULT_CONFIG
+	config.profile = devlog.profile_from_env()
+	started := devlog.global_start(
+		devlog.default_directory("hw-slicer", "app"),
+		config,
+	)
+	if started {
+		context.assertion_failure_proc = devlog.fatal_hook()
+	}
+	defer {
+		if started {devlog.global_destroy()}
+	}
+	devlog.started(
+		devlog.global(),
+		{feature = "app", operation = "startup"},
+		{scope = "app", stage = "launch"},
+	)
 	status := hw_slicer_host_run(&application_api)
+	if status != 0 {
+		devlog.failed(
+			devlog.global(),
+			{feature = "app", operation = "window_host"},
+			{
+				reason = "window host failed",
+				code = i32(status),
+				severity = .Critical,
+			},
+			{scope = "app"},
+		)
+	}
+	devlog.stopped(
+		devlog.global(),
+		{feature = "app", operation = "shutdown"},
+		{scope = "app"},
+	)
 	if status != 0 {
 		os.exit(int(status))
 	}

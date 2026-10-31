@@ -2,5 +2,9 @@
   "hw_odin_ui_flash": {
     "url": "https://github.com/MartinMikusat/hw_odin_ui_flash.git",
     "commit": "f4744a6e76c04e99e54fa8e4205de416b612f1db"
+  },
+  "hw_odin_devlog": {
+    "url": "https://github.com/MartinMikusat/hw_odin_devlog.git",
+    "commit": "4488d49fad236bf0e887972525ba5308ab8b691c"
   }
 }

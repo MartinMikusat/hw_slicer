@@ -13,6 +13,13 @@ elif [ -d "$ROOT/../hw/hw_odin_ui_flash" ]; then
 else
   FLASH_ROOT="$ROOT/../hw_odin_ui_flash"
 fi
+if [ -d "$ROOT/../hw_odin_devlog" ]; then
+  DEVLOG_ROOT="$ROOT/../hw_odin_devlog"
+elif [ -d "$ROOT/../odin_libraries/hw_odin_devlog" ]; then
+  DEVLOG_ROOT="$ROOT/../odin_libraries/hw_odin_devlog"
+else
+  DEVLOG_ROOT="$ROOT/../hw_odin_devlog"
+fi
 MODE=${1:-debug}
 
 case "$MODE" in
@@ -71,6 +78,7 @@ fi
     -out:"$EXECUTABLE" \
     $ODIN_FLAGS \
     -collection:flash="$FLASH_ROOT" \
+    -collection:devlog="$DEVLOG_ROOT" \
     -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$MODE/libhw_clipper2.a" \
     -extra-linker-flags:"$HOST_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
 )

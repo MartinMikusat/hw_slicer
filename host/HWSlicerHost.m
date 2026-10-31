@@ -299,6 +299,17 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
     }
     g_application_initialized = true;
 
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(),
+        ^{
+            if (g_application && g_application_initialized &&
+                g_application->window_state) {
+                g_application->window_state(window.visible, NSApp.isActive);
+            }
+        }
+    );
+
     __block unsigned snapshotTick = 0;
     self.timer = [NSTimer
         scheduledTimerWithTimeInterval:1.0 / 60.0
@@ -345,7 +356,8 @@ int32_t hw_slicer_host_run(const HW_Slicer_Application_API *applicationAPI) {
         !applicationAPI->key || !applicationAPI->control_count ||
         !applicationAPI->control_at || !applicationAPI->hit_test ||
         !applicationAPI->activate_control ||
-        !applicationAPI->write_ui_snapshot) {
+        !applicationAPI->write_ui_snapshot ||
+        !applicationAPI->window_state) {
         return 2;
     }
     @autoreleasepool {
