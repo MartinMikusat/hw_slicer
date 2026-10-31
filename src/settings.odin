@@ -14,7 +14,7 @@ Settings_Document :: struct {
 	font_size: int `json:"font_size"`,
 }
 
-DEFAULT_FONT_SIZE :: 14
+DEFAULT_FONT_SIZE :: 13
 FONT_SIZE_MIN :: 10
 // The dense fixed workspace fits through 18 pt without reflow.
 FONT_SIZE_MAX :: 18

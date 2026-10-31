@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:math"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -11,6 +12,10 @@ import evidence "./evidence"
 
 foreign import core_graphics "system:CoreGraphics.framework"
 foreign core_graphics {
+	CGDataProviderCreateWithCFData :: proc "c" (data: rawptr) -> rawptr ---
+	CGDataProviderRelease :: proc "c" (provider: rawptr) ---
+	CGFontCreateWithDataProvider :: proc "c" (provider: rawptr) -> rawptr ---
+	CGFontRelease :: proc "c" (font: rawptr) ---
 	CGColorSpaceCreateDeviceRGB :: proc "c" () -> rawptr ---
 	CGColorSpaceRelease :: proc "c" (space: rawptr) ---
 	CGBitmapContextCreate :: proc "c" (
@@ -51,13 +56,15 @@ foreign core_text {
 		ascent, descent, leading: ^f64,
 	) -> f64 ---
 	CTLineDraw :: proc "c" (line, ctx: rawptr) ---
+	CTFontManagerRegisterGraphicsFont :: proc "c" (font: rawptr, error: ^rawptr) -> bool ---
+	CTFontCreateWithName :: proc "c" (name: rawptr, size: f64, transform: rawptr) -> rawptr ---
 	kCTFontAttributeName: rawptr
 	kCTForegroundColorFromContextAttributeName: rawptr
 }
 
 foreign import slicer_core_foundation "system:CoreFoundation.framework"
 foreign slicer_core_foundation {
-	CFRetain :: proc "c" (value: rawptr) -> rawptr ---
+	CFDataCreate :: proc "c" (allocator: rawptr, bytes: rawptr, length: int) -> rawptr ---
 	CFStringCreateWithBytes :: proc "c" (
 		allocator: rawptr,
 		bytes: [^]u8,
@@ -94,6 +101,7 @@ UI_Action :: enum u64 {
 	Toggle_Theme,
 	Show_Help,
 	Close_Help,
+	Dismiss_Help,
 	Select_Benchy,
 	Select_All_In_One,
 	Select_Bunny,
@@ -252,14 +260,19 @@ ui_section_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	return {20, 306, 204, 24}
 }
 
+ui_help_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	width := min(540.0, ui.width-48)
+	return {ui.width/2-width/2, 24, width, min(340.0, ui.height-48)}
+}
+
 ui_settings_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	width := min(420.0, ui.width-48)
 	height := 260.0
 	return {
 		ui.width/2-width/2,
-		ui.height/2-height/2,
+		24,
 		width,
-		height,
+		min(height, ui.height-48),
 	}
 }
 
@@ -275,9 +288,9 @@ ui_evidence_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	height := min(600.0, ui.height-96)
 	return {
 		ui.width/2-width/2,
-		ui.height/2-height/2,
+		24,
 		width,
-		height,
+		min(height, ui.height-48),
 	}
 }
 
@@ -335,12 +348,9 @@ ui_build_controls :: proc(
 	ui_add_control(ui, "window minimize", "minimize window", {40, 5, 30, 30}, .Window_Minimize)
 	ui_add_control(ui, "window zoom", "zoom window", {72, 5, 30, 30}, .Window_Zoom)
 	if ui.help_open {
-		modal := UI_Rect{
-			ui.width/2-270,
-			ui.height/2-170,
-			540,
-			340,
-		}
+		modal := ui_help_modal_rect(ui)
+		ui_add_control(ui, "help scrim", "close viewer help", {0, 0, ui.width, ui.height}, .Dismiss_Help)
+		ui_add_control(ui, "help surface", "viewer help", modal, .None)
 		ui_add_control(
 			ui,
 			"help close",
@@ -356,7 +366,7 @@ ui_build_controls :: proc(
 			ui,
 			"evidence scrim",
 			"close evidence inspector",
-			{0, 40, ui.width, ui.height-40},
+			{0, 0, ui.width, ui.height},
 			.Dismiss_Evidence,
 		)
 		ui_add_control(
@@ -494,6 +504,7 @@ ui_build_controls :: proc(
 		"toggle mesh wireframe",
 		{viewport.x+98, viewport.y+12, 98, 30},
 		.Toggle_Wireframe,
+		true, 1, ui.wireframe,
 	)
 	ui_add_control(
 		ui,
@@ -623,208 +634,116 @@ ui_add_border :: proc(
 	)
 }
 
+ui_add_round_rect :: proc(
+	vertices: ^[dynamic]Solid_Vertex,
+	ui: ^UI_State,
+	rect: UI_Rect,
+	radius: f64,
+	color: Vec4,
+) {
+	r := min(radius, min(rect.w, rect.h)/2)
+	if r <= 0 {return}
+	ui_add_rect(vertices, ui, {rect.x+r, rect.y, rect.w-2*r, rect.h}, color)
+	ui_add_rect(vertices, ui, {rect.x, rect.y+r, r, rect.h-2*r}, color)
+	ui_add_rect(vertices, ui, {rect.x+rect.w-r, rect.y+r, r, rect.h-2*r}, color)
+	centers := [4][2]f64{
+		{rect.x+r, rect.y+r}, {rect.x+rect.w-r, rect.y+r},
+		{rect.x+rect.w-r, rect.y+rect.h-r}, {rect.x+r, rect.y+rect.h-r},
+	}
+	for center, corner in centers {
+		start := math.PI * (1 + f64(corner)/2)
+		for segment in 0..<8 {
+			a0 := start+f64(segment)*math.PI/16
+			a1 := start+f64(segment+1)*math.PI/16
+			points := [3][2]f64{center, {center[0]+r*math.cos(a0), center[1]+r*math.sin(a0)}, {center[0]+r*math.cos(a1), center[1]+r*math.sin(a1)}}
+			for point in points {
+				append(vertices, Solid_Vertex{position = {f32(point[0]/ui.width*2-1), f32(1-point[1]/ui.height*2)}, color = color})
+			}
+		}
+	}
+}
+
+ui_control_standing :: proc(ui: ^UI_State, control: UI_Control) -> bool {
+	return control.enabled && (control.selected || control.id == ui.pressed_id)
+}
+
+ui_control_ink :: proc(ui: ^UI_State, action: UI_Action) -> Vec4 {
+	theme := ui_theme(ui)
+	for control in ui.controls {
+		if control.action != action {continue}
+		if !control.enabled {return {0.501961, 0.501961, 0.501961, 1}}
+		if ui_control_standing(ui, control) {return theme.canvas}
+		break
+	}
+	return theme.text
+}
+
 ui_build_geometry :: proc(
 	ui: ^UI_State,
 	evidence_view: ^UI_Evidence_View = nil,
 ) -> [dynamic]Solid_Vertex {
 	vertices := make([dynamic]Solid_Vertex, context.temp_allocator)
 	theme := ui_theme(ui)
-	evidence_stage_count := 0
-	if ui_evidence_available(evidence_view) {
-		evidence_stage_count = len(evidence_view.replay.root.stages)
-	}
 	ui_add_rect(&vertices, ui, {0, 0, ui.width, 40}, theme.header)
 	ui_add_rect(&vertices, ui, ui_left_rect(ui), theme.surface)
 	ui_add_rect(&vertices, ui, ui_right_rect(ui), theme.surface)
-	bar := ui_action_bar_rect(ui)
-	ui_add_rect(&vertices, ui, bar, theme.header)
-	if ui.help_open {
-		modal := UI_Rect{
-			ui.width/2-270,
-			ui.height/2-170,
-			540,
-			340,
-		}
-		ui_add_rect(&vertices, ui, {0, 40, ui.width, ui.height-40}, {0, 0, 0, 0.58})
-		ui_add_rect(&vertices, ui, modal, theme.overlay)
-		ui_add_border(&vertices, ui, modal, COLOR_GUM)
-	} else if ui.evidence_open && ui_evidence_available(evidence_view) {
-		modal := ui_evidence_modal_rect(ui)
-		ui_add_rect(&vertices, ui, {0, 40, ui.width, ui.height-40}, {0, 0, 0, 0.58})
-		ui_add_rect(&vertices, ui, modal, theme.overlay)
-	} else if ui.settings_open {
+	ui_add_rect(&vertices, ui, ui_action_bar_rect(ui), theme.header)
+	if ui.help_open || (ui.evidence_open && ui_evidence_available(evidence_view)) || ui.settings_open {
 		modal := ui_settings_modal_rect(ui)
-		ui_add_rect(&vertices, ui, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.58})
-		ui_add_rect(&vertices, ui, modal, theme.overlay)
+		if ui.help_open {modal = ui_help_modal_rect(ui)}
+		if ui.evidence_open && ui_evidence_available(evidence_view) {modal = ui_evidence_modal_rect(ui)}
+		ui_add_rect(&vertices, ui, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.8})
+		ui_add_round_rect(&vertices, ui, {modal.x-3, modal.y+3, modal.w+6, modal.h+6}, 15, {0, 0, 0, 0.18})
+		ui_add_round_rect(&vertices, ui, modal, 12, theme.overlay)
 	}
 
 	for control in ui.controls {
-		hovered := control.id == ui.hovered_id
-		fill := theme.surface if hovered else theme.control
-		if _, is_stage := ui_evidence_stage_action_index(
-			control.action,
-			evidence_stage_count,
-		); is_stage {
-			ui_add_rect(
-				&vertices,
-				ui,
-				control.rect,
-				theme.surface if hovered else theme.raised,
-			)
-			if control.selected {
-				ui_add_rect(
-					&vertices,
-					ui,
-					{control.rect.x, control.rect.y, 4, control.rect.h},
-					COLOR_GUM,
-				)
-				ui_add_border(
-					&vertices,
-					ui,
-					control.rect,
-					COLOR_GUM,
-				)
-			}
+		hovered := control.enabled && control.id == ui.hovered_id
+		standing := ui_control_standing(ui, control)
+		if control.action == .None || control.action == .Dismiss_Settings || control.action == .Dismiss_Evidence || control.action == .Dismiss_Help {continue}
+		if control.action == .Window_Close || control.action == .Window_Minimize || control.action == .Window_Zoom {continue}
+		if control.action == .Section_Height {
+			track := UI_Rect{control.rect.x+4, control.rect.y+control.rect.h/2-2, control.rect.w-8, 4}
+			ui_add_round_rect(&vertices, ui, track, 2, {0.5, 0.5, 0.5, 1})
+			fraction := 0.0
+			if ui.section_max > 0 {fraction = clamp(f64(ui.section_z/ui.section_max), 0, 1)}
+			ui_add_round_rect(&vertices, ui, {track.x, track.y, max(1, track.w*fraction), track.h}, 2, theme.text)
+			ui_add_round_rect(&vertices, ui, {track.x+track.w*fraction-6, control.rect.y+6, 12, 12}, 6, theme.text)
 			continue
 		}
-		switch control.action {
-		case .Window_Close, .Window_Minimize, .Window_Zoom:
-			ui_add_rect(&vertices, ui, control.rect, fill)
-		case .Toggle_Theme:
-			ui_add_rect(&vertices, ui, control.rect, fill)
-			ui_add_border(&vertices, ui, control.rect, COLOR_COFFEE)
-			ui_add_rect(
-				&vertices,
-				ui,
-				{control.rect.x, control.rect.y, 4, control.rect.h},
-				COLOR_COFFEE,
-			)
-		case .Toggle_Wireframe, .Lay_On_Face:
-			ui_add_rect(&vertices, ui, control.rect, fill)
-			ui_add_border(&vertices, ui, control.rect, COLOR_COFFEE)
-			ui_add_rect(
-				&vertices,
-				ui,
-				{control.rect.x, control.rect.y, 4, control.rect.h},
-				COLOR_COFFEE,
-			)
-		case .Toggle_Section:
-			ui_add_rect(&vertices, ui, control.rect, fill)
-			ui_add_border(&vertices, ui, control.rect, COLOR_SECTION)
-			ui_add_rect(
-				&vertices,
-				ui,
-				{control.rect.x, control.rect.y, 4, control.rect.h},
-				COLOR_SECTION if ui.section_enabled else theme.muted,
-			)
-		case .Section_Height:
-			ui_add_rect(&vertices, ui, control.rect, theme.surface)
-			track := UI_Rect{
-				control.rect.x+4,
-				control.rect.y+control.rect.h/2-2,
-				control.rect.w-8,
-				4,
-			}
-			ui_add_rect(&vertices, ui, track, theme.muted)
-			fraction := 0.0
-			if ui.section_max > 0 {
-				fraction = min(max(f64(ui.section_z/ui.section_max), 0), 1)
-			}
-			ui_add_rect(
-				&vertices,
-				ui,
-				{track.x, track.y, track.w*fraction, track.h},
-				COLOR_SECTION,
-			)
-			ui_add_rect(
-				&vertices,
-				ui,
-				{track.x+track.w*fraction-4, control.rect.y+4, 8, control.rect.h-8},
-				COLOR_SECTION,
-			)
-		case .Show_Help, .Frame_Mesh:
-			ui_add_rect(&vertices, ui, control.rect, fill)
-		case .Open_Settings:
-			ui_add_rect(&vertices, ui, control.rect, fill)
-			ui_add_border(&vertices, ui, control.rect, COLOR_COFFEE)
-			ui_add_rect(
-				&vertices,
-				ui,
-				{control.rect.x, control.rect.y, 4, control.rect.h},
-				COLOR_COFFEE,
-			)
-		case .Font_Decrease, .Font_Increase, .Close_Settings:
-			ui_add_rect(&vertices, ui, control.rect, fill)
-			ui_add_border(&vertices, ui, control.rect, COLOR_GUM)
-		case .Select_Benchy, .Select_All_In_One, .Select_Bunny:
-			ui_add_rect(
-				&vertices,
-				ui,
-				control.rect,
-				theme.surface if hovered else theme.raised,
-			)
-			if control.selected {
-				ui_add_rect(
-					&vertices,
-					ui,
-					{control.rect.x, control.rect.y, 4, control.rect.h},
-					COLOR_COFFEE,
-				)
-			}
-		case .Open, .Slice, .Cancel, .Capture, .Compare, .Export:
-			ui_add_rect(
-				&vertices,
-				ui,
-				{
-					control.rect.x+6,
-					control.rect.y+6,
-					control.rect.w-12,
-					control.rect.h-12,
-				},
-				fill,
-			)
-			if control.enabled {
-				ui_add_border(
-					&vertices,
-					ui,
-					{
-						control.rect.x+6,
-						control.rect.y+6,
-						control.rect.w-12,
-						control.rect.h-12,
-					},
-					COLOR_COFFEE,
-				)
-			}
-		case .Close_Help, .Close_Evidence:
-			ui_add_rect(&vertices, ui, control.rect, fill)
-			ui_add_border(&vertices, ui, control.rect, COLOR_GUM)
-		case .None, .Dismiss_Evidence, .Dismiss_Settings, .Evidence_Stage_Base:
+		if control.action == .Toggle_Section {
+			track := UI_Rect{control.rect.x+8, control.rect.y+11, 25, 14}
+			track_color := Vec4{0.5, 0.5, 0.5, 1}
+			if ui.section_enabled && control.enabled {track_color = theme.text}
+			ui_add_round_rect(&vertices, ui, track, 7, track_color)
+			thumb_x := track.x+2
+			if ui.section_enabled {thumb_x = track.x+track.w-12}
+			ui_add_round_rect(&vertices, ui, {thumb_x, track.y+2, 10, 10}, 5, theme.canvas)
+			continue
 		}
+		menu := control.action == .Select_Benchy || control.action == .Select_All_In_One || control.action == .Select_Bunny
+		if _, stage := ui_evidence_stage_action_index(control.action, len(evidence_view.replay.root.stages) if ui_evidence_available(evidence_view) else 0); stage {menu = true}
+		rect := UI_Rect{control.rect.x+3, control.rect.y+4, control.rect.w-6, control.rect.h-8}
+		if rect.w <= 0 || rect.h <= 0 {continue}
+		fill := theme.raised
+		if hovered {fill = {0.87, 0.87, 0.87, 1} if !ui.dark else {0.24, 0.24, 0.24, 1}}
+		if standing {fill = theme.text}
+		if menu && !hovered && !standing {continue}
+		if !menu {
+			ui_add_round_rect(&vertices, ui, {rect.x, rect.y+2, rect.w, rect.h}, 6, {0, 0, 0, 0.18})
+		}
+		ui_add_round_rect(&vertices, ui, rect, 6, fill)
 	}
 	for hint in flash.visible_hints(&ui.flash_state) {
 		width := max(16.0, 8.0+8.0*f64(len(hint.label)))
-		rect := UI_Rect{
-			hint.target.rect.x+2,
-			hint.target.rect.y+2,
-			width,
-			18,
-		}
+		rect := UI_Rect{hint.target.rect.x+2, hint.target.rect.y+2, width, 18}
 		rect.x = min(rect.x, ui.width-rect.w)
 		rect.y = min(rect.y, ui.height-rect.h)
 		background := FLASH_SELECTED_BG if hint.selected else FLASH_BG
 		border := FLASH_SELECTED_BORDER if hint.selected else FLASH_BORDER
 		ui_add_rect(&vertices, ui, rect, background)
 		ui_add_border(&vertices, ui, rect, border)
-		if hint.selected {
-			target := UI_Rect{
-				hint.target.rect.x,
-				hint.target.rect.y,
-				hint.target.rect.w,
-				hint.target.rect.h,
-			}
-			ui_add_border(&vertices, ui, target, FLASH_SELECTED_BORDER)
-		}
+		if hint.selected {ui_add_border(&vertices, ui, {hint.target.rect.x, hint.target.rect.y, hint.target.rect.w, hint.target.rect.h}, FLASH_SELECTED_BORDER)}
 	}
 	return vertices
 }
@@ -1034,15 +953,36 @@ ui_draw_help_icon :: proc(
 	)
 }
 
-ui_system_monospaced_font :: proc(size: f64) -> rawptr {
-	font := msg_id_f64_f64(
-		objc_getClass("NSFont"),
-		sel_registerName("monospacedSystemFontOfSize:weight:"),
-		size,
-		0,
-	)
-	if font == nil {return nil}
-	return CFRetain(font)
+UI_INTER_FONT :: #load("../resources/fonts/Inter-Regular.woff2")
+UI_MONO_FONT :: #load("../resources/fonts/JetBrainsMono-Regular.woff2")
+ui_fonts_registered: bool
+
+ui_register_fonts :: proc() {
+	if ui_fonts_registered {return}
+	for data in ([2][]byte{UI_INTER_FONT, UI_MONO_FONT}) {
+		cf_data := CFDataCreate(nil, raw_data(data), len(data))
+		assert(cf_data != nil)
+		provider := CGDataProviderCreateWithCFData(cf_data)
+		assert(provider != nil)
+		font := CGFontCreateWithDataProvider(provider)
+		assert(font != nil)
+		error: rawptr
+		registered := CTFontManagerRegisterGraphicsFont(font, &error)
+		if error != nil {CFRelease(error)}
+		CGFontRelease(font)
+		CGDataProviderRelease(provider)
+		CFRelease(cf_data)
+		assert(registered, "embedded font must register")
+	}
+	ui_fonts_registered = true
+}
+
+ui_font :: proc(name: string, size: f64) -> rawptr {
+	ui_register_fonts()
+	font_name := ui_cf_string(name)
+	assert(font_name != nil)
+	defer CFRelease(font_name)
+	return CTFontCreateWithName(font_name, size, nil)
 }
 
 ui_draw_flash_hint_text :: proc(
@@ -1306,7 +1246,7 @@ ui_draw_evidence_overlay :: proc(
 	)
 
 	for stage, stage_index in replay.root.stages {
-		color := COLOR_GUM if stage_index == selected_index else theme.text
+		color := ui_control_ink(ui, ui_evidence_stage_action(stage_index))
 		ui_draw_text(
 			ctx,
 			font,
@@ -1397,7 +1337,7 @@ ui_draw_evidence_overlay :: proc(
 		ui,
 		"1  CLOSE",
 		{modal.x+modal.w-132, modal.y+modal.h-48, 112, 32},
-		COLOR_GUM,
+		ui_control_ink(ui, .Close_Evidence),
 		0,
 		.Center,
 	)
@@ -1434,7 +1374,7 @@ ui_draw_settings_overlay :: proc(
 		ui,
 		"[-]",
 		{modal.x+24, modal.y+96, 48, 40},
-		theme.text if ui.font_size > FONT_SIZE_MIN else theme.muted,
+		ui_control_ink(ui, .Font_Decrease),
 		0,
 		.Center,
 	)
@@ -1444,7 +1384,7 @@ ui_draw_settings_overlay :: proc(
 		ui,
 		"[+]",
 		{modal.x+82, modal.y+96, 48, 40},
-		theme.text if ui.font_size < FONT_SIZE_MAX else theme.muted,
+		ui_control_ink(ui, .Font_Increase),
 		0,
 		.Center,
 	)
@@ -1463,7 +1403,7 @@ ui_draw_settings_overlay :: proc(
 		ui,
 		"CLOSE",
 		{modal.x+modal.w-120, modal.y+modal.h-52, 96, 36},
-		COLOR_GUM,
+		ui_control_ink(ui, .Close_Settings),
 		0,
 		.Center,
 	)
@@ -1492,9 +1432,12 @@ ui_build_text_overlay :: proc(
 	if ctx == nil {return pixels}
 	defer CGContextRelease(ctx)
 	CGContextClearRect(ctx, {{0, 0}, {f64(width), f64(height)}})
-	font := ui_system_monospaced_font(f64(ui.font_size)*ui.scale)
+	font := ui_font("Inter-Regular", f64(ui.font_size)*ui.scale)
 	if font == nil {return pixels}
 	defer CFRelease(font)
+	mono := ui_font("JetBrainsMono-Regular", f64(ui.font_size)*ui.scale)
+	assert(mono != nil)
+	defer CFRelease(mono)
 	theme := ui_theme(ui)
 
 	ui_draw_window_icons(ctx, ui, theme.text)
@@ -1508,12 +1451,7 @@ ui_build_text_overlay :: proc(
 		0,
 	)
 	if ui.help_open {
-		modal := UI_Rect{
-			ui.width/2-270,
-			ui.height/2-170,
-			540,
-			340,
-		}
+		modal := ui_help_modal_rect(ui)
 		ui_draw_text(
 			ctx,
 			font,
@@ -1549,7 +1487,7 @@ ui_build_text_overlay :: proc(
 			ui,
 			"01  CLOSE",
 			{modal.x+modal.w-132, modal.y+modal.h-54, 112, 36},
-			COLOR_GUM,
+			ui_control_ink(ui, .Close_Help),
 			0,
 			.Center,
 		)
@@ -1557,7 +1495,7 @@ ui_build_text_overlay :: proc(
 		return pixels
 	}
 	if ui.evidence_open && ui_evidence_available(evidence_view) {
-		ui_draw_evidence_overlay(ctx, font, ui, evidence_view)
+		ui_draw_evidence_overlay(ctx, mono, ui, evidence_view)
 		return pixels
 	}
 	if ui.settings_open {
@@ -1570,7 +1508,7 @@ ui_build_text_overlay :: proc(
 		ui,
 		"DARK" if !ui.dark else "LIGHT",
 		{ui.width-156, 5, 82, 30},
-		COLOR_COFFEE,
+		ui_control_ink(ui, .Toggle_Theme),
 		0,
 		.Center,
 	)
@@ -1580,7 +1518,7 @@ ui_build_text_overlay :: proc(
 		ui,
 		"SETTINGS",
 		{ui.width-246, 5, 82, 30},
-		COLOR_COFFEE,
+		ui_control_ink(ui, .Open_Settings),
 		0,
 		.Center,
 	)
@@ -1588,13 +1526,14 @@ ui_build_text_overlay :: proc(
 		ctx,
 		ui,
 		{ui.width-56, 8, 24, 24},
-		theme.text,
+		ui_control_ink(ui, .Show_Help),
 	)
 
 	ui_draw_text(ctx, font, ui, "REFERENCE MODELS", {20, 58, 190, 24}, theme.muted, 0)
 	model_labels := [3]string{"3DBENCHY", "ALL IN ONE TEST", "STANFORD BUNNY"}
+	model_actions := [3]UI_Action{.Select_Benchy, .Select_All_In_One, .Select_Bunny}
 	for label, index in model_labels {
-		color := COLOR_COFFEE if index == ui.selected_model else theme.text
+		color := ui_control_ink(ui, model_actions[index])
 		ui_draw_text(
 			ctx,
 			font,
@@ -1611,13 +1550,13 @@ ui_build_text_overlay :: proc(
 		font,
 		ui,
 		"ENABLED" if ui.section_enabled else "DISABLED",
-		{28, 258, 188, 36},
-		COLOR_SECTION if ui.section_enabled else theme.muted,
+		{64, 258, 152, 36},
+		ui_control_ink(ui, .Toggle_Section),
 		0,
 	)
 	ui_draw_text(
 		ctx,
-		font,
+		mono,
 		ui,
 		fmt.tprintf("Z %.2f MM", ui.section_z),
 		{20, 334, 204, 22},
@@ -1626,7 +1565,7 @@ ui_build_text_overlay :: proc(
 	)
 	ui_draw_text(
 		ctx,
-		font,
+		mono,
 		ui,
 		fmt.tprintf("%d SEGMENTS", ui.section_segments),
 		{20, 358, 204, 22},
@@ -1640,7 +1579,7 @@ ui_build_text_overlay :: proc(
 		ui,
 		"FRAME",
 		{viewport.x+12, viewport.y+12, 78, 30},
-		theme.text,
+		ui_control_ink(ui, .Frame_Mesh),
 		0,
 		.Center,
 	)
@@ -1650,7 +1589,7 @@ ui_build_text_overlay :: proc(
 		ui,
 		"WIREFRAME",
 		{viewport.x+98, viewport.y+12, 98, 30},
-		COLOR_COFFEE if ui.wireframe else theme.text,
+		ui_control_ink(ui, .Toggle_Wireframe),
 		0,
 		.Center,
 	)
@@ -1661,7 +1600,7 @@ ui_build_text_overlay :: proc(
 		ui,
 		"LAY ON FACE",
 		{viewport.x+204, viewport.y+12, 126, 30},
-		COLOR_COFFEE if ui.lay_on_face else theme.text,
+		ui_control_ink(ui, .Lay_On_Face),
 		0,
 		.Center,
 	)
@@ -1680,7 +1619,7 @@ ui_build_text_overlay :: proc(
 		for line, index in lines {
 			ui_draw_text(
 				ctx,
-				font,
+				mono,
 				ui,
 				line,
 				{right.x+12, right.y+86+f64(index*26), 252, 24},
@@ -1722,8 +1661,9 @@ ui_build_text_overlay :: proc(
 	bar := ui_action_bar_rect(ui)
 	slot_width := bar.w/6
 	labels := [6]string{"OPEN", "SLICE", "CANCEL", "CAPTURE", "COMPARE", "EXPORT"}
+	action_ids := [6]UI_Action{.Open, .Slice, .Cancel, .Capture, .Compare, .Export}
 	for label, index in labels {
-		color := COLOR_COFFEE if index == 0 else theme.muted
+		color := ui_control_ink(ui, action_ids[index])
 		ui_draw_text(
 			ctx,
 			font,

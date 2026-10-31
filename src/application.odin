@@ -277,7 +277,7 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.ui.evidence_open = false
 		app.ui.help_open = true
 		app.needs_redraw = true
-	case .Close_Help:
+	case .Close_Help, .Dismiss_Help:
 		app.ui.help_open = false
 		app.needs_redraw = true
 	case .Close_Evidence:
