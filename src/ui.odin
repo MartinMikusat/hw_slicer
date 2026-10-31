@@ -239,25 +239,61 @@ ui_contains :: proc(rect: UI_Rect, x, y: f64) -> bool {
 		x < rect.x+rect.w && y < rect.y+rect.h
 }
 
+UI_ACTION_LABELS :: [6]string{"1  Open", "2  Slice", "3  Cancel", "4  Capture", "5  Compare", "6  Export"}
+ui_action_widths: [6]f64
+
+ui_action_layout :: proc(ui: ^UI_State) -> (bar: UI_Rect, buttons: [6]UI_Rect) {
+	if ui_action_widths[0] == 0 {
+		font := ui_font("Inter-Regular", BASE_FONT_SIZE)
+		assert(font != nil)
+		defer CFRelease(font)
+		for label, index in UI_ACTION_LABELS {
+			run := ui_text_run(font, label)
+			assert(run.line != nil)
+			ui_action_widths[index] = math.ceil(run.advance)+28
+			CFRelease(run.line)
+		}
+	}
+	available := max(1.0, ui.width-24)
+	x, y := f64(0), f64(0)
+	for width, index in ui_action_widths {
+		width := min(width, available)
+		if x > 0 && x+width > available {
+			x = 0
+			y += 40
+		}
+		buttons[index] = {12+x, y, width, 32}
+		x += width+10.5
+	}
+	height := y+52
+	bar = {12, ui.height-height-12, available, height}
+	for &button in buttons {button.y += bar.y+8}
+	return
+}
+
+ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	bar, _ := ui_action_layout(ui)
+	return bar
+}
+
 ui_viewport_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	bar := ui_action_bar_rect(ui)
 	return {
 		x = 244,
 		y = 52,
 		w = max(240.0, ui.width-548),
-		h = max(240.0, ui.height-128),
+		h = max(1.0, bar.y-64),
 	}
 }
 
 ui_left_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	return {12, 52, 220, max(240, ui.height-128)}
+	bar := ui_action_bar_rect(ui)
+	return {12, 52, 220, max(1, bar.y-64)}
 }
 
 ui_right_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	return {ui.width-292, 52, 280, max(240, ui.height-128)}
-}
-
-ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	return {12, ui.height-64, ui.width-24, 52}
+	bar := ui_action_bar_rect(ui)
+	return {ui.width-292, 52, 280, max(1, bar.y-64)}
 }
 
 ui_section_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
@@ -552,22 +588,9 @@ ui_build_controls :: proc(
 		"06 export",
 	}
 	actions := [6]UI_Action{.Open, .Slice, .Cancel, .Capture, .Compare, .Export}
-	bar := ui_action_bar_rect(ui)
-	button_labels := [6]string{"1  Open", "2  Slice", "3  Cancel", "4  Capture", "5  Compare", "6  Export"}
-	font := ui_font("Inter-Regular", BASE_FONT_SIZE)
-	assert(font != nil)
-	defer CFRelease(font)
-	x := bar.x
-	for index in 0..<6 {
-		run := ui_text_run(font, button_labels[index])
-		assert(run.line != nil)
-		width := math.ceil(run.advance)+28
-		CFRelease(run.line)
-		ui_add_control(
-			ui, names[index], accessibility_labels[index],
-			{x, bar.y+8, width, 32}, actions[index], index == 0,
-		)
-		x += width+10.5
+	_, buttons := ui_action_layout(ui)
+	for rect, index in buttons {
+		ui_add_control(ui, names[index], accessibility_labels[index], rect, actions[index], index == 0)
 	}
 }
 
@@ -1425,7 +1448,9 @@ ui_build_text_overlay :: proc(
 		ui = &underlay
 		CGContextSetAlpha(ctx, 0.2)
 	}
-	ui_draw_text(ctx, font, ui, "HW SLICER / MESH VIEWER", {12, 0, 360, 40}, theme.text, 0)
+	title_width := max(0.0, ui.width-383)
+	title := "HW SLICER / MESH VIEWER" if title_width >= 180 else "SLICER"
+	ui_draw_text(ctx, font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
 	window_labels := [3]string{"[_]", "[+]", "[x]"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
 	for label, index in window_labels {
@@ -1583,9 +1608,8 @@ ui_build_text_overlay :: proc(
 		)
 	}
 
-	labels := [6]string{"1  Open", "2  Slice", "3  Cancel", "4  Capture", "5  Compare", "6  Export"}
 	actions := [6]UI_Action{.Open, .Slice, .Cancel, .Capture, .Compare, .Export}
-	for label, index in labels {
+	for label, index in UI_ACTION_LABELS {
 		action := actions[index]
 		ui_draw_text(ctx, font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
 	}
