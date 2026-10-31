@@ -981,6 +981,33 @@ ui_pill_rect :: proc(ui: ^UI_State, hit: UI_Rect) -> UI_Rect {
 	return {hit.x+inset, hit.y+(hit.h-height)/2, hit.w-2*inset, height}
 }
 
+ui_pill_highlight :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect, radius: f64, color: Vec4) {
+	scale := ui_style_scale(ui)
+	r := min(radius, min(rect.w, rect.h)/2)-1/scale
+	thickness := 0.75/scale
+	if r <= thickness {return}
+	ui_add_rect(vertices, ui, {rect.x+radius, rect.y+1/scale, rect.w-2*radius, thickness}, color)
+	centers := [2][2]f64{{rect.x+radius, rect.y+radius}, {rect.x+rect.w-radius, rect.y+radius}}
+	for center, corner in centers {
+		start := math.PI*(1+f64(corner)/2)
+		for segment in 0..<8 {
+			a0 := start+f64(segment)*math.PI/16
+			a1 := start+f64(segment+1)*math.PI/16
+			points := [4][2]f64{
+				{center[0]+r*math.cos(a0), center[1]+r*math.sin(a0)},
+				{center[0]+r*math.cos(a1), center[1]+r*math.sin(a1)},
+				{center[0]+(r-thickness)*math.cos(a1), center[1]+(r-thickness)*math.sin(a1)},
+				{center[0]+(r-thickness)*math.cos(a0), center[1]+(r-thickness)*math.sin(a0)},
+			}
+			indices := [6]int{0, 1, 2, 0, 2, 3}
+			for index in indices {
+				point := points[index]
+				append(vertices, Solid_Vertex{position = {f32(point[0]/ui.width*2-1), f32(1-point[1]/ui.height*2)}, color = color})
+			}
+		}
+	}
+}
+
 ui_pill_shadow :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect) {
 	scale := ui_style_scale(ui)
 	row := ui_style_row_height(ui)
@@ -1144,7 +1171,7 @@ ui_build_geometry :: proc(
 			highlight_alpha := (f32(0.24) if hovered else f32(0.14)) if ui.dark else (f32(0.45) if hovered else f32(0.9))
 			highlight := Vec4{1, 1, 1, highlight_alpha}
 			if window_control {highlight = {fill.x+(1-fill.x)*0.35, fill.y+(1-fill.y)*0.35, fill.z+(1-fill.z)*0.35, 1}}
-			ui_add_rect(&vertices, ui, {rect.x+radius, rect.y+1/scale, max(0, rect.w-2*radius), 0.75/scale}, highlight)
+			ui_pill_highlight(&vertices, ui, rect, radius, highlight)
 		}
 	}
 	for hint in flash.visible_hints(&ui.flash_state) {
