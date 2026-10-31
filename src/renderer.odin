@@ -12,6 +12,7 @@ Scene_Uniforms :: struct {
 	model:     Mat4,
 	color:     Vec4,
 	light_dir: Vec4,
+	camera:    Vec4,
 }
 
 Solid_Vertex :: struct {
@@ -68,6 +69,7 @@ struct SceneUniforms {
     float4x4 model;
     float4 color;
     float4 light_dir;
+    float4 camera;
 };
 
 struct MeshOut {
@@ -75,6 +77,8 @@ struct MeshOut {
     float3 normal;
     float4 color;
     float3 light_dir;
+    float3 world;
+    float3 camera;
 };
 
 vertex MeshOut mesh_vertex(
@@ -88,15 +92,41 @@ vertex MeshOut mesh_vertex(
     out.normal = normalize((scene.model * float4(source.normal, 0.0)).xyz);
     out.color = scene.color;
     out.light_dir = scene.light_dir.xyz;
+    out.world = (scene.model * float4(source.position, 1.0)).xyz;
+    out.camera = scene.camera.xyz;
     return out;
 }
 
+// Adapted from hw_delta_support/shaders/charger3d.metal.
+static float2 environment_brdf(float roughness, float n_dot_v) {
+    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+    float4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
+    return float2(-1.04, 1.04) * a004 + r.zw;
+}
+
+static float3 tone_map(float3 x) {
+    return saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
+}
+
 fragment float4 mesh_fragment(MeshOut in [[stage_in]]) {
-    float light = 0.22 + 0.78 * max(
-        dot(normalize(in.normal), normalize(in.light_dir.xyz)),
-        0.0
-    );
-    return float4(in.color.rgb * light, in.color.a);
+    float3 normal = normalize(in.normal);
+    float3 view = normalize(in.camera - in.world);
+    if (dot(normal, view) < 0.0) {normal = -normal;}
+    float n_dot_v = max(dot(normal, view), 1e-3);
+    float3 light = normalize(in.light_dir);
+    float3 fill = normalize(float3(0.6, 0.3, 0.5));
+    float3 albedo = pow(in.color.rgb, float3(2.2));
+    float diffuse = 0.32 + 0.75 * max(dot(normal, light), 0.0)
+        + 0.28 * max(dot(normal, fill), 0.0);
+    float3 reflected = reflect(-view, normal);
+    float studio = 0.22 + 1.8 * pow(max(dot(reflected, light), 0.0), 12.0)
+        + 0.6 * pow(max(dot(reflected, fill), 0.0), 6.0);
+    float2 brdf = environment_brdf(0.48, n_dot_v);
+    float3 specular = studio * (float3(0.04) * brdf.x + brdf.y);
+    float3 color = tone_map((albedo * diffuse + specular) * 1.35);
+    return float4(pow(color, float3(1.0 / 2.2)), in.color.a);
 }
 
 fragment float4 line_fragment(MeshOut in [[stage_in]]) {
@@ -670,6 +700,7 @@ renderer_draw :: proc(
 		model = model,
 		color = COLOR_COFFEE,
 		light_dir = {-0.35, -0.45, 0.82, 0},
+		camera = {eye.x, eye.y, eye.z, 1},
 	}
 	msg_void_id(
 		encoder,
