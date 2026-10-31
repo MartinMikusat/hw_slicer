@@ -144,12 +144,14 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 	}
 	mesh_destroy(&app.mesh)
 	app.mesh = next
-	app.placement = placement_on_bed(&app.mesh, mat4_identity())
+	rotation := mat4_identity()
+	if index == 1 {rotation = {1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1}}
+	app.placement = placement_on_bed(&app.mesh, rotation)
 	app.ui.lay_on_face = false
 	app.face_hover = -1
 	app.face_pressed = -1
 	app.ui.selected_model = index
-	app.ui.section_max = mesh_size(app.mesh.bounds).z
+	app.ui.section_max = mesh_size(app.placement.bounds).z
 	app.ui.section_z = app.ui.section_max/2
 	app.section_dirty = true
 	delete(app.model_name)

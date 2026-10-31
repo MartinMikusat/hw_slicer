@@ -11,8 +11,11 @@ Scene_Uniforms :: struct {
 	mvp:       Mat4,
 	model:     Mat4,
 	color:     Vec4,
-	light_dir: Vec4,
 	camera:    Vec4,
+	view_projection: Mat4,
+	params: Vec4,
+	viewport: Vec4,
+	sh: [9]Vec4,
 }
 
 Solid_Vertex :: struct {
@@ -27,10 +30,14 @@ Texture_Vertex :: struct {
 }
 
 Renderer :: struct {
+	environment: Id,
+	harmonics: [9]Vec4,
+	ao_depth: Id,
 	layer:            Id,
 	device:           Id,
 	queue:            Id,
 	mesh_pipeline:    Id,
+	depth_pipeline: Id,
 	line_pipeline:    Id,
 	solid_pipeline:   Id,
 	texture_pipeline: Id,
@@ -68,15 +75,17 @@ struct SceneUniforms {
     float4x4 mvp;
     float4x4 model;
     float4 color;
-    float4 light_dir;
     float4 camera;
+    float4x4 view_projection;
+    float4 params;
+    float4 viewport;
+    float4 sh[9];
 };
 
 struct MeshOut {
     float4 position [[position]];
     float3 normal;
     float4 color;
-    float3 light_dir;
     float3 world;
     float3 camera;
 };
@@ -91,7 +100,6 @@ vertex MeshOut mesh_vertex(
     out.position = scene.mvp * float4(source.position, 1.0);
     out.normal = normalize((scene.model * float4(source.normal, 0.0)).xyz);
     out.color = scene.color;
-    out.light_dir = scene.light_dir.xyz;
     out.world = (scene.model * float4(source.position, 1.0)).xyz;
     out.camera = scene.camera.xyz;
     return out;
@@ -110,24 +118,76 @@ static float3 tone_map(float3 x) {
     return saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
 }
 
-fragment float4 mesh_fragment(MeshOut in [[stage_in]]) {
+constexpr sampler environment_sampler(filter::linear, mip_filter::linear, s_address::repeat, t_address::clamp_to_edge);
+
+static float3 environment_sample(texture2d<float> environment, float3 direction, float lod) {
+	float2 uv = float2(atan2(direction.z, direction.x) * 0.15915494 + 0.5, acos(clamp(direction.y, -1.0, 1.0)) * 0.31830989);
+	return environment.sample(environment_sampler, uv, level(lod)).rgb;
+}
+
+static float3 harmonics_irradiance(constant float4 *sh, float3 n) {
+	return sh[0].xyz * 0.282095
+		+ sh[1].xyz * (0.488603 * n.y) + sh[2].xyz * (0.488603 * n.z) + sh[3].xyz * (0.488603 * n.x)
+		+ sh[4].xyz * (1.092548 * n.x * n.y) + sh[5].xyz * (1.092548 * n.y * n.z)
+		+ sh[6].xyz * (0.315392 * (3.0 * n.z * n.z - 1.0)) + sh[7].xyz * (1.092548 * n.x * n.z)
+		+ sh[8].xyz * (0.546274 * (n.x * n.x - n.y * n.y));
+}
+
+static float ambient_occlusion(MeshOut in, float3 normal, constant SceneUniforms &scene, depth2d<float> depth) {
+    constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
+    float3 helper = abs(normal.z) < 0.99 ? float3(0,0,1) : float3(1,0,0);
+    float3 tangent = normalize(cross(helper, normal));
+    float3 bitangent = cross(normal, tangent);
+    float radius = scene.params.z;
+    float blocked = 0.0;
+    float4 surface = scene.view_projection * float4(in.world, 1.0);
+    for (int i = 0; i < 16; i++) {
+        float step = (float(i) + 0.5) / 16.0;
+        float azimuth = float(i) * 2.39996;
+        float lift = 0.12 + 0.88 * fract(step * 7.0);
+        float flat = sqrt(1.0 - lift * lift);
+        float3 direction = tangent * (cos(azimuth) * flat) + bitangent * (sin(azimuth) * flat) + normal * lift;
+        float4 clip = scene.view_projection * float4(in.world + direction * radius * (0.2 + 0.8 * step), 1.0);
+        if (clip.w <= 0.0) {continue;}
+        float2 local = float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+        if (any(local < 0.0) || any(local >= 1.0)) {continue;}
+        float2 uv = scene.viewport.xy + local * scene.viewport.zw;
+        float stored = depth.sample(nearest, uv);
+        if (stored >= 1.0) {continue;}
+        float near_z = scene.params.x, far_z = scene.params.y;
+        float stored_distance = near_z * far_z / (far_z - stored * (far_z - near_z));
+        float gap = clip.w - stored_distance;
+        float range = saturate(radius / max(abs(surface.w - stored_distance), 1e-3));
+        blocked += (gap > radius * 0.04 ? 1.0 : 0.0) * range;
+    }
+    return 1.0 - 0.75 * blocked / 16.0;
+}
+
+fragment float4 mesh_fragment(MeshOut in [[stage_in]],
+    constant SceneUniforms &scene [[buffer(1)]],
+    texture2d<float> environment [[texture(0)]],
+    depth2d<float> depth [[texture(1)]]) {
     float3 normal = normalize(in.normal);
     float3 view = normalize(in.camera - in.world);
     if (dot(normal, view) < 0.0) {normal = -normal;}
     float n_dot_v = max(dot(normal, view), 1e-3);
-    float3 light = normalize(in.light_dir);
-    float3 fill = normalize(float3(0.6, 0.3, 0.5));
     float3 albedo = pow(in.color.rgb, float3(2.2));
-    float diffuse = 0.32 + 0.75 * max(dot(normal, light), 0.0)
-        + 0.28 * max(dot(normal, fill), 0.0);
-    float3 reflected = reflect(-view, normal);
-    float studio = 0.22 + 1.8 * pow(max(dot(reflected, light), 0.0), 12.0)
-        + 0.6 * pow(max(dot(reflected, fill), 0.0), 6.0);
-    float2 brdf = environment_brdf(0.48, n_dot_v);
-    float3 specular = studio * (float3(0.04) * brdf.x + brdf.y);
-    float3 color = tone_map((albedo * diffuse + specular) * 1.35);
+    // The source environment uses Y up; the slicer uses Z up.
+    float3 environment_normal = normal.xzy;
+    float3 reflected = reflect(-view, normal).xzy;
+    float3 diffuse = albedo * max(harmonics_irradiance(scene.sh, environment_normal), 0.0);
+    float roughness = 0.48;
+    float levels = float(environment.get_num_mip_levels() - 1);
+    float3 prefiltered = environment_sample(environment, reflected, roughness * min(levels, 6.0));
+    prefiltered = mix(prefiltered, max(harmonics_irradiance(scene.sh, reflected), 0.0), smoothstep(0.1, 0.7, roughness));
+    float2 brdf = environment_brdf(roughness, n_dot_v);
+    float3 specular = prefiltered * (float3(0.04) * brdf.x + brdf.y);
+    float shade = scene.params.w > 0.0 ? ambient_occlusion(in, normal, scene, depth) : 1.0;
+    float3 color = tone_map((diffuse + specular) * shade);
     return float4(pow(color, float3(1.0 / 2.2)), in.color.a);
 }
+
+fragment float4 depth_fragment(MeshOut in [[stage_in]]) {return float4(0);}
 
 fragment float4 line_fragment(MeshOut in [[stage_in]]) {
     return in.color;
@@ -204,11 +264,14 @@ renderer_initialize :: proc(renderer: ^Renderer, layer: Id) -> bool {
 	)
 	if renderer.queue == nil {return false}
 	if !renderer_build_pipelines(renderer) {return false}
-	return renderer_build_grid(renderer)
+	return renderer_environment_upload(renderer) && renderer_build_grid(renderer)
 }
 
 renderer_shutdown :: proc(renderer: ^Renderer) {
-	objects := [14]Id{
+	objects := [?]Id{
+		renderer.environment,
+		renderer.depth_pipeline,
+		renderer.ao_depth,
 		renderer.depth_texture,
 		renderer.text_texture,
 		renderer.capture_texture,
@@ -322,6 +385,8 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 		false,
 		false,
 	)
+	renderer.depth_pipeline = renderer_build_pipeline(renderer, library, "mesh_vertex", "depth_fragment", true, false)
+	if renderer.depth_pipeline == nil {return false}
 	renderer.line_pipeline = renderer_build_pipeline(
 		renderer,
 		library,
@@ -525,6 +590,11 @@ renderer_ensure_depth :: proc(
 	if renderer.depth_texture != nil {
 		msg_void(renderer.depth_texture, sel_registerName("release"))
 	}
+	msg_void_u(descriptor, sel_registerName("setUsage:"), 5)
+	ao_depth := msg_id_id(renderer.device, sel_registerName("newTextureWithDescriptor:"), descriptor)
+	if ao_depth == nil {msg_void(next, sel_registerName("release")); renderer.depth_texture = nil; return false}
+	if renderer.ao_depth != nil {msg_void(renderer.ao_depth, sel_registerName("release"))}
+	renderer.ao_depth = ao_depth
 	renderer.depth_texture = next
 	renderer.depth_width = width
 	renderer.depth_height = height
@@ -663,6 +733,41 @@ renderer_draw :: proc(
 	msg_void_u(depth_attachment, sel_registerName("setLoadAction:"), 2)
 	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0)
 	msg_void_f64(depth_attachment, sel_registerName("setClearDepth:"), 1)
+	size := mesh_size(placement.bounds)
+	model := placement.transform
+	eye := app_camera_eye(camera)
+	view := mat4_look_at(eye, camera.target, {0, 0, 1})
+	near_z := max(0.01, camera.distance*0.001)
+	far_z := max(1000.0, camera.distance*20+vec3_length(size))
+	projection := mat4_perspective(
+		0.78,
+		f32(max(0.01, viewport.w/viewport.h)),
+		near_z,
+		far_z,
+	)
+	mesh_uniforms := Scene_Uniforms{
+		mvp = mat4_mul(projection, mat4_mul(view, model)),
+		model = model,
+		color = COLOR_COFFEE,
+		camera = {eye.x, eye.y, eye.z, 1},
+		view_projection = mat4_mul(projection, view),
+		params = {near_z, far_z, max(f32(0.1), vec3_length(size)*0.025), 0 if wireframe else 1},
+		viewport = {f32(viewport.x/width), f32(viewport.y/height), f32(viewport.w/width), f32(viewport.h/height)},
+		sh = renderer.harmonics,
+	}
+	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.ao_depth)
+	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 1)
+	prepass := msg_id_id(command_buffer, sel_registerName("renderCommandEncoderWithDescriptor:"), pass)
+	if prepass == nil {return .No_Encoder}
+	msg_void_viewport(prepass, sel_registerName("setViewport:"), {viewport.x*scale, viewport.y*scale, viewport.w*scale, viewport.h*scale, 0, 1})
+	msg_void_id(prepass, sel_registerName("setDepthStencilState:"), renderer.depth_state)
+	msg_void_id(prepass, sel_registerName("setRenderPipelineState:"), renderer.depth_pipeline)
+	msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
+	msg_void_ptr_u_u(prepass, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_u_u_u(prepass, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(renderer.mesh_vertex_count))
+	msg_void(prepass, sel_registerName("endEncoding"))
+	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.depth_texture)
+	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0)
 	encoder := msg_id_id(
 		command_buffer,
 		sel_registerName("renderCommandEncoderWithDescriptor:"),
@@ -683,25 +788,6 @@ renderer_draw :: proc(
 		sel_registerName("setViewport:"),
 		mesh_viewport,
 	)
-	size := mesh_size(placement.bounds)
-	model := placement.transform
-	eye := app_camera_eye(camera)
-	view := mat4_look_at(eye, camera.target, {0, 0, 1})
-	near_z := max(0.01, camera.distance*0.001)
-	far_z := max(1000.0, camera.distance*20+vec3_length(size))
-	projection := mat4_perspective(
-		0.78,
-		f32(max(0.01, viewport.w/viewport.h)),
-		near_z,
-		far_z,
-	)
-	mesh_uniforms := Scene_Uniforms{
-		mvp = mat4_mul(projection, mat4_mul(view, model)),
-		model = model,
-		color = COLOR_COFFEE,
-		light_dir = {-0.35, -0.45, 0.82, 0},
-		camera = {eye.x, eye.y, eye.z, 1},
-	}
 	msg_void_id(
 		encoder,
 		sel_registerName("setDepthStencilState:"),
@@ -732,6 +818,9 @@ renderer_draw :: proc(
 		size_of(Scene_Uniforms),
 		1,
 	)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
+	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
 	msg_void_u_u_u(
 		encoder,
 		sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
@@ -741,6 +830,7 @@ renderer_draw :: proc(
 	)
 
 	if face_hover >= 0 {
+		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.line_pipeline)
 		a := mesh.vertices[face_hover*3].position
 		n := vec3_normalize(vec3_cross(vec3_sub(mesh.vertices[face_hover*3+1].position,a), vec3_sub(mesh.vertices[face_hover*3+2].position,a)))
 		tolerance := max(f32(0.00001),vec3_length(mesh_size(mesh.bounds))*0.000001)
@@ -778,7 +868,6 @@ renderer_draw :: proc(
 			theme.muted.z,
 			0.62,
 		},
-		light_dir = {0, 0, 1, 0},
 	}
 	msg_void_id(
 		encoder,
@@ -812,7 +901,6 @@ renderer_draw :: proc(
 			mvp = mat4_mul(projection, view),
 			model = mat4_identity(),
 			color = COLOR_SECTION,
-			light_dir = {0, 0, 1, 0},
 		}
 		msg_void_id(
 			encoder,
