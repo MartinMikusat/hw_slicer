@@ -248,8 +248,6 @@ ui_contains :: proc(rect: UI_Rect, x, y: f64) -> bool {
 		x < rect.x+rect.w && y < rect.y+rect.h
 }
 
-UI_ACTION_LABELS :: [6]string{"1  Open", "2  Slice", "3  Cancel", "4  Capture", "5  Compare", "6  Export"}
-ui_action_widths: [6]f64
 ui_character_widths: [FONT_SIZE_MAX+1]f64
 
 ui_character_width :: proc(ui: ^UI_State) -> f64 {
@@ -266,39 +264,8 @@ ui_character_width :: proc(ui: ^UI_State) -> f64 {
 	return ui_character_widths[size]
 }
 
-ui_action_layout :: proc(ui: ^UI_State) -> (bar: UI_Rect, buttons: [6]UI_Rect) {
-	if ui_action_widths[0] == 0 {
-		font := ui_font("Inter-Regular", BASE_FONT_SIZE)
-		assert(font != nil)
-		defer CFRelease(font)
-		for label, index in UI_ACTION_LABELS {
-			run := ui_text_run(font, label)
-			assert(run.line != nil)
-			ui_action_widths[index] = run.advance
-			CFRelease(run.line)
-		}
-	}
-	available := max(1.0, ui.width-24)
-	ch := ui_character_width(ui)
-	x, y := f64(0), f64(0)
-	for text_width, index in ui_action_widths {
-		width := min(text_width+4.5*ch, available)
-		if x > 0 && x+width > available {
-			x = 0
-			y += 40
-		}
-		buttons[index] = {12+x, y, width, 32}
-		x += width+ch
-	}
-	height := y+52
-	bar = {12, ui.height-height-12, available, height}
-	for &button in buttons {button.y += bar.y+8}
-	return
-}
-
 ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	bar, _ := ui_action_layout(ui)
-	return bar
+	return {12, ui.height-64, max(1.0, ui.width-24), 52}
 }
 
 ui_compact :: proc(ui: ^UI_State) -> bool {
@@ -329,7 +296,7 @@ ui_right_rect :: proc(ui: ^UI_State) -> UI_Rect {
 
 ui_section_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	if ui_compact(ui) {return {20, 116, 156, 20}}
-	return {20, 246, 204, 24}
+	return {20, 306, 204, 24}
 }
 
 ui_help_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
@@ -696,6 +663,9 @@ ui_build_controls :: proc(
 			ui_add_control(ui, panel_names[index], panel_labels[index], {12+f64(index)*57, 52, 57, 28}, panel_actions[index], true, 1, ui.panel == panel)
 		}
 	}
+	if !compact || ui.panel == .Models {
+		ui_add_control(ui, "action open", "01 open model or evidence", {20, 82, 152, 30}, .Open)
+	}
 
 	rows := [3]struct {
 		name, label: string,
@@ -707,8 +677,8 @@ ui_build_controls :: proc(
 	}
 	for row, index in rows {
 		if compact && ui.panel != .Models {continue}
-		rect := UI_Rect{20, f64(82+index*30), 204, 28}
-		if compact {rect = {16, f64(82+index*30), 164, 28}}
+		rect := UI_Rect{20, f64(142+index*30), 204, 28}
+		if compact {rect = {16, f64(122+index*30), 164, 28}}
 		ui_add_control(
 			ui,
 			row.name,
@@ -741,7 +711,7 @@ ui_build_controls :: proc(
 		true, 1, ui.wireframe,
 	)
 	if !compact || ui.panel == .Section {
-		section_rect := UI_Rect{20, 208, 204, 30}
+		section_rect := UI_Rect{20, 268, 204, 30}
 		if compact {section_rect = {20, 84, 156, 28}}
 		ui_add_control(
 			ui,
@@ -761,27 +731,6 @@ ui_build_controls :: proc(
 		)
 	}
 
-	names := [6]string{
-		"action open",
-		"action slice",
-		"action cancel",
-		"action capture",
-		"action compare",
-		"action export",
-	}
-	accessibility_labels := [6]string{
-		"01 open",
-		"02 slice",
-		"03 cancel",
-		"04 capture",
-		"05 compare",
-		"06 export",
-	}
-	actions := [6]UI_Action{.Open, .Slice, .Cancel, .Capture, .Compare, .Export}
-	_, buttons := ui_action_layout(ui)
-	for rect, index in buttons {
-		ui_add_control(ui, names[index], accessibility_labels[index], rect, actions[index], index == 0)
-	}
 }
 
 ui_hit_test :: proc(ui: ^UI_State, x, y: f64) -> u64 {
@@ -1806,7 +1755,7 @@ ui_build_text_overlay :: proc(
 		CGContextSetAlpha(ctx, 0.2)
 	}
 	title_width := max(0.0, ui.width-383)
-	title := "HW Slicer / Mesh viewer" if title_width >= 180 else "Slicer"
+	title := "HW Slicer / Model and placement" if title_width >= 230 else "Slicer"
 	ui_draw_text(ctx, font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
 	window_labels := [3]string{"−", "+", "×"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
@@ -1845,6 +1794,7 @@ ui_build_text_overlay :: proc(
 			ui_draw_text(ctx, font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
 		}
 		if ui.panel == .Models {
+			ui_draw_text(ctx, font, ui, "Open model", ui_control_rect(ui, .Open), ui_control_ink(ui, .Open), 0, .Center)
 			labels := [3]string{"3DBenchy", "All in one test", "Stanford Bunny"}
 			actions := [3]UI_Action{.Select_Benchy, .Select_All_In_One, .Select_Bunny}
 			for label, index in labels {
@@ -1857,7 +1807,9 @@ ui_build_text_overlay :: proc(
 			ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 158, 156, 18}, 70)
 		}
 	} else {
-		ui_draw_text(ctx, font, ui, "Reference models", {20, 58, 190, 24}, theme.muted, 0)
+		ui_draw_text(ctx, font, ui, "Load model", {20, 58, 190, 24}, theme.muted, 0)
+		ui_draw_text(ctx, font, ui, "Open model", ui_control_rect(ui, .Open), ui_control_ink(ui, .Open), 0, .Center)
+		ui_draw_text(ctx, font, ui, "Reference models", {20, 118, 190, 24}, theme.muted, 0)
 		model_labels := [3]string{"3DBenchy", "All in one test", "Stanford Bunny"}
 		model_actions := [3]UI_Action{.Select_Benchy, .Select_All_In_One, .Select_Bunny}
 		for label, index in model_labels {
@@ -1872,18 +1824,18 @@ ui_build_text_overlay :: proc(
 				8,
 			)
 		}
-		ui_draw_text(ctx, font, ui, "Section", {20, 180, 190, 24}, theme.muted, 0)
+		ui_draw_text(ctx, font, ui, "Section", {20, 240, 190, 24}, theme.muted, 0)
 		ui_draw_text(
 			ctx,
 			font,
 			ui,
 			"Enabled" if ui.section_enabled else "Disabled",
-			{64, 208, 152, 30},
+			{64, 268, 152, 30},
 			ui_control_ink(ui, .Toggle_Section),
 			0,
 		)
-		ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 274, 204, 22}, 90)
-		ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 298, 204, 22}, 90)
+		ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 334, 204, 22}, 90)
+		ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 358, 204, 22}, 90)
 	}
 
 	viewport := ui_viewport_rect(ui)
@@ -1937,7 +1889,7 @@ ui_build_text_overlay :: proc(
 		}
 	} else {
 		right := ui_right_rect(ui)
-		ui_draw_text(ctx, font, ui, "Mesh evidence", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
+		ui_draw_text(ctx, font, ui, "Model details", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
 		ui_draw_text(ctx, font, ui, model_name, {right.x+12, right.y+42, 252, 32}, theme.text, 0)
 		if mesh != nil && mesh.triangle_count > 0 {
 			size := mesh_size(mesh.bounds)
@@ -1969,12 +1921,6 @@ ui_build_text_overlay :: proc(
 	}
 
 	ui_draw_status(ctx, font, ui, status, status_failed)
-
-	actions := [6]UI_Action{.Open, .Slice, .Cancel, .Capture, .Compare, .Export}
-	for label, index in UI_ACTION_LABELS {
-		action := actions[index]
-		ui_draw_text(ctx, font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
-	}
 
 	if modal_open {
 		ui = modal_ui

@@ -6,7 +6,7 @@ import "core:strings"
 import evidence "./evidence"
 
 @(test)
-ui_registry_preserves_numbered_action_slots_test :: proc(t: ^testing.T) {
+ui_registry_exposes_model_loading_test :: proc(t: ^testing.T) {
 	ui: UI_State
 	ui_initialize(&ui)
 	defer ui_destroy(&ui)
@@ -16,17 +16,11 @@ ui_registry_preserves_numbered_action_slots_test :: proc(t: ^testing.T) {
 	ui.dark = true
 	ui_build_controls(&ui)
 
-	testing.expect_value(t, len(ui.controls), 20)
-	testing.expect_value(t, ui.controls[5].action, UI_Action.Open_Settings)
-	testing.expect(t, ui.controls[6].selected)
-	testing.expect(t, !ui.controls[7].selected)
-	first_action := ui.controls[14]
-	testing.expect_value(t, first_action.action, UI_Action.Open)
-	testing.expect(t, first_action.enabled)
-	for index in 15..<20 {
-		testing.expect(t, !ui.controls[index].enabled)
-	}
-	testing.expect_value(t, ui.controls[19].action, UI_Action.Export)
+	open := ui_control_rect(&ui, .Open)
+	left := ui_left_rect(&ui)
+	testing.expect(t, ui_contains(left, open.x, open.y))
+	testing.expect_value(t, ui_hit_test(&ui, open.x+10, open.y+10), u64(UI_Action.Open))
+	testing.expect(t, ui_control_rect(&ui, .Select_Benchy).y > open.y)
 }
 
 @(test)
