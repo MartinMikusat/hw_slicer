@@ -5,3 +5,5 @@ build/
 *.dylib
 .hw-slicer-runtime/
 .dev-logs/
+
+reference/
