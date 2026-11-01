@@ -25,25 +25,7 @@ Follow the shared visual rules in `../hw_delta_support/DESIGN.md` for applicable
 
 ## Pipeline workspace
 
-The application is a development workspace for inspecting each stage of the slicing pipeline.
-Prioritize deep development of the early stages. A complete slicer and external users are long-term goals.
-Leave detailed decisions for later stages open until their development requires them.
-
-- Use a full-window workspace with stage settings on the left, a 3D view in the center, and stage results on the right.
-- Give each meaningful slicing operation a distinct stage when its output can be inspected. Group internal operations that have no useful independent result.
-- Combine model loading and placement in the first stage. Combine motion and G-code in the final stage, including G-code simulation when implemented.
-- Use this provisional sequence to guide the workspace: model and placement, layer schedule, mesh intersections, contours and topology, regions, surfaces and skin, perimeters, infill, supports and bridges, path plan, motion and G-code. Refine boundaries against the actual pipeline.
-- Show each stage's purpose, input, output, and implementation status. Label unimplemented stages as placeholders and do not imply that their results exist.
-- Keep the sidebars consistent across stages. For an empty sidebar, state what the stage will configure or produce. Do not invent controls or measurements.
-- Provide a persistent stage list and Previous and Next controls. Allow direct navigation to placeholders and stale results. Enable Next when the current stage has a valid required result; visiting a placeholder must remain possible.
-- Preserve the selected layer across applicable stages. Show the layer in model context and provide an isolated view for detailed inspection.
-- Put each setting at the first stage that it affects. Show inherited values as context in later stages without duplicate editable controls.
-- Run stages automatically when their operations are known to be fast. Provide a Run or Recompute action for operations that can take noticeably longer. Choose this behavior per stage until actual use justifies another approach.
-- When earlier inputs change, retain available later results and mark them stale. Identify the earlier change that invalidated them.
-- Preserve model viewing and evidence-bundle inspection. Map evidence to its stage where possible and retain access to unmapped records.
-
-Establish the stage workspace with existing viewer and evidence features first. Connect engine stages in subsequent bounded changes.
-Maintain a separate authoritative pipeline document with stage descriptions and current implementation status.
+For pipeline workspace design and development priorities, follow [TODO.md](TODO.md).
 
 ## Model placement
 
