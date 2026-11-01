@@ -6,7 +6,7 @@ import "core:strings"
 import evidence "./evidence"
 
 @(test)
-ui_registry_exposes_model_loading_test :: proc(t: ^testing.T) {
+ui_registry_exposes_stage_navigation_test :: proc(t: ^testing.T) {
 	ui: UI_State
 	ui_initialize(&ui)
 	defer ui_destroy(&ui)
@@ -16,11 +16,15 @@ ui_registry_exposes_model_loading_test :: proc(t: ^testing.T) {
 	ui.dark = true
 	ui_build_controls(&ui)
 
-	open := ui_control_rect(&ui, .Open)
-	left := ui_left_rect(&ui)
-	testing.expect(t, ui_contains(left, open.x, open.y))
-	testing.expect_value(t, ui_hit_test(&ui, open.x+10, open.y+10), u64(UI_Action.Open))
-	testing.expect(t, ui_control_rect(&ui, .Select_Benchy).y > open.y)
+	next := ui_control_rect(&ui, .Next_Stage)
+	testing.expect_value(t, ui_hit_test(&ui, next.x+10, next.y+10), u64(UI_Action.Next_Stage))
+	testing.expect_value(t, ui_control_rect(&ui, .Select_Benchy).w, 0)
+	previous := ui_control_rect(&ui, .Previous_Stage)
+	testing.expect_value(t, ui_hit_test(&ui, previous.x+10, previous.y+10), u64(0))
+	ui.stage_index = 1
+	ui_build_controls(&ui)
+	testing.expect_value(t, ui_hit_test(&ui, previous.x+10, previous.y+10), u64(UI_Action.Previous_Stage))
+	testing.expect_value(t, ui_control_rect(&ui, .Lay_On_Face).w, 0)
 }
 
 @(test)

@@ -268,6 +268,11 @@ app_activate :: proc(action: UI_Action) -> bool {
 		return true
 	}
 	switch action {
+	case .Previous_Stage, .Next_Stage:
+		delta := -1 if action == .Previous_Stage else 1
+		app.ui.stage_index = clamp(app.ui.stage_index+delta, 0, len(ui_stage_names)-1)
+		app.ui.lay_on_face = false
+		app.needs_redraw = true
 	case .Modal_Surface:
 		return false
 	case .Evidence_Stages, .Evidence_Details:

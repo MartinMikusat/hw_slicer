@@ -131,6 +131,8 @@ UI_Action :: enum u64 {
 	Panel_Models,
 	Panel_Section,
 	Panel_Mesh,
+	Previous_Stage,
+	Next_Stage,
 	Evidence_Stages,
 	Evidence_Details,
 	Evidence_Stage_Base = 1000,
@@ -192,6 +194,12 @@ COLOR_SECTION :: Vec4{0.980392, 0.427451, 0.121569, 1}
 UI_Panel :: enum {Models, Section, Mesh}
 UI_Evidence_Pane :: enum {Stages, Details}
 
+ui_stage_names := [11]string{
+	"Model and placement", "Layer schedule", "Mesh intersections", "Contours and topology",
+	"Regions", "Surfaces and skin", "Perimeters", "Infill", "Supports and bridges",
+	"Path plan", "Motion and G-code",
+}
+
 UI_State :: struct {
 	controls: [dynamic]UI_Control,
 	flash_state: flash.State,
@@ -206,6 +214,7 @@ UI_State :: struct {
 	scale: f64,
 	dark: bool,
 	selected_model: int,
+	stage_index: int,
 	panel: UI_Panel,
 	wireframe: bool,
 	lay_on_face: bool,
@@ -296,7 +305,7 @@ ui_right_rect :: proc(ui: ^UI_State) -> UI_Rect {
 
 ui_section_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	if ui_compact(ui) {return {20, 116, 156, 20}}
-	return {20, 306, 204, 24}
+	return {20, 176, 204, 24}
 }
 
 ui_help_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
@@ -657,44 +666,20 @@ ui_build_controls :: proc(
 	if compact {
 		panels := [3]UI_Panel{.Models, .Section, .Mesh}
 		panel_names := [3]string{"models panel", "section panel", "mesh panel"}
-		panel_labels := [3]string{"Models", "Section", "Mesh"}
+		panel_labels := [3]string{"Settings", "Section", "Details"}
 		panel_actions := [3]UI_Action{.Panel_Models, .Panel_Section, .Panel_Mesh}
 		for panel, index in panels {
 			ui_add_control(ui, panel_names[index], panel_labels[index], {12+f64(index)*57, 52, 57, 28}, panel_actions[index], true, 1, ui.panel == panel)
 		}
 	}
-	if !compact || ui.panel == .Models {
-		ui_add_control(ui, "action open", "01 open model or evidence", {20, 82, 152, 30}, .Open)
-	}
-
-	rows := [3]struct {
-		name, label: string,
-		action: UI_Action,
-	}{
-		{"model benchy", "load 3D Benchy", .Select_Benchy},
-		{"model all in one", "load all in one printer test", .Select_All_In_One},
-		{"model bunny", "load Stanford Bunny", .Select_Bunny},
-	}
-	for row, index in rows {
-		if compact && ui.panel != .Models {continue}
-		rect := UI_Rect{20, f64(142+index*30), 204, 28}
-		if compact {rect = {16, f64(122+index*30), 164, 28}}
-		ui_add_control(
-			ui,
-			row.name,
-			row.label,
-			rect,
-			row.action,
-			true,
-			1,
-			index == ui.selected_model,
-		)
-	}
+	bar := ui_action_bar_rect(ui)
+	ui_add_control(ui, "previous stage", "previous stage", {bar.x, bar.y+8, 112, 32}, .Previous_Stage, ui.stage_index > 0)
+	ui_add_control(ui, "next stage", "next stage", {bar.x+120, bar.y+8, 112, 32}, .Next_Stage, ui.stage_index < len(ui_stage_names)-1)
 
 	viewport := ui_viewport_rect(ui)
-	lay_rect := UI_Rect{viewport.x+204, viewport.y+12, 126, 30}
-	if viewport.w < 342 {lay_rect = {viewport.x+12, viewport.y+46, 126, 30}}
-	ui_add_control(ui, "lay on face", "Lay on face", lay_rect, .Lay_On_Face, true, 1, ui.lay_on_face)
+	if ui.stage_index == 0 && (!compact || ui.panel == .Models) {
+		ui_add_control(ui, "lay on face", "Lay on face", {20, 86, 150, 30}, .Lay_On_Face, true, 1, ui.lay_on_face)
+	}
 	ui_add_control(
 		ui,
 		"frame mesh",
@@ -710,8 +695,8 @@ ui_build_controls :: proc(
 		.Toggle_Wireframe,
 		true, 1, ui.wireframe,
 	)
-	if !compact || ui.panel == .Section {
-		section_rect := UI_Rect{20, 268, 204, 30}
+	if ui.stage_index == 0 && (!compact || ui.panel == .Section) {
+		section_rect := UI_Rect{20, 138, 204, 30}
 		if compact {section_rect = {20, 84, 156, 28}}
 		ui_add_control(
 			ui,
@@ -1755,7 +1740,7 @@ ui_build_text_overlay :: proc(
 		CGContextSetAlpha(ctx, 0.2)
 	}
 	title_width := max(0.0, ui.width-383)
-	title := "HW Slicer / Model and placement" if title_width >= 230 else "Slicer"
+	title := fmt.tprintf("HW Slicer / %s", ui_stage_names[ui.stage_index]) if title_width >= 230 else "Slicer"
 	ui_draw_text(ctx, font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
 	window_labels := [3]string{"−", "+", "×"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
@@ -1788,54 +1773,35 @@ ui_build_text_overlay :: proc(
 	compact := ui_compact(ui)
 	if compact {
 		panels := [3]UI_Action{.Panel_Models, .Panel_Section, .Panel_Mesh}
-		labels := [3]string{"Models", "Section", "Mesh"}
+		labels := [3]string{"Settings", "Section", "Details"}
 		for label, index in labels {
 			action := panels[index]
 			ui_draw_text(ctx, font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
 		}
-		if ui.panel == .Models {
-			ui_draw_text(ctx, font, ui, "Open model", ui_control_rect(ui, .Open), ui_control_ink(ui, .Open), 0, .Center)
-			labels := [3]string{"3DBenchy", "All in one test", "Stanford Bunny"}
-			actions := [3]UI_Action{.Select_Benchy, .Select_All_In_One, .Select_Bunny}
-			for label, index in labels {
-				rect := ui_control_rect(ui, actions[index])
-				ui_draw_text(ctx, font, ui, label, rect, ui_control_ink(ui, actions[index]), 10)
-			}
-		} else if ui.panel == .Section {
+		if ui.stage_index > 0 && ui.panel != .Mesh {
+			ui_draw_text(ctx, font, ui, "Not implemented", {20, 88, 156, 24}, theme.text, 0)
+		} else if ui.panel == .Section && ui.stage_index == 0 {
 			ui_draw_text(ctx, font, ui, "Enabled" if ui.section_enabled else "Disabled", {64, 84, 112, 28}, ui_control_ink(ui, .Toggle_Section), 0)
 			ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 138, 156, 18}, 70)
 			ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 158, 156, 18}, 70)
 		}
-	} else {
-		ui_draw_text(ctx, font, ui, "Load model", {20, 58, 190, 24}, theme.muted, 0)
-		ui_draw_text(ctx, font, ui, "Open model", ui_control_rect(ui, .Open), ui_control_ink(ui, .Open), 0, .Center)
-		ui_draw_text(ctx, font, ui, "Reference models", {20, 118, 190, 24}, theme.muted, 0)
-		model_labels := [3]string{"3DBenchy", "All in one test", "Stanford Bunny"}
-		model_actions := [3]UI_Action{.Select_Benchy, .Select_All_In_One, .Select_Bunny}
-		for label, index in model_labels {
-			color := ui_control_ink(ui, model_actions[index])
-			ui_draw_text(
-				ctx,
-				font,
-				ui,
-				label,
-				ui_control_rect(ui, model_actions[index]),
-				color,
-				8,
-			)
-		}
-		ui_draw_text(ctx, font, ui, "Section", {20, 240, 190, 24}, theme.muted, 0)
+	} else if ui.stage_index == 0 {
+		ui_draw_text(ctx, font, ui, "Model settings", {20, 58, 190, 24}, theme.text, 0)
+		ui_draw_text(ctx, font, ui, "Section", {20, 114, 190, 24}, theme.muted, 0)
 		ui_draw_text(
 			ctx,
 			font,
 			ui,
 			"Enabled" if ui.section_enabled else "Disabled",
-			{64, 268, 152, 30},
+			{64, 138, 152, 30},
 			ui_control_ink(ui, .Toggle_Section),
 			0,
 		)
-		ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 334, 204, 22}, 90)
-		ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 358, 204, 22}, 90)
+		ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 204, 204, 22}, 90)
+		ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 228, 204, 22}, 90)
+	} else {
+		ui_draw_text(ctx, font, ui, "Stage settings", {20, 58, 190, 24}, theme.text, 0)
+		ui_draw_text(ctx, font, ui, "Not implemented", {20, 92, 190, 24}, theme.text, 0)
 	}
 
 	viewport := ui_viewport_rect(ui)
@@ -1870,7 +1836,16 @@ ui_build_text_overlay :: proc(
 		0,
 		.Center,
 	)
-	if compact {
+	if ui.stage_index > 0 && !compact {
+		right := ui_right_rect(ui)
+		ui_draw_text(ctx, font, ui, "Stage results", {right.x+12, right.y+8, 252, 28}, theme.text, 0)
+		ui_draw_text(ctx, font, ui, "Not implemented", {right.x+12, right.y+42, 252, 24}, theme.text, 0)
+	} else if compact && ui.stage_index > 0 {
+		if ui.panel == .Mesh {
+			ui_draw_text(ctx, font, ui, "Stage results", {20, 82, 156, 20}, theme.text, 0)
+			ui_draw_text(ctx, font, ui, "Not implemented", {20, 106, 156, 20}, theme.text, 0)
+		}
+	} else if compact {
 		if ui.panel == .Mesh {
 			ui_draw_text(ctx, font, ui, model_name, {20, 82, 156, 20}, theme.text, 0)
 			if mesh != nil && mesh.triangle_count > 0 {
@@ -1921,6 +1896,10 @@ ui_build_text_overlay :: proc(
 	}
 
 	ui_draw_status(ctx, font, ui, status, status_failed)
+	ui_draw_text(ctx, font, ui, "Previous", ui_control_rect(ui, .Previous_Stage), ui_control_ink(ui, .Previous_Stage), 0, .Center)
+	ui_draw_text(ctx, font, ui, "Next", ui_control_rect(ui, .Next_Stage), ui_control_ink(ui, .Next_Stage), 0, .Center)
+	bar := ui_action_bar_rect(ui)
+	ui_draw_text(ctx, font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(ui_stage_names), ui_stage_names[ui.stage_index]), {bar.x+248, bar.y+8, max(0, bar.w-248), 32}, theme.text, 0)
 
 	if modal_open {
 		ui = modal_ui
