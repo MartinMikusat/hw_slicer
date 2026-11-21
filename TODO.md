@@ -46,7 +46,7 @@ Label unimplemented stages as placeholders. Do not imply that their results exis
 - [ ] Extend retained evidence through the remaining intermediate feature graphs. Add geometric rendering and cross-stage selection. Connect these stages to the production slice action before physical printer calibration. See [project details](README.md#project-details).
 - [ ] Add a settings sweep for tuning. Define ranges for relevant settings on a test model, such as a bridging test. Place several copies on the build plate, each with a different combination of the sampled settings, to compare configurations in one print.
 - [ ] Allow configuring settings directly from the sliced preview. Selecting a feature in the preview, such as a bridge, shows the settings that govern it and allows changing them there, so the user does not have to search for the right setting.
-- [ ] Add MCP servers for the slicer and for the printer, so an AI agent can change slicer settings and control the printer directly.
+- [ ] Add MCP servers for the slicer and for the printer, so an AI agent can change slicer settings and control the printer directly. Implement the slicer side here and the printer side in `hw_ratos`.
 - [ ] Document the stages and their current implementation status as the workspace develops.
 
 ## Deferred
