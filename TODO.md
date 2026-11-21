@@ -47,6 +47,7 @@ Label unimplemented stages as placeholders. Do not imply that their results exis
 - [ ] Add a settings sweep for tuning. Define ranges for relevant settings on a test model, such as a bridging test. Place several copies on the build plate, each with a different combination of the sampled settings, to compare configurations in one print.
 - [ ] Allow configuring settings directly from the sliced preview. Selecting a feature in the preview, such as a bridge, shows the settings that govern it and allows changing them there, so the user does not have to search for the right setting.
 - [ ] Add MCP servers for the slicer and for the printer, so an AI agent can change slicer settings and control the printer directly. Implement the slicer side here and the printer side in `hw_ratos`.
+- [ ] Integrate FullControl-style explicit toolpath design: user-defined paths with per-point state such as speed, extrusion, and temperature, previewed and exported through the pipeline. See [references](docs/references.md).
 - [ ] Document the stages and their current implementation status as the workspace develops.
 
 ## Deferred
