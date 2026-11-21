@@ -44,6 +44,7 @@ Label unimplemented stages as placeholders. Do not imply that their results exis
 - [ ] Establish the stage workspace with the existing viewer and evidence features. Represent unconnected stages as placeholders.
 - [ ] Connect engine stages in subsequent bounded changes. Develop early stages in depth before committing to detailed later-stage designs.
 - [ ] Extend retained evidence through the remaining intermediate feature graphs. Add geometric rendering and cross-stage selection. Connect these stages to the production slice action before physical printer calibration. See [project details](README.md#project-details).
+- [ ] Add a settings sweep for tuning. Define ranges for relevant settings on a test model, such as a bridging test. Place several copies on the build plate, each with a different combination of the sampled settings, to compare configurations in one print.
 - [ ] Document the stages and their current implementation status as the workspace develops.
 
 ## Deferred
