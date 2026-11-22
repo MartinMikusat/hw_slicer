@@ -52,7 +52,10 @@ App_State :: struct {
 	drag_button:   i32,
 	last_width:    f64,
 	last_height:   f64,
-	last_scale:    f64,
+	last_scale:           f64,
+	slider_scroll_accum:  f64,
+	slider_scroll_target: UI_Action,
+	slider_scroll_tick:   time.Tick,
 }
 
 app: App_State
@@ -841,6 +844,51 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 		return
 	}
 	if app.ui.settings_open || app.ui.help_open {return}
+	if app.design.active && len(app.design.layers) > 0 {
+		px, py := app.ui.pointer_x, app.ui.pointer_y
+		layer_rect := ui_design_layer_slider_rect(&app.ui)
+		prog_rect := ui_design_progress_slider_rect(&app.ui)
+		target: UI_Action
+		if ui_contains(layer_rect, px, py) {
+			target = .Design_Layer
+		} else if ui_contains(prog_rect, px, py) {
+			target = .Design_Layer_Progress
+		}
+		if target != .None {
+			delta := delta_y
+			if target == .Design_Layer_Progress && abs(delta_x) > abs(delta_y) {
+				delta = -delta_x
+			}
+			if delta == 0 {return}
+			now := time.tick_now()
+			idle := app.slider_scroll_tick == {} || time.duration_seconds(time.tick_diff(app.slider_scroll_tick, now)) > 0.15
+			if app.slider_scroll_target != target || idle || (app.slider_scroll_accum*delta < 0) {
+				app.slider_scroll_accum = 0
+				app.slider_scroll_target = target
+			}
+			app.slider_scroll_tick = now
+			app.slider_scroll_accum += delta
+			step := 0
+			if idle && abs(delta) >= 0.5 {
+				step = 1 if delta > 0 else -1
+				app.slider_scroll_accum = 0
+			} else if abs(app.slider_scroll_accum) >= 4.0 {
+				step = 1 if app.slider_scroll_accum > 0 else -1
+				app.slider_scroll_accum = 0
+			}
+			if step != 0 {
+				if target == .Design_Layer {
+					layer_idx, _, _, _ := design_layer_state(&app.design)
+					design_set_layer(&app.design, layer_idx+step, 1.0)
+				} else {
+					design_step_in_layer(&app.design, step)
+				}
+				app.design.playing = false
+				app.needs_redraw = true
+			}
+			return
+		}
+	}
 	app.camera_goal.distance *= math.exp(-f32(delta_y)*0.008)
 	app.camera_goal.distance = clamp_f32(app.camera_goal.distance, 0.1, camera_distance_max(app.camera_goal, ui_viewport_rect(&app.ui)))
 	app.needs_redraw = true

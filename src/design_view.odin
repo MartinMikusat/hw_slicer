@@ -297,6 +297,34 @@ design_set_in_layer :: proc(s: ^Design_State, fraction: f64) {
 	s.clock = layer.t0+(layer.t1-layer.t0)*clamp(fraction, 0, 1)
 }
 
+// Steps the in-layer progress by `delta` extruded moves (single step = 1 move/bead).
+design_step_in_layer :: proc(s: ^Design_State, delta: int) {
+	if len(s.layers) == 0 || delta == 0 {return}
+	idx := clamp(s.selected_layer, 0, len(s.layers)-1)
+	s.selected_layer = idx
+	layer := s.layers[idx]
+	count := layer.end_bead-layer.first_bead
+	if count <= 0 {return}
+	// Find how many beads in this layer have finished at `s.clock`.
+	completed := 0
+	if s.clock >= layer.t1-1e-9 {
+		completed = count
+	} else if s.clock > layer.t0+1e-9 {
+		low, high := layer.first_bead, layer.end_bead
+		for low < high {
+			mid := (low+high)/2
+			if s.beads[mid].t1 <= s.clock+1e-9 {low = mid+1} else {high = mid}
+		}
+		completed = low-layer.first_bead
+	}
+	next_completed := clamp(completed+delta, 0, count)
+	if next_completed == 0 {
+		s.clock = layer.t0
+	} else {
+		s.clock = s.beads[layer.first_bead+next_completed-1].t1
+	}
+}
+
 // Extruding moves become beads with their print-time interval and per-layer spans.
 design_beads :: proc(t: ^design.Toolpath, beads: ^[dynamic]Design_Bead, layers: ^[dynamic]Design_Layer) {
 	position := t.start
