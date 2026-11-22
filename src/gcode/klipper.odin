@@ -1,6 +1,7 @@
 package gcode
 
 import "core:fmt"
+import "core:math"
 import "core:strings"
 
 import contracts "../contracts"
@@ -389,17 +390,35 @@ klipper_emit_operation :: proc(
 			klipper_feed_rate(operation.speed),
 		)
 	case .Extrude:
-		strings.write_string(builder, "G1 X")
-		klipper_append_coordinate(builder, operation.point_b.x)
-		strings.write_string(builder, " Y")
-		klipper_append_coordinate(builder, operation.point_b.y)
-		strings.write_string(builder, " E")
-		klipper_append_extrusion(builder, operation.filament_delta_nm)
-		fmt.sbprintf(
-			builder,
-			" F%d\n",
-			klipper_feed_rate(operation.speed),
-		)
+		if operation.arc != .None {
+			strings.write_string(builder, "G2 X" if operation.arc == .CW else "G3 X")
+			klipper_append_coordinate(builder, operation.point_b.x)
+			strings.write_string(builder, " Y")
+			klipper_append_coordinate(builder, operation.point_b.y)
+			strings.write_string(builder, " I")
+			klipper_append_coordinate(builder, contracts.Micrometres(i64(operation.arc_center.x)-i64(operation.point_a.x)))
+			strings.write_string(builder, " J")
+			klipper_append_coordinate(builder, contracts.Micrometres(i64(operation.arc_center.y)-i64(operation.point_a.y)))
+			strings.write_string(builder, " E")
+			klipper_append_extrusion(builder, operation.filament_delta_nm)
+			fmt.sbprintf(
+				builder,
+				" F%d\n",
+				klipper_feed_rate(operation.speed),
+			)
+		} else {
+			strings.write_string(builder, "G1 X")
+			klipper_append_coordinate(builder, operation.point_b.x)
+			strings.write_string(builder, " Y")
+			klipper_append_coordinate(builder, operation.point_b.y)
+			strings.write_string(builder, " E")
+			klipper_append_extrusion(builder, operation.filament_delta_nm)
+			fmt.sbprintf(
+				builder,
+				" F%d\n",
+				klipper_feed_rate(operation.speed),
+			)
+		}
 	case .Dwell:
 		dwell_ms := (operation.duration_us+999)/1_000
 		fmt.sbprintf(builder, "G4 P%d\n", dwell_ms)
@@ -433,8 +452,8 @@ klipper_emit_operation :: proc(
 	return true
 }
 
-// The bounding rectangle of all extrusion endpoints, which START_PRINT receives as the print
-// area. A valid motion plan has at least one extrusion.
+// The bounding rectangle of all extrusion endpoints (and arc bounds), which START_PRINT
+// receives as the print area. A valid motion plan has at least one extrusion.
 klipper_extrusion_area :: proc(motion: features.Motion_Plan_Result) -> (area: [2]polygon.Polygon_Point) {
 	area = {{max(contracts.Micrometres), max(contracts.Micrometres)}, {min(contracts.Micrometres), min(contracts.Micrometres)}}
 	for operation in motion.operations {
@@ -442,6 +461,13 @@ klipper_extrusion_area :: proc(motion: features.Motion_Plan_Result) -> (area: [2
 		for point in ([2]polygon.Polygon_Point{operation.point_a, operation.point_b}) {
 			area[0] = {min(area[0].x, point.x), min(area[0].y, point.y)}
 			area[1] = {max(area[1].x, point.x), max(area[1].y, point.y)}
+		}
+		if operation.arc != .None {
+			dx := f64(i64(operation.point_a.x)-i64(operation.arc_center.x))
+			dy := f64(i64(operation.point_a.y)-i64(operation.arc_center.y))
+			r := contracts.Micrometres(i64(math.ceil(math.hypot(dx, dy))))
+			area[0] = {min(area[0].x, operation.arc_center.x-r), min(area[0].y, operation.arc_center.y-r)}
+			area[1] = {max(area[1].x, operation.arc_center.x+r), max(area[1].y, operation.arc_center.y+r)}
 		}
 	}
 	return

@@ -2,16 +2,24 @@ package design
 
 import "core:math"
 
+Arc_Kind :: enum u8 {
+	None,
+	CW,  // G2
+	CCW, // G3
+}
+
 // One nozzle move to `to`. Extruding moves lay a bead `width` wide whose top is at to.z and
-// that is `height` thick.
+// that is `height` thick. When `arc != .None`, the move follows a circular arc around `center`.
 Move :: struct {
 	to:           [3]f64,
+	center:       [2]f64, // XY arc centre (mm from bed centre) when arc != .None
 	width:        f64,
 	height:       f64,
 	speed:        f64, // mm/s
 	acceleration: f64, // mm/s²
 	fan:          f64, // percent; extruding moves only
 	extrude:      bool,
+	arc:          Arc_Kind,
 	feature:      int, // index of the object that extrudes it; -1 for travel
 }
 
@@ -150,50 +158,36 @@ emit_loop :: proc(g: ^Generator, object: Object, inset: f64) -> bool {
 
 @(private)
 emit_rounded_box_loop :: proc(g: ^Generator, c, half: [2]f64, r: f64) {
-	full_segs := int(math.ceil(math.PI/math.acos(1-CHORD_TOLERANCE/r)))
-	full_segs = clamp(full_segs, MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS)
-	corner_segs := max(3, full_segs/4)
 	hx := max(0, half.x-r)
 	hy := max(0, half.y-r)
 
 	travel(g, {c.x-hx, c.y-half.y})
 	if hx > EPSILON {extrude(g, {c.x+hx, c.y-half.y})}
-	for i in 1..=corner_segs {
-		a := -0.5*math.PI + 0.5*math.PI*f64(i)/f64(corner_segs)
-		extrude(g, {c.x+hx+r*math.cos(a), c.y-hy+r*math.sin(a)})
-	}
+	extrude_arc(g, {c.x+half.x, c.y-hy}, {c.x+hx, c.y-hy}, .CCW)
 	if hy > EPSILON {extrude(g, {c.x+half.x, c.y+hy})}
-	for i in 1..=corner_segs {
-		a := 0.5*math.PI*f64(i)/f64(corner_segs)
-		extrude(g, {c.x+hx+r*math.cos(a), c.y+hy+r*math.sin(a)})
-	}
+	extrude_arc(g, {c.x+hx, c.y+half.y}, {c.x+hx, c.y+hy}, .CCW)
 	if hx > EPSILON {extrude(g, {c.x-hx, c.y+half.y})}
-	for i in 1..=corner_segs {
-		a := 0.5*math.PI + 0.5*math.PI*f64(i)/f64(corner_segs)
-		extrude(g, {c.x-hx+r*math.cos(a), c.y+hy+r*math.sin(a)})
-	}
+	extrude_arc(g, {c.x-half.x, c.y+hy}, {c.x-hx, c.y+hy}, .CCW)
 	if hy > EPSILON {extrude(g, {c.x-half.x, c.y-hy})}
-	for i in 1..=corner_segs {
-		a := math.PI + 0.5*math.PI*f64(i)/f64(corner_segs)
-		extrude(g, {c.x-hx+r*math.cos(a), c.y-hy+r*math.sin(a)})
-	}
+	extrude_arc(g, {c.x-hx, c.y-half.y}, {c.x-hx, c.y-hy}, .CCW)
 }
 
 @(private)
 emit_radial_loop :: proc(g: ^Generator, object: Object, radius: f64) {
 	c := object.center
-	segments := MAX_CIRCLE_SEGMENTS
 	if object.sides >= 3 {
-		segments = clamp(object.sides, 3, MAX_CIRCLE_SEGMENTS)
-	} else if radius > CHORD_TOLERANCE {
-		segments = int(math.ceil(math.PI/math.acos(1-CHORD_TOLERANCE/radius)))
-		segments = clamp(segments, MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS)
+		segments := clamp(object.sides, 3, MAX_CIRCLE_SEGMENTS)
+		travel(g, {c.x+radius, c.y})
+		for i in 1..=segments {
+			angle := 2*math.PI*f64(i)/f64(segments)
+			extrude(g, {c.x+radius*math.cos(angle), c.y+radius*math.sin(angle)})
+		}
+		return
 	}
+	// Smooth circles emit two exact 180° CCW Klipper arcs (G3).
 	travel(g, {c.x+radius, c.y})
-	for i in 1..=segments {
-		angle := 2*math.PI*f64(i)/f64(segments)
-		extrude(g, {c.x+radius*math.cos(angle), c.y+radius*math.sin(angle)})
-	}
+	extrude_arc(g, {c.x-radius, c.y}, c, .CCW)
+	extrude_arc(g, {c.x+radius, c.y}, c, .CCW)
 }
 
 // Fills the strip left inside a solid box layer after its last loop, which is narrower than
@@ -251,6 +245,50 @@ extrude :: proc(g: ^Generator, to: [2]f64) {
 		feature = g.feature,
 	})
 	// A bead's cross-section is a rectangle with semicircular sides.
+	area := (w-h)*h+math.PI*h*h/4
+	filament_area := math.PI*g.d.filament_diameter*g.d.filament_diameter/4
+	g.t.extruded_length += distance
+	g.t.filament_length += distance*area/filament_area
+	g.t.duration += distance/settings.speed
+	g.position = target
+}
+
+// Computes signed sweep angle (radians) and radius for an XY arc from `from` to `to` around `center`.
+arc_geometry :: proc(from, to, center: [2]f64, arc: Arc_Kind) -> (radius, sweep: f64) {
+	r0 := from-center
+	r1 := to-center
+	radius = math.hypot(r0.x, r0.y)
+	if radius <= EPSILON {return 0, 0}
+	sweep = math.atan2(r0.x*r1.y-r0.y*r1.x, r0.x*r1.x+r0.y*r1.y)
+	if arc == .CCW {
+		if sweep <= EPSILON {sweep += 2*math.PI}
+	} else if arc == .CW {
+		if sweep >= -EPSILON {sweep -= 2*math.PI}
+	}
+	return
+}
+
+@(private)
+extrude_arc :: proc(g: ^Generator, to, center: [2]f64, arc: Arc_Kind) {
+	assert(g.started)
+	radius, sweep := arc_geometry({g.position.x, g.position.y}, to, center, arc)
+	distance := radius*abs(sweep)
+	if distance <= EPSILON {return}
+	target := [3]f64{to.x, to.y, g.z}
+	w, h := g.d.line_width, g.thickness
+	settings := g.settings
+	append(&g.t.moves, Move{
+		to = target,
+		center = center,
+		width = w,
+		height = h,
+		speed = settings.speed,
+		acceleration = settings.acceleration,
+		fan = settings.fan,
+		extrude = true,
+		arc = arc,
+		feature = g.feature,
+	})
 	area := (w-h)*h+math.PI*h*h/4
 	filament_area := math.PI*g.d.filament_diameter*g.d.filament_diameter/4
 	g.t.extruded_length += distance

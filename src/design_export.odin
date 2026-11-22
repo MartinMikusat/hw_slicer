@@ -288,7 +288,22 @@ design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Prof
 		dx := f64(i64(target.x)-i64(b.position.x))
 		dy := f64(i64(target.y)-i64(b.position.y))
 		distance_um := math.sqrt(dx*dx+dy*dy)
-		if target == b.position {continue}
+		op_arc := features.Motion_Arc_Kind.None
+		op_center: polygon.Polygon_Point
+		if move.extrude && move.arc != .None {
+			arc_center, _ := plan_point({move.center.x, move.center.y, move.to.z})
+			op_center = arc_center
+			op_arc = .CW if move.arc == .CW else .CCW
+			radius_mm, sweep := design.arc_geometry(
+				{f64(i64(b.position.x)-DEV_BED_X_UM/2)/1000, f64(i64(b.position.y)-DEV_BED_Y_UM/2)/1000},
+				{move.to.x, move.to.y},
+				move.center,
+				move.arc,
+			)
+			distance_um = radius_mm*abs(sweep)*1000
+		} else if target == b.position {
+			continue
+		}
 		if !move.extrude {
 			long := distance_um >= f64(i64(process.minimum_retraction_travel))
 			if long {plan_operation(&b, plan_filament(&b, process.retraction_speed, -1))}
@@ -312,9 +327,11 @@ design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Prof
 		speed := design_speed(move.speed)
 		plan_operation(&b, {
 			kind = .Extrude,
+			arc = op_arc,
 			role = .Perimeter,
 			point_a = b.position,
 			point_b = target,
+			arc_center = op_center,
 			speed = speed,
 			acceleration = design_acceleration(move.acceleration),
 			fan_ratio = design_fan(move.fan),

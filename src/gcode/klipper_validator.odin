@@ -42,6 +42,8 @@ Klipper_Parsed_Kind :: enum u8 {
 	G90,
 	G0,
 	G1,
+	G2,
+	G3,
 	G4,
 	M83,
 	M106,
@@ -60,6 +62,8 @@ Klipper_Parsed_Command :: struct {
 	has_x:       bool,
 	has_y:       bool,
 	has_z:       bool,
+	has_i:       bool,
+	has_j:       bool,
 	has_e:       bool,
 	has_f:       bool,
 	has_s:       bool,
@@ -69,6 +73,8 @@ Klipper_Parsed_Command :: struct {
 	x:           i64,
 	y:           i64,
 	z:           i64,
+	i:           i64,
+	j:           i64,
 	e_nm:        i128,
 	f:           i64,
 	s:           i64,
@@ -270,7 +276,7 @@ klipper_validate_print_command :: proc(
 		return klipper_apply_acceleration(command, profile, state)
 	case .M106, .M107:
 		return klipper_apply_fan(command, state, report)
-	case .G0, .G1:
+	case .G0, .G1, .G2, .G3:
 		return klipper_validate_print_move(
 			command,
 			profile,
@@ -368,12 +374,20 @@ klipper_validate_print_move :: proc(
 		state.x = command.x
 		state.y = command.y
 	case .Extrude:
-		if command.kind != .G1 ||
+		expected_kind := Klipper_Parsed_Kind.G1
+		if operation.arc == .CW {expected_kind = .G2}
+		if operation.arc == .CCW {expected_kind = .G3}
+		expected_arc := operation.arc != .None
+		if command.kind != expected_kind ||
 		   !command.has_x || !command.has_y ||
 		   command.has_z || !command.has_e ||
 		   !command.has_f ||
+		   command.has_i != expected_arc ||
+		   command.has_j != expected_arc ||
 		   command.x != i64(operation.point_b.x) ||
 		   command.y != i64(operation.point_b.y) ||
+		   (expected_arc && (command.i != i64(operation.arc_center.x)-i64(operation.point_a.x) ||
+		                     command.j != i64(operation.arc_center.y)-i64(operation.point_a.y))) ||
 		   command.e_nm != operation.filament_delta_nm ||
 		   command.f != expected_feed ||
 		   state.acceleration != expected_acceleration ||
@@ -565,6 +579,8 @@ klipper_parse_command :: proc(
 	switch tokens[0] {
 	case "G0":   result.kind = .G0
 	case "G1":   result.kind = .G1
+	case "G2":   result.kind = .G2
+	case "G3":   result.kind = .G3
 	case "G4":   result.kind = .G4
 	case "G21":  result.kind = .G21
 	case "G90":  result.kind = .G90
@@ -595,6 +611,16 @@ klipper_parse_command :: proc(
 			result.z, token_ok =
 				klipper_parse_fixed_i64(value, 3)
 			result.has_z = true
+		case 'I':
+			if result.has_i {return {}, .Invalid_Syntax}
+			result.i, token_ok =
+				klipper_parse_fixed_i64(value, 3)
+			result.has_i = true
+		case 'J':
+			if result.has_j {return {}, .Invalid_Syntax}
+			result.j, token_ok =
+				klipper_parse_fixed_i64(value, 3)
+			result.has_j = true
 		case 'E':
 			if result.has_e {return {}, .Invalid_Syntax}
 			e_units: i64
@@ -639,6 +665,7 @@ klipper_command_parameters_valid :: proc(
 ) -> bool {
 	parameter_count :=
 		int(command.has_x)+int(command.has_y)+int(command.has_z)+
+		int(command.has_i)+int(command.has_j)+
 		int(command.has_e)+int(command.has_f)+int(command.has_s)+
 		int(command.has_p)+int(command.has_r)+int(command.has_t)
 	if token_count != parameter_count+1 {return false}
@@ -649,6 +676,14 @@ klipper_command_parameters_valid :: proc(
 		return (command.has_x || command.has_y ||
 			command.has_z || command.has_e) &&
 			command.has_f &&
+			!command.has_i && !command.has_j &&
+			!command.has_s && !command.has_p &&
+			!command.has_r && !command.has_t
+	case .G2, .G3:
+		return command.has_x && command.has_y &&
+			command.has_i && command.has_j &&
+			command.has_e && command.has_f &&
+			!command.has_z &&
 			!command.has_s && !command.has_p &&
 			!command.has_r && !command.has_t
 	case .G4:

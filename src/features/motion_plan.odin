@@ -27,6 +27,12 @@ Motion_Layer :: struct {
 	planned_duration_us:  u64,
 }
 
+Motion_Arc_Kind :: enum u8 {
+	None,
+	CW,  // G2
+	CCW, // G3
+}
+
 Motion_Operation :: struct {
 	stable_id:             contracts.Stable_ID,
 	source_move_id:        contracts.Stable_ID,
@@ -34,9 +40,11 @@ Motion_Operation :: struct {
 	path_id:               contracts.Stable_ID,
 	layer_index:           u32,
 	kind:                  Motion_Operation_Kind,
+	arc:                   Motion_Arc_Kind,
 	role:                  profiles.Printable_Role,
 	point_a:               polygon.Polygon_Point,
 	point_b:               polygon.Polygon_Point,
+	arc_center:            polygon.Polygon_Point,
 	speed:                 profiles.Speed_Um_Per_Second,
 	acceleration:          profiles.Acceleration_Um_Per_Second_Squared,
 	fan_ratio:             profiles.Ratio_Ppm,

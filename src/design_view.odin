@@ -326,35 +326,67 @@ design_step_in_layer :: proc(s: ^Design_State, delta: int) {
 }
 
 // Extruding moves become beads with their print-time interval and per-layer spans.
+// Circular arcs (`move.arc != .None`) are tessellated into smooth chords for 3D preview.
 design_beads :: proc(t: ^design.Toolpath, beads: ^[dynamic]Design_Bead, layers: ^[dynamic]Design_Layer) {
+	append_bead :: proc(beads: ^[dynamic]Design_Bead, layers: ^[dynamic]Design_Layer, a, b: [3]f64, w, h, t0, t1: f64) {
+		bead_idx := len(beads)
+		append(beads, Design_Bead{
+			a = {f32(a.x), f32(a.y), f32(a.z)},
+			b = {f32(b.x), f32(b.y), f32(b.z)},
+			width = f32(w),
+			height = f32(h),
+			t0 = t0,
+			t1 = t1,
+		})
+		if len(layers) == 0 || abs(b.z-layers[len(layers)-1].z) > 1e-6 {
+			append(layers, Design_Layer{
+				z          = b.z,
+				t0         = t0,
+				t1         = t1,
+				first_bead = bead_idx,
+				end_bead   = bead_idx+1,
+			})
+		} else {
+			last := &layers[len(layers)-1]
+			last.t1 = t1
+			last.end_bead = bead_idx+1
+		}
+	}
 	position := t.start
 	clock := 0.0
 	for move in t.moves {
+		if move.extrude && move.arc != .None {
+			radius, sweep := design.arc_geometry({position.x, position.y}, {move.to.x, move.to.y}, move.center, move.arc)
+			distance := radius*abs(sweep)
+			duration := distance/move.speed
+			full_segs := design.MAX_CIRCLE_SEGMENTS
+			if radius > design.CHORD_TOLERANCE {
+				full_segs = int(math.ceil(math.PI/math.acos(1-design.CHORD_TOLERANCE/radius)))
+			}
+			full_segs = clamp(full_segs, design.MIN_CIRCLE_SEGMENTS, design.MAX_CIRCLE_SEGMENTS)
+			segs := max(2, int(math.ceil(f64(full_segs)*abs(sweep)/(2*math.PI))))
+			start_angle := math.atan2(position.y-move.center.y, position.x-move.center.x)
+			prev := position
+			seg_dt := duration/f64(segs)
+			for i in 1..=segs {
+				next_pt := move.to
+				if i < segs {
+					ang := start_angle+sweep*f64(i)/f64(segs)
+					next_pt = {move.center.x+radius*math.cos(ang), move.center.y+radius*math.sin(ang), move.to.z}
+				}
+				t0 := clock+f64(i-1)*seg_dt
+				t1 := clock+f64(i)*seg_dt
+				append_bead(beads, layers, prev, next_pt, move.width, move.height, t0, t1)
+				prev = next_pt
+			}
+			clock += duration
+			position = move.to
+			continue
+		}
 		delta := move.to-position
 		duration := math.sqrt(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z)/move.speed
 		if move.extrude {
-			bead_idx := len(beads)
-			append(beads, Design_Bead{
-				a = {f32(position.x), f32(position.y), f32(position.z)},
-				b = {f32(move.to.x), f32(move.to.y), f32(move.to.z)},
-				width = f32(move.width),
-				height = f32(move.height),
-				t0 = clock,
-				t1 = clock+duration,
-			})
-			if len(layers) == 0 || abs(move.to.z-layers[len(layers)-1].z) > 1e-6 {
-				append(layers, Design_Layer{
-					z          = move.to.z,
-					t0         = clock,
-					t1         = clock+duration,
-					first_bead = bead_idx,
-					end_bead   = bead_idx+1,
-				})
-			} else {
-				last := &layers[len(layers)-1]
-				last.t1 = clock+duration
-				last.end_bead = bead_idx+1
-			}
+			append_bead(beads, layers, position, move.to, move.width, move.height, clock, clock+duration)
 		}
 		clock += duration
 		position = move.to
