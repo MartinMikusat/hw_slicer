@@ -243,7 +243,9 @@ ui_character_width :: proc(ui: ^UI_State) -> f64 {
 	return ui_character_widths[size]
 }
 
+// Design focus hides the stage bar, so the workspace extends to the bottom edge.
 ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	if ui.design_active {return {12, ui.height, max(1.0, ui.width-24), 0}}
 	return {12, ui.height-64, max(1.0, ui.width-24), 52}
 }
 
@@ -616,21 +618,23 @@ ui_build_controls :: proc(
 		)
 		return
 	}
-	ui_add_control(
-		ui,
-		"theme",
-		"switch to light theme" if ui.dark else "switch to dark theme",
-		{ui.width-255, 5, 74, 30},
-		.Toggle_Theme,
-	)
-	ui_add_control(ui, "help", "viewer help", {ui.width-174, 5, 87, 30}, .Show_Help)
-	ui_add_control(
-		ui,
-		"settings",
-		"open settings",
-		{ui.width-359, 5, 97, 30},
-		.Open_Settings,
-	)
+	if !ui.design_active {
+		ui_add_control(
+			ui,
+			"theme",
+			"switch to light theme" if ui.dark else "switch to dark theme",
+			{ui.width-255, 5, 74, 30},
+			.Toggle_Theme,
+		)
+		ui_add_control(ui, "help", "viewer help", {ui.width-174, 5, 87, 30}, .Show_Help)
+		ui_add_control(
+			ui,
+			"settings",
+			"open settings",
+			{ui.width-359, 5, 97, 30},
+			.Open_Settings,
+		)
+	}
 
 	compact := ui_compact(ui)
 	if compact {
@@ -642,9 +646,11 @@ ui_build_controls :: proc(
 			ui_add_control(ui, panel_names[index], panel_labels[index], {12+f64(index)*57, 52, 57, 28}, panel_actions[index], true, 1, ui.panel == panel)
 		}
 	}
-	bar := ui_action_bar_rect(ui)
-	ui_add_control(ui, "previous stage", "previous stage", {bar.x, bar.y+8, 112, 32}, .Previous_Stage, ui.stage_index > 0)
-	ui_add_control(ui, "next stage", "next stage", {bar.x+120, bar.y+8, 112, 32}, .Next_Stage, ui.stage_index < len(ui_stage_names)-1)
+	if !ui.design_active {
+		bar := ui_action_bar_rect(ui)
+		ui_add_control(ui, "previous stage", "previous stage", {bar.x, bar.y+8, 112, 32}, .Previous_Stage, ui.stage_index > 0)
+		ui_add_control(ui, "next stage", "next stage", {bar.x+120, bar.y+8, 112, 32}, .Next_Stage, ui.stage_index < len(ui_stage_names)-1)
+	}
 
 	viewport := ui_viewport_rect(ui)
 	if ui.stage_index == 0 && (!compact || ui.panel == .Models) {
@@ -946,7 +952,7 @@ ui_draw_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	ui_add_rect(painter, {0, 0, ui.width, 40}, theme.header)
 	ui_add_rect(painter, ui_left_rect(ui), theme.surface)
 	ui_add_rect(painter, ui_right_rect(ui), theme.surface)
-	ui_add_rect(painter, ui_action_bar_rect(ui), theme.header)
+	if !ui.design_active {ui_add_rect(painter, ui_action_bar_rect(ui), theme.header)}
 }
 
 ui_draw_modal_surface :: proc(painter: ^UI_Painter, ui: ^UI_State, modal: UI_Rect) {
@@ -1641,6 +1647,7 @@ ui_draw_labels :: proc(
 	design_shown := ui.design_active && design_state != nil
 	title_width := max(0.0, ui.width-383)
 	title := fmt.tprintf("HW Slicer / %s", ui_stage_names[ui.stage_index]) if title_width >= 230 else "Slicer"
+	if design_shown {title = fmt.tprintf("HW Slicer / %s", model_name) if title_width >= 230 else model_name}
 	ui_draw_text(painter, painter.font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
 	window_labels := [3]string{"−", "+", "×"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
@@ -1653,7 +1660,7 @@ ui_draw_labels :: proc(
 		painter.font,
 		ui,
 		"Dark" if !ui.dark else "Light",
-		{ui.width-255, 5, 74, 30},
+		ui_control_rect(ui, .Toggle_Theme),
 		ui_control_ink(ui, .Toggle_Theme),
 		0,
 		.Center,
@@ -1663,7 +1670,7 @@ ui_draw_labels :: proc(
 		painter.font,
 		ui,
 		"Settings",
-		{ui.width-359, 5, 97, 30},
+		ui_control_rect(ui, .Open_Settings),
 		ui_control_ink(ui, .Open_Settings),
 		0,
 		.Center,
@@ -1811,7 +1818,7 @@ ui_draw_labels :: proc(
 	ui_draw_text(painter, painter.font, ui, "Previous", ui_control_rect(ui, .Previous_Stage), ui_control_ink(ui, .Previous_Stage), 0, .Center)
 	ui_draw_text(painter, painter.font, ui, "Next", ui_control_rect(ui, .Next_Stage), ui_control_ink(ui, .Next_Stage), 0, .Center)
 	bar := ui_action_bar_rect(ui)
-	ui_draw_text(painter, painter.font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(ui_stage_names), ui_stage_names[ui.stage_index]), {bar.x+248, bar.y+8, max(0, bar.w-248), 32}, theme.text, 0)
+	if !ui.design_active do ui_draw_text(painter, painter.font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(ui_stage_names), ui_stage_names[ui.stage_index]), {bar.x+248, bar.y+8, max(0, bar.w-248), 32}, theme.text, 0)
 }
 
 ui_draw_design_settings :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_State) {
@@ -1849,6 +1856,9 @@ ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_S
 		ui_draw_measurement(painter, ui, stat[0], stat[1], {area.x, y, area.w, row}, label_width)
 		y += row
 	}
+	gcode_text := filepath.base(s.export_path) if s.export_error == .None else design_export_error_text(s.export_error)
+	ui_draw_text(painter, painter.font, ui, gcode_text, {area.x, y, area.w, row}, theme.text, 0)
+	y += row
 	y += row*0.5
 	ui_draw_text(painter, painter.font, ui, "Parameters", {area.x, y, area.w, row}, theme.muted, 0)
 	y += row

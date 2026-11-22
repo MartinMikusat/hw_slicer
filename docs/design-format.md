@@ -1,9 +1,18 @@
 # Design format (`.hwsdesign`)
 
 A design file is a printer-parametric toolpath program. See
-[ADR 0001](adr/0001-printer-parametric-toolpath-design.md). The application
-opens it with `1` (Open) or `--design=<path>`, and reloads it when the file
-changes.
+[ADR 0001](adr/0001-printer-parametric-toolpath-design.md).
+
+The application shows the most recently modified design in
+`resources/designs/` and follows it when another design there changes.
+`--design=<path>` or `1` (Open) pins one file instead. The shown design
+reloads when its file changes.
+
+Each successful load writes `build/gcode/<name>-<nozzle>mm.gcode` through the
+Marlin emitter. The printer, PLA temperatures (210 °C nozzle, 60 °C bed), the
+220 × 220 × 250 mm bed, retraction, and accelerations are development
+placeholders in `src/design_export.odin`. Coordinates are mm from the bed
+centre, and the export fails when a move leaves the bed.
 
 ## Statements
 

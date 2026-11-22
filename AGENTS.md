@@ -33,7 +33,11 @@ Lay on face uses one placement transform for rendering, face selection, and laye
 
 ## Printer-parametric designs
 
-`.hwsdesign` files generate toolpaths directly from physical printer inputs and bypass mesh slicing (`src/design/`, simulation in `src/design_view.odin`). The format is [docs/design-format.md](docs/design-format.md). Open one with `--design=<path>`, and capture a moment with `--design-time=<0..1>`.
+`.hwsdesign` files generate toolpaths directly from physical printer inputs and bypass mesh slicing (`src/design/`, simulation in `src/design_view.odin`, G-code in `src/design_export.odin`). The format is [docs/design-format.md](docs/design-format.md). The app shows the newest design in `resources/designs/` without input and writes its G-code to `build/gcode/`. `--design=<path>` pins a file, and `--design-time=<0..1>` sets the captured moment.
+
+## Development interface
+
+While the backend is in development, the interface shows only the feature under work, and it shows it on launch without operator input. Update the interface with each change so that it stays in sync with that feature. Hide unrelated controls; do not build general interface features.
 
 ## Diagnostics
 

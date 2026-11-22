@@ -20,5 +20,6 @@ Regular slicing converts a fixed-size model into toolpaths. The operator wants a
 ## Consequences
 
 - Designs do not need the mesh-slicing stages, and their evidence does not apply to designs.
-- G-code export, a shared profile graph, more primitives, and changes during a print are later milestones.
+- G-code goes through the existing Marlin emitter: the design toolpath becomes a motion plan, so designs and regular slicing share one validated output path.
+- A shared profile graph, real printer profiles, more primitives, and changes during a print are later milestones.
 - The format specification is [docs/design-format.md](../design-format.md).

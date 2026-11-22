@@ -252,7 +252,8 @@ app_open_document :: proc() {
 		return
 	}
 	selected := string(cstring(&path[0]))
-	if strings.equal_fold(filepath.ext(selected), ".hwsdesign") {
+	app.design.pinned = true
+	if strings.equal_fold(filepath.ext(selected), DESIGN_EXTENSION) {
 		_ = app_load_design(selected)
 		return
 	}
@@ -444,7 +445,10 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 			return false
 		}
 	}
-	if startup_design != "" && app_load_design(startup_design) && startup_design_time >= 0 {
+	startup := startup_design
+	app.design.pinned = startup != ""
+	if startup == "" {startup, _ = design_newest()}
+	if startup != "" && app_load_design(startup) && startup_design_time >= 0 {
 		design_set_time_fraction(&app.design, startup_design_time)
 	}
 	app.needs_redraw = true
@@ -671,6 +675,7 @@ application_frame :: proc "c" (width, height, scale: f64) {
 			}
 		}
 	}
+	free_all(context.temp_allocator)
 }
 
 application_mouse :: proc "c" (

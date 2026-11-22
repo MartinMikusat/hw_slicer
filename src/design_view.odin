@@ -17,6 +17,10 @@ DESIGN_RATES :: [?]f64{1, 10, 50, 200}
 DESIGN_DEFAULT_RATE :: 1
 DESIGN_POLL_SECONDS :: 0.5
 DESIGN_SOURCE_LIMIT :: 1 << 20
+DESIGN_EXTENSION :: ".hwsdesign"
+
+// ponytail: dev-only absolute directory; the focused interface shows its newest design.
+DEV_DESIGN_DIRECTORY :: "/Users/martin/projects/hw_slicer/resources/designs"
 
 // Vertices of one bead: eight side quads of an octagonal cross-section and two end caps.
 BEAD_SIDES :: 8
@@ -30,6 +34,7 @@ Design_Bead :: struct {
 
 Design_State :: struct {
 	active:       bool,
+	pinned:       bool, // opened explicitly; do not follow the newest design
 	path:         string,
 	modified:     time.Time,
 	poll_tick:    time.Tick,
@@ -42,6 +47,8 @@ Design_State :: struct {
 	rate_index:   int,
 	play_tick:    time.Tick,
 	partial:      [BEAD_VERTICES]Mesh_Vertex,
+	export_path:  string,
+	export_error: Design_Export_Error,
 }
 
 design_state_init :: proc(s: ^Design_State) {
@@ -54,9 +61,10 @@ design_state_clear :: proc(s: ^Design_State) {
 	design.toolpath_destroy(&s.toolpath)
 	delete(s.beads)
 	delete(s.path)
-	nozzle, rate := s.nozzle_index, s.rate_index
+	delete(s.export_path)
+	nozzle, rate, pinned := s.nozzle_index, s.rate_index, s.pinned
 	s^ = {}
-	s.nozzle_index, s.rate_index = nozzle, rate
+	s.nozzle_index, s.rate_index, s.pinned = nozzle, rate, pinned
 }
 
 design_nozzle :: proc(s: ^Design_State) -> f64 {
@@ -148,17 +156,46 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	app.section_dirty = true
 	delete(app.model_name)
 	app.model_name = strings.clone(filepath.base(path))
-	app_set_status(fmt.tprintf("DESIGN: %d LAYERS, %d MOVES", toolpath.layers, len(toolpath.moves)))
 	devlog.succeeded(devlog.global(), site, {scope = "design", stage = "loaded"}, {rows = i64(len(beads))})
+	export_site := devlog.Site{feature = "design", operation = "export"}
+	app.design.export_path, app.design.export_error = design_export(&app.design)
+	if app.design.export_error == .None {
+		devlog.succeeded(devlog.global(), export_site, {scope = "design", stage = "gcode"}, {rows = i64(len(toolpath.moves))})
+		app_set_status(fmt.tprintf("DESIGN: %d LAYERS, G-CODE WRITTEN", toolpath.layers))
+	} else {
+		devlog.failed(devlog.global(), export_site, {reason = "design export failed", detail = design_export_error_text(app.design.export_error), code = i32(app.design.export_error), severity = .Error}, {scope = "design", stage = "gcode"})
+		app_set_status(fmt.tprintf("G-CODE FAILED: %s", design_export_error_text(app.design.export_error)), true)
+	}
 	if !keep_time {app_frame_camera()}
 	return true
 }
 
-// Reloads the design when its file changed, at most every DESIGN_POLL_SECONDS.
+// The most recently modified design in DEV_DESIGN_DIRECTORY, allocated with the temp allocator.
+design_newest :: proc() -> (path: string, ok: bool) {
+	entries, error := os.read_all_directory_by_path(DEV_DESIGN_DIRECTORY, context.temp_allocator)
+	if error != nil {return "", false}
+	newest: time.Time
+	for entry in entries {
+		if entry.type != .Regular || !strings.equal_fold(filepath.ext(entry.name), DESIGN_EXTENSION) {continue}
+		if !ok || time.diff(newest, entry.modification_time) > 0 {
+			path, newest, ok = entry.fullpath, entry.modification_time, true
+		}
+	}
+	return
+}
+
+// Follows the newest design unless one was opened explicitly, and reloads the shown design when
+// its file changed. Runs at most every DESIGN_POLL_SECONDS.
 app_poll_design :: proc() {
-	if app.design.path == "" {return}
 	if app.design.poll_tick != {} && time.duration_seconds(time.tick_since(app.design.poll_tick)) < DESIGN_POLL_SECONDS {return}
 	app.design.poll_tick = time.tick_now()
+	if !app.design.pinned {
+		if newest, found := design_newest(); found && newest != app.design.path {
+			_ = app_load_design(newest)
+			return
+		}
+	}
+	if app.design.path == "" {return}
 	info, error := os.stat(app.design.path, context.temp_allocator)
 	if error != nil || info.modification_time == app.design.modified {return}
 	path := strings.clone(app.design.path, context.temp_allocator)
