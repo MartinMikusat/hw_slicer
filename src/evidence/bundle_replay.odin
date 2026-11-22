@@ -29,7 +29,7 @@ Evidence_Bundle_Replay :: struct {
 	unified_plan:     features.Unified_Path_Plan_Artifact,
 	extrusion:        features.Extrusion_Artifact,
 	motion_plan:      features.Motion_Plan_Artifact,
-	marlin:           gcode.Marlin_Artifact,
+	klipper:           gcode.Klipper_Artifact,
 	layer_schedule_loaded: bool,
 	layer_spans_loaded: bool,
 	intersections_loaded: bool,
@@ -46,7 +46,7 @@ Evidence_Bundle_Replay :: struct {
 	unified_plan_loaded: bool,
 	extrusion_loaded: bool,
 	motion_plan_loaded: bool,
-	marlin_loaded:    bool,
+	klipper_loaded:    bool,
 }
 
 Evidence_Bundle_Source_Kind :: enum u8 {
@@ -135,8 +135,8 @@ evidence_bundle_replay_destroy :: proc(
 	if replay.motion_plan_loaded {
 		features.motion_plan_artifact_destroy(&replay.motion_plan, allocator)
 	}
-	if replay.marlin_loaded {
-		gcode.marlin_artifact_destroy(&replay.marlin, allocator)
+	if replay.klipper_loaded {
+		gcode.klipper_artifact_destroy(&replay.klipper, allocator)
 	}
 	replay^ = {}
 }
@@ -692,7 +692,7 @@ evidence_bundle_replay_primitive_supported :: proc(
 			format == features.EXTRUSION_ARTIFACT_FORMAT ||
 			format == features.MOTION_PLAN_ARTIFACT_FORMAT
 	case "emit-gcode":
-		return format == gcode.MARLIN_ARTIFACT_FORMAT
+		return format == gcode.KLIPPER_ARTIFACT_FORMAT
 	case:
 		return false
 	}
@@ -1222,16 +1222,16 @@ evidence_bundle_replay_stage_decode :: proc(
 			replay.motion_plan_loaded = true
 		}
 	case "emit-gcode":
-		if replay.marlin_loaded {return .Invalid_Content}
-		expectations, preflight_error := marlin_manifest_preflight(
+		if replay.klipper_loaded {return .Invalid_Content}
+		expectations, preflight_error := klipper_manifest_preflight(
 			manifest,
 			primitive.path,
 			artifact_bytes,
 		)
 		if preflight_error != .None {return .Invalid_Content}
-		artifact, decode_error := gcode.marlin_artifact_decode(
+		artifact, decode_error := gcode.klipper_artifact_decode(
 			artifact_bytes,
-			gcode.DEFAULT_MARLIN_ARTIFACT_LIMITS,
+			gcode.DEFAULT_KLIPPER_ARTIFACT_LIMITS,
 			allocator,
 		)
 		if decode_error != .None {
@@ -1240,15 +1240,15 @@ evidence_bundle_replay_stage_decode :: proc(
 			}
 			return .Invalid_Content
 		}
-		if marlin_manifest_replay_verify(
+		if klipper_manifest_replay_verify(
 			expectations,
 			artifact,
 		) != .None {
-			gcode.marlin_artifact_destroy(&artifact, allocator)
+			gcode.klipper_artifact_destroy(&artifact, allocator)
 			return .Invalid_Content
 		}
-		replay.marlin = artifact
-		replay.marlin_loaded = true
+		replay.klipper = artifact
+		replay.klipper_loaded = true
 	case:
 	}
 	return .None
@@ -1383,8 +1383,8 @@ evidence_bundle_replay_dependencies_valid :: proc(
 		replay.extrusion.result_hash {
 		return false
 	}
-	if replay.motion_plan_loaded && replay.marlin_loaded &&
-	   replay.marlin.motion_hash != replay.motion_plan.result_hash {
+	if replay.motion_plan_loaded && replay.klipper_loaded &&
+	   replay.klipper.motion_hash != replay.motion_plan.result_hash {
 		return false
 	}
 	return true

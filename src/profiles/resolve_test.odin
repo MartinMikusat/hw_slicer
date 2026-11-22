@@ -42,7 +42,7 @@ profiles_resolve_produces_selected_v2_policies_test :: proc(t: ^testing.T) {
 	testing.expect_value(
 		t,
 		resolved.dialect.dialect,
-		GCode_Dialect.Marlin_Conservative,
+		GCode_Dialect.Klipper,
 	)
 }
 
@@ -264,7 +264,6 @@ profile_test_documents :: proc() -> (
 		maximum_acceleration = 5_000_000,
 		maximum_extruder_speed = 50_000,
 		maximum_extruder_acceleration = 5_000_000,
-		bed_leveling = .None,
 	}
 	material := Material_Profile{
 		schema_version = MATERIAL_PROFILE_SCHEMA_VERSION,
@@ -363,7 +362,7 @@ profile_test_documents :: proc() -> (
 	}
 	dialect := Dialect_Profile{
 		schema_version = DIALECT_PROFILE_SCHEMA_VERSION,
-		dialect = .Marlin_Conservative,
+		dialect = .Klipper,
 		coordinate_mode = .Absolute,
 		extrusion_mode = .Relative,
 		xy_decimal_places = 3,

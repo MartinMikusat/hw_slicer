@@ -16,8 +16,8 @@ The native mesh viewer and G0 foundation milestone are implemented. G1 reaches
 deterministic CPU loop reconstruction. G2 includes strict region
 classification, printable feature generation, unified path planning,
 fixed-point extrusion, and constrained motion planning. G3 has an initial
-conservative Marlin emitter, an independent state replay validator, and atomic
-file publication. The profile contract resolves these policies against explicit
+Klipper emitter, an independent state replay validator, and atomic file
+publication. G-code targets Klipper only. The profile contract resolves these policies against explicit
 printer and material limits before geometry execution.
 
 The [technical implementation plan](PLAN.md) defines the subsystem contracts,
@@ -277,12 +277,15 @@ The current engine implementation provides:
 - A bounded little-endian motion artifact that retains path, extrusion,
   printer, process, layer, operation, timing, and result identities. Package
   and directory replay retain it beside the path-plan primitive in one stage.
-- Conservative Marlin file emission with millimetre units, absolute XYZ,
-  relative extrusion, typed heating, homing, leveling, parking, and shutdown.
+- Klipper file emission with millimetre units, absolute XYZ, and relative
+  extrusion. The printer's `START_PRINT` macro receives the temperatures and
+  the extrusion area and owns homing, heating, meshing, and priming;
+  `END_PRINT` owns retraction, parking, and shutdown. Each layer reports
+  `SET_PRINT_STATS_INFO`, and acceleration uses `SET_VELOCITY_LIMIT`.
 - Exact decimal coordinate, feed, acceleration, and extrusion formatting with
   command-to-motion correlation records.
-- An independent strict parser that replays modes, temperatures, acceleration,
-  cooling, motion, extrusion, bounds, parking, and final machine state.
+- An independent strict parser that replays modes, the start and end macros,
+  layer reporting, acceleration, cooling, motion, extrusion, and bounds.
 - A bounded little-endian G-code artifact that retains profile revisions,
   motion identity, command correlation, summary values, and exact output bytes.
   Generic evidence capture applies budgets before full decoding. Its stage
@@ -305,7 +308,7 @@ The current engine implementation provides:
 
 The profile resolver provides:
 
-- Separate versioned printer, material, process, and Marlin dialect documents.
+- Separate versioned printer, material, process, and Klipper dialect documents.
 - Required canonical units for every physical and process field.
 - Combined physical thickness and minimum layer-count skin targets.
 - The selected overlap, thin-wall, gap, bridge, support, extrusion, and motion
@@ -313,8 +316,8 @@ The profile resolver provides:
 - Explicit process-target validation against printer and material limits.
 - Explicit machine-coordinate bounds, one-extruder enforcement, and bounded
   extruder motion limits.
-- Typed homing, leveling, parking, acceleration, cooling, and file-output
-  policies for the conservative Marlin target.
+- Typed acceleration, cooling, and file-output policies for the Klipper
+  target.
 - Deterministic first-layer override resolution and thin-wall width conversion.
 - Exact gap-width allocation into unprinted evidence, one centered line, two
   partitioned lines, or a region that is too wide for gap fill.

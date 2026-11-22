@@ -98,23 +98,6 @@ printer_profile_validate :: proc(
 	   i64(profile.maximum_extruder_acceleration) <= 0 {
 		return .Printer_Limits
 	}
-	park_position_valid :=
-		i64(profile.park_x) >= i64(profile.axis_minimum_x) &&
-		i64(profile.park_x) <= i64(profile.axis_maximum_x) &&
-		i64(profile.park_y) >= i64(profile.axis_minimum_y) &&
-		i64(profile.park_y) <= i64(profile.axis_maximum_y)
-	park_values_zero :=
-		i64(profile.park_x) == 0 &&
-		i64(profile.park_y) == 0 &&
-		i64(profile.park_z_lift) == 0
-	park_enabled_valid :=
-		park_position_valid && i64(profile.park_z_lift) > 0
-	if profile.bed_leveling == .Invalid ||
-	   i64(profile.park_z_lift) < 0 ||
-	   profile.park_after_print && !park_enabled_valid ||
-	   !profile.park_after_print && !park_values_zero {
-		return .Printer_Geometry
-	}
 	return .None
 }
 
@@ -189,7 +172,7 @@ dialect_profile_validate :: proc(
 	if profile.schema_version != DIALECT_PROFILE_SCHEMA_VERSION {
 		return .Dialect_Schema
 	}
-	if profile.dialect != .Marlin_Conservative ||
+	if profile.dialect != .Klipper ||
 	   profile.coordinate_mode != .Absolute ||
 	   profile.extrusion_mode != .Relative ||
 	   profile.xy_decimal_places != 3 ||

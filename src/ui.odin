@@ -1428,7 +1428,7 @@ ui_evidence_graph_state :: proc(
 		if replay.extrusion_loaded {return "EXTRUSION GRAPH RETAINED"}
 		if replay.motion_plan_loaded {return "MOTION GRAPH RETAINED"}
 	case "emit-gcode":
-		if replay.marlin_loaded {return "G-CODE GRAPH RETAINED"}
+		if replay.klipper_loaded {return "G-CODE GRAPH RETAINED"}
 	case:
 	}
 	return "MANIFEST RETAINED"

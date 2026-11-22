@@ -121,11 +121,11 @@ Evidence_Inspect_Decoded_Wire :: struct {
 	motion_plan_motion_duration_us: ^u64 `json:"motion_plan_motion_duration_us,omitempty"`,
 	motion_plan_dwell_duration_us: ^u64 `json:"motion_plan_dwell_duration_us,omitempty"`,
 	motion_plan_total_duration_us: ^u64 `json:"motion_plan_total_duration_us,omitempty"`,
-	marlin_loaded:         ^bool `json:"marlin_loaded,omitempty"`,
-	marlin_commands:       ^u64  `json:"marlin_commands,omitempty"`,
-	marlin_gcode_bytes:    ^u64  `json:"marlin_gcode_bytes,omitempty"`,
-	marlin_layers:         ^u64  `json:"marlin_layers,omitempty"`,
-	marlin_motion_operations: ^u64 `json:"marlin_motion_operations,omitempty"`,
+	klipper_loaded:         ^bool `json:"klipper_loaded,omitempty"`,
+	klipper_commands:       ^u64  `json:"klipper_commands,omitempty"`,
+	klipper_gcode_bytes:    ^u64  `json:"klipper_gcode_bytes,omitempty"`,
+	klipper_layers:         ^u64  `json:"klipper_layers,omitempty"`,
+	klipper_motion_operations: ^u64 `json:"klipper_motion_operations,omitempty"`,
 }
 
 Evidence_Inspect_Wire :: struct {
@@ -215,9 +215,9 @@ main :: proc() {
 	extrusion_moves: u64
 	motion_plan_layers: u64
 	motion_plan_operations: u64
-	marlin_commands: u64
-	marlin_gcode_bytes: u64
-	marlin_layers: u64
+	klipper_commands: u64
+	klipper_gcode_bytes: u64
+	klipper_layers: u64
 	layer_schedule_layers: u64
 	layer_schedule_minimum_z_um: i64
 	layer_schedule_maximum_z_um: i64
@@ -517,19 +517,19 @@ main :: proc() {
 		decoded.motion_plan_total_duration_us =
 			&replay.motion_plan.result.total_planned_duration_us
 	}
-	if replay.marlin_loaded {
-		marlin_commands =
-			u64(len(replay.marlin.result.commands))
-		marlin_gcode_bytes =
-			u64(len(replay.marlin.result.bytes))
-		marlin_layers =
-			u64(replay.marlin.result.layer_count)
-		decoded.marlin_loaded = &replay.marlin_loaded
-		decoded.marlin_commands = &marlin_commands
-		decoded.marlin_gcode_bytes = &marlin_gcode_bytes
-		decoded.marlin_layers = &marlin_layers
-		decoded.marlin_motion_operations =
-			&replay.marlin.result.motion_operation_count
+	if replay.klipper_loaded {
+		klipper_commands =
+			u64(len(replay.klipper.result.commands))
+		klipper_gcode_bytes =
+			u64(len(replay.klipper.result.bytes))
+		klipper_layers =
+			u64(replay.klipper.result.layer_count)
+		decoded.klipper_loaded = &replay.klipper_loaded
+		decoded.klipper_commands = &klipper_commands
+		decoded.klipper_gcode_bytes = &klipper_gcode_bytes
+		decoded.klipper_layers = &klipper_layers
+		decoded.klipper_motion_operations =
+			&replay.klipper.result.motion_operation_count
 	}
 	wire := Evidence_Inspect_Wire{
 		schema_version = 1,

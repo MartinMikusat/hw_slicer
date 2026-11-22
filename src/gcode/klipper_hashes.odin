@@ -4,27 +4,26 @@ import contracts "../contracts"
 import features "../features"
 import profiles "../profiles"
 
-MARLIN_RESULT_HASH_SCHEMA_VERSION :: u32(1)
+KLIPPER_RESULT_HASH_SCHEMA_VERSION :: u32(2)
 
-marlin_result_hash :: proc(
+klipper_result_hash :: proc(
 	motion_hash: contracts.Content_Hash,
 	motion: features.Motion_Plan_Result,
 	profile: profiles.Resolved_Profiles,
-	result: Marlin_Result,
-	limits := DEFAULT_MARLIN_LIMITS,
+	result: Klipper_Result,
+	limits := DEFAULT_KLIPPER_LIMITS,
 	allocator := context.allocator,
 ) -> (contracts.Content_Hash, bool) {
 	expected, expected_error :=
-		marlin_emit(motion, profile, limits, allocator)
+		klipper_emit(motion, profile, limits, allocator)
 	if expected_error != .None {return {}, false}
-	defer marlin_result_destroy(&expected, allocator)
+	defer klipper_result_destroy(&expected, allocator)
 	if result.schema_version != expected.schema_version ||
 	   result.layer_count != expected.layer_count ||
 	   result.motion_operation_count != expected.motion_operation_count ||
 	   result.positive_filament_nm != expected.positive_filament_nm ||
 	   result.negative_filament_nm != expected.negative_filament_nm ||
 	   result.emitted_dwell_ms != expected.emitted_dwell_ms ||
-	   result.shutdown_retraction_nm != expected.shutdown_retraction_nm ||
 	   result.final_x != expected.final_x ||
 	   result.final_y != expected.final_y ||
 	   result.final_z != expected.final_z ||
@@ -41,7 +40,7 @@ marlin_result_hash :: proc(
 		}
 	}
 	report, validation_error :=
-		marlin_validate(result.bytes, profile, motion)
+		klipper_validate(result.bytes, profile, motion)
 	if validation_error != .None ||
 	   report.command_count != u64(len(result.commands)) ||
 	   report.layer_count != result.layer_count ||
@@ -55,24 +54,24 @@ marlin_result_hash :: proc(
 		return {}, false
 	}
 
-	return marlin_result_content_hash(
+	return klipper_result_content_hash(
 		motion_hash,
 		profiles.profile_revisions(profile),
 		result,
 	)
 }
 
-marlin_result_content_hash :: proc(
+klipper_result_content_hash :: proc(
 	motion_hash: contracts.Content_Hash,
 	revisions: contracts.Profile_Revisions,
-	result: Marlin_Result,
+	result: Klipper_Result,
 ) -> (contracts.Content_Hash, bool) {
-	if !marlin_result_structurally_valid(result) {return {}, false}
+	if !klipper_result_structurally_valid(result) {return {}, false}
 	hash: contracts.Canonical_Hash
 	contracts.canonical_hash_init(
 		&hash,
-		"hw-slicer/marlin-gcode",
-		MARLIN_RESULT_HASH_SCHEMA_VERSION,
+		"hw-slicer/klipper-gcode",
+		KLIPPER_RESULT_HASH_SCHEMA_VERSION,
 	)
 	contracts.canonical_hash_append_content_hash(&hash, motion_hash)
 	contracts.canonical_hash_append_content_hash(&hash, revisions.printer)
@@ -85,19 +84,15 @@ marlin_result_content_hash :: proc(
 		&hash,
 		result.motion_operation_count,
 	)
-	marlin_hash_append_u128(
+	klipper_hash_append_u128(
 		&hash,
 		result.positive_filament_nm,
 	)
-	marlin_hash_append_u128(
+	klipper_hash_append_u128(
 		&hash,
 		result.negative_filament_nm,
 	)
 	contracts.canonical_hash_append_u64(&hash, result.emitted_dwell_ms)
-	contracts.canonical_hash_append_u64(
-		&hash,
-		result.shutdown_retraction_nm,
-	)
 	contracts.canonical_hash_append_i64(&hash, i64(result.final_x))
 	contracts.canonical_hash_append_i64(&hash, i64(result.final_y))
 	contracts.canonical_hash_append_i64(&hash, i64(result.final_z))
@@ -127,15 +122,11 @@ marlin_result_content_hash :: proc(
 	return contracts.canonical_hash_final(&hash), true
 }
 
-marlin_result_structurally_valid :: proc(result: Marlin_Result) -> bool {
-	shutdown_retraction_valid :=
-		u128(result.shutdown_retraction_nm) <=
-		result.negative_filament_nm
-	if result.schema_version != MARLIN_EMITTER_SCHEMA_VERSION ||
+klipper_result_structurally_valid :: proc(result: Klipper_Result) -> bool {
+	if result.schema_version != KLIPPER_EMITTER_SCHEMA_VERSION ||
 	   result.layer_count == 0 ||
 	   result.motion_operation_count == 0 ||
 	   result.positive_filament_nm == 0 ||
-	   !shutdown_retraction_valid ||
 	   len(result.bytes) == 0 ||
 	   len(result.commands) == 0 ||
 	   u64(len(result.commands)-1) > u64(max(u32)) ||
@@ -154,7 +145,7 @@ marlin_result_structurally_valid :: proc(result: Marlin_Result) -> bool {
 		if command.stable_id == contracts.INVALID_STABLE_ID ||
 		   command.command_index != u32(command_index) ||
 		   command.kind == .Invalid ||
-		   u8(command.kind) > u8(Marlin_Command_Kind.Disable_Steppers) ||
+		   u8(command.kind) > u8(Klipper_Command_Kind.End_Print) ||
 		   command.byte_offset != expected_offset ||
 		   command.byte_count == 0 ||
 		   !byte_range_valid ||
@@ -176,7 +167,7 @@ marlin_result_structurally_valid :: proc(result: Marlin_Result) -> bool {
 	return expected_offset == u64(len(result.bytes))
 }
 
-marlin_hash_append_u128 :: proc(
+klipper_hash_append_u128 :: proc(
 	hash: ^contracts.Canonical_Hash,
 	value: u128,
 ) {

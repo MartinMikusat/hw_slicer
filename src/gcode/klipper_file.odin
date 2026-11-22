@@ -10,11 +10,11 @@ import "core:time"
 import features "../features"
 import profiles "../profiles"
 
-MARLIN_FILE_STAGING_PREFIX :: ".hw-slicer-gcode-staging-"
-MARLIN_FILE_RENAME_EXCL :: c.uint(0x00000004)
+KLIPPER_FILE_STAGING_PREFIX :: ".hw-slicer-gcode-staging-"
+KLIPPER_FILE_RENAME_EXCL :: c.uint(0x00000004)
 
-foreign import marlin_file_system "system:System"
-foreign marlin_file_system {
+foreign import klipper_file_system "system:System"
+foreign klipper_file_system {
 	renameatx_np :: proc "c" (
 		old_fd: c.int,
 		old_path: cstring,
@@ -24,7 +24,7 @@ foreign marlin_file_system {
 	) -> c.int ---
 }
 
-Marlin_File_Error :: enum u8 {
+Klipper_File_Error :: enum u8 {
 	None,
 	Invalid_Result,
 	Invalid_Destination,
@@ -40,27 +40,27 @@ Marlin_File_Error :: enum u8 {
 	Cleanup_Failed,
 }
 
-Marlin_File_Test_Hook :: struct {
+Klipper_File_Test_Hook :: struct {
 	fail_after_byte_count: u64,
 	fail_before_rename:    bool,
 }
 
-marlin_file_publish :: proc(
-	result: Marlin_Result,
+klipper_file_publish :: proc(
+	result: Klipper_Result,
 	profile: profiles.Resolved_Profiles,
 	motion: features.Motion_Plan_Result,
 	destination: string,
 	replace_existing := false,
-	test_hook := Marlin_File_Test_Hook{},
-	limits := DEFAULT_MARLIN_LIMITS,
+	test_hook := Klipper_File_Test_Hook{},
+	limits := DEFAULT_KLIPPER_LIMITS,
 	allocator := context.allocator,
-) -> (publish_error: Marlin_File_Error) {
+) -> (publish_error: Klipper_File_Error) {
 	_, valid_result :=
-		marlin_result_hash({}, motion, profile, result, limits, allocator)
+		klipper_result_hash({}, motion, profile, result, limits, allocator)
 	if !valid_result {return .Invalid_Result}
 
 	parent_path, destination_name, destination_error :=
-		marlin_file_destination_split(destination, allocator)
+		klipper_file_destination_split(destination, allocator)
 	if destination_error != .None {return destination_error}
 	defer delete(parent_path, allocator)
 	parent_cstring :=
@@ -74,7 +74,7 @@ marlin_file_publish :: proc(
 	destination_cstring :=
 		strings.clone_to_cstring(destination_name, context.temp_allocator)
 	destination_exists, destination_valid :=
-		marlin_file_destination_state(parent_fd, destination_cstring)
+		klipper_file_destination_state(parent_fd, destination_cstring)
 	if !destination_valid {return .Invalid_Destination}
 	if destination_exists && !replace_existing {
 		return .Destination_Exists
@@ -88,7 +88,7 @@ marlin_file_publish :: proc(
 		staging_name = fmt.bprintf(
 			staging_name_buffer[:],
 			"%s%d-%016x-%02d",
-			MARLIN_FILE_STAGING_PREFIX,
+			KLIPPER_FILE_STAGING_PREFIX,
 			posix.getpid(),
 			nonce,
 			attempt,
@@ -114,7 +114,7 @@ marlin_file_publish :: proc(
 			posix.close(staging_fd)
 		}
 		if staging_created && !published {
-			if !marlin_file_cleanup_at(parent_fd, staging_name) {
+			if !klipper_file_cleanup_at(parent_fd, staging_name) {
 				publish_error = .Cleanup_Failed
 			}
 		}
@@ -122,7 +122,7 @@ marlin_file_publish :: proc(
 	if posix.fchmod(staging_fd, {.IRUSR, .IWUSR}) != .OK {
 		return .Write_Failed
 	}
-	write_error := marlin_file_write_all(
+	write_error := klipper_file_write_all(
 		staging_fd,
 		result.bytes,
 		test_hook.fail_after_byte_count,
@@ -132,7 +132,7 @@ marlin_file_publish :: proc(
 	posix.close(staging_fd)
 	staging_fd = -1
 
-	validation_error := marlin_file_validate_staging(
+	validation_error := klipper_file_validate_staging(
 		parent_fd,
 		staging_name,
 		result.bytes,
@@ -144,7 +144,7 @@ marlin_file_publish :: proc(
 	if test_hook.fail_before_rename {return .Injected_Failure}
 
 	destination_exists, destination_valid =
-		marlin_file_destination_state(parent_fd, destination_cstring)
+		klipper_file_destination_state(parent_fd, destination_cstring)
 	if !destination_valid {return .Invalid_Destination}
 	if destination_exists && !replace_existing {
 		return .Destination_Exists
@@ -165,7 +165,7 @@ marlin_file_publish :: proc(
 		staging_cstring,
 		c.int(parent_fd),
 		destination_cstring,
-		MARLIN_FILE_RENAME_EXCL,
+		KLIPPER_FILE_RENAME_EXCL,
 	) != 0 {
 		if posix.get_errno() == .EEXIST {return .Destination_Exists}
 		return .Publish_Failed
@@ -176,12 +176,12 @@ marlin_file_publish :: proc(
 	return .None
 }
 
-marlin_file_destination_split :: proc(
+klipper_file_destination_split :: proc(
 	destination: string,
 	allocator := context.allocator,
 ) -> (
 	parent_path, destination_name: string,
-	publish_error: Marlin_File_Error,
+	publish_error: Klipper_File_Error,
 ) {
 	if destination == "" ||
 	   destination[len(destination)-1] == '/' ||
@@ -194,7 +194,7 @@ marlin_file_destination_split :: proc(
 	   name == ".." ||
 	   len(name) > 255 ||
 	   !strings.has_suffix(name, ".gcode") ||
-	   strings.has_prefix(name, MARLIN_FILE_STAGING_PREFIX) {
+	   strings.has_prefix(name, KLIPPER_FILE_STAGING_PREFIX) {
 		return "", "", .Invalid_Destination
 	}
 	if parent == "" {parent = "."}
@@ -205,7 +205,7 @@ marlin_file_destination_split :: proc(
 	return absolute_parent, name, .None
 }
 
-marlin_file_destination_state :: proc(
+klipper_file_destination_state :: proc(
 	parent_fd: posix.FD,
 	name: cstring,
 ) -> (exists, valid: bool) {
@@ -222,11 +222,11 @@ marlin_file_destination_state :: proc(
 	return false, false
 }
 
-marlin_file_write_all :: proc(
+klipper_file_write_all :: proc(
 	file_fd: posix.FD,
 	bytes: []u8,
 	fail_after_byte_count: u64,
-) -> Marlin_File_Error {
+) -> Klipper_File_Error {
 	offset: int
 	for offset < len(bytes) {
 		write_count := len(bytes)-offset
@@ -249,14 +249,14 @@ marlin_file_write_all :: proc(
 	return .None
 }
 
-marlin_file_validate_staging :: proc(
+klipper_file_validate_staging :: proc(
 	parent_fd: posix.FD,
 	staging_name: string,
 	expected_bytes: []u8,
 	profile: profiles.Resolved_Profiles,
 	motion: features.Motion_Plan_Result,
 	allocator := context.allocator,
-) -> Marlin_File_Error {
+) -> Klipper_File_Error {
 	staging_cstring :=
 		strings.clone_to_cstring(staging_name, context.temp_allocator)
 	file_fd := posix.openat(
@@ -298,16 +298,16 @@ marlin_file_validate_staging :: proc(
 			return .Validation_Failed
 		}
 	}
-	_, validation_error := marlin_validate(bytes, profile, motion)
+	_, validation_error := klipper_validate(bytes, profile, motion)
 	if validation_error != .None {return .Validation_Failed}
 	return .None
 }
 
-marlin_file_cleanup_at :: proc(
+klipper_file_cleanup_at :: proc(
 	parent_fd: posix.FD,
 	staging_name: string,
 ) -> bool {
-	if !strings.has_prefix(staging_name, MARLIN_FILE_STAGING_PREFIX) {
+	if !strings.has_prefix(staging_name, KLIPPER_FILE_STAGING_PREFIX) {
 		return false
 	}
 	staging_cstring :=

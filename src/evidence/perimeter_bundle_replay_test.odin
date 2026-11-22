@@ -246,7 +246,7 @@ perimeter_bundle_expect_replay :: proc(
 	testing.expect(t, !replay.unified_plan_loaded)
 	testing.expect(t, !replay.extrusion_loaded)
 	testing.expect(t, !replay.motion_plan_loaded)
-	testing.expect(t, !replay.marlin_loaded)
+	testing.expect(t, !replay.klipper_loaded)
 	testing.expect_value(t, len(replay.stage_manifests), 1)
 	testing.expect_value(t, len(replay.perimeters.result.layers), 1)
 	testing.expect_value(t, len(replay.perimeters.result.groups), 0)

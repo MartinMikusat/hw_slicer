@@ -79,10 +79,6 @@ profile_invalidation_starts_at_gcode_for_dialect_fields_test :: proc(
 	next := previous
 	next.dialect.e_decimal_places += 1
 	expect_invalidation_suffix(t, previous, next, .Emit_GCode)
-
-	next = previous
-	next.printer.bed_leveling = .Probe_Before_Print
-	expect_invalidation_suffix(t, previous, next, .Emit_GCode)
 }
 
 @(test)

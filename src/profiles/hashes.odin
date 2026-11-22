@@ -2,7 +2,7 @@ package profiles
 
 import contracts "../contracts"
 
-PROFILE_STAGE_HASH_SCHEMA_VERSION :: u32(1)
+PROFILE_STAGE_HASH_SCHEMA_VERSION :: u32(2)
 
 Profile_Stage_Hashes :: struct {
 	normalize:         contracts.Content_Hash,
@@ -98,7 +98,6 @@ profile_stage_hashes :: proc(
 		"hw-slicer/profile-stage/emit-gcode",
 		PROFILE_STAGE_HASH_SCHEMA_VERSION,
 	)
-	append_printer_gcode_actions(&gcode, profiles.printer)
 	append_dialect_profile(&gcode, profiles.dialect)
 
 	return {
@@ -234,7 +233,6 @@ printer_profile_hash :: proc(
 	append_printer_feature_geometry(&hash, profile)
 	append_printer_layer_limits(&hash, profile)
 	append_printer_motion_limits(&hash, profile)
-	append_printer_gcode_actions(&hash, profile)
 	return contracts.canonical_hash_final(&hash)
 }
 
@@ -344,17 +342,6 @@ append_printer_motion_limits :: proc(
 		hash,
 		i64(profile.maximum_extruder_acceleration),
 	)
-}
-
-append_printer_gcode_actions :: proc(
-	hash: ^contracts.Canonical_Hash,
-	profile: Printer_Profile,
-) {
-	contracts.canonical_hash_append_u8(hash, u8(profile.bed_leveling))
-	contracts.canonical_hash_append_u8(hash, u8(profile.park_after_print))
-	contracts.canonical_hash_append_i64(hash, i64(profile.park_x))
-	contracts.canonical_hash_append_i64(hash, i64(profile.park_y))
-	contracts.canonical_hash_append_i64(hash, i64(profile.park_z_lift))
 }
 
 append_material_path_limits :: proc(

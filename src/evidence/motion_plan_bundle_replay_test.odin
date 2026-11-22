@@ -361,7 +361,7 @@ evidence_bundle_replay_rejects_retained_dependency_mismatch_test :: proc(
 		path_plan_loaded = true,
 		extrusion_loaded = true,
 		motion_plan_loaded = true,
-		marlin_loaded = true,
+		klipper_loaded = true,
 	}
 	testing.expect(t, evidence_bundle_replay_dependencies_valid(replay))
 	replay.extrusion.dependencies.path_plan_hash[0] = 1
@@ -373,7 +373,7 @@ evidence_bundle_replay_rejects_retained_dependency_mismatch_test :: proc(
 	replay.motion_plan.dependencies.extrusion_hash[0] = 1
 	testing.expect(t, !evidence_bundle_replay_dependencies_valid(replay))
 	replay.motion_plan.dependencies.extrusion_hash[0] = 0
-	replay.marlin.motion_hash[0] = 1
+	replay.klipper.motion_hash[0] = 1
 	testing.expect(t, !evidence_bundle_replay_dependencies_valid(replay))
 }
 
@@ -386,7 +386,7 @@ motion_plan_bundle_expect_replay :: proc(
 	testing.expect(t, replay.motion_plan_loaded)
 	testing.expect(t, !replay.topology_loaded)
 	testing.expect(t, !replay.regions_loaded)
-	testing.expect(t, !replay.marlin_loaded)
+	testing.expect(t, !replay.klipper_loaded)
 	testing.expect_value(t, len(replay.stage_manifests), 1)
 	testing.expect_value(t, len(replay.path_plan.result.layers), 1)
 	testing.expect_value(t, len(replay.path_plan.result.paths), 1)

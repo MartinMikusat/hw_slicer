@@ -29,8 +29,6 @@ DEV_MAX_EXTRUDER_SPEED :: 120_000
 DEV_MAX_EXTRUDER_ACCELERATION :: 800_000
 DEV_RETRACTION_UM :: 500
 DEV_RETRACTION_SPEED :: 120_000
-DEV_PARK_X_UM :: 250_000
-DEV_PARK_Y_UM :: 500_000 // RatOS parks at the back: Y endstop at 500 mm
 // ponytail: PLA and toolhead assumptions; the captured configuration does not contain them.
 DEV_NOZZLE_TEMPERATURE :: 210
 DEV_BED_TEMPERATURE :: 60
@@ -95,11 +93,6 @@ design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved
 		maximum_acceleration = DEV_MAX_ACCELERATION,
 		maximum_extruder_speed = DEV_MAX_EXTRUDER_SPEED,
 		maximum_extruder_acceleration = DEV_MAX_EXTRUDER_ACCELERATION,
-		bed_leveling = .None,
-		park_after_print = true,
-		park_x = DEV_PARK_X_UM,
-		park_y = DEV_PARK_Y_UM,
-		park_z_lift = 10_000,
 	}
 	material := profiles.Material_Profile{
 		schema_version = profiles.MATERIAL_PROFILE_SCHEMA_VERSION,
@@ -168,7 +161,7 @@ design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved
 	}
 	dialect := profiles.Dialect_Profile{
 		schema_version = profiles.DIALECT_PROFILE_SCHEMA_VERSION,
-		dialect = .Marlin_Conservative,
+		dialect = .Klipper,
 		coordinate_mode = .Absolute,
 		extrusion_mode = .Relative,
 		xy_decimal_places = 3,
@@ -331,14 +324,14 @@ design_export :: proc(s: ^Design_State, allocator := context.allocator) -> (path
 		delete(plan.layers)
 		delete(plan.operations)
 	}
-	emitted, emit_error := gcode.marlin_emit(plan, profile)
+	emitted, emit_error := gcode.klipper_emit(plan, profile)
 	if emit_error != .None {return "", .Emit}
-	defer gcode.marlin_result_destroy(&emitted)
+	defer gcode.klipper_result_destroy(&emitted)
 	if os.make_directory_all(DEV_GCODE_DIRECTORY) != nil && !os.is_dir(DEV_GCODE_DIRECTORY) {return "", .Directory}
 	stem := strings.trim_suffix(filepath.base(s.path), filepath.ext(s.path))
 	name := fmt.tprintf("%s-%.2fmm.gcode", stem, design_nozzle(s))
 	destination, _ := filepath.join({DEV_GCODE_DIRECTORY, name}, allocator)
-	if gcode.marlin_file_publish(emitted, profile, plan, destination, replace_existing = true) != .None {
+	if gcode.klipper_file_publish(emitted, profile, plan, destination, replace_existing = true) != .None {
 		delete(destination, allocator)
 		return "", .Publish
 	}

@@ -5,6 +5,7 @@ An Apple Silicon macOS slicer that converts 3D models into deterministic FFF too
 ## Architecture and Platform
 
 - **Platform:** Apple Silicon (macOS ARM64). Target native Apple Silicon features and Neon/SIMD explicitly.
+- **G-code:** Klipper only. The printer's `START_PRINT` and `END_PRINT` macros own homing, heating, meshing, priming, parking, and shutdown.
 - **Languages:** Odin for engine, pipeline, geometry, and UI logic; Objective-C (`host/HWSlicerHost.m`) for AppKit window lifecycle and platform events; C++ (`third_party/clipper2/`) for planar polygon boolean/offset operations.
 - **Graphics & UI:** Direct Metal rendering (`CAMetalLayer`) and custom shaders for the 3D scene. The 2D interface is an immediate-mode UI with a typed control registry, drawn with `hw_odin_rune` (`rune:gpu` draw list, `rune:text`) into the same command buffer. `HWSlicerHost.m` keeps the window, events, accessibility, and open panel.
 - **Rendering Model:** Demand-driven rendering. Only render frames upon user interaction, state mutations, animation ticks, or window resize.

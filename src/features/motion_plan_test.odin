@@ -366,7 +366,6 @@ motion_plan_test_profile :: proc(
 			maximum_acceleration = 5_000_000,
 			maximum_extruder_speed = 50_000,
 			maximum_extruder_acceleration = 5_000_000,
-			bed_leveling = .None,
 		},
 		material = {
 			schema_version = profiles.MATERIAL_PROFILE_SCHEMA_VERSION,
@@ -410,7 +409,7 @@ motion_plan_test_profile :: proc(
 		},
 		dialect = {
 			schema_version = profiles.DIALECT_PROFILE_SCHEMA_VERSION,
-			dialect = .Marlin_Conservative,
+			dialect = .Klipper,
 			coordinate_mode = .Absolute,
 			extrusion_mode = .Relative,
 			xy_decimal_places = 3,

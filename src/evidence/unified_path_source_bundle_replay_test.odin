@@ -221,7 +221,7 @@ unified_source_bundle_expect_replay :: proc(
 	testing.expect(t, !replay.path_plan_loaded)
 	testing.expect(t, !replay.extrusion_loaded)
 	testing.expect(t, !replay.motion_plan_loaded)
-	testing.expect(t, !replay.marlin_loaded)
+	testing.expect(t, !replay.klipper_loaded)
 	testing.expect_value(t, len(replay.stage_manifests), 1)
 	testing.expect_value(t, len(replay.unified_sources.result.layers), 1)
 	testing.expect_value(t, len(replay.unified_sources.result.sources), 0)

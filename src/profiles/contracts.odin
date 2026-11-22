@@ -2,10 +2,10 @@ package profiles
 
 import contracts "../contracts"
 
-PRINTER_PROFILE_SCHEMA_VERSION :: u32(2)
+PRINTER_PROFILE_SCHEMA_VERSION :: u32(3)
 MATERIAL_PROFILE_SCHEMA_VERSION :: u32(1)
 PROCESS_PROFILE_SCHEMA_VERSION :: u32(2)
-DIALECT_PROFILE_SCHEMA_VERSION :: u32(2)
+DIALECT_PROFILE_SCHEMA_VERSION :: u32(3)
 
 RATIO_SCALE :: u32(1_000_000)
 MAX_BRIDGE_ANGLE_CANDIDATES :: 8
@@ -114,13 +114,6 @@ Extrusion_Accumulation_Policy :: enum u8 {
 	Volume_Then_Fixed_Point_Length,
 }
 
-Bed_Leveling_Policy :: enum u8 {
-	Invalid,
-	None,
-	Probe_Before_Print,
-	Restore_Stored_Mesh,
-}
-
 Acceleration_Command_Policy :: enum u8 {
 	Invalid,
 	Profile_Approved,
@@ -133,7 +126,7 @@ GCode_Output_Mode :: enum u8 {
 
 GCode_Dialect :: enum u8 {
 	Invalid,
-	Marlin_Conservative,
+	Klipper,
 }
 
 Coordinate_Mode :: enum u8 {
@@ -200,11 +193,6 @@ Printer_Profile :: struct {
 	maximum_acceleration: Acceleration_Um_Per_Second_Squared,
 	maximum_extruder_speed: Speed_Um_Per_Second,
 	maximum_extruder_acceleration: Acceleration_Um_Per_Second_Squared,
-	bed_leveling:         Bed_Leveling_Policy,
-	park_after_print:     bool,
-	park_x:               contracts.Micrometres,
-	park_y:               contracts.Micrometres,
-	park_z_lift:          contracts.Micrometres,
 }
 
 Material_Profile :: struct {

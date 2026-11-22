@@ -1988,8 +1988,6 @@ under the active coordinate, extrusion, tool, or feed mode.
   Princeton University Press, 2006. ISBN 978-0-691-12993-8.
 - Toth, P., and Vigo, D., eds. *The Vehicle Routing Problem*, SIAM, 2002.
   ISBN 978-0-89871-498-2.
-- Marlin Firmware. *G-code Index*, current official documentation,
-  [marlinfw.org/meta/gcode](https://marlinfw.org/meta/gcode/).
 - Klipper. *G-Codes*, current official documentation,
   [klipper3d.org/G-Codes.html](https://www.klipper3d.org/G-Codes.html).
 
@@ -2020,8 +2018,8 @@ under the active coordinate, extrusion, tool, or feed mode.
 **Milestone Project**
 
 Integrate spatial-bin nearest selection, bounded 2-opt, seam policy, retraction,
-speed and flow annotations, the initial Marlin-compatible dialect, and the
-independent validator. Add other dialects only through conformance fixtures.
+speed and flow annotations, the Klipper dialect, and the independent
+validator. The slicer targets Klipper only.
 
 **Time Estimate**
 
@@ -2782,7 +2780,7 @@ an automatic fail regardless of the weighted score.
 | GPU limits | Threadgroup and memory values come from runtime properties and current feature tables | Record capabilities and calibration in benchmark manifests on each machine |
 | Support scope | Normal supports and interfaces are release requirements; tree supports are a later gated provider | Define stability, trapped-volume, collision, material, and print validation fixtures |
 | Multi-material scope | Contracts preserve material and tool ownership from the start | Choose target printers and define purge, wipe, prime, tool-change, and tower policy |
-| G-code dialects | One Marlin-compatible dialect is first; other firmware requires provider tests | Select physical printers, pin documentation, dry-run, and compare parsed state |
+| G-code dialects | Klipper only; other firmware is out of scope | Pin Klipper and RatOS macro documentation, dry-run, and compare parsed state |
 | Printer profiles | Profiles are versioned data, not bundled claims until verified | Obtain manufacturer data, record license and source, then run physical calibration |
 | Benchmark corpus | Generated fixtures plus redistributable real models can cover scale and defects | Select exact models, record licenses and SHA-256 hashes, and publish expected results |
 | Performance thresholds | The table defines the desired release floor | Calibrate the initial scalar engine; revise only through a recorded engineering decision |

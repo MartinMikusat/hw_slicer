@@ -5,68 +5,65 @@ import "core:strings"
 
 import contracts "../contracts"
 import features "../features"
+import polygon "../polygon"
 import profiles "../profiles"
 
-MARLIN_EMITTER_SCHEMA_VERSION :: u32(1)
+KLIPPER_EMITTER_SCHEMA_VERSION :: u32(2)
+KLIPPER_HEADER :: "; hw_slicer klipper"
 
-Marlin_Command_Kind :: enum u8 {
+// The printer's START_PRINT and END_PRINT macros own homing, heating, bed meshing, priming,
+// parking and shutdown. START_PRINT takes the RatOS parameters: temperatures and the
+// extrusion area X0, Y0, X1, Y1 in mm.
+Klipper_Command_Kind :: enum u8 {
 	Invalid,
 	Comment,
+	Set_Print_Stats,
+	Start_Print,
 	Set_Millimetres,
 	Set_Absolute_Coordinates,
 	Set_Relative_Extrusion,
-	Set_Bed_Temperature,
-	Wait_Bed_Temperature,
-	Wait_Nozzle_Temperature,
-	Home_All_Axes,
-	Probe_Bed,
-	Restore_Bed_Mesh,
-	Set_Print_Acceleration,
-	Set_Travel_Acceleration,
-	Set_Retract_Acceleration,
+	Set_Acceleration,
 	Set_Fan,
 	Move,
 	Dwell,
-	Set_Nozzle_Temperature,
-	Disable_Steppers,
+	End_Print,
 }
 
-Marlin_Command_Record :: struct {
+Klipper_Command_Record :: struct {
 	stable_id:          contracts.Stable_ID,
 	command_index:      u32,
-	kind:               Marlin_Command_Kind,
+	kind:               Klipper_Command_Kind,
 	byte_offset:        u64,
 	byte_count:         u32,
 	source_operation_id: contracts.Stable_ID,
 	layer_index:        u32,
 }
 
-Marlin_Result :: struct {
+Klipper_Result :: struct {
 	schema_version:             u32,
 	bytes:                      []u8,
-	commands:                   []Marlin_Command_Record,
+	commands:                   []Klipper_Command_Record,
 	layer_count:                u32,
 	motion_operation_count:     u64,
 	positive_filament_nm:       u128,
 	negative_filament_nm:       u128,
 	emitted_dwell_ms:           u64,
-	shutdown_retraction_nm:     u64,
 	final_x:                    contracts.Micrometres,
 	final_y:                    contracts.Micrometres,
 	final_z:                    contracts.Micrometres,
 }
 
-Marlin_Limits :: struct {
+Klipper_Limits :: struct {
 	max_commands: u64,
 	max_bytes:    u64,
 }
 
-DEFAULT_MARLIN_LIMITS :: Marlin_Limits{
+DEFAULT_KLIPPER_LIMITS :: Klipper_Limits{
 	max_commands = 20_000_000_000,
 	max_bytes = 16*1024*1024*1024,
 }
 
-Marlin_Error :: enum u8 {
+Klipper_Error :: enum u8 {
 	None,
 	Invalid_Profile,
 	Invalid_Motion,
@@ -76,10 +73,8 @@ Marlin_Error :: enum u8 {
 	Arithmetic,
 }
 
-Marlin_State :: struct {
-	print_acceleration:   i64,
-	travel_acceleration:  i64,
-	retract_acceleration: i64,
+Klipper_State :: struct {
+	acceleration:         i64, // mm/s²; -1 until set
 	fan_pwm:              i32,
 	positioned_xy:        bool,
 	x:                    contracts.Micrometres,
@@ -87,12 +82,12 @@ Marlin_State :: struct {
 	z:                    contracts.Micrometres,
 }
 
-marlin_emit :: proc(
+klipper_emit :: proc(
 	motion: features.Motion_Plan_Result,
 	profile: profiles.Resolved_Profiles,
-	limits := DEFAULT_MARLIN_LIMITS,
+	limits := DEFAULT_KLIPPER_LIMITS,
 	allocator := context.allocator,
-) -> (Marlin_Result, Marlin_Error) {
+) -> (Klipper_Result, Klipper_Error) {
 	resolved, resolve_error := profiles.profiles_resolve(
 		profile.printer,
 		profile.material,
@@ -102,11 +97,11 @@ marlin_emit :: proc(
 	if resolve_error != .None || resolved != profile {
 		return {}, .Invalid_Profile
 	}
-	if !marlin_motion_valid(motion, profile) {
+	if !klipper_motion_valid(motion, profile) {
 		return {}, .Invalid_Motion
 	}
 	maximum_commands :=
-		u64(32)+u64(len(motion.layers))*4+
+		u64(32)+u64(len(motion.layers))*5+
 		u64(len(motion.operations))*3
 	if maximum_commands < u64(len(motion.operations)) ||
 	   maximum_commands > limits.max_commands ||
@@ -130,152 +125,67 @@ marlin_emit :: proc(
 	if builder_error != nil {return {}, .Allocation_Failed}
 	defer strings.builder_destroy(&builder)
 	commands :=
-		make([]Marlin_Command_Record, int(maximum_commands), allocator)
+		make([]Klipper_Command_Record, int(maximum_commands), allocator)
 	if maximum_commands > 0 && commands == nil {
 		return {}, .Allocation_Failed
 	}
 	command_write := 0
-	result := Marlin_Result{
-		schema_version = MARLIN_EMITTER_SCHEMA_VERSION,
+	result := Klipper_Result{
+		schema_version = KLIPPER_EMITTER_SCHEMA_VERSION,
 		layer_count = u32(len(motion.layers)),
 		motion_operation_count = u64(len(motion.operations)),
 	}
-	state := Marlin_State{
-		print_acceleration = -1,
-		travel_acceleration = -1,
-		retract_acceleration = -1,
+	state := Klipper_State{
+		acceleration = -1,
 		fan_pwm = -1,
 	}
 
-	if !marlin_write_literal(
+	area := klipper_extrusion_area(motion)
+	start := klipper_command_begin(builder)
+	fmt.sbprintf(&builder, "%s\n", KLIPPER_HEADER)
+	if !klipper_command_end(builder, commands, &command_write, .Comment, start) {
+		delete(commands, allocator)
+		return {}, .Command_Limit
+	}
+	start = klipper_command_begin(builder)
+	fmt.sbprintf(&builder, "SET_PRINT_STATS_INFO TOTAL_LAYER=%d\n", len(motion.layers))
+	if !klipper_command_end(builder, commands, &command_write, .Set_Print_Stats, start) {
+		delete(commands, allocator)
+		return {}, .Command_Limit
+	}
+	nozzle_temperature := i32(profile.process.source.nozzle_temperature)
+	start = klipper_command_begin(builder)
+	fmt.sbprintf(
 		&builder,
-		commands,
-		&command_write,
-		.Comment,
-		"; hw_slicer conservative marlin\n",
-	) ||
-	   !marlin_write_literal(
-		&builder,
-		commands,
-		&command_write,
-		.Set_Millimetres,
-		"G21\n",
-	) ||
-	   !marlin_write_literal(
-		&builder,
-		commands,
-		&command_write,
-		.Set_Absolute_Coordinates,
-		"G90\n",
-	) ||
-	   !marlin_write_literal(
-		&builder,
-		commands,
-		&command_write,
-		.Set_Relative_Extrusion,
-		"M83\n",
-	) ||
-	   !marlin_write_literal(
-		&builder,
-		commands,
-		&command_write,
-		.Set_Fan,
-		"M107\n",
-	) {
+		"START_PRINT EXTRUDER_TEMP=%d EXTRUDER_OTHER_LAYER_TEMP=%d BED_TEMP=%d X0=",
+		nozzle_temperature,
+		nozzle_temperature,
+		i32(profile.process.source.bed_temperature),
+	)
+	klipper_append_coordinate(&builder, area[0].x)
+	strings.write_string(&builder, " Y0=")
+	klipper_append_coordinate(&builder, area[0].y)
+	strings.write_string(&builder, " X1=")
+	klipper_append_coordinate(&builder, area[1].x)
+	strings.write_string(&builder, " Y1=")
+	klipper_append_coordinate(&builder, area[1].y)
+	strings.write_string(&builder, "\n")
+	if !klipper_command_end(builder, commands, &command_write, .Start_Print, start) ||
+	   !klipper_write_literal(&builder, commands, &command_write, .Set_Millimetres, "G21\n") ||
+	   !klipper_write_literal(&builder, commands, &command_write, .Set_Absolute_Coordinates, "G90\n") ||
+	   !klipper_write_literal(&builder, commands, &command_write, .Set_Relative_Extrusion, "M83\n") ||
+	   !klipper_write_literal(&builder, commands, &command_write, .Set_Fan, "M107\n") {
 		delete(commands, allocator)
 		return {}, .Command_Limit
 	}
 	state.fan_pwm = 0
-	bed_temperature := i32(profile.process.source.bed_temperature)
-	if bed_temperature > 0 {
-		start := marlin_command_begin(builder)
-		fmt.sbprintf(&builder, "M140 S%d\n", bed_temperature)
-		if !marlin_command_end(
-			builder,
-			commands,
-			&command_write,
-			.Set_Bed_Temperature,
-			start,
-		) {
-			delete(commands, allocator)
-			return {}, .Command_Limit
-		}
-	}
-	if !marlin_write_literal(
-		&builder,
-		commands,
-		&command_write,
-		.Home_All_Axes,
-		"G28\n",
-	) {
-		delete(commands, allocator)
-		return {}, .Command_Limit
-	}
-	if bed_temperature > 0 {
-		start := marlin_command_begin(builder)
-		fmt.sbprintf(&builder, "M190 S%d\n", bed_temperature)
-		if !marlin_command_end(
-			builder,
-			commands,
-			&command_write,
-			.Wait_Bed_Temperature,
-			start,
-		) {
-			delete(commands, allocator)
-			return {}, .Command_Limit
-		}
-	}
-	switch profile.printer.bed_leveling {
-	case .None:
-	case .Probe_Before_Print:
-		if !marlin_write_literal(
-			&builder,
-			commands,
-			&command_write,
-			.Probe_Bed,
-			"G29\n",
-		) {
-			delete(commands, allocator)
-			return {}, .Command_Limit
-		}
-	case .Restore_Stored_Mesh:
-		if !marlin_write_literal(
-			&builder,
-			commands,
-			&command_write,
-			.Restore_Bed_Mesh,
-			"M420 S1\n",
-		) {
-			delete(commands, allocator)
-			return {}, .Command_Limit
-		}
-	case .Invalid:
-		delete(commands, allocator)
-		return {}, .Invalid_Profile
-	}
-	start := marlin_command_begin(builder)
-	fmt.sbprintf(
-		&builder,
-		"M109 S%d\n",
-		i32(profile.process.source.nozzle_temperature),
-	)
-	if !marlin_command_end(
-		builder,
-		commands,
-		&command_write,
-		.Wait_Nozzle_Temperature,
-		start,
-	) {
-		delete(commands, allocator)
-		return {}, .Command_Limit
-	}
 
 	for layer in motion.layers {
-		start = marlin_command_begin(builder)
+		start = klipper_command_begin(builder)
 		fmt.sbprintf(&builder, ";LAYER:%d Z:", layer.layer_index)
-		marlin_append_coordinate(&builder, layer.z)
+		klipper_append_coordinate(&builder, layer.z)
 		strings.write_string(&builder, "\n")
-		if !marlin_command_end(
+		if !klipper_command_end(
 			builder,
 			commands,
 			&command_write,
@@ -286,7 +196,20 @@ marlin_emit :: proc(
 			delete(commands, allocator)
 			return {}, .Command_Limit
 		}
-		if !marlin_emit_acceleration(
+		start = klipper_command_begin(builder)
+		fmt.sbprintf(&builder, "SET_PRINT_STATS_INFO CURRENT_LAYER=%d\n", layer.layer_index+1)
+		if !klipper_command_end(
+			builder,
+			commands,
+			&command_write,
+			.Set_Print_Stats,
+			start,
+			layer_index = layer.layer_index,
+		) {
+			delete(commands, allocator)
+			return {}, .Command_Limit
+		}
+		if !klipper_emit_acceleration(
 			&builder,
 			commands,
 			&command_write,
@@ -299,15 +222,15 @@ marlin_emit :: proc(
 			delete(commands, allocator)
 			return {}, .Command_Limit
 		}
-		start = marlin_command_begin(builder)
+		start = klipper_command_begin(builder)
 		strings.write_string(&builder, "G0 Z")
-		marlin_append_coordinate(&builder, layer.z)
+		klipper_append_coordinate(&builder, layer.z)
 		fmt.sbprintf(
 			&builder,
 			" F%d\n",
-			marlin_feed_rate(profile.process.source.travel.speed),
+			klipper_feed_rate(profile.process.source.travel.speed),
 		)
-		if !marlin_command_end(
+		if !klipper_command_end(
 			builder,
 			commands,
 			&command_write,
@@ -325,19 +248,19 @@ marlin_emit :: proc(
 			operation_start+int(layer.operation_count)
 		for operation in motion.operations[operation_start:operation_end] {
 			if !state.positioned_xy && operation.kind != .Dwell {
-				start = marlin_command_begin(builder)
+				start = klipper_command_begin(builder)
 				strings.write_string(&builder, "G0 X")
-				marlin_append_coordinate(&builder, operation.point_a.x)
+				klipper_append_coordinate(&builder, operation.point_a.x)
 				strings.write_string(&builder, " Y")
-				marlin_append_coordinate(&builder, operation.point_a.y)
+				klipper_append_coordinate(&builder, operation.point_a.y)
 				fmt.sbprintf(
 					&builder,
 					" F%d\n",
-					marlin_feed_rate(
+					klipper_feed_rate(
 						profile.process.source.travel.speed,
 					),
 				)
-				if !marlin_command_end(
+				if !klipper_command_end(
 					builder,
 					commands,
 					&command_write,
@@ -352,7 +275,7 @@ marlin_emit :: proc(
 				state.x = operation.point_a.x
 				state.y = operation.point_a.y
 			}
-			if !marlin_emit_operation(
+			if !klipper_emit_operation(
 				&builder,
 				commands,
 				&command_write,
@@ -366,139 +289,7 @@ marlin_emit :: proc(
 		}
 	}
 
-	if profile.printer.park_after_print && result.positive_filament_nm > 0 {
-		if len(motion.layers) == 0 {
-			delete(commands, allocator)
-			return {}, .Invalid_Motion
-		}
-		lifted_z :=
-			i64(state.z)+i64(profile.printer.park_z_lift)
-		if lifted_z > i64(profile.printer.axis_maximum_z) {
-			delete(commands, allocator)
-			return {}, .Invalid_Motion
-		}
-		if !marlin_emit_acceleration(
-			&builder,
-			commands,
-			&command_write,
-			&state,
-			.Retract,
-			profile.process.source.retraction_acceleration,
-			{},
-			max(u32),
-		) {
-			delete(commands, allocator)
-			return {}, .Command_Limit
-		}
-		shutdown_retraction_nm :=
-			u64(i64(profile.process.source.retraction_distance))*1_000
-		start = marlin_command_begin(builder)
-		strings.write_string(&builder, "G1 E")
-		marlin_append_extrusion(&builder, -i128(shutdown_retraction_nm))
-		fmt.sbprintf(
-			&builder,
-			" F%d\n",
-			marlin_feed_rate(profile.process.source.retraction_speed),
-		)
-		if !marlin_command_end(
-			builder,
-			commands,
-			&command_write,
-			.Move,
-			start,
-		) {
-			delete(commands, allocator)
-			return {}, .Command_Limit
-		}
-		result.shutdown_retraction_nm = shutdown_retraction_nm
-		result.negative_filament_nm += u128(shutdown_retraction_nm)
-		if !marlin_emit_acceleration(
-			&builder,
-			commands,
-			&command_write,
-			&state,
-			.Travel,
-			profile.process.source.travel.acceleration,
-			{},
-			max(u32),
-		) {
-			delete(commands, allocator)
-			return {}, .Command_Limit
-		}
-		start = marlin_command_begin(builder)
-		strings.write_string(&builder, "G0 Z")
-		marlin_append_coordinate(
-			&builder,
-			contracts.Micrometres(lifted_z),
-		)
-		fmt.sbprintf(
-			&builder,
-			" F%d\n",
-			marlin_feed_rate(profile.process.source.travel.speed),
-		)
-		if !marlin_command_end(
-			builder,
-			commands,
-			&command_write,
-			.Move,
-			start,
-		) {
-			delete(commands, allocator)
-			return {}, .Command_Limit
-		}
-		state.z = contracts.Micrometres(lifted_z)
-		start = marlin_command_begin(builder)
-		strings.write_string(&builder, "G0 X")
-		marlin_append_coordinate(&builder, profile.printer.park_x)
-		strings.write_string(&builder, " Y")
-		marlin_append_coordinate(&builder, profile.printer.park_y)
-		fmt.sbprintf(
-			&builder,
-			" F%d\n",
-			marlin_feed_rate(profile.process.source.travel.speed),
-		)
-		if !marlin_command_end(
-			builder,
-			commands,
-			&command_write,
-			.Move,
-			start,
-		) {
-			delete(commands, allocator)
-			return {}, .Command_Limit
-		}
-		state.x = profile.printer.park_x
-		state.y = profile.printer.park_y
-	}
-
-	if !marlin_write_literal(
-		&builder,
-		commands,
-		&command_write,
-		.Set_Fan,
-		"M107\n",
-	) ||
-	   !marlin_write_literal(
-		&builder,
-		commands,
-		&command_write,
-		.Set_Nozzle_Temperature,
-		"M104 S0\n",
-	) ||
-	   !marlin_write_literal(
-		&builder,
-		commands,
-		&command_write,
-		.Set_Bed_Temperature,
-		"M140 S0\n",
-	) ||
-	   !marlin_write_literal(
-		&builder,
-		commands,
-		&command_write,
-		.Disable_Steppers,
-		"M84\n",
-	) {
+	if !klipper_write_literal(&builder, commands, &command_write, .End_Print, "END_PRINT\n") {
 		delete(commands, allocator)
 		return {}, .Command_Limit
 	}
@@ -518,7 +309,7 @@ marlin_emit :: proc(
 	result.final_y = state.y
 	result.final_z = state.z
 	report, validation_error :=
-		marlin_validate(result.bytes, profile, motion)
+		klipper_validate(result.bytes, profile, motion)
 	if validation_error != .None ||
 	   report.command_count != u64(len(result.commands)) ||
 	   report.positive_filament_nm != result.positive_filament_nm ||
@@ -527,22 +318,22 @@ marlin_emit :: proc(
 	   report.final_x != result.final_x ||
 	   report.final_y != result.final_y ||
 	   report.final_z != result.final_z {
-		marlin_result_destroy(&result, allocator)
+		klipper_result_destroy(&result, allocator)
 		return {}, .Invalid_Motion
 	}
 	return result, .None
 }
 
-marlin_emit_operation :: proc(
+klipper_emit_operation :: proc(
 	builder: ^strings.Builder,
-	commands: []Marlin_Command_Record,
+	commands: []Klipper_Command_Record,
 	command_write: ^int,
-	state: ^Marlin_State,
+	state: ^Klipper_State,
 	operation: features.Motion_Operation,
-	result: ^Marlin_Result,
+	result: ^Klipper_Result,
 ) -> bool {
 	acceleration_kind := operation.kind
-	if !marlin_emit_acceleration(
+	if !klipper_emit_acceleration(
 		builder,
 		commands,
 		command_write,
@@ -555,15 +346,15 @@ marlin_emit_operation :: proc(
 		return false
 	}
 	if operation.kind == .Extrude {
-		pwm := marlin_fan_pwm(operation.fan_ratio)
+		pwm := klipper_fan_pwm(operation.fan_ratio)
 		if pwm != state.fan_pwm {
-			start := marlin_command_begin(builder^)
+			start := klipper_command_begin(builder^)
 			if pwm == 0 {
 				strings.write_string(builder, "M107\n")
 			} else {
 				fmt.sbprintf(builder, "M106 S%d\n", pwm)
 			}
-			if !marlin_command_end(
+			if !klipper_command_end(
 				builder^,
 				commands,
 				command_write,
@@ -577,37 +368,37 @@ marlin_emit_operation :: proc(
 			state.fan_pwm = pwm
 		}
 	}
-	start := marlin_command_begin(builder^)
+	start := klipper_command_begin(builder^)
 	switch operation.kind {
 	case .Retract, .Recover:
 		strings.write_string(builder, "G1 E")
-		marlin_append_extrusion(builder, operation.filament_delta_nm)
+		klipper_append_extrusion(builder, operation.filament_delta_nm)
 		fmt.sbprintf(
 			builder,
 			" F%d\n",
-			marlin_feed_rate(operation.speed),
+			klipper_feed_rate(operation.speed),
 		)
 	case .Travel:
 		strings.write_string(builder, "G0 X")
-		marlin_append_coordinate(builder, operation.point_b.x)
+		klipper_append_coordinate(builder, operation.point_b.x)
 		strings.write_string(builder, " Y")
-		marlin_append_coordinate(builder, operation.point_b.y)
+		klipper_append_coordinate(builder, operation.point_b.y)
 		fmt.sbprintf(
 			builder,
 			" F%d\n",
-			marlin_feed_rate(operation.speed),
+			klipper_feed_rate(operation.speed),
 		)
 	case .Extrude:
 		strings.write_string(builder, "G1 X")
-		marlin_append_coordinate(builder, operation.point_b.x)
+		klipper_append_coordinate(builder, operation.point_b.x)
 		strings.write_string(builder, " Y")
-		marlin_append_coordinate(builder, operation.point_b.y)
+		klipper_append_coordinate(builder, operation.point_b.y)
 		strings.write_string(builder, " E")
-		marlin_append_extrusion(builder, operation.filament_delta_nm)
+		klipper_append_extrusion(builder, operation.filament_delta_nm)
 		fmt.sbprintf(
 			builder,
 			" F%d\n",
-			marlin_feed_rate(operation.speed),
+			klipper_feed_rate(operation.speed),
 		)
 	case .Dwell:
 		dwell_ms := (operation.duration_us+999)/1_000
@@ -616,7 +407,7 @@ marlin_emit_operation :: proc(
 	case .Invalid:
 		return false
 	}
-	if !marlin_command_end(
+	if !klipper_command_end(
 		builder^,
 		commands,
 		command_write,
@@ -642,47 +433,43 @@ marlin_emit_operation :: proc(
 	return true
 }
 
-marlin_emit_acceleration :: proc(
+// The bounding rectangle of all extrusion endpoints, which START_PRINT receives as the print
+// area. A valid motion plan has at least one extrusion.
+klipper_extrusion_area :: proc(motion: features.Motion_Plan_Result) -> (area: [2]polygon.Polygon_Point) {
+	area = {{max(contracts.Micrometres), max(contracts.Micrometres)}, {min(contracts.Micrometres), min(contracts.Micrometres)}}
+	for operation in motion.operations {
+		if operation.kind != .Extrude {continue}
+		for point in ([2]polygon.Polygon_Point{operation.point_a, operation.point_b}) {
+			area[0] = {min(area[0].x, point.x), min(area[0].y, point.y)}
+			area[1] = {max(area[1].x, point.x), max(area[1].y, point.y)}
+		}
+	}
+	return
+}
+
+klipper_emit_acceleration :: proc(
 	builder: ^strings.Builder,
-	commands: []Marlin_Command_Record,
+	commands: []Klipper_Command_Record,
 	command_write: ^int,
-	state: ^Marlin_State,
+	state: ^Klipper_State,
 	operation_kind: features.Motion_Operation_Kind,
 	acceleration: profiles.Acceleration_Um_Per_Second_Squared,
 	source_operation_id: contracts.Stable_ID,
 	layer_index: u32,
 ) -> bool {
-	if operation_kind == .Dwell {return true}
+	// Klipper limits extrude-only moves by max_extrude_only_accel, not the toolhead acceleration.
+	if operation_kind == .Dwell || operation_kind == .Retract || operation_kind == .Recover {return true}
+	if operation_kind == .Invalid {return false}
 	value := i64(acceleration)/1_000
-	kind: Marlin_Command_Kind
-	prefix := ""
-	current: ^i64
-	switch operation_kind {
-	case .Extrude:
-		kind = .Set_Print_Acceleration
-		prefix = "M204 P"
-		current = &state.print_acceleration
-	case .Travel:
-		kind = .Set_Travel_Acceleration
-		prefix = "M204 T"
-		current = &state.travel_acceleration
-	case .Retract, .Recover:
-		kind = .Set_Retract_Acceleration
-		prefix = "M204 R"
-		current = &state.retract_acceleration
-	case .Dwell:
-		return true
-	case .Invalid:
-		return false
-	}
+	current := &state.acceleration
 	if current^ == value {return true}
-	start := marlin_command_begin(builder^)
-	fmt.sbprintf(builder, "%s%d\n", prefix, value)
-	if !marlin_command_end(
+	start := klipper_command_begin(builder^)
+	fmt.sbprintf(builder, "SET_VELOCITY_LIMIT ACCEL=%d\n", value)
+	if !klipper_command_end(
 		builder^,
 		commands,
 		command_write,
-		kind,
+		.Set_Acceleration,
 		start,
 		source_operation_id,
 		layer_index,
@@ -693,7 +480,7 @@ marlin_emit_acceleration :: proc(
 	return true
 }
 
-marlin_motion_valid :: proc(
+klipper_motion_valid :: proc(
 	motion: features.Motion_Plan_Result,
 	profile: profiles.Resolved_Profiles,
 ) -> bool {
@@ -713,7 +500,7 @@ marlin_motion_valid :: proc(
 		layer_z := i64(layer.z)
 		operation_limit :=
 			layer.operation_offset+u64(layer.operation_count)
-		duration_sum, duration_ok := marlin_checked_add_u64(
+		duration_sum, duration_ok := klipper_checked_add_u64(
 			layer.motion_duration_us,
 			layer.dwell_duration_us,
 		)
@@ -737,17 +524,17 @@ marlin_motion_valid :: proc(
 			if operation.stable_id == contracts.INVALID_STABLE_ID ||
 			   operation.layer_index != u32(layer_index) ||
 			   operation.duration_us == 0 ||
-			   !marlin_operation_numeric_valid(operation, profile) {
+			   !klipper_operation_numeric_valid(operation, profile) {
 				return false
 			}
 			if operation.kind == .Dwell {
-				layer_dwell, duration_ok = marlin_checked_add_u64(
+				layer_dwell, duration_ok = klipper_checked_add_u64(
 					layer_dwell,
 					operation.duration_us,
 				)
 				dwell_count += 1
 			} else {
-				layer_motion, duration_ok = marlin_checked_add_u64(
+				layer_motion, duration_ok = klipper_checked_add_u64(
 					layer_motion,
 					operation.duration_us,
 				)
@@ -793,14 +580,14 @@ marlin_motion_valid :: proc(
 			return false
 		}
 		total_motion, duration_ok =
-			marlin_checked_add_u64(total_motion, layer_motion)
+			klipper_checked_add_u64(total_motion, layer_motion)
 		if duration_ok {
 			total_dwell, duration_ok =
-				marlin_checked_add_u64(total_dwell, layer_dwell)
+				klipper_checked_add_u64(total_dwell, layer_dwell)
 		}
 		if duration_ok {
 			total_planned, duration_ok =
-				marlin_checked_add_u64(
+				klipper_checked_add_u64(
 					total_planned,
 					layer.planned_duration_us,
 				)
@@ -818,7 +605,7 @@ marlin_motion_valid :: proc(
 		total_planned == motion.total_planned_duration_us
 }
 
-marlin_operation_numeric_valid :: proc(
+klipper_operation_numeric_valid :: proc(
 	operation: features.Motion_Operation,
 	profile: profiles.Resolved_Profiles,
 ) -> bool {
@@ -874,37 +661,37 @@ marlin_operation_numeric_valid :: proc(
 	return false
 }
 
-marlin_write_literal :: proc(
+klipper_write_literal :: proc(
 	builder: ^strings.Builder,
-	commands: []Marlin_Command_Record,
+	commands: []Klipper_Command_Record,
 	command_write: ^int,
-	kind: Marlin_Command_Kind,
+	kind: Klipper_Command_Kind,
 	line: string,
 	source_operation_id := contracts.INVALID_STABLE_ID,
 	layer_index := max(u32),
 ) -> bool {
-	start := marlin_command_begin(builder^)
+	start := klipper_command_begin(builder^)
 	strings.write_string(builder, line)
-	return marlin_command_end(
+	return klipper_command_end(
 		builder^,
 		commands,
 		command_write,
-		kind,
+		.Set_Acceleration,
 		start,
 		source_operation_id,
 		layer_index,
 	)
 }
 
-marlin_command_begin :: proc(builder: strings.Builder) -> int {
+klipper_command_begin :: proc(builder: strings.Builder) -> int {
 	return len(strings.to_string(builder))
 }
 
-marlin_command_end :: proc(
+klipper_command_end :: proc(
 	builder: strings.Builder,
-	commands: []Marlin_Command_Record,
+	commands: []Klipper_Command_Record,
 	command_write: ^int,
-	kind: Marlin_Command_Kind,
+	kind: Klipper_Command_Kind,
 	start: int,
 	source_operation_id := contracts.INVALID_STABLE_ID,
 	layer_index := max(u32),
@@ -936,18 +723,18 @@ marlin_command_end :: proc(
 	return true
 }
 
-marlin_append_coordinate :: proc(
+klipper_append_coordinate :: proc(
 	builder: ^strings.Builder,
 	value: contracts.Micrometres,
 ) {
-	marlin_append_fixed(builder, i128(value), 3)
+	klipper_append_fixed(builder, i128(value), 3)
 }
 
-marlin_append_extrusion :: proc(builder: ^strings.Builder, value_nm: i128) {
-	marlin_append_fixed(builder, value_nm/10, 5)
+klipper_append_extrusion :: proc(builder: ^strings.Builder, value_nm: i128) {
+	klipper_append_fixed(builder, value_nm/10, 5)
 }
 
-marlin_append_fixed :: proc(
+klipper_append_fixed :: proc(
 	builder: ^strings.Builder,
 	units: i128,
 	decimal_places: u8,
@@ -972,24 +759,24 @@ marlin_append_fixed :: proc(
 	}
 }
 
-marlin_feed_rate :: proc(speed: profiles.Speed_Um_Per_Second) -> i64 {
+klipper_feed_rate :: proc(speed: profiles.Speed_Um_Per_Second) -> i64 {
 	return i64(speed)*60/1_000
 }
 
-marlin_fan_pwm :: proc(ratio: profiles.Ratio_Ppm) -> i32 {
+klipper_fan_pwm :: proc(ratio: profiles.Ratio_Ppm) -> i32 {
 	return i32(
 		(u64(u32(ratio))*255+u64(profiles.RATIO_SCALE/2))/
 		u64(profiles.RATIO_SCALE),
 	)
 }
 
-marlin_checked_add_u64 :: proc(a, b: u64) -> (u64, bool) {
+klipper_checked_add_u64 :: proc(a, b: u64) -> (u64, bool) {
 	if b > max(u64)-a {return 0, false}
 	return a+b, true
 }
 
-marlin_result_destroy :: proc(
-	result: ^Marlin_Result,
+klipper_result_destroy :: proc(
+	result: ^Klipper_Result,
 	allocator := context.allocator,
 ) {
 	delete(result.bytes, allocator)

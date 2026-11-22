@@ -3,13 +3,13 @@ package evidence
 import contracts "../contracts"
 import gcode "../gcode"
 
-Marlin_Capture :: struct {
+Klipper_Capture :: struct {
 	bytes:      []u8,
 	artifact:   Evidence_Artifact,
 	additional: Capture_Usage,
 }
 
-Marlin_Capture_Error :: enum u8 {
+Klipper_Capture_Error :: enum u8 {
 	None,
 	Invalid_Request,
 	Capture_Disabled,
@@ -22,14 +22,14 @@ Marlin_Capture_Error :: enum u8 {
 	Allocation_Failed,
 }
 
-marlin_capture_describe :: proc(
+klipper_capture_describe :: proc(
 	path: string,
 	request: contracts.Evidence_Request,
 	current: Capture_Usage,
 	artifact_bytes: []u8,
-	limits := gcode.DEFAULT_MARLIN_ARTIFACT_LIMITS,
+	limits := gcode.DEFAULT_KLIPPER_ARTIFACT_LIMITS,
 	allocator := context.allocator,
-) -> (Marlin_Capture, Marlin_Capture_Error) {
+) -> (Klipper_Capture, Klipper_Capture_Error) {
 	switch request.level {
 	case .Disabled:
 		return {}, .Capture_Disabled
@@ -41,7 +41,7 @@ marlin_capture_describe :: proc(
 	}
 	if !artifact_path_valid(path) {return {}, .Invalid_Path}
 	summary, preflight_error :=
-		gcode.marlin_artifact_preflight(artifact_bytes, limits)
+		gcode.klipper_artifact_preflight(artifact_bytes, limits)
 	switch preflight_error {
 	case .None:
 	case .Limit:
@@ -75,8 +75,8 @@ marlin_capture_describe :: proc(
 		return {}, .Invalid_Request
 	}
 	decoded, decode_error :=
-		gcode.marlin_artifact_decode(artifact_bytes, limits, allocator)
-	gcode.marlin_artifact_destroy(&decoded, allocator)
+		gcode.klipper_artifact_decode(artifact_bytes, limits, allocator)
+	gcode.klipper_artifact_destroy(&decoded, allocator)
 	switch decode_error {
 	case .None:
 	case .Allocation_Failed:
@@ -96,8 +96,8 @@ marlin_capture_describe :: proc(
 	copy(bytes, artifact_bytes)
 	artifact, describe_error := evidence_artifact_describe(
 		path,
-		gcode.MARLIN_ARTIFACT_FORMAT,
-		gcode.MARLIN_ARTIFACT_SCHEMA_VERSION,
+		gcode.KLIPPER_ARTIFACT_FORMAT,
+		gcode.KLIPPER_ARTIFACT_SCHEMA_VERSION,
 		additional.item_count,
 		bytes,
 		allocator,
@@ -116,8 +116,8 @@ marlin_capture_describe :: proc(
 	}, .None
 }
 
-marlin_capture_destroy :: proc(
-	capture: ^Marlin_Capture,
+klipper_capture_destroy :: proc(
+	capture: ^Klipper_Capture,
 	allocator := context.allocator,
 ) {
 	delete(capture.bytes, allocator)
