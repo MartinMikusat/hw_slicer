@@ -1,141 +1,159 @@
 # Stack ownership plan
 
-This plan covers how the project takes control of the path from a design to the
-printer's motion, including a Klipper fork. It records the boundary, the current
-stack, the order of work, and the decisions that remain open. It is a plan, not
-a description of the current implementation.
+This plan covers how the project replaces the printer-side software with its
+own native stack. It records the target, the current stack, the order of work,
+and the decisions that remain open. It is a plan, not a description of the
+current implementation.
 
-## Goal and boundary
+## Target
 
-The operator wants to understand and control every layer from the design to the
-printer firmware. The boundary is the motor driver signal. The project owns:
+The goal is one "golden" setup for one printer: the operator's RatOS V-Core 3
+now, and possibly a custom printer later. The setup is complete and fixed. It
+has no plugin system and no general printer support.
 
-1. The design language and its evaluation (`src/design/`).
-2. The slicer's toolpath, simulation, and G-code output (`hw_slicer`).
-3. The printer application and its Moonraker client (`hw_ratos`).
-4. The Klipper host process, `klippy`, through a fork.
+Every program that the project writes is Odin and runs natively:
 
-The project does not modify the microcontroller firmware in Klipper's `src/`.
-That firmware executes timed step commands and runs heaters, so it stays
-upstream. The host-side step compression in `klippy/chelper/` belongs to the
-fork, but it changes only when a stage below requires it.
+1. The design language, slicer, simulation, and G-code output (`hw_slicer`).
+2. The printer application on the Mac (`hw_ratos`).
+3. A printer host on the printer's Linux computer. It replaces Klipper's
+   `klippy`, Moonraker, Mainsail, the RatOS Configurator, and the RatOS
+   macros.
+
+The boundary is the motor driver signal. The stock Klipper firmware on the
+printer's microcontrollers stays. It executes timed step commands, reads
+sensors, drives heaters, and shuts the machine down on faults. The Odin host
+speaks its documented serial protocol.
 
 ## Current stack
 
-The facts below come from the clones in `hw_ratos/research/reference-projects/`
-and the captured printer configuration in `hw_ratos/research/captured-config/`.
+These facts come from the clones in `hw_ratos/research/reference-projects/`
+and the captured configuration in `hw_ratos/research/captured-config/`.
 
-- RatOS builds its image from upstream Klipper: `KLIPPER_REPO_SHIP` is
-  `https://github.com/Klipper3d/klipper.git`, branch `master`
-  (`RatOS/src/modules/klipper/config`, lines 19–20). RatOS adds its
-  configuration, macros, and Klipper extension modules on top.
-- `klippy` loads a module from `klippy/extras/` for each configuration section
-  (`klippy/klippy.py`, `load_object`, lines 90–103). New host behaviour can
-  therefore ship as an extension module without changes to core files.
-- Each `Move` copies the current acceleration and junction deviation when it
-  is created (`klippy/toolhead.py`, lines 14–20). `SET_VELOCITY_LIMIT` affects
-  the moves queued after it, so per-feature acceleration already works without
-  a fork.
-- `SET_PRESSURE_ADVANCE` changes pressure advance at run time
-  (`klippy/kinematics/extruder.py`, line 98). `gcode_move` holds a speed
-  factor that an extension can change (`klippy/extras/gcode_move.py`).
-- `klippy` has a batch mode that converts G-code into the exact
-  microcontroller command stream without a printer
-  (`docs/Debugging.md`, lines 45–66).
-- The printer runs START_PRINT and END_PRINT from RatOS. The slicer's Klipper
-  output depends on them; see [docs/design-format.md](design-format.md).
-- `hw_ratos` already reads `printer.info` through Moonraker
-  (`moonraker/client.odin`), which reports the running Klipper version.
+| Component | Role on the printer | Implementation |
+| --- | --- | --- |
+| Klipper firmware (`src/`) | Step timing, sensors, heaters, fault shutdown | C on the microcontrollers |
+| `klippy` | G-code, macros, motion planning, kinematics, homing, probing, heaters | Python: about 9,600 lines of core and kinematics, 29,700 lines in 138 `extras` modules |
+| `klippy/chelper` | Step generation and compression, serial queue | C, about 4,500 lines, called from Python |
+| Moonraker | HTTP and WebSocket API, file storage, updates | Python |
+| Mainsail | Web interface | Vue, built with Vite; served as static files |
+| RatOS Configurator | Configuration server | Node.js, `npm run start` on port 3000 (`RatOS/src/modules/ratos/start_chroot_script`) |
+| RatOS configuration | Printer configuration and Jinja macros such as `START_PRINT` | Klipper configuration files |
 
-## Principles
+RatOS installs upstream Klipper `master` unmodified
+(`RatOS/src/modules/klipper/config`, lines 19–20).
 
-- Use an extension module before a core change. Fork core files only when an
-  extension cannot reach the behaviour.
-- Keep every fork change on a branch that rebases on upstream `master`.
-  Record each core change and its reason in the fork's `docs/adr/`.
-- Verify motion changes in batch mode before they reach the printer. Compare
-  the microcontroller command stream before and after each change.
-- Keep the stock microcontroller firmware. A change that needs new firmware
-  commands is out of scope until the operator decides otherwise.
+Performance is not the main gain of a native host. `klippy` already generates
+and compresses steps in C. The gains are one language and toolchain across
+the stack, shared code between the slicer and the printer, deterministic
+behaviour that the project can inspect, and a small fixed system image.
+
+## Sources of truth
+
+- Klipper's serial protocol: `docs/Protocol.md` and `docs/MCU_Commands.md`.
+- Klipper's host structure: `docs/Code_Overview.md` and `docs/Kinematics.md`.
+- Reference output: `klippy` batch mode converts G-code into the exact
+  microcontroller command stream (`docs/Debugging.md`, lines 45–66). The
+  printer's Linux computer already has `klippy` installed, so batch mode runs
+  there without new installs on the Mac.
+- The printer's configuration: the captured `configfile.json`.
+
+## Verification
+
+- Compare the Odin host's microcontroller command stream with `klippy` batch
+  mode for the same G-code and configuration. Motion, homing, and heater
+  commands must match, or the difference must be explained and accepted.
+- Connect to the real microcontrollers only after the command stream matches.
 - The operator accepts each stage on the physical printer.
 
 ## Stages
 
-Each stage ends with a result the operator can see. A later stage starts only
-after the operator accepts the earlier one.
+Each stage ends with a result the operator can see. A stage starts only after
+the operator accepts the stage before it.
 
-### Stage 0: reproduce the printer's Klipper
+### Stage 0: pin the reference
 
-1. Read the running Klipper version from `printer.info` through `hw_ratos`.
-2. Create the fork repository at that commit, with upstream as a second remote.
-3. Run the fork in batch mode on the Mac with the captured `printer.cfg`
-   and its RatOS includes.
-4. Run a design's G-code through batch mode and keep the command stream as
-   evidence.
+1. Read the running Klipper version and the microcontroller firmware versions
+   through `hw_ratos`.
+2. Copy the microcontrollers' data dictionaries from the printer. They define
+   the command and response formats that the firmware accepts.
+3. Record a batch-mode command stream on the printer for one design's G-code.
 
-Result: the project can show what Klipper does with a design's G-code,
-without the printer.
+Result: a fixed reference for every later comparison.
 
-### Stage 1: compare the slicer simulation with Klipper
+### Stage 1: protocol and connection
 
-1. Parse the batch-mode command stream into per-move timing.
-2. Show Klipper's timing next to the slicer's print-time estimate in the
-   design view.
+1. Implement message framing, variable-length integers, the CRC, and the data
+   dictionary in Odin.
+2. Implement clock synchronization with the microcontrollers.
+3. Connect to the real microcontrollers with `klippy` stopped. Read
+   identification and temperatures only. Command no motion and no heat.
 
-Result: the simulation matches the printer's timing, or the difference is
-visible. The current estimate ignores acceleration and cornering.
+Result: the Odin host reports live temperatures from the printer.
 
-### Stage 2: feature-aware printing through an extension module
+### Stage 2: heaters, fans, and safety
 
-1. Add `klippy/extras/hw_feature.py` to the fork.
-2. Have the slicer emit `HW_FEATURE ID=<n>` before each feature's moves.
-3. Let the module apply per-feature overrides of speed factor, acceleration,
-   fan, and pressure advance.
-4. Expose the overrides through Moonraker so `hw_ratos` can change them
-   during a print.
+1. Implement heater control and the safety checks before any motion:
+   heater verification, minimum and maximum temperature, and the
+   microcontroller's fault shutdown.
+2. Implement part cooling and controller fans.
 
-Result: the operator changes "this cylinder's fan" during a print, and the
-change applies from that feature's next occurrence.
+Result: the Odin host heats the bed and nozzle safely and holds temperature.
 
-### Stage 3: re-evaluate the design during a print
+### Stage 3: motion
 
-1. Build the design evaluator for `linux_arm64` so the printer host can run it.
-2. Replace file streaming with a print job that keeps the design and
-   generates the next layers on the printer host.
-3. Allow parameter changes only where they do not contradict printed layers.
-   Define these rules before implementation.
+1. Implement the CoreXY kinematics, the move queue with lookahead, step
+   generation and compression, pressure advance, and input shaping.
+2. Implement the TMC driver configuration, sensorless homing, the BLTouch
+   probe, and bed mesh.
+3. Match the batch-mode command stream for homing and test moves, then for a
+   full design.
+
+Result: the Odin host homes the printer and runs a design's moves.
+
+### Stage 4: print jobs
+
+1. Replace the RatOS `START_PRINT` and `END_PRINT` macros with native start
+   and end procedures.
+2. Run designs as feature-aware print jobs. Each feature carries its own
+   motion and cooling, so the host needs no `SET_VELOCITY_LIMIT` churn.
+3. Let `hw_ratos` change feature settings during a print.
+
+Result: the printer prints a design from the slicer through the Odin host.
+
+### Stage 5: re-evaluate the design during a print
+
+1. Build the design evaluator into the printer host.
+2. Generate the next layers on the printer from the current parameters.
+3. Define which parameter changes are valid after layers are printed.
 
 Result: the operator changes a design parameter during a print, and the
-following layers use it. This covers the TODO item about abstract motion
-behaviours such as z-hop.
+following layers use it.
 
-### Stage 4: core changes where extensions stop
+### Stage 6: the golden image
 
-Candidates, each with batch-mode evidence:
+1. Replace the Moonraker API with the Odin host's own interface for
+   `hw_ratos`.
+2. Build a minimal Linux image with the Odin host and no Python or Node.js.
+3. Keep a documented way back to the current RatOS image.
 
-- Per-feature cornering and lookahead behaviour in `toolhead.py`.
-- Pressure advance changes without flushing step generation.
-- Feature-aware moves that carry their settings, which removes the
-  `SET_VELOCITY_LIMIT` churn between travel and print moves.
+Result: the printer runs only the project's native stack and the stock
+microcontroller firmware.
 
 ## Licensing
 
-Klipper is GPLv3 (`COPYING`). A private fork has no publication duty.
-Distribution of the modified fork requires distribution of its source under
-GPLv3. The slicer and `hw_ratos` communicate with Klipper through files,
-G-code, and Moonraker, so they remain separate programs.
+The project accepts the licences of the code it uses. An Odin host that ports
+`klippy` or `chelper` code is a derivative work of Klipper and is GPLv3. A
+host written only from the protocol and kinematics documentation can use
+another licence. The stock microcontroller firmware stays GPLv3 and is a
+separate program.
 
 ## Open decisions
 
 The operator decides these before Stage 0 starts:
 
-1. The fork's location. Proposal: a new repository `hw_klipper` next to
-   `hw_ratos`.
-2. How the fork reaches the printer. RatOS's update manager tracks upstream,
-   so the printer must point to the fork, with a documented way back to
-   upstream.
-3. Whether the Mac batch-mode setup uses a Python virtual environment in the
-   fork repository. Global instructions limit tool installation, so this
-   needs approval.
-4. The language for the extension modules. Klipper extensions are Python.
-   Stage 3 adds an Odin program on the printer host that `klippy` calls.
+1. The repository for the printer host. Proposal: `hw_printer`, separate from
+   `hw_ratos`, which stays the Mac application.
+2. Whether the host ports Klipper's algorithms (GPLv3) or reimplements them
+   from documentation.
+3. Access to the printer's Linux computer for Stage 0 and later stages.
+4. The interface between the printer host and `hw_ratos` in Stage 6.
