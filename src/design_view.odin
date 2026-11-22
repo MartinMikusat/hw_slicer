@@ -32,23 +32,32 @@ Design_Bead :: struct {
 	t0, t1:        f64, // print time in seconds
 }
 
+Design_Layer :: struct {
+	z:          f64,
+	t0, t1:     f64,
+	first_bead: int,
+	end_bead:   int,
+}
+
 Design_State :: struct {
-	active:       bool,
-	pinned:       bool, // opened explicitly; do not follow the newest design
-	path:         string,
-	modified:     time.Time,
-	poll_tick:    time.Tick,
-	nozzle_index: int,
-	evaluated:    design.Design,
-	toolpath:     design.Toolpath,
-	beads:        [dynamic]Design_Bead,
-	clock:        f64, // simulated print time in seconds
-	playing:      bool,
-	rate_index:   int,
-	play_tick:    time.Tick,
-	partial:      [BEAD_VERTICES]Mesh_Vertex,
-	export_path:  string,
-	export_error: Design_Export_Error,
+	active:         bool,
+	pinned:         bool, // opened explicitly; do not follow the newest design
+	path:           string,
+	modified:       time.Time,
+	poll_tick:      time.Tick,
+	nozzle_index:   int,
+	evaluated:      design.Design,
+	toolpath:       design.Toolpath,
+	beads:          [dynamic]Design_Bead,
+	layers:         [dynamic]Design_Layer,
+	selected_layer: int,
+	clock:          f64, // simulated print time in seconds
+	playing:        bool,
+	rate_index:     int,
+	play_tick:      time.Tick,
+	partial:        [BEAD_VERTICES]Mesh_Vertex,
+	export_path:    string,
+	export_error:   Design_Export_Error,
 }
 
 design_state_init :: proc(s: ^Design_State) {
@@ -60,6 +69,7 @@ design_state_clear :: proc(s: ^Design_State) {
 	design.design_destroy(&s.evaluated)
 	design.toolpath_destroy(&s.toolpath)
 	delete(s.beads)
+	delete(s.layers)
 	delete(s.path)
 	delete(s.export_path)
 	nozzle, rate, pinned := s.nozzle_index, s.rate_index, s.pinned
@@ -115,11 +125,13 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	}
 	toolpath := design.generate(&evaluated)
 	beads := make([dynamic]Design_Bead)
-	design_beads(&toolpath, &beads)
+	layers := make([dynamic]Design_Layer)
+	design_beads(&toolpath, &beads, &layers)
 	mesh := design_bead_mesh(beads[:])
 	if !renderer_set_mesh(&app.renderer, &mesh) {
 		mesh_destroy(&mesh)
 		delete(beads)
+		delete(layers)
 		design.toolpath_destroy(&toolpath)
 		design.design_destroy(&evaluated)
 		devlog.failed(devlog.global(), site, {reason = "renderer mesh upload failed", severity = .Critical}, {scope = "design", stage = "upload"})
@@ -139,7 +151,9 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	app.design.evaluated = evaluated
 	app.design.toolpath = toolpath
 	app.design.beads = beads
+	app.design.layers = layers
 	app.design.clock = fraction*toolpath.duration
+	design_sync_layer(&app.design)
 	app.design.playing = playing
 	app.design.play_tick = time.tick_now()
 
@@ -211,28 +225,87 @@ app_animate_design :: proc() -> bool {
 		s.clock = design_duration(s)
 		s.playing = false
 	}
+	design_sync_layer(s)
 	return true
 }
 
 design_toggle_play :: proc(s: ^Design_State) {
 	if !s.active {return}
 	s.playing = !s.playing
-	if s.playing && s.clock >= design_duration(s) {s.clock = 0}
+	if s.playing && s.clock >= design_duration(s) {
+		s.clock = 0
+		design_sync_layer(s)
+	}
 	s.play_tick = time.tick_now()
 }
 
 design_set_time_fraction :: proc(s: ^Design_State, fraction: f64) {
 	s.clock = clamp(fraction, 0, 1)*design_duration(s)
+	design_sync_layer(s)
 }
 
-// Extruding moves become beads with their print-time interval.
-design_beads :: proc(t: ^design.Toolpath, beads: ^[dynamic]Design_Bead) {
+design_sync_layer :: proc(s: ^Design_State) {
+	n := len(s.layers)
+	if n == 0 {
+		s.selected_layer = 0
+		return
+	}
+	if s.clock <= s.layers[0].t0 {
+		s.selected_layer = 0
+		return
+	}
+	if s.clock >= s.layers[n-1].t1 {
+		s.selected_layer = n-1
+		return
+	}
+	low, high := 0, n-1
+	for low < high {
+		mid := (low+high)/2
+		if s.layers[mid].t1 < s.clock {low = mid+1} else {high = mid}
+	}
+	s.selected_layer = low
+}
+
+design_layer_state :: proc(s: ^Design_State) -> (layer_idx, layer_count: int, z, in_layer: f64) {
+	layer_count = len(s.layers)
+	if layer_count == 0 {return 0, 0, 0, 0}
+	layer_idx = clamp(s.selected_layer, 0, layer_count-1)
+	layer := s.layers[layer_idx]
+	z = layer.z
+	span := layer.t1-layer.t0
+	if span <= 1e-9 {
+		in_layer = 1.0 if s.clock >= layer.t0 else 0.0
+	} else {
+		in_layer = clamp((s.clock-layer.t0)/span, 0, 1)
+	}
+	return
+}
+
+design_set_layer :: proc(s: ^Design_State, layer_idx: int, in_layer := 1.0) {
+	if len(s.layers) == 0 {return}
+	idx := clamp(layer_idx, 0, len(s.layers)-1)
+	s.selected_layer = idx
+	layer := s.layers[idx]
+	s.clock = layer.t0+(layer.t1-layer.t0)*clamp(in_layer, 0, 1)
+}
+
+design_set_in_layer :: proc(s: ^Design_State, fraction: f64) {
+	if len(s.layers) == 0 {return}
+	idx := clamp(s.selected_layer, 0, len(s.layers)-1)
+	s.selected_layer = idx
+	layer := s.layers[idx]
+	s.clock = layer.t0+(layer.t1-layer.t0)*clamp(fraction, 0, 1)
+}
+
+// Extruding moves become beads with their print-time interval and per-layer spans.
+design_beads :: proc(t: ^design.Toolpath, beads: ^[dynamic]Design_Bead, layers: ^[dynamic]Design_Layer) {
 	position := t.start
 	clock := 0.0
 	for move in t.moves {
 		delta := move.to-position
 		duration := math.sqrt(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z)/move.speed
 		if move.extrude {
+			bead_idx := len(beads)
 			append(beads, Design_Bead{
 				a = {f32(position.x), f32(position.y), f32(position.z)},
 				b = {f32(move.to.x), f32(move.to.y), f32(move.to.z)},
@@ -241,6 +314,19 @@ design_beads :: proc(t: ^design.Toolpath, beads: ^[dynamic]Design_Bead) {
 				t0 = clock,
 				t1 = clock+duration,
 			})
+			if len(layers) == 0 || abs(move.to.z-layers[len(layers)-1].z) > 1e-6 {
+				append(layers, Design_Layer{
+					z          = move.to.z,
+					t0         = clock,
+					t1         = clock+duration,
+					first_bead = bead_idx,
+					end_bead   = bead_idx+1,
+				})
+			} else {
+				last := &layers[len(layers)-1]
+				last.t1 = clock+duration
+				last.end_bead = bead_idx+1
+			}
 		}
 		clock += duration
 		position = move.to

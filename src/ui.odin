@@ -101,6 +101,8 @@ UI_Action :: enum u64 {
 	Simulation_Play,
 	Simulation_Rate,
 	Simulation_Time,
+	Design_Layer,
+	Design_Layer_Progress,
 	Evidence_Stage_Base = 1000,
 }
 
@@ -194,10 +196,16 @@ UI_State :: struct {
 	section_max:      f32,
 	section_segments: int,
 	section_dragging: bool,
-	design_active:    bool,
-	design_playing:   bool,
-	design_fraction:  f64,
+	design_active:       bool,
+	design_playing:      bool,
+	design_fraction:     f64,
+	design_layer:        int,
+	design_layers:       int,
+	design_layer_z:      f64,
+	design_in_layer:     f64,
 	simulation_dragging: bool,
+	layer_dragging:      bool,
+	in_layer_dragging:   bool,
 	pressed_id: u64,
 	focused_id: u64,
 	hovered_id: u64,
@@ -679,6 +687,10 @@ ui_build_controls :: proc(
 		.Toggle_Wireframe,
 		true, 1, ui.wireframe,
 	)
+	if ui.design_active && ui.design_layers > 0 {
+		ui_add_control(ui, "layer", "active layer", ui_design_layer_slider_rect(ui), .Design_Layer)
+		ui_add_control(ui, "layer progress", "in-layer progress", ui_design_progress_slider_rect(ui), .Design_Layer_Progress)
+	}
 	if ui.stage_index == 0 && !ui.design_active && (!compact || ui.panel == .Section) {
 		section_rect := UI_Rect{20, 138, 204, 30}
 		if compact {section_rect = {20, 84, 156, 28}}
@@ -703,17 +715,18 @@ ui_build_controls :: proc(
 }
 
 UI_Design_Layout :: struct {
-	printer, simulation, nozzle, play, rate, slider, clock: UI_Rect,
+	printer, simulation, nozzle, play, rate, slider, clock, layer_info: UI_Rect,
 }
 
 ui_design_layout :: proc(ui: ^UI_State) -> UI_Design_Layout {
 	if ui_compact(ui) {
 		return {
-			nozzle = {20, 86, 156, 28},
-			play   = {20, 120, 74, 28},
-			rate   = {102, 120, 74, 28},
-			slider = {20, 156, 156, 20},
-			clock  = {20, 180, 156, 18},
+			nozzle     = {20, 86, 156, 28},
+			play       = {20, 120, 74, 28},
+			rate       = {102, 120, 74, 28},
+			slider     = {20, 156, 156, 20},
+			clock      = {20, 180, 156, 18},
+			layer_info = {20, 202, 156, 18},
 		}
 	}
 	return {
@@ -724,7 +737,22 @@ ui_design_layout :: proc(ui: ^UI_State) -> UI_Design_Layout {
 		rate       = {126, 152, 98, 30},
 		slider     = {20, 192, 204, 24},
 		clock      = {20, 222, 204, 22},
+		layer_info = {20, 246, 204, 22},
 	}
+}
+
+ui_design_layer_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	viewport := ui_viewport_rect(ui)
+	top := viewport.y+54
+	bottom := viewport.y+viewport.h-54
+	h := max(64.0, bottom-top)
+	return {viewport.x+viewport.w-38, top, 26, h}
+}
+
+ui_design_progress_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	viewport := ui_viewport_rect(ui)
+	w := max(100.0, viewport.w-70)
+	return {viewport.x+16, viewport.y+viewport.h-40, w, 26}
 }
 
 ui_hit_test :: proc(ui: ^UI_State, x, y: f64) -> u64 {
@@ -982,6 +1010,45 @@ ui_draw_controls :: proc(
 		if control.action == .None || control.action == .Modal_Surface || control.action == .Dismiss_Settings || control.action == .Dismiss_Evidence || control.action == .Dismiss_Help {continue}
 		window_control := control.action == .Window_Close || control.action == .Window_Minimize || control.action == .Window_Zoom
 		if window_control && modal_open {continue}
+		if control.action == .Design_Layer {
+			panel := control.rect
+			panel_fill := theme.raised
+			panel_fill.w = 0.88
+			ui_add_round_rect(painter, panel, 13, panel_fill)
+			if control.id == ui.focused_id {ui_add_border(painter, panel, theme.text)}
+			track := UI_Rect{panel.x+panel.w/2-2, panel.y+12, 4, max(1.0, panel.h-24)}
+			ui_add_round_rect(painter, track, 2, ui_theme_blend(theme, 0.24))
+			fraction := 1.0
+			if ui.design_layers > 1 {
+				fraction = clamp(f64(ui.design_layer)/f64(ui.design_layers-1), 0, 1)
+			}
+			ink := theme.text if control.enabled else Vec4{0.501961, 0.501961, 0.501961, 1}
+			thumb_y := track.y+track.h*(1-fraction)
+			fill_h := max(1.0, track.y+track.h-thumb_y)
+			ui_add_round_rect(painter, {track.x, thumb_y, track.w, fill_h}, 2, ink)
+			ui_add_round_rect(painter, {panel.x+(panel.w-14)/2, thumb_y-7, 14, 14}, 7, ink)
+			// Floating layer readout pill to the left of the vertical thumb.
+			badge_w := 118.0
+			badge_h := 24.0
+			badge_y := clamp(thumb_y-badge_h/2, panel.y, panel.y+panel.h-badge_h)
+			badge := UI_Rect{panel.x-badge_w-8, badge_y, badge_w, badge_h}
+			ui_add_round_rect(painter, badge, 6, panel_fill)
+			continue
+		}
+		if control.action == .Design_Layer_Progress {
+			panel := control.rect
+			panel_fill := theme.raised
+			panel_fill.w = 0.88
+			ui_add_round_rect(painter, panel, 13, panel_fill)
+			if control.id == ui.focused_id {ui_add_border(painter, panel, theme.text)}
+			track := UI_Rect{panel.x+14, panel.y+panel.h/2-2, max(1.0, panel.w-28), 4}
+			ui_add_round_rect(painter, track, 2, ui_theme_blend(theme, 0.24))
+			fraction := clamp(ui.design_in_layer, 0, 1)
+			ink := theme.text if control.enabled else Vec4{0.501961, 0.501961, 0.501961, 1}
+			ui_add_round_rect(painter, {track.x, track.y, max(1.0, track.w*fraction), track.h}, 2, ink)
+			ui_add_round_rect(painter, {track.x+track.w*fraction-7, panel.y+(panel.h-14)/2, 14, 14}, 7, ink)
+			continue
+		}
 		if control.action == .Section_Height || control.action == .Simulation_Time {
 			if control.id == ui.focused_id {ui_add_border(painter, control.rect, theme.text)}
 			track := UI_Rect{control.rect.x+4, control.rect.y+control.rect.h/2-2, control.rect.w-8, 4}
@@ -1831,6 +1898,29 @@ ui_draw_design_settings :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_
 	ui_draw_text(painter, painter.font, ui, fmt.tprintf("%.0f×", design_rate(s)), layout.rate, ui_control_ink(ui, .Simulation_Rate), 0, .Center)
 	clock := fmt.tprintf("%s / %s", design_time_text(s.clock), design_time_text(design_duration(s)))
 	ui_draw_measurement(painter, ui, "Time", clock, layout.clock, 70 if ui_compact(ui) else 90)
+	if ui.design_layers > 0 {
+		layer_text := fmt.tprintf("%d / %d (%.0f%%)", ui.design_layer+1, ui.design_layers, ui.design_in_layer*100)
+		ui_draw_measurement(painter, ui, "Layer", layer_text, layout.layer_info, 70 if ui_compact(ui) else 90)
+		// Floating badge next to the vertical layer slider thumb.
+		layer_rect := ui_design_layer_slider_rect(ui)
+		track_top := layer_rect.y+12
+		track_h := max(1.0, layer_rect.h-24)
+		fraction := 1.0
+		if ui.design_layers > 1 {
+			fraction = clamp(f64(ui.design_layer)/f64(ui.design_layers-1), 0, 1)
+		}
+		thumb_y := track_top+track_h*(1-fraction)
+		badge_w := 118.0
+		badge_h := 24.0
+		badge_y := clamp(thumb_y-badge_h/2, layer_rect.y, layer_rect.y+layer_rect.h-badge_h)
+		badge := UI_Rect{layer_rect.x-badge_w-8, badge_y, badge_w, badge_h}
+		badge_text := fmt.tprintf("L %d/%d  %.2fmm", ui.design_layer+1, ui.design_layers, ui.design_layer_z)
+		ui_draw_text(painter, painter.mono, ui, badge_text, badge, theme.text, 0, .Center)
+		// Compact label above the bottom in-layer progress bar.
+		prog_rect := ui_design_progress_slider_rect(ui)
+		prog_text := fmt.tprintf("Layer %d / %d  ·  Z %.2f mm  ·  In-layer %.0f%%", ui.design_layer+1, ui.design_layers, ui.design_layer_z, ui.design_in_layer*100)
+		ui_draw_text(painter, painter.mono, ui, prog_text, {prog_rect.x+4, prog_rect.y-22, prog_rect.w, 20}, theme.text, 0)
+	}
 }
 
 ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_State, model_name: string) {

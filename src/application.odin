@@ -358,7 +358,7 @@ app_activate :: proc(action: UI_Action) -> bool {
 	case .Font_Increase:
 		app_apply_font_size(1)
 		return true
-	case .Section_Height, .Simulation_Time:
+	case .Section_Height, .Simulation_Time, .Design_Layer, .Design_Layer_Progress:
 		return true
 	case .Design_Nozzle:
 		nozzles := DESIGN_NOZZLES
@@ -512,6 +512,29 @@ app_set_simulation_time :: proc(x: f64) {
 	app.needs_redraw = true
 }
 
+app_set_design_layer :: proc(y: f64) {
+	if !app.design.active || len(app.design.layers) == 0 {return}
+	rect := ui_design_layer_slider_rect(&app.ui)
+	track_top := rect.y+12
+	track_h := max(1.0, rect.h-24)
+	fraction := clamp(1.0-(y-track_top)/track_h, 0, 1)
+	layer_idx := int(math.round(fraction*f64(len(app.design.layers)-1)))
+	design_set_layer(&app.design, layer_idx, 1.0)
+	app.design.playing = false
+	app.needs_redraw = true
+}
+
+app_set_design_in_layer :: proc(x: f64) {
+	if !app.design.active || len(app.design.layers) == 0 {return}
+	rect := ui_design_progress_slider_rect(&app.ui)
+	track_left := rect.x+14
+	track_w := max(1.0, rect.w-28)
+	fraction := clamp((x-track_left)/track_w, 0, 1)
+	design_set_in_layer(&app.design, fraction)
+	app.design.playing = false
+	app.needs_redraw = true
+}
+
 app_rebuild_section :: proc() {
 	if !app.ui.section_enabled || app.mesh.triangle_count == 0 || app.design.active {
 		clear(&app.section_vertices)
@@ -557,6 +580,7 @@ renderer_draw_application :: proc() -> Render_Result {
 	app.ui.design_active = app.design.active
 	app.ui.design_playing = app.design.playing
 	app.ui.design_fraction = app.design.clock/design_duration(&app.design) if design_duration(&app.design) > 0 else 0
+	app.ui.design_layer, app.ui.design_layers, app.ui.design_layer_z, app.ui.design_in_layer = design_layer_state(&app.design)
 	ui_build_controls(&app.ui, &evidence_view)
 	ui_scale := f32(app.ui.scale*app.ui.ui_scale)
 	text.begin_frame(&app.renderer.ui_text, ui_scale)
@@ -732,6 +756,12 @@ application_mouse :: proc "c" (
 		} else if id == u64(UI_Action.Simulation_Time) {
 			app.ui.simulation_dragging = true
 			app_set_simulation_time(point_x)
+		} else if id == u64(UI_Action.Design_Layer) {
+			app.ui.layer_dragging = true
+			app_set_design_layer(point_y)
+		} else if id == u64(UI_Action.Design_Layer_Progress) {
+			app.ui.in_layer_dragging = true
+			app_set_design_in_layer(point_x)
 		} else {
 			app.ui.section_dragging = false
 			if id == 0 && ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
@@ -745,6 +775,10 @@ application_mouse :: proc "c" (
 			app.needs_redraw = true
 		} else if app.ui.simulation_dragging {
 			app_set_simulation_time(point_x)
+		} else if app.ui.layer_dragging {
+			app_set_design_layer(point_y)
+		} else if app.ui.in_layer_dragging {
+			app_set_design_in_layer(point_x)
 		} else if app.dragging {
 			if app.drag_button == 0 {
 				app.camera_goal.yaw -= f32(delta_x)*0.008
@@ -760,9 +794,11 @@ application_mouse :: proc "c" (
 		}
 	case 2:
 		if app.ui.pressed_id != 0 {app.needs_redraw = true}
-		if app.ui.section_dragging || app.ui.simulation_dragging {
+		if app.ui.section_dragging || app.ui.simulation_dragging || app.ui.layer_dragging || app.ui.in_layer_dragging {
 			app.ui.section_dragging = false
 			app.ui.simulation_dragging = false
+			app.ui.layer_dragging = false
+			app.ui.in_layer_dragging = false
 			app.ui.pressed_id = 0
 		} else {
 			id := ui_hit_test(&app.ui, point_x, point_y)
@@ -896,6 +932,40 @@ application_key :: proc "c" (
 		if app.ui.focused_id == u64(UI_Action.Simulation_Time) && (key_code == 123 || key_code == 124) && app.design.active {
 			step := 0.01 if key_code == 124 else -0.01
 			design_set_time_fraction(&app.design, app.design.clock/max(design_duration(&app.design), 0.000001)+step)
+			app.design.playing = false
+			app.needs_redraw = true
+			return
+		}
+		if app.ui.focused_id == u64(UI_Action.Design_Layer_Progress) && (key_code == 123 || key_code == 124) && app.design.active {
+			_, _, _, in_layer := design_layer_state(&app.design)
+			step := 0.02 if key_code == 124 else -0.02
+			design_set_in_layer(&app.design, in_layer+step)
+			app.design.playing = false
+			app.needs_redraw = true
+			return
+		}
+		if app.ui.focused_id == u64(UI_Action.Design_Layer) && (key_code == 123 || key_code == 124 || key_code == 125 || key_code == 126) && app.design.active {
+			layer_idx, _, _, _ := design_layer_state(&app.design)
+			step := 1 if (key_code == 124 || key_code == 126) else -1
+			design_set_layer(&app.design, layer_idx+step, 1.0)
+			app.design.playing = false
+			app.needs_redraw = true
+			return
+		}
+	}
+	if app.design.active && !app.ui.settings_open && !app.ui.help_open && !app.ui.evidence_open {
+		if key_code == 126 || key_code == 125 {
+			layer_idx, _, _, _ := design_layer_state(&app.design)
+			step := 1 if key_code == 126 else -1
+			design_set_layer(&app.design, layer_idx+step, 1.0)
+			app.design.playing = false
+			app.needs_redraw = true
+			return
+		}
+		if key_code == 123 || key_code == 124 {
+			_, _, _, in_layer := design_layer_state(&app.design)
+			step := 0.02 if key_code == 124 else -0.02
+			design_set_in_layer(&app.design, in_layer+step)
 			app.design.playing = false
 			app.needs_redraw = true
 			return
