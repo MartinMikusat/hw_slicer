@@ -50,6 +50,8 @@ Renderer :: struct {
 	section_vertex_count: int,
 	grid_vertex_count: int,
 	marker_vertex_count: int,
+	last_draw_calls:  int,
+	last_triangles:   int,
 	depth_width:      uint,
 	depth_height:     uint,
 	ui_renderer:      gpu.Renderer,
@@ -630,10 +632,14 @@ renderer_draw_mesh :: proc(
 	if !use_highlight && !use_arcs {
 		if count > 0 {
 			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(count))
+			renderer.last_draw_calls += 1
+			renderer.last_triangles += count/3
 		}
 		if len(partial) == 0 {return}
 		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(partial), uint(len(partial)*size_of(Mesh_Vertex)), 0)
 		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(len(partial)))
+		renderer.last_draw_calls += 1
+		renderer.last_triangles += len(partial)/3
 		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 		return
 	}
@@ -659,9 +665,13 @@ renderer_draw_mesh :: proc(
 				c := COLOR_ARC if run.is_arc else uniforms.color
 				set_color(encoder, uniforms, c, &current_color)
 				msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(run.start), uint(seg_count))
+				renderer.last_draw_calls += 1
+				renderer.last_triangles += seg_count/3
 			}
 		} else {
 			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(base_limit))
+			renderer.last_draw_calls += 1
+			renderer.last_triangles += base_limit/3
 		}
 	}
 
@@ -670,6 +680,8 @@ renderer_draw_mesh :: proc(
 		active_count := count-highlight_start
 		if active_count > 0 {
 			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(highlight_start), uint(active_count))
+			renderer.last_draw_calls += 1
+			renderer.last_triangles += active_count/3
 		}
 	}
 
@@ -678,6 +690,8 @@ renderer_draw_mesh :: proc(
 		set_color(encoder, uniforms, p_color, &current_color)
 		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(partial), uint(len(partial)*size_of(Mesh_Vertex)), 0)
 		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(len(partial)))
+		renderer.last_draw_calls += 1
+		renderer.last_triangles += len(partial)/3
 		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 	}
 	set_color(encoder, uniforms, uniforms.color, &current_color)
@@ -758,6 +772,8 @@ renderer_draw :: proc(
 ) -> Render_Result {
 	if renderer.layer == nil {return .No_Layer}
 	if width <= 0 || height <= 0 {return .Empty_Viewport}
+	renderer.last_draw_calls = 0
+	renderer.last_triangles = 0
 	pixel_width := uint(max(1, width*scale))
 	pixel_height := uint(max(1, height*scale))
 	if !renderer_ensure_depth(renderer, pixel_width, pixel_height) {

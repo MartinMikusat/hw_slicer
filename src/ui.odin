@@ -214,6 +214,10 @@ UI_State :: struct {
 	focused_id: u64,
 	hovered_id: u64,
 	pointer_x, pointer_y: f64,
+	fps:          f64,
+	frame_ms:     f64,
+	render_tris:  int,
+	render_draws: int,
 }
 
 ui_initialize :: proc(ui: ^UI_State) {
@@ -1833,6 +1837,18 @@ ui_draw_labels :: proc(
 			0,
 			.Center,
 		)
+	}
+	// Performance stats pill in the top-right corner of the 3D viewport.
+	{
+		vp := ui_viewport_rect(ui)
+		pill_w := min(320.0, max(160.0, vp.w-290))
+		pill := UI_Rect{vp.x+vp.w-pill_w-12, vp.y+12, pill_w, 28}
+		bg := theme.raised
+		bg.w = 0.85
+		ui_add_round_rect(painter, pill, 6, bg)
+		tris_text := fmt.tprintf("%.2fM", f64(ui.render_tris)/1_000_000.0) if ui.render_tris >= 1_000_000 else fmt.tprintf("%dk", ui.render_tris/1000)
+		stats_text := fmt.tprintf("%.1f FPS · %.1f ms · %s tris · %d draws", ui.fps, ui.frame_ms, tris_text, ui.render_draws)
+		ui_draw_text(painter, painter.mono, ui, stats_text, pill, theme.text, 0, .Center)
 	}
 
 	ui_draw_text(

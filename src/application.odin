@@ -56,6 +56,7 @@ App_State :: struct {
 	slider_scroll_accum:  f64,
 	slider_scroll_target: UI_Action,
 	slider_scroll_tick:   time.Tick,
+	last_render_tick:     time.Tick,
 }
 
 app: App_State
@@ -665,7 +666,21 @@ application_frame :: proc "c" (width, height, scale: f64) {
 	app_poll_design()
 	if app_animate_design() {app.needs_redraw = true}
 	if app.needs_redraw {
+		t0 := time.tick_now()
+		if app.last_render_tick != {} {
+			dt := time.duration_seconds(time.tick_diff(app.last_render_tick, t0))
+			if dt > 0.0005 && dt < 0.5 {
+				inst_fps := 1.0/dt
+				app.ui.fps = inst_fps if app.ui.fps <= 0 else (app.ui.fps*0.85+inst_fps*0.15)
+			}
+		}
+		app.last_render_tick = t0
 		result := renderer_draw_application()
+		draw_ms := time.duration_seconds(time.tick_since(t0))*1000.0
+		app.ui.frame_ms = draw_ms if app.ui.frame_ms <= 0 else (app.ui.frame_ms*0.8+draw_ms*0.2)
+		app.ui.render_tris = app.renderer.last_triangles
+		app.ui.render_draws = app.renderer.last_draw_calls
+		if app.ui.fps <= 0 && draw_ms > 0 {app.ui.fps = min(120.0, 1000.0/draw_ms)}
 		switch result {
 		case .Presented, .Captured:
 			if !app.first_frame_logged {
