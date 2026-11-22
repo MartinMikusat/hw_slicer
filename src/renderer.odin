@@ -569,6 +569,20 @@ renderer_ensure_depth :: proc(
 	return true
 }
 
+// Draws the first `count` uploaded mesh vertices, then `partial` from bytes. The mesh buffer
+// stays bound at index 0 afterwards.
+renderer_draw_mesh :: proc(renderer: ^Renderer, encoder: Id, count: int, partial: []Mesh_Vertex) {
+	assert(count >= 0 && count <= renderer.mesh_vertex_count)
+	assert(len(partial)*size_of(Mesh_Vertex) <= 4096)
+	if count > 0 {
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(count))
+	}
+	if len(partial) == 0 {return}
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(partial), uint(len(partial)*size_of(Mesh_Vertex)), 0)
+	msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(len(partial)))
+	msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
+}
+
 Render_Result :: enum u8 {
 	Presented,
 	Captured,
@@ -607,6 +621,8 @@ renderer_draw :: proc(
 	viewport: UI_Rect,
 	theme: Theme,
 	wireframe: bool,
+	mesh_vertices: int,
+	mesh_partial: []Mesh_Vertex,
 	ui_list: ^gpu.Draw_List,
 	width, height, scale: f64,
 ) -> Render_Result {
@@ -697,7 +713,7 @@ renderer_draw :: proc(
 	msg_void_id(prepass, sel_registerName("setRenderPipelineState:"), renderer.depth_pipeline)
 	msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 	msg_void_ptr_u_u(prepass, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
-	msg_void_u_u_u(prepass, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(renderer.mesh_vertex_count))
+	renderer_draw_mesh(renderer, prepass, mesh_vertices, mesh_partial)
 	msg_void(prepass, sel_registerName("endEncoding"))
 	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.depth_texture)
 	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0)
@@ -713,7 +729,7 @@ renderer_draw :: proc(
 	msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-	msg_void_u_u_u(scene_encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(renderer.mesh_vertex_count))
+	renderer_draw_mesh(renderer, scene_encoder, mesh_vertices, mesh_partial)
 	msg_void(scene_encoder, sel_registerName("endEncoding"))
 	msg_void_id(color_attachment, sel_registerName("setTexture:"), texture)
 	encoder := msg_id_id(
@@ -769,13 +785,7 @@ renderer_draw :: proc(
 	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-	msg_void_u_u_u(
-		encoder,
-		sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
-		3,
-		0,
-		uint(renderer.mesh_vertex_count),
-	)
+	renderer_draw_mesh(renderer, encoder, mesh_vertices, mesh_partial)
 
 	if eye.z > -0.01 {
 		floor_vertices := [6]Mesh_Vertex{

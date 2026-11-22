@@ -261,7 +261,8 @@ static bool slicer_open_document(char *path, size_t capacity) {
     panel.allowsMultipleSelection = NO;
     panel.allowedContentTypes = @[
         [UTType typeWithFilenameExtension:@"stl"],
-        [UTType typeWithFilenameExtension:@"hwsdebug"]
+        [UTType typeWithFilenameExtension:@"hwsdebug"],
+        [UTType typeWithFilenameExtension:@"hwsdesign"]
     ];
     NSModalResponse response = [panel runModal];
     [window makeKeyAndOrderFront:nil];

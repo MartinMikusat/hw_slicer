@@ -10,6 +10,7 @@ import flash "flash:."
 import "rune:gpu"
 import "rune:text"
 
+import design "./design"
 import evidence "./evidence"
 
 foreign import core_graphics "system:CoreGraphics.framework"
@@ -96,6 +97,10 @@ UI_Action :: enum u64 {
 	Next_Stage,
 	Evidence_Stages,
 	Evidence_Details,
+	Design_Nozzle,
+	Simulation_Play,
+	Simulation_Rate,
+	Simulation_Time,
 	Evidence_Stage_Base = 1000,
 }
 
@@ -189,6 +194,10 @@ UI_State :: struct {
 	section_max:      f32,
 	section_segments: int,
 	section_dragging: bool,
+	design_active:    bool,
+	design_playing:   bool,
+	design_fraction:  f64,
+	simulation_dragging: bool,
 	pressed_id: u64,
 	focused_id: u64,
 	hovered_id: u64,
@@ -639,7 +648,15 @@ ui_build_controls :: proc(
 
 	viewport := ui_viewport_rect(ui)
 	if ui.stage_index == 0 && (!compact || ui.panel == .Models) {
-		ui_add_control(ui, "lay on face", "Lay on face", {20, 86, 150, 30}, .Lay_On_Face, true, 1, ui.lay_on_face)
+		if ui.design_active {
+			layout := ui_design_layout(ui)
+			ui_add_control(ui, "nozzle", "switch nozzle diameter", layout.nozzle, .Design_Nozzle)
+			ui_add_control(ui, "play", "pause simulation" if ui.design_playing else "play simulation", layout.play, .Simulation_Play)
+			ui_add_control(ui, "playback rate", "change playback rate", layout.rate, .Simulation_Rate)
+			ui_add_control(ui, "print time", "simulated print time", layout.slider, .Simulation_Time)
+		} else {
+			ui_add_control(ui, "lay on face", "Lay on face", {20, 86, 150, 30}, .Lay_On_Face, true, 1, ui.lay_on_face)
+		}
 	}
 	ui_add_control(
 		ui,
@@ -656,7 +673,7 @@ ui_build_controls :: proc(
 		.Toggle_Wireframe,
 		true, 1, ui.wireframe,
 	)
-	if ui.stage_index == 0 && (!compact || ui.panel == .Section) {
+	if ui.stage_index == 0 && !ui.design_active && (!compact || ui.panel == .Section) {
 		section_rect := UI_Rect{20, 138, 204, 30}
 		if compact {section_rect = {20, 84, 156, 28}}
 		ui_add_control(
@@ -677,6 +694,31 @@ ui_build_controls :: proc(
 		)
 	}
 
+}
+
+UI_Design_Layout :: struct {
+	printer, simulation, nozzle, play, rate, slider, clock: UI_Rect,
+}
+
+ui_design_layout :: proc(ui: ^UI_State) -> UI_Design_Layout {
+	if ui_compact(ui) {
+		return {
+			nozzle = {20, 86, 156, 28},
+			play   = {20, 120, 74, 28},
+			rate   = {102, 120, 74, 28},
+			slider = {20, 156, 156, 20},
+			clock  = {20, 180, 156, 18},
+		}
+	}
+	return {
+		printer    = {20, 58, 190, 24},
+		nozzle     = {20, 86, 204, 30},
+		simulation = {20, 124, 190, 24},
+		play       = {20, 152, 98, 30},
+		rate       = {126, 152, 98, 30},
+		slider     = {20, 192, 204, 24},
+		clock      = {20, 222, 204, 22},
+	}
 }
 
 ui_hit_test :: proc(ui: ^UI_State, x, y: f64) -> u64 {
@@ -934,12 +976,16 @@ ui_draw_controls :: proc(
 		if control.action == .None || control.action == .Modal_Surface || control.action == .Dismiss_Settings || control.action == .Dismiss_Evidence || control.action == .Dismiss_Help {continue}
 		window_control := control.action == .Window_Close || control.action == .Window_Minimize || control.action == .Window_Zoom
 		if window_control && modal_open {continue}
-		if control.action == .Section_Height {
+		if control.action == .Section_Height || control.action == .Simulation_Time {
 			if control.id == ui.focused_id {ui_add_border(painter, control.rect, theme.text)}
 			track := UI_Rect{control.rect.x+4, control.rect.y+control.rect.h/2-2, control.rect.w-8, 4}
 			ui_add_round_rect(painter, track, 2, ui_theme_blend(theme, 0.2))
 			fraction := 0.0
-			if ui.section_max > 0 {fraction = clamp(f64(ui.section_z/ui.section_max), 0, 1)}
+			if control.action == .Simulation_Time {
+				fraction = clamp(ui.design_fraction, 0, 1)
+			} else if ui.section_max > 0 {
+				fraction = clamp(f64(ui.section_z/ui.section_max), 0, 1)
+			}
 			ink := theme.text if control.enabled else Vec4{0.501961, 0.501961, 0.501961, 1}
 			ui_add_round_rect(painter, {track.x, track.y, max(1, track.w*fraction), track.h}, 2, ink)
 			ui_add_round_rect(painter, {track.x+track.w*fraction-6, control.rect.y+(control.rect.h-12)/2, 12, 12}, 6, ink)
@@ -1547,13 +1593,14 @@ ui_draw :: proc(
 	model_name, status: string,
 	evidence_view: ^UI_Evidence_View = nil,
 	status_failed := false,
+	design_state: ^Design_State = nil,
 ) {
 	ui_painter_fonts(painter, ui)
 	modal_open := ui.help_open || ui.settings_open || (ui.evidence_open && ui_evidence_available(evidence_view))
 	if !modal_open {
 		ui_draw_panels(painter, ui)
 		ui_draw_controls(painter, ui, evidence_view)
-		ui_draw_labels(painter, ui, mesh, model_name, status, status_failed)
+		ui_draw_labels(painter, ui, mesh, model_name, status, status_failed, design_state)
 		ui_draw_flash_hints(painter, ui)
 		return
 	}
@@ -1571,7 +1618,7 @@ ui_draw :: proc(
 	ui_draw_controls(painter, &underlay)
 	ui_add_rect(painter, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.8})
 	gpu.push_opacity(painter.list, 0.2)
-	ui_draw_labels(painter, &underlay, mesh, model_name, status, status_failed)
+	ui_draw_labels(painter, &underlay, mesh, model_name, status, status_failed, design_state)
 	gpu.pop_opacity(painter.list)
 	modal := ui_settings_modal_rect(ui)
 	if ui.help_open {modal = ui_help_modal_rect(ui)}
@@ -1588,8 +1635,10 @@ ui_draw_labels :: proc(
 	mesh: ^Mesh,
 	model_name, status: string,
 	status_failed: bool,
+	design_state: ^Design_State,
 ) {
 	theme := ui_theme(ui)
+	design_shown := ui.design_active && design_state != nil
 	title_width := max(0.0, ui.width-383)
 	title := fmt.tprintf("HW Slicer / %s", ui_stage_names[ui.stage_index]) if title_width >= 230 else "Slicer"
 	ui_draw_text(painter, painter.font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
@@ -1631,11 +1680,19 @@ ui_draw_labels :: proc(
 		}
 		if ui.stage_index > 0 && ui.panel != .Mesh {
 			ui_draw_text(painter, painter.font, ui, "Not implemented", {20, 88, 156, 24}, theme.text, 0)
+		} else if design_shown && ui.stage_index == 0 {
+			if ui.panel == .Models {
+				ui_draw_design_settings(painter, ui, design_state)
+			} else if ui.panel == .Section {
+				ui_draw_text(painter, painter.font, ui, "Not used for designs", {20, 88, 156, 24}, theme.text, 0)
+			}
 		} else if ui.panel == .Section && ui.stage_index == 0 {
 			ui_draw_text(painter, painter.font, ui, "Enabled" if ui.section_enabled else "Disabled", {64, 84, 112, 28}, ui_control_ink(ui, .Toggle_Section), 0)
 			ui_draw_measurement(painter, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 138, 156, 18}, 70)
 			ui_draw_measurement(painter, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 158, 156, 18}, 70)
 		}
+	} else if ui.stage_index == 0 && design_shown {
+		ui_draw_design_settings(painter, ui, design_state)
 	} else if ui.stage_index == 0 {
 		ui_draw_text(painter, painter.font, ui, "Model settings", {20, 58, 190, 24}, theme.text, 0)
 		ui_draw_text(painter, painter.font, ui, "Section", {20, 114, 190, 24}, theme.muted, 0)
@@ -1696,6 +1753,8 @@ ui_draw_labels :: proc(
 			ui_draw_text(painter, painter.font, ui, "Stage results", {20, 82, 156, 20}, theme.text, 0)
 			ui_draw_text(painter, painter.font, ui, "Not implemented", {20, 106, 156, 20}, theme.text, 0)
 		}
+	} else if compact && design_shown {
+		if ui.panel == .Mesh {ui_draw_design_results(painter, ui, design_state, model_name)}
 	} else if compact {
 		if ui.panel == .Mesh {
 			ui_draw_text(painter, painter.font, ui, model_name, {20, 82, 156, 20}, theme.text, 0)
@@ -1713,6 +1772,8 @@ ui_draw_labels :: proc(
 				}
 			}
 		}
+	} else if design_shown {
+		ui_draw_design_results(painter, ui, design_state, model_name)
 	} else {
 		right := ui_right_rect(ui)
 		ui_draw_text(painter, painter.font, ui, "Model details", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
@@ -1751,6 +1812,52 @@ ui_draw_labels :: proc(
 	ui_draw_text(painter, painter.font, ui, "Next", ui_control_rect(ui, .Next_Stage), ui_control_ink(ui, .Next_Stage), 0, .Center)
 	bar := ui_action_bar_rect(ui)
 	ui_draw_text(painter, painter.font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(ui_stage_names), ui_stage_names[ui.stage_index]), {bar.x+248, bar.y+8, max(0, bar.w-248), 32}, theme.text, 0)
+}
+
+ui_draw_design_settings :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_State) {
+	theme := ui_theme(ui)
+	layout := ui_design_layout(ui)
+	ui_draw_text(painter, painter.font, ui, "Printer", layout.printer, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, fmt.tprintf("Nozzle %.2f mm", design_nozzle(s)), layout.nozzle, ui_control_ink(ui, .Design_Nozzle), 0, .Center)
+	ui_draw_text(painter, painter.font, ui, "Simulation", layout.simulation, theme.muted, 0)
+	ui_draw_text(painter, painter.font, ui, "Pause" if s.playing else "Play", layout.play, ui_control_ink(ui, .Simulation_Play), 0, .Center)
+	ui_draw_text(painter, painter.font, ui, fmt.tprintf("%.0f×", design_rate(s)), layout.rate, ui_control_ink(ui, .Simulation_Rate), 0, .Center)
+	clock := fmt.tprintf("%s / %s", design_time_text(s.clock), design_time_text(design_duration(s)))
+	ui_draw_measurement(painter, ui, "Time", clock, layout.clock, 70 if ui_compact(ui) else 90)
+}
+
+ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_State, model_name: string) {
+	theme := ui_theme(ui)
+	compact := ui_compact(ui)
+	area := UI_Rect{20, 82, 156, 0}
+	row, label_width := 18.0, 70.0
+	if !compact {
+		right := ui_right_rect(ui)
+		ui_draw_text(painter, painter.font, ui, "Design results", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
+		area = {right.x+12, right.y+42, 252, right.h}
+		row, label_width = 24, 120
+	}
+	ui_draw_text(painter, painter.font, ui, model_name, {area.x, area.y, area.w, row}, theme.text, 0)
+	y := area.y+row+(row if !compact else 2)
+	stats := [4][2]string{
+		{"Layers", fmt.tprintf("%d", s.toolpath.layers)},
+		{"Moves", fmt.tprintf("%d", len(s.toolpath.moves))},
+		{"Filament", fmt.tprintf("%.0f mm", s.toolpath.filament_length)},
+		{"Print time", design_time_text(design_duration(s))},
+	}
+	for stat in stats {
+		ui_draw_measurement(painter, ui, stat[0], stat[1], {area.x, y, area.w, row}, label_width)
+		y += row
+	}
+	y += row*0.5
+	ui_draw_text(painter, painter.font, ui, "Parameters", {area.x, y, area.w, row}, theme.muted, 0)
+	y += row
+	bottom := ui_left_rect(ui).y+ui_left_rect(ui).h-60
+	for parameter in s.evaluated.parameters {
+		if y+row > bottom {break}
+		ui_draw_measurement(painter, ui, parameter.name, design.value_text(parameter.value), {area.x, y, area.w, row}, label_width)
+		y += row
+	}
 }
 
 ui_draw_modal_labels :: proc(

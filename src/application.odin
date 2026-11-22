@@ -27,6 +27,7 @@ App_State :: struct {
 	renderer:      Renderer,
 	ui:            UI_State,
 	mesh:          Mesh,
+	design:        Design_State,
 	placement: Model_Placement,
 	face_hover: int,
 	face_pressed: int,
@@ -57,6 +58,8 @@ App_State :: struct {
 app: App_State
 startup_font_size: int
 startup_settings_open: bool
+startup_design: string
+startup_design_time := -1.0
 
 app_context :: proc() -> runtime.Context {
 	result := runtime.default_context()
@@ -156,6 +159,7 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 	}
 	mesh_destroy(&app.mesh)
 	app.mesh = next
+	design_state_clear(&app.design)
 	rotation := mat4_identity()
 	if index == 1 {rotation = {1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1}}
 	app.placement = placement_on_bed(&app.mesh, rotation)
@@ -248,6 +252,10 @@ app_open_document :: proc() {
 		return
 	}
 	selected := string(cstring(&path[0]))
+	if strings.equal_fold(filepath.ext(selected), ".hwsdesign") {
+		_ = app_load_design(selected)
+		return
+	}
 	if !strings.equal_fold(filepath.ext(selected), ".stl") {
 		_ = app_load_evidence(selected)
 		return
@@ -349,8 +357,23 @@ app_activate :: proc(action: UI_Action) -> bool {
 	case .Font_Increase:
 		app_apply_font_size(1)
 		return true
-	case .Section_Height:
+	case .Section_Height, .Simulation_Time:
 		return true
+	case .Design_Nozzle:
+		nozzles := DESIGN_NOZZLES
+		app.design.nozzle_index = (app.design.nozzle_index+1)%len(nozzles)
+		if app.design.path != "" {
+			path := strings.clone(app.design.path, context.temp_allocator)
+			_ = app_load_design(path, true)
+		}
+		app.needs_redraw = true
+	case .Simulation_Play:
+		design_toggle_play(&app.design)
+		app.needs_redraw = true
+	case .Simulation_Rate:
+		rates := DESIGN_RATES
+		app.design.rate_index = (app.design.rate_index+1)%len(rates)
+		app.needs_redraw = true
 	case .Open:
 		app_open_document()
 		app.needs_redraw = true
@@ -385,6 +408,7 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 	app.ui.dark = host.preference_get_int("theme-dark", 1) != 0
 	app.ui.selected_model = 0
 	ui_initialize(&app.ui)
+	design_state_init(&app.design)
 	settings := settings_defaults()
 	_ = settings_load(settings_path(context.temp_allocator), &settings)
 	if startup_font_size != 0 {
@@ -420,6 +444,9 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 			return false
 		}
 	}
+	if startup_design != "" && app_load_design(startup_design) && startup_design_time >= 0 {
+		design_set_time_fraction(&app.design, startup_design_time)
+	}
 	app.needs_redraw = true
 	devlog.succeeded(
 		devlog.global(),
@@ -431,6 +458,7 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 
 app_destroy :: proc() {
 	mesh_destroy(&app.mesh)
+	design_state_clear(&app.design)
 	delete(app.section_vertices)
 	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
 	renderer_shutdown(&app.renderer)
@@ -472,8 +500,16 @@ app_set_section_z :: proc(x: f64) {
 	app.section_dirty = true
 }
 
+app_set_simulation_time :: proc(x: f64) {
+	if !app.design.active {return}
+	fraction := section_height_from_pointer(x, ui_design_layout(&app.ui).slider, 1)
+	design_set_time_fraction(&app.design, f64(fraction))
+	app.design.playing = false
+	app.needs_redraw = true
+}
+
 app_rebuild_section :: proc() {
-	if !app.ui.section_enabled || app.mesh.triangle_count == 0 {
+	if !app.ui.section_enabled || app.mesh.triangle_count == 0 || app.design.active {
 		clear(&app.section_vertices)
 		app.ui.section_segments = 0
 		return
@@ -514,6 +550,9 @@ renderer_draw_application :: proc() -> Render_Result {
 		app.section_dirty = false
 	}
 	evidence_view := app_evidence_view()
+	app.ui.design_active = app.design.active
+	app.ui.design_playing = app.design.playing
+	app.ui.design_fraction = app.design.clock/design_duration(&app.design) if design_duration(&app.design) > 0 else 0
 	ui_build_controls(&app.ui, &evidence_view)
 	ui_scale := f32(app.ui.scale*app.ui.ui_scale)
 	text.begin_frame(&app.renderer.ui_text, ui_scale)
@@ -527,7 +566,11 @@ renderer_draw_application :: proc() -> Render_Result {
 		app.status,
 		&evidence_view,
 		app.status_failed,
+		&app.design,
 	)
+	mesh_vertices := app.renderer.mesh_vertex_count
+	mesh_partial: []Mesh_Vertex
+	if app.design.active {mesh_vertices, mesh_partial = design_visible(&app.design)}
 	viewport := ui_viewport_rect(&app.ui)
 	viewport.x *= app.ui.ui_scale
 	viewport.y *= app.ui.ui_scale
@@ -542,6 +585,8 @@ renderer_draw_application :: proc() -> Render_Result {
 		viewport,
 		ui_theme(&app.ui),
 		app.ui.wireframe,
+		mesh_vertices,
+		mesh_partial,
 		&app.renderer.ui_list,
 		app.ui.physical_width,
 		app.ui.physical_height,
@@ -584,6 +629,8 @@ application_frame :: proc "c" (width, height, scale: f64) {
 		app.needs_redraw = true
 	}
 	app_animate_camera()
+	app_poll_design()
+	if app_animate_design() {app.needs_redraw = true}
 	if app.needs_redraw {
 		result := renderer_draw_application()
 		switch result {
@@ -677,6 +724,9 @@ application_mouse :: proc "c" (
 			app.ui.section_dragging = true
 			app_set_section_z(point_x)
 			app.needs_redraw = true
+		} else if id == u64(UI_Action.Simulation_Time) {
+			app.ui.simulation_dragging = true
+			app_set_simulation_time(point_x)
 		} else {
 			app.ui.section_dragging = false
 			if id == 0 && ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
@@ -688,6 +738,8 @@ application_mouse :: proc "c" (
 		if app.ui.section_dragging {
 			app_set_section_z(point_x)
 			app.needs_redraw = true
+		} else if app.ui.simulation_dragging {
+			app_set_simulation_time(point_x)
 		} else if app.dragging {
 			if app.drag_button == 0 {
 				app.camera_goal.yaw -= f32(delta_x)*0.008
@@ -703,8 +755,9 @@ application_mouse :: proc "c" (
 		}
 	case 2:
 		if app.ui.pressed_id != 0 {app.needs_redraw = true}
-		if app.ui.section_dragging {
+		if app.ui.section_dragging || app.ui.simulation_dragging {
 			app.ui.section_dragging = false
+			app.ui.simulation_dragging = false
 			app.ui.pressed_id = 0
 		} else {
 			id := ui_hit_test(&app.ui, point_x, point_y)
@@ -834,6 +887,13 @@ application_key :: proc "c" (
 		}
 		if app.ui.focused_id == u64(UI_Action.Section_Height) && (key_code == 123 || key_code == 124) {
 			if app_adjust_section_height(1 if key_code == 124 else -1) {return}
+		}
+		if app.ui.focused_id == u64(UI_Action.Simulation_Time) && (key_code == 123 || key_code == 124) && app.design.active {
+			step := 0.01 if key_code == 124 else -0.01
+			design_set_time_fraction(&app.design, app.design.clock/max(design_duration(&app.design), 0.000001)+step)
+			app.design.playing = false
+			app.needs_redraw = true
+			return
 		}
 	}
 	if app.ui.settings_open {
@@ -1030,6 +1090,12 @@ main :: proc() {
 			}
 		} else if argument == "--settings" {
 			startup_settings_open = true
+		} else if strings.has_prefix(argument, "--design=") {
+			startup_design = argument[len("--design="):]
+		} else if strings.has_prefix(argument, "--design-time=") {
+			if parsed, ok := strconv.parse_f64(argument[len("--design-time="):]); ok {
+				startup_design_time = clamp(parsed, 0, 1)
+			}
 		}
 	}
 	config := devlog.DEFAULT_CONFIG
