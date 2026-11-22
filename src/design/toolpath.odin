@@ -57,34 +57,61 @@ object_layers :: proc(d: ^Design, object: Object) -> int {
 	return end_layer
 }
 
-// Outward base flare (mm per side) from a `bevel` or `fillet` junction at layer top `z`.
-// For `.Fillet`, computes the exact C1-tangent circular arc between the horizontal plane below
-// and the object's wall (accounting for cone slope `m = (R_base - R_top) / height`).
+// Outward flare (mm per side) from base and top `bevel`/`fillet` junctions at layer top `z`.
+// Computes exact C1-tangent circular arcs for horizontal-to-wall, horizontal-to-cone, and
+// sloped-cone-to-vertical-column junctions.
 object_base_flare :: proc(object: Object, z, thickness: f64) -> f64 {
-	if object.base_transition == .None || object.base_transition_size <= EPSILON {return 0}
-	s := object.base_transition_size
-	dz := max(0, z-object.z-0.5*thickness)
-	switch object.base_transition {
-	case .None:
-		return 0
-	case .Bevel:
-		if dz >= s-EPSILON {return 0}
-		return s-dz
-	case .Fillet:
-		m := 0.0
-		if object.shape != .Box && object.height > EPSILON {
-			m = (object.size.x-object.top_diameter)*0.5/object.height
+	flare := 0.0
+	if object.base_transition != .None && object.base_transition_size > EPSILON {
+		s := object.base_transition_size
+		dz := max(0, z-object.z-0.5*thickness)
+		switch object.base_transition {
+		case .None:
+		case .Bevel:
+			if dz < s-EPSILON {flare = max(flare, s-dz)}
+		case .Fillet:
+			if object.base_lower_slope > 1e-4 {
+				// Upper half of a C1-tangent fillet from a sloped cone (slope m1) into a vertical column.
+				m1 := object.base_lower_slope
+				z_c := s*(math.sqrt(1+m1*m1)-1)/m1
+				if dz < z_c-EPSILON {
+					rem := z_c-dz
+					flare = max(flare, s-math.sqrt(max(0, s*s-rem*rem)))
+				}
+			} else {
+				m := 0.0
+				if object.shape != .Box && object.height > EPSILON {
+					m = (object.size.x-object.top_diameter)*0.5/object.height
+				}
+				hyp := math.sqrt(1+m*m)
+				z_tan := s*(1-m/hyp)
+				if dz < z_tan-EPSILON {
+					r_c := s*(hyp-m)
+					rem := s-dz
+					r_fillet := r_c-math.sqrt(max(0, s*s-rem*rem))
+					flare = max(flare, r_fillet+m*dz)
+				}
+			}
 		}
-		hyp := math.sqrt(1+m*m)
-		z_tan := s*(1-m/hyp)
-		if dz >= z_tan-EPSILON {return 0}
-		r_c := s*(hyp-m)
-		rem := s-dz
-		r_fillet := r_c-math.sqrt(max(0, s*s-rem*rem))
-		// Nominal cone radius at `dz` relative to base is `-m * dz`, so flare above nominal is `r_fillet + m * dz`.
-		return max(0, r_fillet+m*dz)
 	}
-	return 0
+	if object.top_fillet_radius > EPSILON && object.shape != .Box && object.height > EPSILON {
+		// Lower half of a C1-tangent fillet where this sloped cone meets a vertical column above.
+		s := object.top_fillet_radius
+		m1 := (object.size.x-object.top_diameter)*0.5/object.height
+		if m1 > 1e-4 {
+			hyp := math.sqrt(1+m1*m1)
+			z_c := s*(hyp-1)/m1
+			z_bot := s*(hyp-1)/(m1*hyp)
+			dz_top := (object.z+object.height)-(z-0.5*thickness) // positive distance below top
+			if dz_top >= 0 && dz_top < z_bot-EPSILON {
+				rem := z_c+dz_top
+				r_fillet := s-math.sqrt(max(0, s*s-rem*rem)) // relative to R_top
+				// Nominal cone radius at `dz_top` below top is `R_top + m1 * dz_top`.
+				flare = max(flare, r_fillet-m1*dz_top)
+			}
+		}
+	}
+	return flare
 }
 
 // Effective outer size of `object` at layer height `z` (interpolates tapered cones and base bevel/fillet).

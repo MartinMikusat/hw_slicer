@@ -76,6 +76,8 @@ Object :: struct {
 	floor:                int,
 	base_transition:      Base_Transition,
 	base_transition_size: f64,
+	base_lower_slope:     f64, // > 0 when filleting a sloped lower cone into this vertical upper feature
+	top_fillet_radius:    f64, // > 0 when filleting this sloped cone's top into a vertical upper feature
 	settings:             Feature_Settings,
 	given:                bit_set[Feature_Setting], // settings the feature sets itself
 }
@@ -397,6 +399,33 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 		return fail(p, head.line, "'%s' and '%s' do not meet on a Z plane", a_tok.text, b_tok.text)
 	}
 	s := size_val.amount
+	if upper.base_transition != .None {
+		return fail(p, head.line, "'%s' already has a base bevel or fillet", upper.name)
+	}
+	// Case 1: Sloped lower cone meeting a vertical upper radial feature at the same diameter
+	// (e.g. `fillet(pedestal, sleeve, radius = 12mm)`): attach a shared C1-tangent arc to both.
+	same_center := math.hypot(upper.center.x-lower.center.x, upper.center.y-lower.center.y) <= 1e-4
+	same_dia := lower.shape != .Box && upper.shape != .Box && abs(lower.top_diameter-upper.size.x) <= 1e-3
+	lower_slope := (lower.size.x-lower.top_diameter)*0.5/lower.height if (lower.shape != .Box && lower.height > EPSILON) else 0.0
+	upper_slope := (upper.size.x-upper.top_diameter)*0.5/upper.height if (upper.shape != .Box && upper.height > EPSILON) else 0.0
+	if is_fillet && same_center && same_dia && lower_slope > 1e-4 && abs(upper_slope) <= 1e-4 {
+		hyp := math.sqrt(1+lower_slope*lower_slope)
+		z_top := s*(hyp-1)/lower_slope
+		z_bot := s*(hyp-1)/(lower_slope*hyp)
+		if z_top > upper.height+EPSILON {
+			return fail(p, head.line, "%s %.3f mm exceeds '%s' height %.3f mm", head.text, s, upper.name, upper.height)
+		}
+		if z_bot > lower.height+EPSILON {
+			return fail(p, head.line, "%s %.3f mm exceeds '%s' height %.3f mm", head.text, s, lower.name, lower.height)
+		}
+		lower.top_fillet_radius = s
+		upper.base_transition = .Fillet
+		upper.base_transition_size = s
+		upper.base_lower_slope = lower_slope
+		return true
+	}
+
+	// Case 2: Upper feature resting on a wider horizontal top face of `lower`.
 	max_flare := s
 	eff_height := s
 	if is_fillet && upper.shape != .Box && upper.height > EPSILON {
@@ -407,9 +436,6 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 	}
 	if eff_height > upper.height+EPSILON {
 		return fail(p, head.line, "%s %.3f mm exceeds '%s' height %.3f mm", head.text, s, upper.name, upper.height)
-	}
-	if upper.base_transition != .None {
-		return fail(p, head.line, "'%s' already has a base bevel or fillet", upper.name)
 	}
 	// Verify the flared footprint fits on the lower object's top face.
 	if !junction_fits_on_lower(lower^, upper^, max_flare) {

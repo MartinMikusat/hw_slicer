@@ -66,6 +66,9 @@ let sleeve = tube(
     speed = 28, acceleration = 600, fan = 100
 )
 
+# Smooth C1-tangent fillet where the tapered pedestal meets the vertical bearing sleeve
+fillet(pedestal, sleeve, radius = 12.0mm)
+
 # Stage 5 (z = 18.4..20.8mm): octagonal retaining collar
 let retaining_collar = polygon(
     z = base_height + cone_height + sleeve_height, sides = 8, diameter = 30mm, inner_diameter = bore_diameter,
