@@ -142,6 +142,37 @@ generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
 			if layer < start_layer || layer >= end_layer {continue}
 			g.feature = index
 			g.settings = object.settings
+			if object.top_morph_transition != .None && object.top_morph_height > EPSILON {
+				morph_start := object.z+object.height-object.top_morph_height
+				z_mid := g.z-0.5*g.thickness
+				if z_mid > morph_start {
+					t_morph := clamp((z_mid-morph_start)/object.top_morph_height, 0, 1)
+					s_morph := t_morph*t_morph*(3-2*t_morph) if object.top_morph_transition == .Fillet else t_morph
+					r_out_from := object_size_at_z(object, g.z, g.thickness).x*0.5
+					r_out_to := object.top_morph_diameter*0.5
+					r_in_from := object.inner_diameter*0.5
+					r_in_to := object.top_morph_inner_diameter*0.5
+					emitted_outer := 0
+					for loop in 0..<object.walls {
+						inset := (f64(loop)+0.5)*d.line_width
+						min_from := max(d.line_width*0.5, r_in_from+d.line_width*0.5 if r_in_from > 0 else 0)
+						min_to := max(d.line_width*0.5, r_in_to+d.line_width*0.5 if r_in_to > 0 else 0)
+						if r_out_from-inset < min_from-EPSILON || r_out_to-inset < min_to-EPSILON {break}
+						emit_morphed_radial_loop(&g, object.center, r_out_from-inset, object.sides, r_out_to-inset, object.top_morph_sides, s_morph)
+						emitted_outer += 1
+					}
+					if r_in_from > 0 && r_in_to > 0 {
+						max_in_from := r_out_from-(f64(emitted_outer)+0.5)*d.line_width
+						max_in_to := r_out_to-(f64(emitted_outer)+0.5)*d.line_width
+						for loop in 0..<object.walls {
+							outset := (f64(loop)+0.5)*d.line_width
+							if r_in_from+outset > max_in_from+EPSILON || r_in_to+outset > max_in_to+EPSILON {break}
+							emit_morphed_radial_loop(&g, object.center, r_in_from+outset, object.sides, r_in_to+outset, object.top_morph_sides, s_morph)
+						}
+					}
+					continue
+				}
+			}
 			flare := object_base_flare(object, g.z, g.thickness)
 			solid := (layer-start_layer) < object.floor
 			extra_walls := int(math.ceil(flare/d.line_width)) if flare > EPSILON else 0
@@ -251,6 +282,46 @@ emit_radial_loop :: proc(g: ^Generator, object: Object, radius: f64) {
 	travel(g, {c.x+radius, c.y})
 	extrude_arc(g, {c.x-radius, c.y}, c, .CCW)
 	extrude_arc(g, {c.x+radius, c.y}, c, .CCW)
+}
+
+@(private)
+radial_radius_at_angle :: proc(radius: f64, sides: int, angle: f64) -> f64 {
+	if sides < 3 {return radius}
+	sector := 2*math.PI/f64(sides)
+	a := math.mod(angle, sector)
+	if a < 0 {a += sector}
+	delta := a-sector*0.5
+	return radius*math.cos(sector*0.5)/math.cos(delta)
+}
+
+@(private)
+emit_morphed_radial_loop :: proc(
+	g: ^Generator,
+	c: [2]f64,
+	r_from: f64,
+	sides_from: int,
+	r_to: f64,
+	sides_to: int,
+	s: f64,
+) {
+	if sides_from < 3 && sides_to < 3 {
+		r := r_from*(1-s)+r_to*s
+		travel(g, {c.x+r, c.y})
+		extrude_arc(g, {c.x-r, c.y}, c, .CCW)
+		extrude_arc(g, {c.x+r, c.y}, c, .CCW)
+		return
+	}
+	n := max(sides_from, sides_to)
+	sub := max(6, int(math.ceil(64.0/f64(n))))
+	total := n*sub
+	for i in 0..=total {
+		angle := 2*math.PI*f64(i)/f64(total)
+		rf := radial_radius_at_angle(r_from, sides_from, angle)
+		rt := radial_radius_at_angle(r_to, sides_to, angle)
+		r := rf*(1-s)+rt*s
+		pt := [2]f64{c.x+r*math.cos(angle), c.y+r*math.sin(angle)}
+		if i == 0 {travel(g, pt)} else {extrude(g, pt)}
+	}
 }
 
 // Fills the strip left inside a solid box layer after its last loop, which is narrower than

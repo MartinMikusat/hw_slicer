@@ -76,9 +76,14 @@ Object :: struct {
 	floor:                int,
 	base_transition:      Base_Transition,
 	base_transition_size: f64,
-	base_lower_slope:     f64, // > 0 when filleting a sloped lower cone into this vertical upper feature
-	top_fillet_radius:    f64, // > 0 when filleting this sloped cone's top into a vertical upper feature
-	settings:             Feature_Settings,
+	base_lower_slope:         f64, // > 0 when filleting a sloped lower cone into this vertical upper feature
+	top_fillet_radius:        f64, // > 0 when filleting this sloped cone's top into a vertical upper feature
+	top_morph_transition:     Base_Transition, // linear (Bevel) or smoothstep (Fillet) shape morph into upper
+	top_morph_height:         f64, // height at top of this object over which it morphs into upper (mm)
+	top_morph_sides:          int, // target polygon sides at top (0 for circle, >= 3 for N-gon)
+	top_morph_diameter:       f64, // target outer diameter at top (mm)
+	top_morph_inner_diameter: f64, // target inner diameter at top (mm)
+	settings:                 Feature_Settings,
 	given:                bit_set[Feature_Setting], // settings the feature sets itself
 }
 
@@ -425,7 +430,27 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 		return true
 	}
 
-	// Case 2: Upper feature resting on a wider horizontal top face of `lower`.
+	// Case 2: Coaxial radial shape morph (e.g. circular `tube` -> octagonal/hexagonal `polygon`,
+	// or mismatched hollow radial features): smoothly loft the top `s` mm of `lower` into `upper`
+	// so every outer and inner wall layer connects with printable overhang.
+	diff_shape := lower.sides != upper.sides
+	diff_hollow := lower.inner_diameter > 0 && (abs(lower.top_diameter-upper.size.x) > 1e-3 || abs(lower.inner_diameter-upper.inner_diameter) > 1e-3)
+	if same_center && lower.shape != .Box && upper.shape != .Box && (diff_shape || diff_hollow) {
+		if lower.top_morph_transition != .None {
+			return fail(p, head.line, "'%s' already has a top morph bevel or fillet", lower.name)
+		}
+		if s > lower.height+EPSILON {
+			return fail(p, head.line, "%s %.3f mm exceeds '%s' height %.3f mm", head.text, s, lower.name, lower.height)
+		}
+		lower.top_morph_transition = .Fillet if is_fillet else .Bevel
+		lower.top_morph_height = s
+		lower.top_morph_sides = upper.sides
+		lower.top_morph_diameter = upper.size.x
+		lower.top_morph_inner_diameter = upper.inner_diameter
+		return true
+	}
+
+	// Case 3: Upper feature resting on a wider horizontal top face of `lower`.
 	max_flare := s
 	eff_height := s
 	if is_fillet && upper.shape != .Box && upper.height > EPSILON {

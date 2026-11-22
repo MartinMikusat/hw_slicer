@@ -59,6 +59,12 @@ let hex_se = polygon(x =  bolt_offset, y = -bolt_offset, z = base_height + boss_
 let hex_ne = polygon(x =  bolt_offset, y =  bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
 let hex_nw = polygon(x = -bolt_offset, y =  bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
 
+# Seamless circle-to-hexagon loft transitions on the four corner standoffs
+fillet(standoff_sw, hex_sw, radius = 2.4mm)
+fillet(standoff_se, hex_se, radius = 2.4mm)
+fillet(standoff_ne, hex_ne, radius = 2.4mm)
+fillet(standoff_nw, hex_nw, radius = 2.4mm)
+
 # Stage 4 (z = 10.4..18.4mm): upper precision bearing sleeve
 let sleeve = tube(
     z = base_height + cone_height, diameter = 34mm, inner_diameter = bore_diameter,
@@ -75,3 +81,6 @@ let retaining_collar = polygon(
     height = 2.4mm, walls = wall_lines,
     speed = 25, acceleration = 500, fan = 100
 )
+
+# Seamless circle-to-octagon loft transition from the bearing sleeve into the retaining collar
+fillet(sleeve, retaining_collar, radius = 3.6mm)
