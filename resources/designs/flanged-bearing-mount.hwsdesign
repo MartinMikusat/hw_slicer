@@ -1,0 +1,63 @@
+# Multi-stage flanged bearing mount showcasing rounded boxes, hollow tubes,
+# a tapered conical pedestal, hexagonal/octagonal polygons, and vertical Z stacking.
+let line_width = nozzle * 1.1
+let layer_height = nozzle * 0.5
+let first_layer_height = layer_height
+let print_speed = 50
+let print_acceleration = 1200
+let fan = 90
+
+let wall_lines = fit(4, line_width, 0mm, 2.2mm)
+let floor_layers = fit(3, layer_height, 0.6mm, 0mm)
+
+let base_height = 2.4mm
+let base_layers = round(base_height / layer_height)
+let boss_height = 5.6mm
+let cone_height = 8.0mm
+let sleeve_height = 8.0mm
+let bore_diameter = 20mm
+let bolt_offset = 28mm
+
+# Stage 1 (z = 0..2.4mm): solid rounded-corner mounting flange
+box(
+    width = 84mm, depth = 84mm, radius = 12mm,
+    height = base_height, walls = wall_lines, floor = base_layers,
+    speed = 60, acceleration = 1500, fan = 80
+)
+
+# Stage 2 (z = 2.4mm): four hollow corner mounting standoffs
+tube(x = -bolt_offset, y = -bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
+tube(x =  bolt_offset, y = -bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
+tube(x =  bolt_offset, y =  bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
+tube(x = -bolt_offset, y =  bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
+
+# Stage 2 (z = 2.4mm): two side alignment lugs with filleted corners
+box(x = -31mm, y = 0mm, z = base_height, width = 12mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
+box(x =  31mm, y = 0mm, z = base_height, width = 12mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
+
+# Stage 2 (z = 2.4..10.4mm): central tapered conical pedestal with bearing bore
+cone(
+    z = base_height, diameter = 46mm, top_diameter = 34mm, inner_diameter = bore_diameter,
+    height = cone_height, walls = wall_lines, floor = floor_layers,
+    speed = 40, acceleration = 900, fan = 100
+)
+
+# Stage 3 (z = 8.0..11.2mm): four hexagonal nut collars stacked on the corner standoffs
+polygon(x = -bolt_offset, y = -bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
+polygon(x =  bolt_offset, y = -bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
+polygon(x =  bolt_offset, y =  bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
+polygon(x = -bolt_offset, y =  bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
+
+# Stage 4 (z = 10.4..18.4mm): upper precision bearing sleeve
+tube(
+    z = base_height + cone_height, diameter = 34mm, inner_diameter = bore_diameter,
+    height = sleeve_height, walls = wall_lines,
+    speed = 28, acceleration = 600, fan = 100
+)
+
+# Stage 5 (z = 18.4..20.8mm): octagonal retaining collar
+polygon(
+    z = base_height + cone_height + sleeve_height, sides = 8, diameter = 30mm, inner_diameter = bore_diameter,
+    height = 2.4mm, walls = wall_lines,
+    speed = 25, acceleration = 500, fan = 100
+)

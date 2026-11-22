@@ -38,18 +38,37 @@ Feature_Settings :: struct {
 Shape :: enum u8 {
 	Box,
 	Cylinder,
+	Tube,
+	Cone,
+	Polygon,
+}
+
+shape_name :: proc(shape: Shape) -> string {
+	switch shape {
+	case .Box:      return "box"
+	case .Cylinder: return "cylinder"
+	case .Tube:     return "tube"
+	case .Cone:     return "cone"
+	case .Polygon:  return "polygon"
+	}
+	return "object"
 }
 
 Object :: struct {
-	shape:  Shape,
-	line:   int,
-	center: [2]f64, // mm from the bed centre
-	size:   [2]f64, // box width and depth; cylinder diameter in both
-	height: f64,
-	walls:  int,
-	floor:  int,
-	settings: Feature_Settings,
-	given:    bit_set[Feature_Setting], // settings the feature sets itself
+	shape:          Shape,
+	line:           int,
+	center:         [2]f64, // mm from the bed centre
+	z:              f64,    // base Z offset from the bed (mm)
+	size:           [2]f64, // box width and depth; radial base diameter in both
+	top_diameter:   f64,    // radial top diameter (mm); equals size.x when untapered
+	inner_diameter: f64,    // radial inner bore diameter (mm); 0 when solid
+	radius:         f64,    // box corner fillet radius (mm)
+	sides:          int,    // polygon side count (>= 3); 0 for smooth circular curves
+	height:         f64,
+	walls:          int,
+	floor:          int,
+	settings:       Feature_Settings,
+	given:          bit_set[Feature_Setting], // settings the feature sets itself
 }
 
 Parameter :: struct {
@@ -284,10 +303,10 @@ parse_statements :: proc(p: ^Parser) -> bool {
 				expect(p, .Equals, "'='") or_return
 				value := parse_expression(p) or_return
 				define(p, name.text, value, name.line) or_return
-			} else if token.text == "box" || token.text == "cylinder" {
+			} else if token.text == "box" || token.text == "cylinder" || token.text == "tube" || token.text == "cone" || token.text == "polygon" {
 				parse_object(p, token) or_return
 			} else {
-				return fail(p, token.line, "unknown statement '%s'; use let, box or cylinder", token.text)
+				return fail(p, token.line, "unknown statement '%s'; use let, box, cylinder, tube, cone or polygon", token.text)
 			}
 			expect(p, .Newline, "end of line") or_return
 		case .Number, .Left_Paren, .Right_Paren, .Comma, .Equals, .Plus, .Minus, .Star, .Slash, .End:
@@ -301,9 +320,14 @@ parse_statements :: proc(p: ^Parser) -> bool {
 Object_Key :: enum u8 {
 	X,
 	Y,
+	Z,
 	Width,
 	Depth,
+	Radius,
 	Diameter,
+	Top_Diameter,
+	Inner_Diameter,
+	Sides,
 	Height,
 	Walls,
 	Floor,
@@ -314,30 +338,45 @@ Object_Key :: enum u8 {
 
 @(private)
 OBJECT_KEY_NAMES := [Object_Key]string {
-	.X        = "x",
-	.Y        = "y",
-	.Width    = "width",
-	.Depth    = "depth",
-	.Diameter = "diameter",
-	.Height   = "height",
-	.Walls    = "walls",
-	.Floor    = "floor",
-	.Speed        = "speed",
-	.Acceleration = "acceleration",
-	.Fan          = "fan",
+	.X              = "x",
+	.Y              = "y",
+	.Z              = "z",
+	.Width          = "width",
+	.Depth          = "depth",
+	.Radius         = "radius",
+	.Diameter       = "diameter",
+	.Top_Diameter   = "top_diameter",
+	.Inner_Diameter = "inner_diameter",
+	.Sides          = "sides",
+	.Height         = "height",
+	.Walls          = "walls",
+	.Floor          = "floor",
+	.Speed          = "speed",
+	.Acceleration   = "acceleration",
+	.Fan            = "fan",
 }
 
 @(private)
 parse_object :: proc(p: ^Parser, head: Token) -> bool {
-	shape := Shape.Box if head.text == "box" else Shape.Cylinder
-	allowed := bit_set[Object_Key]{.X, .Y, .Height, .Walls, .Floor, .Speed, .Acceleration, .Fan}
+	shape: Shape
+	switch head.text {
+	case "box":      shape = .Box
+	case "cylinder": shape = .Cylinder
+	case "tube":     shape = .Tube
+	case "cone":     shape = .Cone
+	case "polygon":  shape = .Polygon
+	}
+	allowed := bit_set[Object_Key]{.X, .Y, .Z, .Height, .Walls, .Floor, .Speed, .Acceleration, .Fan}
 	required := bit_set[Object_Key]{.Height, .Walls}
 	if shape == .Box {
-		allowed += {.Width, .Depth}
+		allowed += {.Width, .Depth, .Radius}
 		required += {.Width, .Depth}
 	} else {
-		allowed += {.Diameter}
+		allowed += {.Diameter, .Top_Diameter, .Inner_Diameter, .Sides}
 		required += {.Diameter}
+		if shape == .Tube {required += {.Inner_Diameter}}
+		if shape == .Cone {required += {.Top_Diameter}}
+		if shape == .Polygon {required += {.Sides}}
 	}
 	values: [Object_Key]Value
 	seen: bit_set[Object_Key]
@@ -350,7 +389,7 @@ parse_object :: proc(p: ^Parser, head: Token) -> bool {
 		if key in seen {return fail(p, name.line, "argument '%s' is given twice", name.text)}
 		expect(p, .Equals, "'=' after the argument name") or_return
 		value := parse_expression(p) or_return
-		wants_length := key not_in bit_set[Object_Key]{.Walls, .Floor, .Speed, .Acceleration, .Fan}
+		wants_length := key not_in bit_set[Object_Key]{.Sides, .Walls, .Floor, .Speed, .Acceleration, .Fan}
 		if value.length != wants_length {
 			return fail(p, name.line, "argument '%s' must be %s", name.text, "a length" if wants_length else "a scalar count")
 		}
@@ -361,26 +400,51 @@ parse_object :: proc(p: ^Parser, head: Token) -> bool {
 	for key in Object_Key {
 		if key in required && key not_in seen {return fail(p, head.line, "%s needs argument '%s'", head.text, OBJECT_KEY_NAMES[key])}
 	}
-	for key in ([2]Object_Key{.Walls, .Floor}) {
+	for key in ([3]Object_Key{.Walls, .Floor, .Sides}) {
+		if key not_in seen {continue}
 		v := values[key].amount
 		if abs(v-math.round(v)) > EPSILON {return fail(p, head.line, "'%s' must be a whole count, got %.3f", OBJECT_KEY_NAMES[key], v)}
 	}
 	object := Object{
-		shape  = shape,
-		line   = head.line,
-		center = {values[.X].amount, values[.Y].amount},
-		height = values[.Height].amount,
-		walls  = int(math.round(values[.Walls].amount)),
-		floor  = int(math.round(values[.Floor].amount)),
+		shape    = shape,
+		line     = head.line,
+		center   = {values[.X].amount, values[.Y].amount},
+		z        = values[.Z].amount,
+		height   = values[.Height].amount,
+		walls    = int(math.round(values[.Walls].amount)),
+		floor    = int(math.round(values[.Floor].amount)),
 		settings = {values[.Speed].amount, values[.Acceleration].amount, values[.Fan].amount},
 	}
 	if .Speed in seen {object.given += {.Speed}}
 	if .Acceleration in seen {object.given += {.Acceleration}}
 	if .Fan in seen {object.given += {.Fan}}
+	if object.z < -EPSILON {return fail(p, head.line, "z must not be negative, got %.3f mm", object.z)}
+	if object.z < 0 {object.z = 0}
 	if shape == .Box {
 		object.size = {values[.Width].amount, values[.Depth].amount}
+		object.top_diameter = object.size.x
+		object.radius = values[.Radius].amount
+		if object.radius < -EPSILON {return fail(p, head.line, "radius must not be negative, got %.3f mm", object.radius)}
+		if object.radius > min(object.size.x, object.size.y)*0.5+EPSILON {
+			return fail(p, head.line, "radius %.3f mm exceeds half the box size", object.radius)
+		}
 	} else {
-		object.size = {values[.Diameter].amount, values[.Diameter].amount}
+		dia := values[.Diameter].amount
+		top_dia := values[.Top_Diameter].amount if .Top_Diameter in seen else dia
+		inner_dia := values[.Inner_Diameter].amount if .Inner_Diameter in seen else 0
+		object.size = {dia, dia}
+		object.top_diameter = top_dia
+		object.inner_diameter = inner_dia
+		if .Sides in seen {
+			object.sides = int(math.round(values[.Sides].amount))
+			if object.sides < 3 {return fail(p, head.line, "sides must be at least 3, got %d", object.sides)}
+		}
+		if top_dia <= 0 {return fail(p, head.line, "%s top_diameter must be positive", head.text)}
+		if inner_dia < -EPSILON {return fail(p, head.line, "inner_diameter must not be negative")}
+		if shape == .Tube && inner_dia <= 0 {return fail(p, head.line, "tube inner_diameter must be positive")}
+		if inner_dia > 0 && inner_dia >= min(dia, top_dia)-EPSILON {
+			return fail(p, head.line, "inner_diameter %.3f mm must be smaller than outer diameter %.3f mm", inner_dia, min(dia, top_dia))
+		}
 	}
 	if object.walls < 1 {return fail(p, head.line, "walls must be at least 1, got %d", object.walls)}
 	if object.floor < 0 {return fail(p, head.line, "floor must not be negative, got %d", object.floor)}
@@ -574,8 +638,14 @@ resolve_process :: proc(p: ^Parser, printer: Printer) -> bool {
 		if min(object.size.x, object.size.y) < d.line_width {
 			return fail(p, object.line, "the object is narrower than one line (%.3f mm)", d.line_width)
 		}
-		if object.height < d.first_layer_height {
-			return fail(p, object.line, "the object is lower than the first layer (%.3f mm)", d.first_layer_height)
+		if object.shape != .Box && object.top_diameter < d.line_width {
+			return fail(p, object.line, "the object top_diameter is narrower than one line (%.3f mm)", d.line_width)
+		}
+		if object.inner_diameter > 0 && (min(object.size.x, object.top_diameter)-object.inner_diameter)*0.5 < d.line_width-EPSILON {
+			return fail(p, object.line, "the annular wall is narrower than one line (%.3f mm)", d.line_width)
+		}
+		if object.z == 0 && object.height < d.first_layer_height || object.z > 0 && object.height < d.layer_height {
+			return fail(p, object.line, "the object is lower than one layer")
 		}
 	}
 	return true

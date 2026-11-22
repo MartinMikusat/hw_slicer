@@ -33,13 +33,34 @@ toolpath_destroy :: proc(t: ^Toolpath) {
 	t^ = {}
 }
 
-// The layer count of `object`: its first layer, then whole layers up to its height.
+// The `[start_layer, end_layer)` layer range of `object`.
+object_layer_span :: proc(d: ^Design, object: Object) -> (start_layer, end_layer: int) {
+	if object.z >= d.first_layer_height*0.5 {
+		start_layer = 1 + max(0, int(math.round((object.z-d.first_layer_height)/d.layer_height)))
+	}
+	top := object.z+object.height
+	end_layer = 1 + max(start_layer, int(math.round((top-d.first_layer_height)/d.layer_height)))
+	return
+}
+
+// The ending layer index of `object`.
 object_layers :: proc(d: ^Design, object: Object) -> int {
-	return 1 + max(0, int(math.round((object.height-d.first_layer_height)/d.layer_height)))
+	_, end_layer := object_layer_span(d, object)
+	return end_layer
+}
+
+// Effective outer size of `object` at layer height `z` (interpolates tapered cones).
+object_size_at_z :: proc(object: Object, z: f64) -> [2]f64 {
+	if object.shape == .Box || abs(object.top_diameter-object.size.x) <= EPSILON || object.height <= EPSILON {
+		return object.size
+	}
+	t := clamp((z-object.z)/object.height, 0, 1)
+	dia := object.size.x+(object.top_diameter-object.size.x)*t
+	return {dia, dia}
 }
 
 // Generates layer-ordered moves. Each layer prints the objects in file order, each as
-// concentric loops from the outside in.
+// concentric loops from the outside in (plus inner bore wall loops on hollow tubes).
 generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
 	assert(d.line_width > 0 && d.layer_height > 0 && d.first_layer_height > 0)
 	assert(len(d.objects) > 0)
@@ -50,17 +71,30 @@ generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
 		g.z = d.first_layer_height+f64(layer)*d.layer_height
 		g.thickness = d.first_layer_height if layer == 0 else d.layer_height
 		for object, index in d.objects {
-			count := object_layers(d, object)
-			if layer >= count {continue}
+			start_layer, end_layer := object_layer_span(d, object)
+			if layer < start_layer || layer >= end_layer {continue}
 			g.feature = index
 			g.settings = object.settings
-			solid := layer < object.floor
+			solid := (layer-start_layer) < object.floor
 			loops := max(int) if solid else object.walls
+			emitted_outer := 0
 			for loop in 0..<loops {
 				inset := (f64(loop)+0.5)*d.line_width
 				if !emit_loop(&g, object, inset) {
 					if solid {emit_centre_line(&g, object, f64(loop)*d.line_width)}
 					break
+				}
+				emitted_outer += 1
+			}
+			if !solid && object.shape != .Box && object.inner_diameter > 0 {
+				size_z := object_size_at_z(object, g.z)
+				r_outer := size_z.x*0.5
+				r_inner := object.inner_diameter*0.5
+				max_inner_r := r_outer-(f64(emitted_outer)+0.5)*d.line_width
+				for loop in 0..<object.walls {
+					r_loop := r_inner+(f64(loop)+0.5)*d.line_width
+					if r_loop > max_inner_r+EPSILON {break}
+					emit_radial_loop(&g, object, r_loop)
 				}
 			}
 		}
@@ -83,34 +117,83 @@ Generator :: struct {
 // Emits the loop at `inset` from the outline; false when the loop would not fit.
 @(private)
 emit_loop :: proc(g: ^Generator, object: Object, inset: f64) -> bool {
-	half := object.size*0.5-inset
-	if min(half.x, half.y) < g.d.line_width*0.5 {return false}
+	size_z := object_size_at_z(object, g.z)
+	half := size_z*0.5-inset
+	min_half := g.d.line_width*0.5
+	if object.shape != .Box && object.inner_diameter > 0 {
+		min_half = max(min_half, object.inner_diameter*0.5+g.d.line_width*0.5)
+	}
+	if min(half.x, half.y) < min_half-EPSILON {return false}
 	c := object.center
 	switch object.shape {
 	case .Box:
-		corners := [5][2]f64{
-			{c.x-half.x, c.y-half.y},
-			{c.x+half.x, c.y-half.y},
-			{c.x+half.x, c.y+half.y},
-			{c.x-half.x, c.y+half.y},
-			{c.x-half.x, c.y-half.y},
+		r_outer := clamp(object.radius, 0, min(size_z.x, size_z.y)*0.5)
+		r_corner := clamp(r_outer-inset, 0, min(half.x, half.y))
+		if r_corner <= CHORD_TOLERANCE {
+			corners := [5][2]f64{
+				{c.x-half.x, c.y-half.y},
+				{c.x+half.x, c.y-half.y},
+				{c.x+half.x, c.y+half.y},
+				{c.x-half.x, c.y+half.y},
+				{c.x-half.x, c.y-half.y},
+			}
+			travel(g, corners[0])
+			for corner in corners[1:] {extrude(g, corner)}
+		} else {
+			emit_rounded_box_loop(g, c, half, r_corner)
 		}
-		travel(g, corners[0])
-		for corner in corners[1:] {extrude(g, corner)}
-	case .Cylinder:
-		radius := half.x
-		segments := MAX_CIRCLE_SEGMENTS
-		if radius > CHORD_TOLERANCE {
-			segments = int(math.ceil(math.PI/math.acos(1-CHORD_TOLERANCE/radius)))
-		}
-		segments = clamp(segments, MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS)
-		travel(g, {c.x+radius, c.y})
-		for i in 1..=segments {
-			angle := 2*math.PI*f64(i)/f64(segments)
-			extrude(g, {c.x+radius*math.cos(angle), c.y+radius*math.sin(angle)})
-		}
+	case .Cylinder, .Tube, .Cone, .Polygon:
+		emit_radial_loop(g, object, half.x)
 	}
 	return true
+}
+
+@(private)
+emit_rounded_box_loop :: proc(g: ^Generator, c, half: [2]f64, r: f64) {
+	full_segs := int(math.ceil(math.PI/math.acos(1-CHORD_TOLERANCE/r)))
+	full_segs = clamp(full_segs, MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS)
+	corner_segs := max(3, full_segs/4)
+	hx := max(0, half.x-r)
+	hy := max(0, half.y-r)
+
+	travel(g, {c.x-hx, c.y-half.y})
+	if hx > EPSILON {extrude(g, {c.x+hx, c.y-half.y})}
+	for i in 1..=corner_segs {
+		a := -0.5*math.PI + 0.5*math.PI*f64(i)/f64(corner_segs)
+		extrude(g, {c.x+hx+r*math.cos(a), c.y-hy+r*math.sin(a)})
+	}
+	if hy > EPSILON {extrude(g, {c.x+half.x, c.y+hy})}
+	for i in 1..=corner_segs {
+		a := 0.5*math.PI*f64(i)/f64(corner_segs)
+		extrude(g, {c.x+hx+r*math.cos(a), c.y+hy+r*math.sin(a)})
+	}
+	if hx > EPSILON {extrude(g, {c.x-hx, c.y+half.y})}
+	for i in 1..=corner_segs {
+		a := 0.5*math.PI + 0.5*math.PI*f64(i)/f64(corner_segs)
+		extrude(g, {c.x-hx+r*math.cos(a), c.y+hy+r*math.sin(a)})
+	}
+	if hy > EPSILON {extrude(g, {c.x-half.x, c.y-hy})}
+	for i in 1..=corner_segs {
+		a := math.PI + 0.5*math.PI*f64(i)/f64(corner_segs)
+		extrude(g, {c.x-hx+r*math.cos(a), c.y-hy+r*math.sin(a)})
+	}
+}
+
+@(private)
+emit_radial_loop :: proc(g: ^Generator, object: Object, radius: f64) {
+	c := object.center
+	segments := MAX_CIRCLE_SEGMENTS
+	if object.sides >= 3 {
+		segments = clamp(object.sides, 3, MAX_CIRCLE_SEGMENTS)
+	} else if radius > CHORD_TOLERANCE {
+		segments = int(math.ceil(math.PI/math.acos(1-CHORD_TOLERANCE/radius)))
+		segments = clamp(segments, MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS)
+	}
+	travel(g, {c.x+radius, c.y})
+	for i in 1..=segments {
+		angle := 2*math.PI*f64(i)/f64(segments)
+		extrude(g, {c.x+radius*math.cos(angle), c.y+radius*math.sin(angle)})
+	}
 }
 
 // Fills the strip left inside a solid box layer after its last loop, which is narrower than

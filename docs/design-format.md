@@ -30,6 +30,9 @@ next lines. `#` starts a comment.
 let NAME = EXPRESSION
 box(KEY = EXPRESSION, ...)
 cylinder(KEY = EXPRESSION, ...)
+tube(KEY = EXPRESSION, ...)
+cone(KEY = EXPRESSION, ...)
+polygon(KEY = EXPRESSION, ...)
 ```
 
 A `let` cannot redefine a name. A name must be defined before it is used.
@@ -84,22 +87,30 @@ because 4 lines are 2.64 mm.
 Objects print in file order on each layer. Coordinates are in millimetres
 from the bed centre.
 
-| Key | `box` | `cylinder` | Kind |
+| Key | `box` | `cylinder` / `tube` / `cone` / `polygon` | Kind |
 | --- | --- | --- | --- |
 | `x`, `y` | optional, 0 | optional, 0 | length, centre |
+| `z` | optional, 0 | optional, 0 | length, base Z height |
 | `width`, `depth` | required | | length |
-| `diameter` | | required | length |
-| `height` | required | required | length |
+| `radius` | optional, 0 | | length, corner fillet radius |
+| `diameter` | | required | length, base outer diameter |
+| `top_diameter` | | required on `cone`, optional otherwise | length, top outer diameter (defaults to `diameter`) |
+| `inner_diameter` | | required on `tube`, optional otherwise | length, central bore diameter (defaults to 0) |
+| `sides` | | required on `polygon`, optional otherwise | whole scalar ≥ 3, regular polygon sides |
+| `height` | required | required | length, vertical span above `z` |
 | `walls` | required | required | whole scalar, at least 1 |
-| `floor` | optional, 0 | optional, 0 | whole scalar, solid bottom layers |
+| `floor` | optional, 0 | optional, 0 | whole scalar, solid bottom layers of this feature |
 | `speed` | optional | optional | scalar, mm/s |
 | `acceleration` | optional | optional | scalar, mm/s² |
 | `fan` | optional | optional | scalar, percent |
 
-Each layer prints concentric loops from the outside in. A wall layer prints
+Each layer prints concentric loops from the outside in. When `inner_diameter > 0`,
+floor layers fill the annular ring down to `inner_diameter`, and wall layers print
+`walls` outer loops inward and `walls` inner bore loops outward. A wall layer prints
 `walls` loops. A floor layer prints loops until the shape is full. Set
-`floor` to at least the layer count for a solid object. The object has
-`1 + round((height - first_layer_height) / layer_height)` layers.
+`floor` to at least the layer count for a solid object. A feature starting at
+`z = 0mm` spans `1 + round((height - first_layer_height) / layer_height)` layers;
+a stacked feature (`z > 0mm`) spans the layers from `z` to `z + height`.
 
 ## Feature settings
 
