@@ -28,14 +28,22 @@ next lines. `#` starts a comment.
 
 ```text
 let NAME = EXPRESSION
+let NAME = box(KEY = EXPRESSION, ...)
 box(KEY = EXPRESSION, ...)
 cylinder(KEY = EXPRESSION, ...)
 tube(KEY = EXPRESSION, ...)
 cone(KEY = EXPRESSION, ...)
 polygon(KEY = EXPRESSION, ...)
+bevel(OBJECT_A, OBJECT_B, size = LENGTH)
+fillet(OBJECT_A, OBJECT_B, radius = LENGTH)
 ```
 
 A `let` cannot redefine a name. A name must be defined before it is used.
+Objects bound with `let NAME = ...` can be referenced by `bevel` and `fillet`
+to add a 45° linear chamfer or concave circular root fillet where two stacked
+objects meet on a Z plane. The evaluator verifies that the two objects meet and
+that the flared footprint stays within the supporting face below; beveled
+layers automatically add inward loops so upper walls remain fully supported.
 
 ## Values and units
 

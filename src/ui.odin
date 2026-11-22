@@ -1994,7 +1994,7 @@ ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_S
 	y += row
 	for object in s.evaluated.objects {
 		if y+row > bottom {break}
-		name := fmt.tprintf("%s, line %d", design.shape_name(object.shape), object.line)
+		name := object.name if len(object.name) > 0 else fmt.tprintf("%s, line %d", design.shape_name(object.shape), object.line)
 		value := fmt.tprintf("%.0f  %.0f  %.0f%%", object.settings.speed, object.settings.acceleration, object.settings.fan)
 		ui_draw_measurement(painter, ui, name, value, {area.x, y, area.w, row}, label_width)
 		y += row

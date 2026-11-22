@@ -54,21 +54,30 @@ shape_name :: proc(shape: Shape) -> string {
 	return "object"
 }
 
+Base_Transition :: enum u8 {
+	None,
+	Bevel,  // 45° linear chamfer at the base junction
+	Fillet, // concave circular root fillet at the base junction
+}
+
 Object :: struct {
-	shape:          Shape,
-	line:           int,
-	center:         [2]f64, // mm from the bed centre
-	z:              f64,    // base Z offset from the bed (mm)
-	size:           [2]f64, // box width and depth; radial base diameter in both
-	top_diameter:   f64,    // radial top diameter (mm); equals size.x when untapered
-	inner_diameter: f64,    // radial inner bore diameter (mm); 0 when solid
-	radius:         f64,    // box corner fillet radius (mm)
-	sides:          int,    // polygon side count (>= 3); 0 for smooth circular curves
-	height:         f64,
-	walls:          int,
-	floor:          int,
-	settings:       Feature_Settings,
-	given:          bit_set[Feature_Setting], // settings the feature sets itself
+	shape:                Shape,
+	name:                 string,
+	line:                 int,
+	center:               [2]f64, // mm from the bed centre
+	z:                    f64,    // base Z offset from the bed (mm)
+	size:                 [2]f64, // box width and depth; radial base diameter in both
+	top_diameter:         f64,    // radial top diameter (mm); equals size.x when untapered
+	inner_diameter:       f64,    // radial inner bore diameter (mm); 0 when solid
+	radius:               f64,    // box corner fillet radius (mm)
+	sides:                int,    // polygon side count (>= 3); 0 for smooth circular curves
+	height:               f64,
+	walls:                int,
+	floor:                int,
+	base_transition:      Base_Transition,
+	base_transition_size: f64,
+	settings:             Feature_Settings,
+	given:                bit_set[Feature_Setting], // settings the feature sets itself
 }
 
 Parameter :: struct {
@@ -105,6 +114,7 @@ EPSILON :: 1e-9
 
 design_destroy :: proc(d: ^Design) {
 	for parameter in d.parameters {delete(parameter.name, d.parameters.allocator)}
+	for object in d.objects {delete(object.name, d.objects.allocator)}
 	delete(d.parameters)
 	delete(d.objects)
 	d^ = {}
@@ -127,6 +137,8 @@ evaluate :: proc(source: string, printer: Printer, allocator := context.allocato
 	p.design.filament_diameter = printer.filament_diameter
 	p.tokens = make([dynamic]Token, context.temp_allocator)
 	defer delete(p.tokens)
+	p.object_refs = make([dynamic]Object_Ref, context.temp_allocator)
+	defer delete(p.object_refs)
 	ok = tokenize(&p, source) &&
 		define(&p, "nozzle", {printer.nozzle_diameter, true}, 0) &&
 		define(&p, "filament", {printer.filament_diameter, true}, 0) &&
@@ -170,12 +182,20 @@ Token :: struct {
 }
 
 @(private)
+Object_Ref :: struct {
+	name:  string,
+	index: int,
+	line:  int,
+}
+
+@(private)
 Parser :: struct {
-	allocator: mem.Allocator,
-	tokens:    [dynamic]Token,
-	position:  int,
-	design:    Design,
-	err:       Error,
+	allocator:   mem.Allocator,
+	tokens:      [dynamic]Token,
+	position:    int,
+	design:      Design,
+	object_refs: [dynamic]Object_Ref,
+	err:         Error,
 }
 
 @(private)
@@ -283,8 +303,22 @@ lookup :: proc(p: ^Parser, name: string) -> (Value, bool) {
 }
 
 @(private)
+lookup_object :: proc(p: ^Parser, name: string) -> (int, bool) {
+	for ref in p.object_refs {
+		if ref.name == name {return ref.index, true}
+	}
+	return -1, false
+}
+
+@(private)
+is_object_keyword :: proc(text: string) -> bool {
+	return text == "box" || text == "cylinder" || text == "tube" || text == "cone" || text == "polygon"
+}
+
+@(private)
 define :: proc(p: ^Parser, name: string, value: Value, line: int) -> bool {
 	if _, exists := lookup(p, name); exists {return fail(p, line, "'%s' is already defined", name)}
+	if _, exists := lookup_object(p, name); exists {return fail(p, line, "'%s' is already defined", name)}
 	if len(p.design.parameters) >= MAX_PARAMETERS {return fail(p, line, "more than %d parameters", MAX_PARAMETERS)}
 	append(&p.design.parameters, Parameter{name = strings.clone(name, p.allocator), value = value, line = line})
 	return true
@@ -301,12 +335,22 @@ parse_statements :: proc(p: ^Parser) -> bool {
 			if token.text == "let" {
 				name := expect(p, .Ident, "a name after 'let'") or_return
 				expect(p, .Equals, "'='") or_return
-				value := parse_expression(p) or_return
-				define(p, name.text, value, name.line) or_return
-			} else if token.text == "box" || token.text == "cylinder" || token.text == "tube" || token.text == "cone" || token.text == "polygon" {
-				parse_object(p, token) or_return
+				if peek(p).kind == .Ident && is_object_keyword(peek(p).text) {
+					if _, exists := lookup(p, name.text); exists {return fail(p, name.line, "'%s' is already defined", name.text)}
+					if _, exists := lookup_object(p, name.text); exists {return fail(p, name.line, "'%s' is already defined", name.text)}
+					head := next(p)
+					parse_object(p, head, name.text) or_return
+					append(&p.object_refs, Object_Ref{name = name.text, index = len(p.design.objects)-1, line = name.line})
+				} else {
+					value := parse_expression(p) or_return
+					define(p, name.text, value, name.line) or_return
+				}
+			} else if is_object_keyword(token.text) {
+				parse_object(p, token, "") or_return
+			} else if token.text == "bevel" || token.text == "fillet" {
+				parse_junction(p, token) or_return
 			} else {
-				return fail(p, token.line, "unknown statement '%s'; use let, box, cylinder, tube, cone or polygon", token.text)
+				return fail(p, token.line, "unknown statement '%s'; use let, box, cylinder, tube, cone, polygon, bevel or fillet", token.text)
 			}
 			expect(p, .Newline, "end of line") or_return
 		case .Number, .Left_Paren, .Right_Paren, .Comma, .Equals, .Plus, .Minus, .Star, .Slash, .End:
@@ -314,6 +358,75 @@ parse_statements :: proc(p: ^Parser) -> bool {
 		}
 	}
 	return true
+}
+
+@(private)
+parse_junction :: proc(p: ^Parser, head: Token) -> bool {
+	is_fillet := head.text == "fillet"
+	size_key := "radius" if is_fillet else "size"
+	expect(p, .Left_Paren, "'(' after bevel/fillet") or_return
+	a_tok := expect(p, .Ident, "first object name") or_return
+	expect(p, .Comma, "',' after first object name") or_return
+	b_tok := expect(p, .Ident, "second object name") or_return
+	expect(p, .Comma, "',' before transition size") or_return
+	key_tok := expect(p, .Ident, size_key) or_return
+	if key_tok.text != size_key {
+		return fail(p, key_tok.line, "%s expects '%s = ...', found '%s'", head.text, size_key, key_tok.text)
+	}
+	expect(p, .Equals, "'='") or_return
+	size_val := parse_expression(p) or_return
+	expect(p, .Right_Paren, "')'") or_return
+
+	if !size_val.length || size_val.amount <= 0 {
+		return fail(p, key_tok.line, "%s '%s' must be a positive length", head.text, size_key)
+	}
+	a_idx, a_ok := lookup_object(p, a_tok.text)
+	if !a_ok {return fail(p, a_tok.line, "'%s' is not a named object", a_tok.text)}
+	b_idx, b_ok := lookup_object(p, b_tok.text)
+	if !b_ok {return fail(p, b_tok.line, "'%s' is not a named object", b_tok.text)}
+	if a_idx == b_idx {return fail(p, head.line, "%s needs two different objects", head.text)}
+
+	a := &p.design.objects[a_idx]
+	b := &p.design.objects[b_idx]
+	lower, upper: ^Object
+	if abs((a.z+a.height)-b.z) <= 1e-4 {
+		lower, upper = a, b
+	} else if abs((b.z+b.height)-a.z) <= 1e-4 {
+		lower, upper = b, a
+	} else {
+		return fail(p, head.line, "'%s' and '%s' do not meet on a Z plane", a_tok.text, b_tok.text)
+	}
+	s := size_val.amount
+	if s > upper.height+EPSILON {
+		return fail(p, head.line, "%s %.3f mm exceeds '%s' height %.3f mm", head.text, s, upper.name, upper.height)
+	}
+	if upper.base_transition != .None {
+		return fail(p, head.line, "'%s' already has a base bevel or fillet", upper.name)
+	}
+	// Verify the flared footprint fits on the lower object's top face.
+	if !junction_fits_on_lower(lower^, upper^, s) {
+		return fail(p, head.line, "%s %.3f mm on '%s' extends past '%s' top face", head.text, s, upper.name, lower.name)
+	}
+	upper.base_transition = .Fillet if is_fillet else .Bevel
+	upper.base_transition_size = s
+	return true
+}
+
+@(private)
+junction_fits_on_lower :: proc(lower, upper: Object, flare: f64) -> bool {
+	tol := 1e-4
+	uh := upper.size*0.5 + flare
+	if lower.shape == .Box {
+		lh := lower.size*0.5
+		return upper.center.x-uh.x >= lower.center.x-lh.x-tol &&
+			upper.center.x+uh.x <= lower.center.x+lh.x+tol &&
+			upper.center.y-uh.y >= lower.center.y-lh.y-tol &&
+			upper.center.y+uh.y <= lower.center.y+lh.y+tol
+	}
+	lr := lower.top_diameter*0.5
+	dc := math.hypot(upper.center.x-lower.center.x, upper.center.y-lower.center.y)
+	ur := uh.x if upper.shape != .Box else math.hypot(uh.x, uh.y)
+	return dc+ur <= lr+tol
 }
 
 @(private)
@@ -357,7 +470,7 @@ OBJECT_KEY_NAMES := [Object_Key]string {
 }
 
 @(private)
-parse_object :: proc(p: ^Parser, head: Token) -> bool {
+parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	shape: Shape
 	switch head.text {
 	case "box":      shape = .Box
@@ -407,6 +520,7 @@ parse_object :: proc(p: ^Parser, head: Token) -> bool {
 	}
 	object := Object{
 		shape    = shape,
+		name     = strings.clone(object_name, p.allocator) if len(object_name) > 0 else "",
 		line     = head.line,
 		center   = {values[.X].amount, values[.Y].amount},
 		z        = values[.Z].amount,

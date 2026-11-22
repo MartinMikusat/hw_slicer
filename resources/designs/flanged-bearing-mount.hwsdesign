@@ -1,5 +1,6 @@
 # Multi-stage flanged bearing mount showcasing rounded boxes, hollow tubes,
-# a tapered conical pedestal, hexagonal/octagonal polygons, and vertical Z stacking.
+# a tapered conical pedestal, hexagonal/octagonal polygons, vertical Z stacking,
+# and explicit bevel/fillet junctions where stacked elements meet.
 let line_width = nozzle * 1.1
 let layer_height = nozzle * 0.5
 let first_layer_height = layer_height
@@ -17,46 +18,56 @@ let cone_height = 8.0mm
 let sleeve_height = 8.0mm
 let bore_diameter = 20mm
 let bolt_offset = 28mm
+let root_bevel = 2.4mm
 
 # Stage 1 (z = 0..2.4mm): solid rounded-corner mounting flange
-box(
+let flange = box(
     width = 84mm, depth = 84mm, radius = 12mm,
     height = base_height, walls = wall_lines, floor = base_layers,
     speed = 60, acceleration = 1500, fan = 80
 )
 
 # Stage 2 (z = 2.4mm): four hollow corner mounting standoffs
-tube(x = -bolt_offset, y = -bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
-tube(x =  bolt_offset, y = -bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
-tube(x =  bolt_offset, y =  bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
-tube(x = -bolt_offset, y =  bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
+let standoff_sw = tube(x = -bolt_offset, y = -bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
+let standoff_se = tube(x =  bolt_offset, y = -bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
+let standoff_ne = tube(x =  bolt_offset, y =  bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
+let standoff_nw = tube(x = -bolt_offset, y =  bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
 
 # Stage 2 (z = 2.4mm): two side alignment lugs with filleted corners
-box(x = -31mm, y = 0mm, z = base_height, width = 12mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
-box(x =  31mm, y = 0mm, z = base_height, width = 12mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
+let lug_west = box(x = -33mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
+let lug_east = box(x =  33mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
 
 # Stage 2 (z = 2.4..10.4mm): central tapered conical pedestal with bearing bore
-cone(
+let pedestal = cone(
     z = base_height, diameter = 46mm, top_diameter = 34mm, inner_diameter = bore_diameter,
     height = cone_height, walls = wall_lines, floor = floor_layers,
     speed = 40, acceleration = 900, fan = 100
 )
 
+# Explicit bevels and root fillets where Stage 2 features meet the base flange
+bevel(flange, pedestal, size = root_bevel)
+fillet(flange, standoff_sw, radius = 1.2mm)
+fillet(flange, standoff_se, radius = 1.2mm)
+fillet(flange, standoff_ne, radius = 1.2mm)
+fillet(flange, standoff_nw, radius = 1.2mm)
+bevel(flange, lug_west, size = 1.6mm)
+bevel(flange, lug_east, size = 1.6mm)
+
 # Stage 3 (z = 8.0..11.2mm): four hexagonal nut collars stacked on the corner standoffs
-polygon(x = -bolt_offset, y = -bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
-polygon(x =  bolt_offset, y = -bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
-polygon(x =  bolt_offset, y =  bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
-polygon(x = -bolt_offset, y =  bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
+let hex_sw = polygon(x = -bolt_offset, y = -bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
+let hex_se = polygon(x =  bolt_offset, y = -bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
+let hex_ne = polygon(x =  bolt_offset, y =  bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
+let hex_nw = polygon(x = -bolt_offset, y =  bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
 
 # Stage 4 (z = 10.4..18.4mm): upper precision bearing sleeve
-tube(
+let sleeve = tube(
     z = base_height + cone_height, diameter = 34mm, inner_diameter = bore_diameter,
     height = sleeve_height, walls = wall_lines,
     speed = 28, acceleration = 600, fan = 100
 )
 
 # Stage 5 (z = 18.4..20.8mm): octagonal retaining collar
-polygon(
+let retaining_collar = polygon(
     z = base_height + cone_height + sleeve_height, sides = 8, diameter = 30mm, inner_diameter = bore_diameter,
     height = 2.4mm, walls = wall_lines,
     speed = 25, acceleration = 500, fan = 100

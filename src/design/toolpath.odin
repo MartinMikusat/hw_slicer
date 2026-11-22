@@ -57,14 +57,32 @@ object_layers :: proc(d: ^Design, object: Object) -> int {
 	return end_layer
 }
 
-// Effective outer size of `object` at layer height `z` (interpolates tapered cones).
-object_size_at_z :: proc(object: Object, z: f64) -> [2]f64 {
-	if object.shape == .Box || abs(object.top_diameter-object.size.x) <= EPSILON || object.height <= EPSILON {
-		return object.size
+// Outward base flare (mm per side) from a `bevel` or `fillet` junction at layer top `z`.
+object_base_flare :: proc(object: Object, z, thickness: f64) -> f64 {
+	if object.base_transition == .None || object.base_transition_size <= EPSILON {return 0}
+	s := object.base_transition_size
+	dz := clamp(z-object.z-0.5*thickness, 0, s)
+	if dz >= s-EPSILON {return 0}
+	switch object.base_transition {
+	case .None:   return 0
+	case .Bevel:  return s-dz
+	case .Fillet:
+		rem := s-dz
+		return s-math.sqrt(max(0, s*s-rem*rem))
 	}
-	t := clamp((z-object.z)/object.height, 0, 1)
-	dia := object.size.x+(object.top_diameter-object.size.x)*t
-	return {dia, dia}
+	return 0
+}
+
+// Effective outer size of `object` at layer height `z` (interpolates tapered cones and base bevel/fillet).
+object_size_at_z :: proc(object: Object, z, thickness: f64) -> [2]f64 {
+	base := object.size
+	if object.shape != .Box && abs(object.top_diameter-object.size.x) > EPSILON && object.height > EPSILON {
+		t := clamp((z-object.z)/object.height, 0, 1)
+		dia := object.size.x+(object.top_diameter-object.size.x)*t
+		base = {dia, dia}
+	}
+	flare := object_base_flare(object, z, thickness)
+	return {base.x+2*flare, base.y+2*flare}
 }
 
 // Generates layer-ordered moves. Each layer prints the objects in file order, each as
@@ -83,8 +101,10 @@ generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
 			if layer < start_layer || layer >= end_layer {continue}
 			g.feature = index
 			g.settings = object.settings
+			flare := object_base_flare(object, g.z, g.thickness)
 			solid := (layer-start_layer) < object.floor
-			loops := max(int) if solid else object.walls
+			extra_walls := int(math.ceil(flare/d.line_width)) if flare > EPSILON else 0
+			loops := max(int) if solid else (object.walls+extra_walls)
 			emitted_outer := 0
 			for loop in 0..<loops {
 				inset := (f64(loop)+0.5)*d.line_width
@@ -95,7 +115,7 @@ generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
 				emitted_outer += 1
 			}
 			if !solid && object.shape != .Box && object.inner_diameter > 0 {
-				size_z := object_size_at_z(object, g.z)
+				size_z := object_size_at_z(object, g.z, g.thickness)
 				r_outer := size_z.x*0.5
 				r_inner := object.inner_diameter*0.5
 				max_inner_r := r_outer-(f64(emitted_outer)+0.5)*d.line_width
@@ -125,7 +145,7 @@ Generator :: struct {
 // Emits the loop at `inset` from the outline; false when the loop would not fit.
 @(private)
 emit_loop :: proc(g: ^Generator, object: Object, inset: f64) -> bool {
-	size_z := object_size_at_z(object, g.z)
+	size_z := object_size_at_z(object, g.z, g.thickness)
 	half := size_z*0.5-inset
 	min_half := g.d.line_width*0.5
 	if object.shape != .Box && object.inner_diameter > 0 {
@@ -135,7 +155,9 @@ emit_loop :: proc(g: ^Generator, object: Object, inset: f64) -> bool {
 	c := object.center
 	switch object.shape {
 	case .Box:
-		r_outer := clamp(object.radius, 0, min(size_z.x, size_z.y)*0.5)
+		flare := object_base_flare(object, g.z, g.thickness)
+		r_base := clamp(object.radius, 0, min(object.size.x, object.size.y)*0.5)
+		r_outer := (r_base+flare) if r_base > EPSILON else 0
 		r_corner := clamp(r_outer-inset, 0, min(half.x, half.y))
 		if r_corner <= CHORD_TOLERANCE {
 			corners := [5][2]f64{
@@ -195,7 +217,7 @@ emit_radial_loop :: proc(g: ^Generator, object: Object, radius: f64) {
 @(private)
 emit_centre_line :: proc(g: ^Generator, object: Object, filled: f64) {
 	if object.shape != .Box {return}
-	half := object.size*0.5-filled
+	half := object_size_at_z(object, g.z, g.thickness)*0.5-filled
 	w := g.d.line_width
 	if min(half.x, half.y)*2 < w*0.25 {return}
 	c := object.center
