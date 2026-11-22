@@ -9,10 +9,17 @@ The application shows the most recently modified design in
 reloads when its file changes.
 
 Each successful load writes `build/gcode/<name>-<nozzle>mm.gcode` through the
-Marlin emitter. The printer, PLA temperatures (210 °C nozzle, 60 °C bed), the
-220 × 220 × 250 mm bed, retraction, and accelerations are development
-placeholders in `src/design_export.odin`. Coordinates are mm from the bed
-centre, and the export fails when a move leaves the bed.
+Marlin emitter. The machine values in `src/design_export.odin` come from the
+RatOS V-Core 3 configuration captured in `hw_ratos`: a 500 × 500 × 500 mm bed,
+300 mm/s and 3000 mm/s² limits, 120 mm/s and 800 mm/s² extruder limits, and
+0.5 mm retraction. PLA temperatures (210 °C nozzle, 60 °C bed), the 15 mm³/s
+flow limit, and print accelerations are assumptions. Coordinates are mm from
+the bed centre, and the export fails when a move leaves the bed.
+
+The file starts with `G28`, `M190`, and `M109`. It does not call the RatOS
+`START_PRINT` macro, so the printer loads no bed mesh and primes no nozzle.
+Klipper ignores the Marlin `M204 P` and `M204 T` commands and keeps its
+configured acceleration.
 
 ## Statements
 

@@ -16,17 +16,27 @@ import profiles "./profiles"
 // ponytail: dev-only absolute directory for exported design G-code.
 DEV_GCODE_DIRECTORY :: "/Users/martin/projects/hw_slicer/build/gcode"
 
-// ponytail: development printer and PLA values until printer profiles exist. The bed size,
-// temperatures and limits are placeholders, not the operator's machine.
-DEV_BED_X_UM :: 220_000
-DEV_BED_Y_UM :: 220_000
-DEV_BED_Z_UM :: 250_000
+// ponytail: the operator's RatOS V-Core 3 until printer profiles exist. Machine values come
+// from the Klipper configuration captured in hw_ratos/research/captured-config/configfile.json:
+// [stepper_*] position_max, [printer] max_velocity and max_accel, [extruder]
+// max_extrude_only_velocity, max_extrude_only_accel (RatOS.cfg) and [firmware_retraction].
+DEV_BED_X_UM :: 500_000
+DEV_BED_Y_UM :: 500_000
+DEV_BED_Z_UM :: 500_000
+DEV_MAX_SPEED :: 300_000 // µm/s
+DEV_MAX_ACCELERATION :: 3_000_000 // µm/s²
+DEV_MAX_EXTRUDER_SPEED :: 120_000
+DEV_MAX_EXTRUDER_ACCELERATION :: 800_000
+DEV_RETRACTION_UM :: 500
+DEV_RETRACTION_SPEED :: 120_000
+DEV_PARK_X_UM :: 250_000
+DEV_PARK_Y_UM :: 500_000 // RatOS parks at the back: Y endstop at 500 mm
+// ponytail: PLA and toolhead assumptions; the captured configuration does not contain them.
 DEV_NOZZLE_TEMPERATURE :: 210
 DEV_BED_TEMPERATURE :: 60
-DEV_MAX_VOLUMETRIC_FLOW :: 24_000_000_000 // µm³/s, 24 mm³/s
-DEV_PRINT_ACCELERATION :: 1_000_000 // µm/s²
-DEV_TRAVEL_ACCELERATION :: 2_000_000
-DEV_RETRACTION_UM :: 800
+DEV_MAX_VOLUMETRIC_FLOW :: 15_000_000_000 // µm³/s, 15 mm³/s
+DEV_PRINT_ACCELERATION :: 1_000_000
+DEV_TRAVEL_ACCELERATION :: 3_000_000
 DEV_MINIMUM_RETRACTION_TRAVEL_UM :: 1_500
 
 Design_Export_Error :: enum u8 {
@@ -81,14 +91,14 @@ design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved
 		maximum_layer_height = contracts.Micrometres(i64(nozzle)*4/5),
 		minimum_line_width = contracts.Micrometres(i64(nozzle)/2),
 		maximum_line_width = contracts.Micrometres(i64(nozzle)*2),
-		maximum_speed = 300_000,
-		maximum_acceleration = 5_000_000,
-		maximum_extruder_speed = 50_000,
-		maximum_extruder_acceleration = 5_000_000,
+		maximum_speed = DEV_MAX_SPEED,
+		maximum_acceleration = DEV_MAX_ACCELERATION,
+		maximum_extruder_speed = DEV_MAX_EXTRUDER_SPEED,
+		maximum_extruder_acceleration = DEV_MAX_EXTRUDER_ACCELERATION,
 		bed_leveling = .None,
 		park_after_print = true,
-		park_x = 0,
-		park_y = DEV_BED_Y_UM,
+		park_x = DEV_PARK_X_UM,
+		park_y = DEV_PARK_Y_UM,
 		park_z_lift = 10_000,
 	}
 	material := profiles.Material_Profile{
@@ -149,9 +159,9 @@ design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved
 		retraction = .Distance_And_Exterior_Crossing,
 		retraction_distance = DEV_RETRACTION_UM,
 		minimum_retraction_travel = DEV_MINIMUM_RETRACTION_TRAVEL_UM,
-		retraction_speed = 35_000,
-		recovery_speed = 30_000,
-		retraction_acceleration = 1_000_000,
+		retraction_speed = DEV_RETRACTION_SPEED,
+		recovery_speed = DEV_RETRACTION_SPEED,
+		retraction_acceleration = DEV_MAX_EXTRUDER_ACCELERATION,
 		travel_policy = .Direct,
 		extrusion_accumulation = .Volume_Then_Fixed_Point_Length,
 		extrusion_length_quantum_nm = 10,
