@@ -40,6 +40,7 @@ Renderer :: struct {
 	section_buffer:   Id,
 	grid_buffer:      Id,
 	marker_buffer:    Id,
+	arc_buffer:       Id,
 	capture_texture:  Id,
 	capture_path:     string,
 	capture_written:  bool,
@@ -50,6 +51,7 @@ Renderer :: struct {
 	section_vertex_count: int,
 	grid_vertex_count: int,
 	marker_vertex_count: int,
+	arc_vertex_count: int,
 	depth_width:      uint,
 	depth_height:     uint,
 	ui_renderer:      gpu.Renderer,
@@ -259,6 +261,7 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.capture_texture,
 		renderer.grid_buffer,
 		renderer.marker_buffer,
+		renderer.arc_buffer,
 		renderer.section_buffer,
 		renderer.mesh_buffer,
 		renderer.ui_depth_state,
@@ -520,6 +523,26 @@ renderer_set_section :: proc(renderer: ^Renderer, vertices: []Mesh_Vertex) -> bo
 	return true
 }
 
+renderer_set_arcs :: proc(renderer: ^Renderer, vertices: []Mesh_Vertex) -> bool {
+	next: Id
+	if len(vertices) > 0 {
+		next = msg_id_ptr_u_u(
+			renderer.device,
+			sel_registerName("newBufferWithBytes:length:options:"),
+			raw_data(vertices),
+			uint(len(vertices))*size_of(Mesh_Vertex),
+			0,
+		)
+		if next == nil {return false}
+	}
+	if renderer.arc_buffer != nil {
+		msg_void(renderer.arc_buffer, sel_registerName("release"))
+	}
+	renderer.arc_buffer = next
+	renderer.arc_vertex_count = len(vertices)
+	return true
+}
+
 renderer_ensure_capture_texture :: proc(
 	renderer: ^Renderer,
 	width, height: uint,
@@ -719,6 +742,7 @@ renderer_draw :: proc(
 	viewport: UI_Rect,
 	theme: Theme,
 	wireframe: bool,
+	show_arcs: bool,
 	visual: Design_Visual,
 	ui_list: ^gpu.Draw_List,
 	width, height, scale: f64,
@@ -979,6 +1003,27 @@ renderer_draw :: proc(
 		0,
 		uint(renderer.grid_vertex_count),
 	)
+
+	if show_arcs && (visual.arc_vertices > 0 || visual.has_arc_partial) {
+		arc_uniforms := Scene_Uniforms{
+			mvp   = mat4_mul(projection, mat4_mul(view, model)),
+			model = model,
+			color = COLOR_ARC,
+		}
+		msg_void_id(encoder, sel_registerName("setDepthStencilState:"), renderer.depth_state)
+		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.line_pipeline)
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &arc_uniforms, size_of(Scene_Uniforms), 1)
+		if visual.arc_vertices > 0 && renderer.arc_buffer != nil {
+			count := min(visual.arc_vertices, renderer.arc_vertex_count)
+			msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.arc_buffer, 0, 0)
+			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 1, 0, uint(count))
+		}
+		if visual.has_arc_partial {
+			arc_seg := visual.arc_partial
+			msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(arc_seg[:]), size_of(arc_seg), 0)
+			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 1, 0, 2)
+		}
+	}
 
 	if renderer.section_vertex_count > 0 {
 		section_uniforms := Scene_Uniforms{

@@ -74,6 +74,7 @@ UI_Action :: enum u64 {
 	Select_Bunny,
 	Frame_Mesh,
 	Toggle_Wireframe,
+	Toggle_Arcs,
 	Open,
 	Slice,
 	Cancel,
@@ -159,6 +160,7 @@ DARK_THEME :: Theme{
 COLOR_COFFEE :: Vec4{0.698039, 0.490196, 0.341176, 1}
 COLOR_SECTION :: Vec4{0.980392, 0.427451, 0.121569, 1}
 COLOR_NOZZLE_MARKER :: Vec4{0.08, 0.85, 0.98, 1}
+COLOR_ARC :: Vec4{0.16, 0.86, 0.48, 1}
 
 UI_Panel :: enum {Models, Section, Mesh}
 UI_Evidence_Pane :: enum {Stages, Details}
@@ -186,6 +188,7 @@ UI_State :: struct {
 	stage_index: int,
 	panel: UI_Panel,
 	wireframe: bool,
+	show_arcs: bool,
 	lay_on_face: bool,
 	font_size:   int,
 	ui_scale:    f64,
@@ -218,6 +221,7 @@ ui_initialize :: proc(ui: ^UI_State) {
 	ui.font_size = DEFAULT_FONT_SIZE
 	ui.ui_scale = f64(ui.font_size)/BASE_FONT_SIZE
 	ui.section_enabled = true
+	ui.show_arcs = true
 	flash.state_init(&ui.flash_state)
 }
 
@@ -688,6 +692,16 @@ ui_build_controls :: proc(
 		.Toggle_Wireframe,
 		true, 1, ui.wireframe,
 	)
+	if ui.design_active {
+		ui_add_control(
+			ui,
+			"arcs",
+			"toggle G2/G3 arc preview",
+			{viewport.x+204, viewport.y+12, 70, 30},
+			.Toggle_Arcs,
+			true, 1, ui.show_arcs,
+		)
+	}
 	if ui.design_active && ui.design_layers > 0 {
 		ui_add_control(ui, "layer", "active layer", ui_design_layer_slider_rect(ui), .Design_Layer)
 		ui_add_control(ui, "layer progress", "in-layer progress", ui_design_progress_slider_rect(ui), .Design_Layer_Progress)
@@ -1808,6 +1822,18 @@ ui_draw_labels :: proc(
 		0,
 		.Center,
 	)
+	if ui.design_active {
+		ui_draw_text(
+			painter,
+			painter.font,
+			ui,
+			"Arcs",
+			ui_control_rect(ui, .Toggle_Arcs),
+			ui_control_ink(ui, .Toggle_Arcs),
+			0,
+			.Center,
+		)
+	}
 
 	ui_draw_text(
 		painter,
@@ -1919,7 +1945,18 @@ ui_draw_design_settings :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_
 		ui_draw_text(painter, painter.mono, ui, badge_text, badge, theme.text, 0, .Center)
 		// Compact label above the bottom in-layer progress bar.
 		prog_rect := ui_design_progress_slider_rect(ui)
-		prog_text := fmt.tprintf("Layer %d / %d  ·  Z %.2f mm  ·  In-layer %.0f%%", ui.design_layer+1, ui.design_layers, ui.design_layer_z, ui.design_in_layer*100)
+		move_arc, move_r := design_current_move_info(s)
+		move_label := ""
+		if ui.design_in_layer < 1.0-1e-6 {
+			if move_arc == .CW {
+				move_label = fmt.tprintf("  ·  G2 arc R%.2f mm", move_r)
+			} else if move_arc == .CCW {
+				move_label = fmt.tprintf("  ·  G3 arc R%.2f mm", move_r)
+			} else {
+				move_label = "  ·  G1 line"
+			}
+		}
+		prog_text := fmt.tprintf("Layer %d / %d  ·  Z %.2f mm  ·  In-layer %.0f%%%s", ui.design_layer+1, ui.design_layers, ui.design_layer_z, ui.design_in_layer*100, move_label)
 		ui_draw_text(painter, painter.mono, ui, prog_text, {prog_rect.x+4, prog_rect.y-22, prog_rect.w, 20}, theme.text, 0)
 	}
 }
@@ -1937,9 +1974,10 @@ ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_S
 	}
 	ui_draw_text(painter, painter.font, ui, model_name, {area.x, area.y, area.w, row}, theme.text, 0)
 	y := area.y+row+(row if !compact else 2)
-	stats := [4][2]string{
+	stats := [5][2]string{
 		{"Layers", fmt.tprintf("%d", s.toolpath.layers)},
 		{"Moves", fmt.tprintf("%d", len(s.toolpath.moves))},
+		{"Arcs", fmt.tprintf("%d G2/G3", s.arc_count)},
 		{"Filament", fmt.tprintf("%.0f mm", s.toolpath.filament_length)},
 		{"Print time", design_time_text(design_duration(s))},
 	}

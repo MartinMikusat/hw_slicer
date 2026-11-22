@@ -343,6 +343,9 @@ app_activate :: proc(action: UI_Action) -> bool {
 	case .Toggle_Wireframe:
 		app.ui.wireframe = !app.ui.wireframe
 		app.needs_redraw = true
+	case .Toggle_Arcs:
+		app.ui.show_arcs = !app.ui.show_arcs
+		app.needs_redraw = true
 	case .Toggle_Section:
 		app.ui.section_enabled = !app.ui.section_enabled
 		app.section_dirty = true
@@ -615,6 +618,7 @@ renderer_draw_application :: proc() -> Render_Result {
 		viewport,
 		ui_theme(&app.ui),
 		app.ui.wireframe,
+		app.ui.show_arcs,
 		visual,
 		&app.renderer.ui_list,
 		app.ui.physical_width,
