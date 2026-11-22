@@ -128,42 +128,66 @@ UI_Evidence_View :: struct {
 }
 
 Theme :: struct {
-	canvas:  Vec4,
-	header:  Vec4,
-	surface: Vec4,
-	raised:  Vec4,
-	control: Vec4,
-	overlay: Vec4,
-	text:    Vec4,
-	muted:   Vec4,
+	canvas:     Vec4,
+	header:     Vec4,
+	surface:    Vec4,
+	raised:     Vec4,
+	control:    Vec4,
+	overlay:    Vec4,
+	border:     Vec4,
+	text:       Vec4,
+	muted:      Vec4,
+	accent:     Vec4,
+	accent_ink: Vec4,
+	bead:       Vec4,
+	arc:        Vec4,
+	marker:     Vec4,
 }
 
+// Light theme: Palladian (#EEE9DF), Bone (#E6E0D6), Oatmeal (#C9C1B1),
+// Abyssal Blue (#1B2632) ink, Marble Garden (#646256) muted, Truffle (#A35139) accent,
+// Urban Charm/Tobacco clay beads, and Olive (#5C6E4E) G2/G3 arcs.
 LIGHT_THEME :: Theme{
-	canvas  = {0.976471, 0.972549, 0.964706, 1},
-	header  = {0.976471, 0.972549, 0.964706, 1},
-	surface = {0.976471, 0.972549, 0.964706, 1},
-	raised  = {0.976471, 0.972549, 0.964706, 1},
-	control = {0.976471, 0.972549, 0.964706, 1},
-	overlay = {0.976471, 0.972549, 0.964706, 1},
-	text    = {0.180392, 0.180392, 0.180392, 1},
-	muted   = {0.180392, 0.180392, 0.180392, 1},
+	canvas     = {0.933333, 0.913725, 0.874510, 1}, // #EEE9DF Palladian
+	header     = {0.874510, 0.847059, 0.800000, 1}, // #DFD8CC Warm Stone
+	surface    = {0.901961, 0.878431, 0.839216, 1}, // #E6E0D6 Bone
+	raised     = {0.960784, 0.945098, 0.913725, 1}, // #F5F1E9 Lifted Palladian
+	control    = {0.858824, 0.827451, 0.772549, 1}, // #DBD3C5 Soft Oatmeal
+	overlay    = {0.956863, 0.937255, 0.901961, 1}, // #F4EFE6
+	border     = {0.788235, 0.756863, 0.694118, 1}, // #C9C1B1 Oatmeal
+	text       = {0.105882, 0.149020, 0.196078, 1}, // #1B2632 Abyssal Blue
+	muted      = {0.392157, 0.384314, 0.337255, 1}, // #646256 Marble Garden
+	accent     = {0.639216, 0.317647, 0.223529, 1}, // #A35139 Truffle Trouble
+	accent_ink = {0.933333, 0.913725, 0.874510, 1}, // #EEE9DF Palladian
+	bead       = {0.725490, 0.600000, 0.474510, 1}, // #B99979 Warm Clay (Urban Charm + Tobacco)
+	arc        = {0.360784, 0.431373, 0.305882, 1}, // #5C6E4E Refined Olive
+	marker     = {1.000000, 0.694118, 0.384314, 1}, // #FFB162 Burning Flame
 }
 
+// Dark theme: Abyssal Blue (#1B2632), Midnight Blue (#161E28), Blue Fantastic (#2C3B4D),
+// Palladian (#EEE9DF) ink, Urban Charm (#AFA38D) muted, Burning Flame (#FFB162) accent,
+// Oatmeal warm-stone beads, and Olive (#7A8B62) G2/G3 arcs.
 DARK_THEME :: Theme{
-	canvas  = {0.090196, 0.090196, 0.090196, 1},
-	header  = {0.090196, 0.090196, 0.090196, 1},
-	surface = {0.090196, 0.090196, 0.090196, 1},
-	raised  = {0.141255, 0.141255, 0.141255, 1},
-	control = {0.141255, 0.141255, 0.141255, 1},
-	overlay = {0.090196, 0.090196, 0.090196, 1},
-	text    = {0.819608, 0.819608, 0.819608, 1},
-	muted   = {0.819608, 0.819608, 0.819608, 1},
+	canvas     = {0.105882, 0.149020, 0.196078, 1}, // #1B2632 Abyssal Anchorfish Blue
+	header     = {0.074510, 0.101961, 0.133333, 1}, // #131A22 Deep Midnight
+	surface    = {0.086275, 0.117647, 0.156863, 1}, // #161E28 Midnight Blue
+	raised     = {0.172549, 0.231373, 0.301961, 1}, // #2C3B4D Blue Fantastic
+	control    = {0.141176, 0.192157, 0.250980, 1}, // #243140 Slate Navy
+	overlay    = {0.125490, 0.172549, 0.227451, 1}, // #202C3A
+	border     = {0.219608, 0.286275, 0.364706, 1}, // #38495D Lifted Blue Fantastic
+	text       = {0.933333, 0.913725, 0.874510, 1}, // #EEE9DF Palladian
+	muted      = {0.686275, 0.639216, 0.552941, 1}, // #AFA38D Urban Charm
+	accent     = {1.000000, 0.694118, 0.384314, 1}, // #FFB162 Burning Flame
+	accent_ink = {0.105882, 0.149020, 0.196078, 1}, // #1B2632 Abyssal Blue
+	bead       = {0.788235, 0.713725, 0.603922, 1}, // #C9B69A Warm Oatmeal Stone
+	arc        = {0.478431, 0.545098, 0.384314, 1}, // #7A8B62 Botanical Olive
+	marker     = {1.000000, 0.694118, 0.384314, 1}, // #FFB162 Burning Flame
 }
 
-COLOR_COFFEE :: Vec4{0.698039, 0.490196, 0.341176, 1}
-COLOR_SECTION :: Vec4{0.980392, 0.427451, 0.121569, 1}
-COLOR_NOZZLE_MARKER :: Vec4{0.08, 0.85, 0.98, 1}
-COLOR_ARC :: Vec4{0.16, 0.86, 0.48, 1}
+COLOR_COFFEE :: Vec4{0.725490, 0.600000, 0.474510, 1}
+COLOR_SECTION :: Vec4{0.639216, 0.317647, 0.223529, 1}
+COLOR_NOZZLE_MARKER :: Vec4{1.000000, 0.694118, 0.384314, 1}
+COLOR_ARC :: Vec4{0.360784, 0.431373, 0.305882, 1}
 
 UI_Panel :: enum {Models, Section, Mesh}
 UI_Evidence_Pane :: enum {Stages, Details}
@@ -1015,7 +1039,7 @@ ui_control_ink :: proc(ui: ^UI_State, action: UI_Action) -> Vec4 {
 		if !control.enabled {return {0.501961, 0.501961, 0.501961, 1}}
 		if action == .Toggle_Section {return theme.text}
 		if action == .Window_Close || action == .Window_Minimize || action == .Window_Zoom {return {0.1, 0.1, 0.1, 1}}
-		if ui_control_standing(ui, control) {return theme.canvas}
+		if ui_control_standing(ui, control) {return theme.accent_ink}
 		break
 	}
 	return theme.text
@@ -1024,9 +1048,15 @@ ui_control_ink :: proc(ui: ^UI_State, action: UI_Action) -> Vec4 {
 ui_draw_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	theme := ui_theme(ui)
 	ui_add_rect(painter, {0, 0, ui.width, 40}, theme.header)
-	ui_add_rect(painter, ui_left_rect(ui), theme.surface)
-	ui_add_rect(painter, ui_right_rect(ui), theme.surface)
+	left := ui_left_rect(ui)
+	right := ui_right_rect(ui)
+	ui_add_rect(painter, left, theme.surface)
+	ui_add_rect(painter, right, theme.surface)
 	if !ui.design_active {ui_add_rect(painter, ui_action_bar_rect(ui), theme.header)}
+	// Crisp 1px architectural hairlines between chrome panels and the 3D viewport.
+	ui_add_rect(painter, {0, 39, ui.width, 1}, theme.border)
+	if left.w > 0 {ui_add_rect(painter, {left.x+left.w-1, left.y, 1, left.h}, theme.border)}
+	if right.w > 0 {ui_add_rect(painter, {right.x, right.y, 1, right.h}, theme.border)}
 }
 
 ui_draw_modal_surface :: proc(painter: ^UI_Painter, ui: ^UI_State, modal: UI_Rect) {
@@ -1035,12 +1065,8 @@ ui_draw_modal_surface :: proc(painter: ^UI_Painter, ui: ^UI_State, modal: UI_Rec
 	scale := ui_style_scale(ui)
 	radius := 12/scale
 	edge := 1/scale
-	if ui.dark {
-		ui_add_round_rect(painter, modal, radius, {0.192, 0.192, 0.192, 1})
-		ui_add_round_rect(painter, {modal.x+edge, modal.y+edge, modal.w-2*edge, modal.h-2*edge}, radius-edge, theme.overlay)
-	} else {
-		ui_add_round_rect(painter, modal, radius, theme.overlay)
-	}
+	ui_add_round_rect(painter, modal, radius, theme.border)
+	ui_add_round_rect(painter, {modal.x+edge, modal.y+edge, modal.w-2*edge, modal.h-2*edge}, radius-edge, theme.overlay)
 }
 
 ui_draw_controls :: proc(
@@ -1057,7 +1083,9 @@ ui_draw_controls :: proc(
 			bg := theme.raised
 			bg.w = 0.94
 			ui_add_round_rect(painter, control.rect, 10, bg)
-			ui_add_border(painter, control.rect, Vec4{0.95, 0.52, 0.14, 0.75})
+			accent_border := theme.accent
+			accent_border.w = 0.82
+			ui_add_border(painter, control.rect, accent_border)
 			continue
 		}
 		if control.action == .None || control.action == .Modal_Surface || control.action == .Dismiss_Settings || control.action == .Dismiss_Evidence || control.action == .Dismiss_Help {continue}
@@ -1066,16 +1094,16 @@ ui_draw_controls :: proc(
 		if control.action == .Design_Layer {
 			panel := control.rect
 			panel_fill := theme.raised
-			panel_fill.w = 0.88
+			panel_fill.w = 0.92
 			ui_add_round_rect(painter, panel, 13, panel_fill)
-			if control.id == ui.focused_id {ui_add_border(painter, panel, theme.text)}
+			ui_add_border(painter, panel, theme.accent if control.id == ui.focused_id else theme.border)
 			track := UI_Rect{panel.x+panel.w/2-2, panel.y+12, 4, max(1.0, panel.h-24)}
-			ui_add_round_rect(painter, track, 2, ui_theme_blend(theme, 0.24))
+			ui_add_round_rect(painter, track, 2, theme.border)
 			fraction := 1.0
 			if ui.design_layers > 1 {
 				fraction = clamp(f64(ui.design_layer)/f64(ui.design_layers-1), 0, 1)
 			}
-			ink := theme.text if control.enabled else Vec4{0.501961, 0.501961, 0.501961, 1}
+			ink := theme.accent if control.enabled else theme.muted
 			thumb_y := track.y+track.h*(1-fraction)
 			fill_h := max(1.0, track.y+track.h-thumb_y)
 			ui_add_round_rect(painter, {track.x, thumb_y, track.w, fill_h}, 2, ink)
@@ -1086,42 +1114,42 @@ ui_draw_controls :: proc(
 			badge_y := clamp(thumb_y-badge_h/2, panel.y, panel.y+panel.h-badge_h)
 			badge := UI_Rect{panel.x-badge_w-8, badge_y, badge_w, badge_h}
 			ui_add_round_rect(painter, badge, 6, panel_fill)
+			ui_add_border(painter, badge, theme.border)
 			continue
 		}
 		if control.action == .Design_Layer_Progress {
 			panel := control.rect
 			panel_fill := theme.raised
-			panel_fill.w = 0.88
+			panel_fill.w = 0.92
 			ui_add_round_rect(painter, panel, 13, panel_fill)
-			if control.id == ui.focused_id {ui_add_border(painter, panel, theme.text)}
+			ui_add_border(painter, panel, theme.accent if control.id == ui.focused_id else theme.border)
 			track := UI_Rect{panel.x+14, panel.y+panel.h/2-2, max(1.0, panel.w-28), 4}
-			ui_add_round_rect(painter, track, 2, ui_theme_blend(theme, 0.24))
+			ui_add_round_rect(painter, track, 2, theme.border)
 			fraction := clamp(ui.design_in_layer, 0, 1)
-			ink := theme.text if control.enabled else Vec4{0.501961, 0.501961, 0.501961, 1}
+			ink := theme.accent if control.enabled else theme.muted
 			ui_add_round_rect(painter, {track.x, track.y, max(1.0, track.w*fraction), track.h}, 2, ink)
 			ui_add_round_rect(painter, {track.x+track.w*fraction-7, panel.y+(panel.h-14)/2, 14, 14}, 7, ink)
 			continue
 		}
 		if control.action == .Junction_Size {
 			track := UI_Rect{control.rect.x+6, control.rect.y+control.rect.h/2-2, max(1.0, control.rect.w-12), 4}
-			ui_add_round_rect(painter, track, 2, ui_theme_blend(theme, 0.24))
+			ui_add_round_rect(painter, track, 2, theme.border)
 			fraction := clamp(ui.junction_size/max(ui.junction_max_size, 0.001), 0, 1)
-			accent := Vec4{0.95, 0.52, 0.14, 1.0}
-			ui_add_round_rect(painter, {track.x, track.y, max(1.0, track.w*fraction), track.h}, 2, accent)
-			ui_add_round_rect(painter, {track.x+track.w*fraction-7, control.rect.y+(control.rect.h-14)/2, 14, 14}, 7, accent)
+			ui_add_round_rect(painter, {track.x, track.y, max(1.0, track.w*fraction), track.h}, 2, theme.accent)
+			ui_add_round_rect(painter, {track.x+track.w*fraction-7, control.rect.y+(control.rect.h-14)/2, 14, 14}, 7, theme.accent)
 			continue
 		}
 		if control.action == .Section_Height || control.action == .Simulation_Time {
-			if control.id == ui.focused_id {ui_add_border(painter, control.rect, theme.text)}
+			if control.id == ui.focused_id {ui_add_border(painter, control.rect, theme.accent)}
 			track := UI_Rect{control.rect.x+4, control.rect.y+control.rect.h/2-2, control.rect.w-8, 4}
-			ui_add_round_rect(painter, track, 2, ui_theme_blend(theme, 0.2))
+			ui_add_round_rect(painter, track, 2, theme.border)
 			fraction := 0.0
 			if control.action == .Simulation_Time {
 				fraction = clamp(ui.design_fraction, 0, 1)
 			} else if ui.section_max > 0 {
 				fraction = clamp(f64(ui.section_z/ui.section_max), 0, 1)
 			}
-			ink := theme.text if control.enabled else Vec4{0.501961, 0.501961, 0.501961, 1}
+			ink := theme.accent if control.enabled else theme.muted
 			ui_add_round_rect(painter, {track.x, track.y, max(1, track.w*fraction), track.h}, 2, ink)
 			ui_add_round_rect(painter, {track.x+track.w*fraction-6, control.rect.y+(control.rect.h-12)/2, 12, 12}, 6, ink)
 			continue
@@ -1154,12 +1182,11 @@ ui_draw_controls :: proc(
 			rect = {rect.x+(rect.w-size)/2, rect.y+(rect.h-size)/2, size, size}
 		}
 		if rect.w <= 0 || rect.h <= 0 {continue}
-		fill := theme.raised
+		fill := theme.control
 		if hovered {
-			amount := f32(0.12) if ui.dark else f32(0.55)
-			fill = {fill.x+(1-fill.x)*amount, fill.y+(1-fill.y)*amount, fill.z+(1-fill.z)*amount, 1}
+			fill = theme.raised if ui.dark else {min(1, fill.x+0.05), min(1, fill.y+0.05), min(1, fill.z+0.05), 1}
 		}
-		if standing {fill = theme.text}
+		if standing {fill = theme.accent}
 		if window_control {
 			#partial switch control.action {
 			case .Window_Minimize: fill = {1.0, 0.741, 0.18, 1}
@@ -1887,8 +1914,9 @@ ui_draw_labels :: proc(
 		pill_w := min(320.0, max(160.0, vp.w-290))
 		pill := UI_Rect{vp.x+vp.w-pill_w-12, vp.y+12, pill_w, 28}
 		bg := theme.raised
-		bg.w = 0.85
+		bg.w = 0.90
 		ui_add_round_rect(painter, pill, 6, bg)
+		ui_add_border(painter, pill, theme.border)
 		tris_text := fmt.tprintf("%.2fM", f64(ui.render_tris)/1_000_000.0) if ui.render_tris >= 1_000_000 else fmt.tprintf("%dk", ui.render_tris/1000)
 		stats_text := fmt.tprintf("%.1f FPS · %.1f ms · %s tris · %d draws", ui.fps, ui.frame_ms, tris_text, ui.render_draws)
 		ui_draw_text(painter, painter.mono, ui, stats_text, pill, theme.text, 0, .Center)

@@ -16,7 +16,8 @@ Scene_Uniforms :: struct {
 	mvp:             Mat4,
 	model:           Mat4,
 	color:           Vec4,
-	arc_color:       Vec4, // a > 0 shades vertices with |normal| > 1.5 as G2/G3 arcs
+	arc_color:       Vec4, // a > 0 shades G2/G3 arcs
+	selected_color:  Vec4, // highlight color for selected bevel/fillet/corner junction
 	camera:          Vec4,
 	view_projection: Mat4,
 	params:          Vec4,
@@ -92,6 +93,7 @@ struct SceneUniforms {
     float4x4 model;
     float4 color;
     float4 arc_color;
+    float4 selected_color;
     float4 camera;
     float4x4 view_projection;
     float4 params;
@@ -120,7 +122,7 @@ vertex MeshOut mesh_vertex(
     MeshOut out;
     out.position = scene.mvp * float4(source.position, 1.0);
     out.normal = normalize((scene.model * float4(raw_n, 0.0)).xyz);
-    out.color = is_selected ? float4(0.95, 0.52, 0.14, 1.0) : ((is_arc && scene.arc_color.a > 0.0) ? scene.arc_color : scene.color);
+    out.color = is_selected ? scene.selected_color : ((is_arc && scene.arc_color.a > 0.0) ? scene.arc_color : scene.color);
     out.world = (scene.model * float4(source.position, 1.0)).xyz;
     out.camera = scene.camera.xyz;
     return out;
@@ -184,7 +186,7 @@ vertex MeshOut bead_vertex(
     MeshOut out;
     out.position = scene.mvp * float4(pos, 1.0);
     out.normal   = normalize((scene.model * float4(raw_n, 0.0)).xyz);
-    out.color    = is_selected ? float4(0.95, 0.52, 0.14, 1.0) : ((is_arc && scene.arc_color.a > 0.0) ? scene.arc_color : scene.color);
+    out.color    = is_selected ? scene.selected_color : ((is_arc && scene.arc_color.a > 0.0) ? scene.arc_color : scene.color);
     out.world    = (scene.model * float4(pos, 1.0)).xyz;
     out.camera   = scene.camera.xyz;
     return out;
@@ -1192,8 +1194,9 @@ renderer_draw :: proc(
 	mesh_uniforms := Scene_Uniforms{
 		mvp = mat4_mul(projection, mat4_mul(view, model)),
 		model = model,
-		color = COLOR_COFFEE,
-		arc_color = COLOR_ARC if show_arcs else Vec4{},
+		color = theme.bead,
+		arc_color = theme.arc if show_arcs else Vec4{},
+		selected_color = theme.accent,
 		camera = {eye.x, eye.y, eye.z, f32(visual.selected_junction) if visual.is_design else -1},
 		view_projection = mat4_mul(projection, view),
 		params = {near_z, far_z, max(f32(0.1), vec3_length(size)*0.025), 0 if wireframe else 1},
@@ -1257,7 +1260,7 @@ renderer_draw :: proc(
 		msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-		renderer_draw_beads(renderer, scene_encoder, visual.finished_beads, visual.has_partial, visual.partial_bead, &mesh_uniforms, visual.highlight_start_bead, COLOR_SECTION)
+		renderer_draw_beads(renderer, scene_encoder, visual.finished_beads, visual.has_partial, visual.partial_bead, &mesh_uniforms, visual.highlight_start_bead, theme.accent)
 	} else {
 		msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.mesh_pipeline)
 		msg_void_id_u_u(scene_encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
@@ -1265,13 +1268,13 @@ renderer_draw :: proc(
 		msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-		renderer_draw_mesh(renderer, scene_encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION)
+		renderer_draw_mesh(renderer, scene_encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, theme.accent)
 	}
 	if visual.marker_active {
 		msg_void_u(scene_encoder, sel_registerName("setCullMode:"), 0)
 		msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.mesh_pipeline)
 		msg_void_id(scene_encoder, sel_registerName("setDepthStencilState:"), renderer.depth_state)
-		renderer_draw_marker(renderer, scene_encoder, &mesh_uniforms, projection, view, model, visual.marker_pos, visual.marker_radius, COLOR_NOZZLE_MARKER)
+		renderer_draw_marker(renderer, scene_encoder, &mesh_uniforms, projection, view, model, visual.marker_pos, visual.marker_radius, theme.marker)
 	}
 	msg_void(scene_encoder, sel_registerName("endEncoding"))
 
@@ -1352,7 +1355,7 @@ renderer_draw :: proc(
 		n := vec3_normalize(vec3_cross(vec3_sub(mesh.vertices[face_hover*3+1].position,a), vec3_sub(mesh.vertices[face_hover*3+2].position,a)))
 		tolerance := max(f32(0.00001),vec3_length(mesh_size(mesh.bounds))*0.000001)
 		highlight := mesh_uniforms
-		highlight.color = COLOR_SECTION
+		highlight.color = theme.accent
 		depth_bias := transmute(proc "c" (Id, Sel, f32, f32, f32))objc_send_address
 		depth_bias(encoder, sel_registerName("setDepthBias:slopeScale:clamp:"), -1, -1, 0)
 		msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
@@ -1381,7 +1384,7 @@ renderer_draw :: proc(
 		section_uniforms := Scene_Uniforms{
 			mvp = mat4_mul(projection, view),
 			model = mat4_identity(),
-			color = COLOR_SECTION,
+			color = theme.accent,
 		}
 		msg_void_id(
 			encoder,
