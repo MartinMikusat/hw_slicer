@@ -67,15 +67,7 @@ foreign core_text {
 
 foreign import slicer_core_foundation "system:CoreFoundation.framework"
 foreign slicer_core_foundation {
-	CFNumberCreate :: proc "c" (allocator: rawptr, kind: i32, value: rawptr) -> rawptr ---
 	CFDataCreate :: proc "c" (allocator: rawptr, bytes: rawptr, length: int) -> rawptr ---
-	CFStringCreateWithBytes :: proc "c" (
-		allocator: rawptr,
-		bytes: [^]u8,
-		count: int,
-		encoding: u32,
-		external: bool,
-	) -> rawptr ---
 	CFStringGetLength :: proc "c" (string: rawptr) -> int ---
 	CFAttributedStringCreateMutable :: proc "c" (
 		allocator: rawptr,
@@ -1138,11 +1130,11 @@ Text_Run :: struct {
 ui_cf_string :: proc(text: string) -> rawptr {
 	if len(text) == 0 {return nil}
 	bytes := transmute([]u8)text
-	return CFStringCreateWithBytes(
+	return CF.StringCreateWithBytes(
 		nil,
 		raw_data(bytes),
-		len(bytes),
-		0x08000100,
+		CF.Index(len(bytes)),
+		CF.StringEncoding(0x08000100),
 		false,
 	)
 }
@@ -1170,7 +1162,7 @@ ui_text_run :: proc(font: rawptr, text: string, tracking := f64(0)) -> Text_Run 
 	)
 	if tracking != 0 {
 		value := tracking
-		number := CFNumberCreate(nil, 6, &value)
+		number := CF.NumberCreate(nil, .Float64Type, &value)
 		assert(number != nil)
 		CFAttributedStringSetAttribute(attributed, range, kCTKernAttributeName, number)
 		CFRelease(number)

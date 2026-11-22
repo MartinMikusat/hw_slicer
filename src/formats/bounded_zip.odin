@@ -376,10 +376,10 @@ bounded_zip_extract :: proc(
 		)
 		defer bytes.buffer_destroy(&buffer)
 		inflate_error := zlib.inflate(
-			input = compressed,
-			buf = &buffer,
+			data = compressed,
+			output = &buffer,
 			raw = true,
-			expected_output_size = int(entry.uncompressed_bytes),
+			size_unpacked = int(entry.uncompressed_bytes),
 		)
 		if inflate_error != nil {return nil, .Inflate_Failed}
 		inflated := bytes.buffer_to_bytes(&buffer)

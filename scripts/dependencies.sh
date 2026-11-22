@@ -23,7 +23,7 @@ fi
 EXPECTED_FLASH_URL="https://github.com/MartinMikusat/hw_odin_ui_flash.git"
 EXPECTED_FLASH_COMMIT="f4744a6e76c04e99e54fa8e4205de416b612f1db"
 EXPECTED_DEVLOG_URL="https://github.com/MartinMikusat/hw_odin_devlog.git"
-EXPECTED_DEVLOG_COMMIT="4488d49fad236bf0e887972525ba5308ab8b691c"
+EXPECTED_DEVLOG_COMMIT="5f44e3bb81677901635f9ab828fcae73d0cbb009"
 
 if [ "${1:-}" != "check" ]; then
   echo "usage: scripts/dependencies.sh check" >&2
