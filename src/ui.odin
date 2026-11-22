@@ -66,6 +66,8 @@ UI_Action :: enum u64 {
 	Window_Minimize,
 	Window_Zoom,
 	Toggle_Theme,
+	Theme_Light,
+	Theme_Dark,
 	Show_Help,
 	Close_Help,
 	Dismiss_Help,
@@ -337,12 +339,12 @@ ui_help_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
 
 ui_settings_modal_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	width := min(420.0, ui.width-48)
-	height := 260.0
+	height := 304.0
 	return {
 		ui.width/2-width/2,
-		24,
+		56,
 		width,
-		min(height, ui.height-48),
+		min(height, ui.height-72),
 	}
 }
 
@@ -645,9 +647,29 @@ ui_build_controls :: proc(
 		)
 		ui_add_control(
 			ui,
+			"theme light",
+			"switch to light theme",
+			{modal.x+24, modal.y+82, 92, 34},
+			.Theme_Light,
+			true,
+			1,
+			!ui.dark,
+		)
+		ui_add_control(
+			ui,
+			"theme dark",
+			"switch to dark theme",
+			{modal.x+124, modal.y+82, 92, 34},
+			.Theme_Dark,
+			true,
+			1,
+			ui.dark,
+		)
+		ui_add_control(
+			ui,
 			"font smaller",
 			"decrease font size",
-			{modal.x+24, modal.y+96, 48, 40},
+			{modal.x+24, modal.y+162, 48, 36},
 			.Font_Decrease,
 			ui.font_size > FONT_SIZE_MIN,
 		)
@@ -655,7 +677,7 @@ ui_build_controls :: proc(
 			ui,
 			"font larger",
 			"increase font size",
-			{modal.x+82, modal.y+96, 48, 40},
+			{modal.x+82, modal.y+162, 48, 36},
 			.Font_Increase,
 			ui.font_size < FONT_SIZE_MAX,
 		)
@@ -668,7 +690,15 @@ ui_build_controls :: proc(
 		)
 		return
 	}
-	if !ui.design_active {
+	if ui.design_active {
+		ui_add_control(
+			ui,
+			"settings",
+			"open settings",
+			{ui.width-108, 5, 96, 30},
+			.Open_Settings,
+		)
+	} else {
 		ui_add_control(
 			ui,
 			"theme",
@@ -1210,8 +1240,8 @@ ui_draw_controls :: proc(
 		radius := 6/scale
 		ui_add_round_rect(painter, rect, radius, fill)
 		if !menu && !standing {
-			highlight_alpha := (f32(0.24) if hovered else f32(0.14)) if ui.dark else (f32(0.45) if hovered else f32(0.9))
-			highlight := Vec4{1, 1, 1, highlight_alpha}
+			highlight_alpha := (f32(0.10) if hovered else f32(0.05)) if ui.dark else (f32(0.28) if hovered else f32(0.18))
+			highlight := Vec4{theme.raised.x, theme.raised.y, theme.raised.z, highlight_alpha}
 			if window_control {highlight = {fill.x+(1-fill.x)*0.35, fill.y+(1-fill.y)*0.35, fill.z+(1-fill.z)*0.35, 1}}
 			ui_pill_highlight(painter, ui, rect, radius, highlight)
 		}
@@ -1702,8 +1732,37 @@ ui_draw_settings_overlay :: proc(
 		painter,
 		painter.font,
 		ui,
+		"Appearance",
+		{modal.x+24, modal.y+52, modal.w-48, 22},
+		theme.muted,
+		0,
+	)
+	ui_draw_text(
+		painter,
+		painter.font,
+		ui,
+		"Light",
+		{modal.x+24, modal.y+82, 92, 34},
+		ui_control_ink(ui, .Theme_Light),
+		0,
+		.Center,
+	)
+	ui_draw_text(
+		painter,
+		painter.font,
+		ui,
+		"Dark",
+		{modal.x+124, modal.y+82, 92, 34},
+		ui_control_ink(ui, .Theme_Dark),
+		0,
+		.Center,
+	)
+	ui_draw_text(
+		painter,
+		painter.font,
+		ui,
 		"Font size",
-		{modal.x+24, modal.y+54, modal.w-48, 24},
+		{modal.x+24, modal.y+132, modal.w-48, 22},
 		theme.muted,
 		0,
 	)
@@ -1712,7 +1771,7 @@ ui_draw_settings_overlay :: proc(
 		painter.font,
 		ui,
 		"−",
-		{modal.x+24, modal.y+96, 48, 40},
+		{modal.x+24, modal.y+162, 48, 36},
 		ui_control_ink(ui, .Font_Decrease),
 		0,
 		.Center,
@@ -1722,7 +1781,7 @@ ui_draw_settings_overlay :: proc(
 		painter.font,
 		ui,
 		"+",
-		{modal.x+82, modal.y+96, 48, 40},
+		{modal.x+82, modal.y+162, 48, 36},
 		ui_control_ink(ui, .Font_Increase),
 		0,
 		.Center,
@@ -1732,7 +1791,7 @@ ui_draw_settings_overlay :: proc(
 		painter.mono,
 		ui,
 		fmt.tprintf("%d PT", ui.font_size),
-		{modal.x+142, modal.y+96, modal.w-166, 40},
+		{modal.x+142, modal.y+162, modal.w-166, 36},
 		theme.text,
 		0, tracked = true,
 	)

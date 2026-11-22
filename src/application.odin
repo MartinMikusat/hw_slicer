@@ -318,6 +318,14 @@ app_activate :: proc(action: UI_Action) -> bool {
 			1 if app.ui.dark else 0,
 		)
 		app.needs_redraw = true
+	case .Theme_Light:
+		app.ui.dark = false
+		app.host.preference_set_int("theme-dark", 0)
+		app.needs_redraw = true
+	case .Theme_Dark:
+		app.ui.dark = true
+		app.host.preference_set_int("theme-dark", 1)
+		app.needs_redraw = true
 	case .Show_Help:
 		app.ui.focused_id = 0
 		app.ui.evidence_open = false
