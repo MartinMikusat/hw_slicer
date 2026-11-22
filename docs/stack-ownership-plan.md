@@ -141,11 +141,13 @@ microcontroller firmware.
 
 ## Licensing
 
-The project accepts the licences of the code it uses. An Odin host that ports
-`klippy` or `chelper` code is a derivative work of Klipper and is GPLv3. A
-host written only from the protocol and kinematics documentation can use
-another licence. The stock microcontroller firmware stays GPLv3 and is a
-separate program.
+The printer host ports Klipper's algorithms from `klippy` and `chelper`, such
+as the move queue, kinematics, and step compression. It is a derivative work
+of Klipper and is licensed under GPLv3. Each ported file records its Klipper
+source file and commit. The other projects stay under their own licences
+because they communicate with the host only through files and the host's
+interface. The stock microcontroller firmware stays GPLv3 and is a separate
+program.
 
 ## Open decisions
 
@@ -153,7 +155,5 @@ The operator decides these before Stage 0 starts:
 
 1. The repository for the printer host. Proposal: `hw_printer`, separate from
    `hw_ratos`, which stays the Mac application.
-2. Whether the host ports Klipper's algorithms (GPLv3) or reimplements them
-   from documentation.
-3. Access to the printer's Linux computer for Stage 0 and later stages.
-4. The interface between the printer host and `hw_ratos` in Stage 6.
+2. Access to the printer's Linux computer for Stage 0 and later stages.
+3. The interface between the printer host and `hw_ratos` in Stage 6.
