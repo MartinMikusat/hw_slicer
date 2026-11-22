@@ -34,8 +34,10 @@ Design_Bead :: struct {
 	arc_radius:    f32,
 }
 
-Design_Arc_Span :: struct {
-	t0, t1: f64,
+Design_Vertex_Run :: struct {
+	start:  int,
+	count:  int,
+	is_arc: bool,
 }
 
 Design_Layer :: struct {
@@ -55,7 +57,7 @@ Design_State :: struct {
 	evaluated:      design.Design,
 	toolpath:       design.Toolpath,
 	beads:          [dynamic]Design_Bead,
-	arc_spans:      [dynamic]Design_Arc_Span,
+	vertex_runs:    [dynamic]Design_Vertex_Run,
 	arc_count:      int,
 	layers:         [dynamic]Design_Layer,
 	selected_layer: int,
@@ -77,7 +79,7 @@ design_state_clear :: proc(s: ^Design_State) {
 	design.design_destroy(&s.evaluated)
 	design.toolpath_destroy(&s.toolpath)
 	delete(s.beads)
-	delete(s.arc_spans)
+	delete(s.vertex_runs)
 	delete(s.layers)
 	delete(s.path)
 	delete(s.export_path)
@@ -135,22 +137,20 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	toolpath := design.generate(&evaluated)
 	beads := make([dynamic]Design_Bead)
 	layers := make([dynamic]Design_Layer)
-	arc_spans := make([dynamic]Design_Arc_Span)
-	arc_vertices := make([dynamic]Mesh_Vertex, context.temp_allocator)
-	arc_count := design_beads(&toolpath, &beads, &layers, &arc_spans, &arc_vertices)
+	vertex_runs := make([dynamic]Design_Vertex_Run)
+	arc_count := design_beads(&toolpath, &beads, &layers, &vertex_runs)
 	mesh := design_bead_mesh(beads[:])
 	if !renderer_set_mesh(&app.renderer, &mesh) {
 		mesh_destroy(&mesh)
 		delete(beads)
 		delete(layers)
-		delete(arc_spans)
+		delete(vertex_runs)
 		design.toolpath_destroy(&toolpath)
 		design.design_destroy(&evaluated)
 		devlog.failed(devlog.global(), site, {reason = "renderer mesh upload failed", severity = .Critical}, {scope = "design", stage = "upload"})
 		app_set_status("DESIGN FAILED: METAL BUFFER", true)
 		return false
 	}
-	_ = renderer_set_arcs(&app.renderer, arc_vertices[:])
 	fraction := 1.0
 	if keep_time && app.design.active && design_duration(&app.design) > 0 {
 		fraction = app.design.clock/design_duration(&app.design)
@@ -164,7 +164,7 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	app.design.evaluated = evaluated
 	app.design.toolpath = toolpath
 	app.design.beads = beads
-	app.design.arc_spans = arc_spans
+	app.design.vertex_runs = vertex_runs
 	app.design.arc_count = arc_count
 	app.design.layers = layers
 	app.design.clock = fraction*toolpath.duration
@@ -340,20 +340,18 @@ design_step_in_layer :: proc(s: ^Design_State, delta: int) {
 	}
 }
 
-// Extruding moves become beads with their print-time interval and per-layer spans.
-// Circular arcs (`move.arc != .None`) are tessellated into smooth chords for 3D preview
-// and also emitted into `arc_vertices` so native G2/G3 arcs can be visualized directly.
+// Extruding moves become beads with their print-time interval, per-layer spans, and contiguous
+// G1 vs G2/G3 vertex runs so arc geometry can be shaded directly without an overlay.
 design_beads :: proc(
 	t: ^design.Toolpath,
 	beads: ^[dynamic]Design_Bead,
 	layers: ^[dynamic]Design_Layer,
-	arc_spans: ^[dynamic]Design_Arc_Span,
-	arc_vertices: ^[dynamic]Mesh_Vertex,
+	runs: ^[dynamic]Design_Vertex_Run,
 ) -> (arc_count: int) {
-	ARC_Z_LIFT :: f32(0.04)
 	append_bead :: proc(
 		beads: ^[dynamic]Design_Bead,
 		layers: ^[dynamic]Design_Layer,
+		runs: ^[dynamic]Design_Vertex_Run,
 		a, b: [3]f64,
 		w, h, t0, t1: f64,
 		arc: design.Arc_Kind,
@@ -370,6 +368,13 @@ design_beads :: proc(
 			arc = arc,
 			arc_radius = f32(arc_radius),
 		})
+		is_arc := arc != .None
+		v_start := bead_idx*BEAD_VERTICES
+		if len(runs) > 0 && runs[len(runs)-1].is_arc == is_arc {
+			runs[len(runs)-1].count += BEAD_VERTICES
+		} else {
+			append(runs, Design_Vertex_Run{start = v_start, count = BEAD_VERTICES, is_arc = is_arc})
+		}
 		if len(layers) == 0 || abs(b.z-layers[len(layers)-1].z) > 1e-6 {
 			append(layers, Design_Layer{
 				z          = b.z,
@@ -409,12 +414,7 @@ design_beads :: proc(
 				}
 				t0 := clock+f64(i-1)*seg_dt
 				t1 := clock+f64(i)*seg_dt
-				append_bead(beads, layers, prev, next_pt, move.width, move.height, t0, t1, move.arc, radius)
-				append(arc_spans, Design_Arc_Span{t0 = t0, t1 = t1})
-				append(arc_vertices,
-					Mesh_Vertex{{f32(prev.x), f32(prev.y), f32(prev.z)+ARC_Z_LIFT}, {0, 0, 1}},
-					Mesh_Vertex{{f32(next_pt.x), f32(next_pt.y), f32(next_pt.z)+ARC_Z_LIFT}, {0, 0, 1}},
-				)
+				append_bead(beads, layers, runs, prev, next_pt, move.width, move.height, t0, t1, move.arc, radius)
 				prev = next_pt
 			}
 			clock += duration
@@ -424,7 +424,7 @@ design_beads :: proc(
 		delta := move.to-position
 		duration := math.sqrt(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z)/move.speed
 		if move.extrude {
-			append_bead(beads, layers, position, move.to, move.width, move.height, clock, clock+duration, .None, 0)
+			append_bead(beads, layers, runs, position, move.to, move.width, move.height, clock, clock+duration, .None, 0)
 		}
 		clock += duration
 		position = move.to
@@ -507,10 +507,9 @@ design_bead_vertices :: proc(bead: Design_Bead, fraction: f32, out: []Mesh_Verte
 Design_Visual :: struct {
 	finished_vertices: int,
 	partial:           []Mesh_Vertex,
+	partial_is_arc:    bool,
+	runs:              []Design_Vertex_Run,
 	highlight_start:   int, // vertex index where current layer begins; -1 when using default color
-	arc_vertices:      int, // number of arc overlay line vertices visible up to clock
-	arc_partial:       [2]Mesh_Vertex,
-	has_arc_partial:   bool,
 	marker_active:     bool,
 	marker_pos:        Vec3,
 	marker_radius:     f32,
@@ -534,10 +533,11 @@ design_current_move_info :: proc(s: ^Design_State) -> (arc: design.Arc_Kind, rad
 }
 
 // The vertices to draw at the current time: a prefix of finished beads, the growing bead,
-// optional current-layer highlight range, visible G2/G3 arc overlay, and nozzle-tip marker sphere.
+// contiguous G1/arc vertex runs, optional current-layer highlight range, and nozzle-tip marker sphere.
 design_visible :: proc(s: ^Design_State) -> (v: Design_Visual) {
 	v.highlight_start = -1
 	if !s.active || len(s.beads) == 0 {return}
+	v.runs = s.vertex_runs[:]
 	low, high := 0, len(s.beads)
 	for low < high {
 		middle := (low+high)/2
@@ -551,22 +551,8 @@ design_visible :: proc(s: ^Design_State) -> (v: Design_Visual) {
 		fraction := f32((s.clock-bead.t0)/max(bead.t1-bead.t0, 0.000001))
 		design_bead_vertices(bead, fraction, s.partial[:])
 		v.partial = s.partial[:]
+		v.partial_is_arc = bead.arc != .None
 		tip = vec3_add(bead.a, vec3_mul(vec3_sub(bead.b, bead.a), fraction))
-		if bead.arc != .None {
-			v.has_arc_partial = true
-			v.arc_partial = {
-				{{bead.a.x, bead.a.y, bead.a.z+0.04}, {0, 0, 1}},
-				{{tip.x, tip.y, tip.z+0.04}, {0, 0, 1}},
-			}
-		}
-	}
-	if len(s.arc_spans) > 0 {
-		al, ah := 0, len(s.arc_spans)
-		for al < ah {
-			mid := (al+ah)/2
-			if s.arc_spans[mid].t1 <= s.clock {al = mid+1} else {ah = mid}
-		}
-		v.arc_vertices = al*2
 	}
 	layer_idx, layer_count, _, in_layer := design_layer_state(s)
 	if layer_count > 0 {

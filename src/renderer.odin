@@ -40,7 +40,6 @@ Renderer :: struct {
 	section_buffer:   Id,
 	grid_buffer:      Id,
 	marker_buffer:    Id,
-	arc_buffer:       Id,
 	capture_texture:  Id,
 	capture_path:     string,
 	capture_written:  bool,
@@ -51,7 +50,6 @@ Renderer :: struct {
 	section_vertex_count: int,
 	grid_vertex_count: int,
 	marker_vertex_count: int,
-	arc_vertex_count: int,
 	depth_width:      uint,
 	depth_height:     uint,
 	ui_renderer:      gpu.Renderer,
@@ -261,7 +259,6 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.capture_texture,
 		renderer.grid_buffer,
 		renderer.marker_buffer,
-		renderer.arc_buffer,
 		renderer.section_buffer,
 		renderer.mesh_buffer,
 		renderer.ui_depth_state,
@@ -523,26 +520,6 @@ renderer_set_section :: proc(renderer: ^Renderer, vertices: []Mesh_Vertex) -> bo
 	return true
 }
 
-renderer_set_arcs :: proc(renderer: ^Renderer, vertices: []Mesh_Vertex) -> bool {
-	next: Id
-	if len(vertices) > 0 {
-		next = msg_id_ptr_u_u(
-			renderer.device,
-			sel_registerName("newBufferWithBytes:length:options:"),
-			raw_data(vertices),
-			uint(len(vertices))*size_of(Mesh_Vertex),
-			0,
-		)
-		if next == nil {return false}
-	}
-	if renderer.arc_buffer != nil {
-		msg_void(renderer.arc_buffer, sel_registerName("release"))
-	}
-	renderer.arc_buffer = next
-	renderer.arc_vertex_count = len(vertices)
-	return true
-}
-
 renderer_ensure_capture_texture :: proc(
 	renderer: ^Renderer,
 	width, height: uint,
@@ -629,9 +606,10 @@ renderer_ensure_depth :: proc(
 	return true
 }
 
-// Draws the first `count` uploaded mesh vertices, then `partial` from bytes. When
-// `highlight_start >= 0`, vertices `[highlight_start ..< count)` and `partial` are drawn using
-// `highlight_color` so the active layer stands out while scrubbing in-layer progress.
+// Draws the first `count` uploaded mesh vertices, then `partial` from bytes.
+// When `show_arcs` is true and `runs` is provided, G2/G3 arc beads are shaded in `COLOR_ARC`
+// directly on the bead geometry. When `highlight_start >= 0`, the active layer's vertices
+// `[highlight_start ..< count)` and `partial` are shaded in `highlight_color`.
 renderer_draw_mesh :: proc(
 	renderer: ^Renderer,
 	encoder: Id,
@@ -640,11 +618,16 @@ renderer_draw_mesh :: proc(
 	uniforms: ^Scene_Uniforms = nil,
 	highlight_start := -1,
 	highlight_color := COLOR_SECTION,
+	runs: []Design_Vertex_Run = nil,
+	show_arcs := false,
+	partial_is_arc := false,
 ) {
 	assert(count >= 0 && count <= renderer.mesh_vertex_count)
 	assert(len(partial)*size_of(Mesh_Vertex) <= 4096)
 	use_highlight := uniforms != nil && highlight_start >= 0 && highlight_start <= count
-	if !use_highlight {
+	use_arcs := uniforms != nil && show_arcs && len(runs) > 0
+
+	if !use_highlight && !use_arcs {
 		if count > 0 {
 			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(count))
 		}
@@ -654,24 +637,50 @@ renderer_draw_mesh :: proc(
 		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 		return
 	}
-	if highlight_start > 0 {
-		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(highlight_start))
+
+	set_color :: proc(encoder: Id, base: ^Scene_Uniforms, color: Vec4, current: ^Vec4) {
+		if color == current^ {return}
+		u := base^
+		u.color = color
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &u, size_of(Scene_Uniforms), 1)
+		msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &u, size_of(Scene_Uniforms), 1)
+		current^ = color
 	}
-	active_uniforms := uniforms^
-	active_uniforms.color = highlight_color
-	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &active_uniforms, size_of(Scene_Uniforms), 1)
-	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &active_uniforms, size_of(Scene_Uniforms), 1)
-	active_count := count-highlight_start
-	if active_count > 0 {
-		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(highlight_start), uint(active_count))
+
+	current_color := uniforms.color
+	base_limit := highlight_start if use_highlight else count
+	if base_limit > 0 {
+		if use_arcs {
+			for run in runs {
+				if run.start >= base_limit {break}
+				seg_end := min(run.start+run.count, base_limit)
+				seg_count := seg_end-run.start
+				if seg_count <= 0 {continue}
+				c := COLOR_ARC if run.is_arc else uniforms.color
+				set_color(encoder, uniforms, c, &current_color)
+				msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(run.start), uint(seg_count))
+			}
+		} else {
+			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(base_limit))
+		}
 	}
+
+	if use_highlight {
+		set_color(encoder, uniforms, highlight_color, &current_color)
+		active_count := count-highlight_start
+		if active_count > 0 {
+			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(highlight_start), uint(active_count))
+		}
+	}
+
 	if len(partial) > 0 {
+		p_color := highlight_color if use_highlight else (COLOR_ARC if (use_arcs && partial_is_arc) else uniforms.color)
+		set_color(encoder, uniforms, p_color, &current_color)
 		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(partial), uint(len(partial)*size_of(Mesh_Vertex)), 0)
 		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(len(partial)))
 		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 	}
-	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
-	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
+	set_color(encoder, uniforms, uniforms.color, &current_color)
 }
 
 renderer_draw_marker :: proc(
@@ -850,7 +859,7 @@ renderer_draw :: proc(
 	msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-	renderer_draw_mesh(renderer, scene_encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION)
+	renderer_draw_mesh(renderer, scene_encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION, visual.runs, show_arcs, visual.partial_is_arc)
 	if visual.marker_active {
 		renderer_draw_marker(renderer, scene_encoder, &mesh_uniforms, projection, view, model, visual.marker_pos, visual.marker_radius, COLOR_NOZZLE_MARKER)
 	}
@@ -909,7 +918,7 @@ renderer_draw :: proc(
 	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-	renderer_draw_mesh(renderer, encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION)
+	renderer_draw_mesh(renderer, encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION, visual.runs, show_arcs, visual.partial_is_arc)
 	if visual.marker_active {
 		renderer_draw_marker(renderer, encoder, &mesh_uniforms, projection, view, model, visual.marker_pos, visual.marker_radius, COLOR_NOZZLE_MARKER)
 	}
@@ -1003,27 +1012,6 @@ renderer_draw :: proc(
 		0,
 		uint(renderer.grid_vertex_count),
 	)
-
-	if show_arcs && (visual.arc_vertices > 0 || visual.has_arc_partial) {
-		arc_uniforms := Scene_Uniforms{
-			mvp   = mat4_mul(projection, mat4_mul(view, model)),
-			model = model,
-			color = COLOR_ARC,
-		}
-		msg_void_id(encoder, sel_registerName("setDepthStencilState:"), renderer.depth_state)
-		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.line_pipeline)
-		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &arc_uniforms, size_of(Scene_Uniforms), 1)
-		if visual.arc_vertices > 0 && renderer.arc_buffer != nil {
-			count := min(visual.arc_vertices, renderer.arc_vertex_count)
-			msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.arc_buffer, 0, 0)
-			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 1, 0, uint(count))
-		}
-		if visual.has_arc_partial {
-			arc_seg := visual.arc_partial
-			msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(arc_seg[:]), size_of(arc_seg), 0)
-			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 1, 0, 2)
-		}
-	}
 
 	if renderer.section_vertex_count > 0 {
 		section_uniforms := Scene_Uniforms{
