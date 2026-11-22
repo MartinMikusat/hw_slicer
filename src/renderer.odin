@@ -27,8 +27,11 @@ Renderer :: struct {
 	environment: Id,
 	harmonics: [9]Vec4,
 	ao_depth: Id,
+	scene_msaa: Id,
 	scene_texture: Id,
+	screen_depth_texture: Id,
 	floor_pipeline: Id,
+	resolve_pipeline: Id,
 	layer:            Id,
 	device:           Id,
 	queue:            Id,
@@ -36,7 +39,6 @@ Renderer :: struct {
 	depth_pipeline: Id,
 	line_pipeline:    Id,
 	depth_state:       Id,
-	depth_equal_state: Id,
 	ui_depth_state:    Id,
 	mesh_buffer:      Id,
 	section_buffer:   Id,
@@ -57,6 +59,8 @@ Renderer :: struct {
 	bench_sync:       bool,
 	depth_width:      uint,
 	depth_height:     uint,
+	ss_width:         uint,
+	ss_height:        uint,
 	ui_renderer:      gpu.Renderer,
 	ui_text:          text.System,
 	ui_list:          gpu.Draw_List,
@@ -136,7 +140,7 @@ static float3 harmonics_irradiance(constant float4 *sh, float3 n) {
 		+ sh[8].xyz * (0.546274 * (n.x * n.x - n.y * n.y));
 }
 
-static float ambient_occlusion(MeshOut in, float3 normal, constant SceneUniforms &scene, depth2d<float> depth) {
+static float ambient_occlusion(MeshOut in, float3 normal, constant SceneUniforms &scene, depth2d<float> depth, int taps) {
     constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
     float3 helper = abs(normal.z) < 0.99 ? float3(0,0,1) : float3(1,0,0);
     float3 tangent = normalize(cross(helper, normal));
@@ -144,26 +148,32 @@ static float ambient_occlusion(MeshOut in, float3 normal, constant SceneUniforms
     float radius = scene.params.z;
     float blocked = 0.0;
     float4 surface = scene.view_projection * float4(in.world, 1.0);
-    for (int i = 0; i < 8; i++) {
-        float step = (float(i) + 0.5) / 8.0;
-        float azimuth = float(i) * 2.39996;
+    float4 t_clip = scene.view_projection * float4(tangent * radius, 0.0);
+    float4 b_clip = scene.view_projection * float4(bitangent * radius, 0.0);
+    float4 n_clip = scene.view_projection * float4(normal * radius, 0.0);
+    float near_z = scene.params.x, far_z = scene.params.y;
+    float nf = near_z * far_z, fn = far_z - near_z;
+    float phase = fract(dot(floor(in.position.xy), float2(0.75487766, 0.56984029))) * 6.2831853;
+    float inv_taps = 1.0 / float(taps);
+    for (int i = 0; i < taps; i++) {
+        float step = (float(i) + 0.5) * inv_taps;
+        float azimuth = float(i) * 2.39996 + phase;
         float lift = 0.14 + 0.86 * fract(step * 5.0);
         float flat = sqrt(1.0 - lift * lift);
-        float3 direction = tangent * (cos(azimuth) * flat) + bitangent * (sin(azimuth) * flat) + normal * lift;
-        float4 clip = scene.view_projection * float4(in.world + direction * radius * (0.2 + 0.8 * step), 1.0);
+        float scale = 0.2 + 0.8 * step;
+        float4 clip = surface + (t_clip * (cos(azimuth) * flat) + b_clip * (sin(azimuth) * flat) + n_clip * lift) * scale;
         if (clip.w <= 0.0) {continue;}
         float2 local = float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
         if (any(local < 0.0) || any(local >= 1.0)) {continue;}
         float2 uv = scene.viewport.xy + local * scene.viewport.zw;
         float stored = depth.sample(nearest, uv);
         if (stored >= 1.0) {continue;}
-        float near_z = scene.params.x, far_z = scene.params.y;
-        float stored_distance = near_z * far_z / (far_z - stored * (far_z - near_z));
+        float stored_distance = nf / (far_z - stored * fn);
         float gap = clip.w - stored_distance;
         float range = saturate(radius / max(abs(surface.w - stored_distance), 1e-3));
         blocked += (gap > radius * 0.04 ? 1.0 : 0.0) * range;
     }
-    return 1.0 - 0.75 * blocked / 8.0;
+    return 1.0 - 0.75 * blocked * inv_taps;
 }
 
 fragment float4 mesh_fragment(MeshOut in [[stage_in]],
@@ -174,7 +184,7 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     float3 view = normalize(in.camera - in.world);
     if (dot(normal, view) < 0.0) {normal = -normal;}
     float n_dot_v = max(dot(normal, view), 1e-3);
-    float3 albedo = pow(in.color.rgb, float3(2.2));
+    float3 albedo = in.color.rgb * in.color.rgb;
     // The source environment uses Y up; the slicer uses Z up.
     float3 environment_normal = normal.xzy;
     float3 reflected = reflect(-view, normal).xzy;
@@ -185,9 +195,8 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     prefiltered = mix(prefiltered, max(harmonics_irradiance(scene.sh, reflected), 0.0), smoothstep(0.1, 0.7, roughness));
     float2 brdf = environment_brdf(roughness, n_dot_v);
     float3 specular = prefiltered * (float3(0.04) * brdf.x + brdf.y);
-    float shade = scene.params.w > 0.0 ? ambient_occlusion(in, normal, scene, depth) : 1.0;
-    float3 color = tone_map((diffuse + specular) * shade);
-    return float4(pow(color, float3(1.0 / 2.2)), in.color.a);
+    float3 color = tone_map(diffuse + specular);
+    return float4(sqrt(color), in.color.a);
 }
 
 fragment float4 floor_fragment(MeshOut in [[stage_in]],
@@ -196,8 +205,18 @@ fragment float4 floor_fragment(MeshOut in [[stage_in]],
     texture2d<float> scene_color [[texture(2)]]) {
     constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
     constexpr sampler linear_sampler(filter::linear, address::clamp_to_edge);
+    float4 surf = scene.view_projection * float4(in.world, 1.0);
+    float2 surf_uv = float2(surf.x / surf.w * 0.5 + 0.5, 0.5 - surf.y / surf.w * 0.5);
+    float2 d_tex = float2(1.0 / float(depth.get_width()), 1.0 / float(depth.get_height()));
+    if (depth.sample(nearest, surf_uv) < in.position.z &&
+        depth.sample(nearest, surf_uv + float2( d_tex.x, 0.0)) < in.position.z &&
+        depth.sample(nearest, surf_uv + float2(-d_tex.x, 0.0)) < in.position.z &&
+        depth.sample(nearest, surf_uv + float2(0.0,  d_tex.y)) < in.position.z &&
+        depth.sample(nearest, surf_uv + float2(0.0, -d_tex.y)) < in.position.z) {
+        return float4(in.color.rgb, 1.0);
+    }
     float3 normal = float3(0, 0, 1);
-    float shade = ambient_occlusion(in, normal, scene, depth);
+    float shade = ambient_occlusion(in, normal, scene, depth, 8);
     float3 color = in.color.rgb * shade;
     float3 direction = reflect(normalize(in.world - in.camera), normal);
     float radius = scene.params.z;
@@ -224,10 +243,84 @@ fragment float4 floor_fragment(MeshOut in [[stage_in]],
     return float4(color, 1.0);
 }
 
-fragment float4 depth_fragment(MeshOut in [[stage_in]]) {return float4(0);}
-
 fragment float4 line_fragment(MeshOut in [[stage_in]]) {
     return in.color;
+}
+
+struct ResolveOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex ResolveOut resolve_vertex(
+    uint id [[vertex_id]],
+    constant SceneUniforms &scene [[buffer(1)]]
+) {
+    const float2 corners[6] = {
+        float2(0.0, 0.0), float2(1.0, 0.0), float2(1.0, 1.0),
+        float2(0.0, 0.0), float2(1.0, 1.0), float2(0.0, 1.0),
+    };
+    float2 c = corners[id];
+    ResolveOut out;
+    out.position = float4(c.x * 2.0 - 1.0, 1.0 - c.y * 2.0, 0.0, 1.0);
+    out.uv = scene.viewport.xy + c * scene.viewport.zw;
+    return out;
+}
+
+// 2x2 Tent AA resolve over the 4x MSAA-resolved scene texture: four symmetric bilinear taps
+// at +/-0.25 texels evaluate the exact 2x2 pixel tent kernel ([1/8, 6/8, 1/8] separable) in
+// linear light, suppressing parallel print-line moire while preserving crisp silhouettes.
+// Screen-space AO is applied once per display pixel from the 1x ao_depth buffer.
+fragment float4 resolve_fragment(
+    ResolveOut in [[stage_in]],
+    constant SceneUniforms &scene [[buffer(1)]],
+    depth2d<float> depth [[texture(1)]],
+    texture2d<float> scene_color [[texture(2)]]
+) {
+    constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
+    constexpr sampler linear_s(filter::linear, address::clamp_to_edge);
+    float w = float(scene_color.get_width());
+    float h = float(scene_color.get_height());
+    float2 texel = float2(1.0 / w, 1.0 / h);
+    float2 o = texel * 0.25;
+    float4 s0 = scene_color.sample(linear_s, in.uv + float2(-o.x, -o.y));
+    float4 s1 = scene_color.sample(linear_s, in.uv + float2( o.x, -o.y));
+    float4 s2 = scene_color.sample(linear_s, in.uv + float2(-o.x,  o.y));
+    float4 s3 = scene_color.sample(linear_s, in.uv + float2( o.x,  o.y));
+    float a_sum = s0.a + s1.a + s2.a + s3.a;
+    if (a_sum <= 1e-4) { return float4(0.0); }
+    float3 lin =
+        (s0.rgb * s0.rgb) * s0.a +
+        (s1.rgb * s1.rgb) * s1.a +
+        (s2.rgb * s2.rgb) * s2.a +
+        (s3.rgb * s3.rgb) * s3.a;
+    float shade = 1.0;
+    if (scene.params.w > 0.0) {
+        float d0 = depth.sample(nearest, in.uv);
+        if (d0 < 1.0) {
+            float near_z = scene.params.x, far_z = scene.params.y, radius = scene.params.z;
+            float nf = near_z * far_z, fn = far_z - near_z;
+            float z0 = nf / (far_z - d0 * fn);
+            float r_uv = clamp(radius / max(z0, 1e-3) * 1.15, 0.002, 0.04);
+            float2 r_xy = float2(r_uv * (h / w), r_uv);
+            float phase = fract(dot(floor(in.position.xy), float2(0.75487766, 0.56984029))) * 6.2831853;
+            float blocked = 0.0;
+            for (int i = 0; i < 8; i++) {
+                float step = (float(i) + 0.5) / 8.0;
+                float angle = float(i) * 2.39996 + phase;
+                float2 uv_s = in.uv + float2(cos(angle), sin(angle)) * r_xy * (0.2 + 0.8 * step);
+                float ds = depth.sample(nearest, uv_s);
+                if (ds >= 1.0) {continue;}
+                float zs = nf / (far_z - ds * fn);
+                float diff = z0 - zs;
+                float range = saturate(radius / max(abs(diff), 1e-3));
+                blocked += (diff > radius * 0.04 ? 1.0 : 0.0) * range;
+            }
+            shade = 1.0 - 0.55 * blocked / 8.0;
+        }
+    }
+    float3 rgb = sqrt((lin / a_sum) * shade);
+    return float4(rgb, a_sum * 0.25);
 }
 `
 
@@ -259,8 +352,11 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 	if renderer.ui_list.instances != nil {gpu.draw_list_destroy(&renderer.ui_list)}
 	objects := [?]Id{
 		renderer.environment,
+		renderer.scene_msaa,
 		renderer.scene_texture,
+		renderer.screen_depth_texture,
 		renderer.floor_pipeline,
+		renderer.resolve_pipeline,
 		renderer.depth_pipeline,
 		renderer.ao_depth,
 		renderer.depth_texture,
@@ -270,7 +366,6 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.section_buffer,
 		renderer.mesh_buffer,
 		renderer.ui_depth_state,
-		renderer.depth_equal_state,
 		renderer.depth_state,
 		renderer.line_pipeline,
 		renderer.mesh_pipeline,
@@ -291,20 +386,28 @@ renderer_build_pipeline :: proc(
 	depth: bool,
 	blend: bool,
 	premultiplied := false,
+	sample_count := uint(1),
 ) -> Id {
 	vertex := msg_id_id(
 		library,
 		sel_registerName("newFunctionWithName:"),
 		nsstring(vertex_name),
 	)
-	fragment := msg_id_id(
-		library,
-		sel_registerName("newFunctionWithName:"),
-		nsstring(fragment_name),
-	)
-	if vertex == nil || fragment == nil {return nil}
+	fragment: Id
+	if len(fragment_name) > 0 {
+		fragment = msg_id_id(
+			library,
+			sel_registerName("newFunctionWithName:"),
+			nsstring(fragment_name),
+		)
+		if fragment == nil {
+			msg_void(vertex, sel_registerName("release"))
+			return nil
+		}
+	}
+	if vertex == nil {return nil}
 	defer msg_void(vertex, sel_registerName("release"))
-	defer msg_void(fragment, sel_registerName("release"))
+	defer if fragment != nil {msg_void(fragment, sel_registerName("release"))}
 
 	descriptor := msg_id(
 		msg_id(objc_getClass("MTLRenderPipelineDescriptor"), sel_registerName("alloc")),
@@ -313,24 +416,26 @@ renderer_build_pipeline :: proc(
 	if descriptor == nil {return nil}
 	defer msg_void(descriptor, sel_registerName("release"))
 	msg_void_id(descriptor, sel_registerName("setVertexFunction:"), vertex)
-	msg_void_id(descriptor, sel_registerName("setFragmentFunction:"), fragment)
-	attachments := msg_id(descriptor, sel_registerName("colorAttachments"))
-	attachment := msg_id_index(
-		attachments,
-		sel_registerName("objectAtIndexedSubscript:"),
-		0,
-	)
-	msg_void_u(attachment, sel_registerName("setPixelFormat:"), 80)
-	if blend {
-		msg_void_bool(attachment, sel_registerName("setBlendingEnabled:"), true)
-		msg_void_u(
-			attachment,
-			sel_registerName("setSourceRGBBlendFactor:"),
-			1 if premultiplied else 4,
+	if fragment != nil {
+		msg_void_id(descriptor, sel_registerName("setFragmentFunction:"), fragment)
+		attachments := msg_id(descriptor, sel_registerName("colorAttachments"))
+		attachment := msg_id_index(
+			attachments,
+			sel_registerName("objectAtIndexedSubscript:"),
+			0,
 		)
-		msg_void_u(attachment, sel_registerName("setDestinationRGBBlendFactor:"), 5)
-		msg_void_u(attachment, sel_registerName("setSourceAlphaBlendFactor:"), 1)
-		msg_void_u(attachment, sel_registerName("setDestinationAlphaBlendFactor:"), 5)
+		msg_void_u(attachment, sel_registerName("setPixelFormat:"), 80)
+		if blend {
+			msg_void_bool(attachment, sel_registerName("setBlendingEnabled:"), true)
+			msg_void_u(
+				attachment,
+				sel_registerName("setSourceRGBBlendFactor:"),
+				1 if premultiplied else 4,
+			)
+			msg_void_u(attachment, sel_registerName("setDestinationRGBBlendFactor:"), 5)
+			msg_void_u(attachment, sel_registerName("setSourceAlphaBlendFactor:"), 1)
+			msg_void_u(attachment, sel_registerName("setDestinationAlphaBlendFactor:"), 5)
+		}
 	}
 	if depth {
 		msg_void_u(
@@ -338,6 +443,9 @@ renderer_build_pipeline :: proc(
 			sel_registerName("setDepthAttachmentPixelFormat:"),
 			252,
 		)
+	}
+	if sample_count > 1 {
+		msg_void_u(descriptor, sel_registerName("setRasterSampleCount:"), sample_count)
 	}
 	error: Id
 	result := msg_id_id_error(
@@ -374,10 +482,13 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 		true,
 		false,
 		false,
+		4,
 	)
 	renderer.floor_pipeline = renderer_build_pipeline(renderer, library, "mesh_vertex", "floor_fragment", true, false)
 	if renderer.floor_pipeline == nil {return false}
-	renderer.depth_pipeline = renderer_build_pipeline(renderer, library, "mesh_vertex", "depth_fragment", true, false)
+	renderer.resolve_pipeline = renderer_build_pipeline(renderer, library, "resolve_vertex", "resolve_fragment", true, true, false)
+	if renderer.resolve_pipeline == nil {return false}
+	renderer.depth_pipeline = renderer_build_pipeline(renderer, library, "mesh_vertex", "", true, false)
 	if renderer.depth_pipeline == nil {return false}
 	renderer.line_pipeline = renderer_build_pipeline(
 		renderer,
@@ -410,13 +521,6 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 		sel_registerName("newDepthStencilStateWithDescriptor:"),
 		depth_descriptor,
 	)
-	msg_void_u(depth_descriptor, sel_registerName("setDepthCompareFunction:"), 3) // LessEqual
-	msg_void_bool(depth_descriptor, sel_registerName("setDepthWriteEnabled:"), false)
-	renderer.depth_equal_state = msg_id_id(
-		renderer.device,
-		sel_registerName("newDepthStencilStateWithDescriptor:"),
-		depth_descriptor,
-	)
 	ui_depth_descriptor := msg_id(
 		msg_id(objc_getClass("MTLDepthStencilDescriptor"), sel_registerName("alloc")),
 		sel_registerName("init"),
@@ -440,8 +544,8 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 	)
 	return renderer.mesh_pipeline != nil &&
 		renderer.line_pipeline != nil &&
+		renderer.resolve_pipeline != nil &&
 		renderer.depth_state != nil &&
-		renderer.depth_equal_state != nil &&
 		renderer.ui_depth_state != nil
 }
 
@@ -575,14 +679,20 @@ renderer_ensure_capture_texture :: proc(
 
 renderer_ensure_depth :: proc(
 	renderer: ^Renderer,
-	width, height: uint,
+	width, height, vp_w, vp_h: uint,
 ) -> bool {
+	vp_w := max(uint(1), vp_w)
+	vp_h := max(uint(1), vp_h)
 	if renderer.depth_texture != nil &&
+	   renderer.screen_depth_texture != nil &&
+	   renderer.scene_msaa != nil &&
 	   renderer.depth_width == width &&
-	   renderer.depth_height == height {
+	   renderer.depth_height == height &&
+	   renderer.ss_width == vp_w &&
+	   renderer.ss_height == vp_h {
 		return true
 	}
-	descriptor := msg_id_u_u_u_bool(
+	screen_desc := msg_id_u_u_u_bool(
 		objc_getClass("MTLTextureDescriptor"),
 		sel_registerName(
 			"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
@@ -592,34 +702,89 @@ renderer_ensure_depth :: proc(
 		height,
 		false,
 	)
-	msg_void_u(descriptor, sel_registerName("setStorageMode:"), 2)
-	msg_void_u(descriptor, sel_registerName("setUsage:"), 4)
+	msg_void_u(screen_desc, sel_registerName("setStorageMode:"), 2)
+	msg_void_u(screen_desc, sel_registerName("setUsage:"), 4)
+	screen_depth := msg_id_id(
+		renderer.device,
+		sel_registerName("newTextureWithDescriptor:"),
+		screen_desc,
+	)
+	if screen_depth == nil {return false}
+	msaa_depth_desc := msg_id_u_u_u_bool(
+		objc_getClass("MTLTextureDescriptor"),
+		sel_registerName(
+			"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+		),
+		252,
+		vp_w,
+		vp_h,
+		false,
+	)
+	msg_void_u(msaa_depth_desc, sel_registerName("setTextureType:"), 4) // 2DMultisample
+	msg_void_u(msaa_depth_desc, sel_registerName("setSampleCount:"), 4)
+	msg_void_u(msaa_depth_desc, sel_registerName("setStorageMode:"), 2)
+	msg_void_u(msaa_depth_desc, sel_registerName("setUsage:"), 4)
 	next := msg_id_id(
 		renderer.device,
 		sel_registerName("newTextureWithDescriptor:"),
-		descriptor,
+		msaa_depth_desc,
 	)
-	if next == nil {return false}
-	msg_void_u(descriptor, sel_registerName("setUsage:"), 5)
-	ao_depth := msg_id_id(renderer.device, sel_registerName("newTextureWithDescriptor:"), descriptor)
-	if ao_depth == nil {msg_void(next, sel_registerName("release")); return false}
-	color_descriptor := msg_id_u_u_u_bool(objc_getClass("MTLTextureDescriptor"), sel_registerName("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 80, width, height, false)
-	msg_void_u(color_descriptor, sel_registerName("setStorageMode:"), 2)
-	msg_void_u(color_descriptor, sel_registerName("setUsage:"), 5)
-	scene_texture := msg_id_id(renderer.device, sel_registerName("newTextureWithDescriptor:"), color_descriptor)
-	if scene_texture == nil {
+	if next == nil {msg_void(screen_depth, sel_registerName("release")); return false}
+	ao_desc := msg_id_u_u_u_bool(
+		objc_getClass("MTLTextureDescriptor"),
+		sel_registerName(
+			"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+		),
+		252,
+		vp_w,
+		vp_h,
+		false,
+	)
+	msg_void_u(ao_desc, sel_registerName("setStorageMode:"), 2)
+	msg_void_u(ao_desc, sel_registerName("setUsage:"), 5)
+	ao_depth := msg_id_id(renderer.device, sel_registerName("newTextureWithDescriptor:"), ao_desc)
+	if ao_depth == nil {
+		msg_void(screen_depth, sel_registerName("release"))
+		msg_void(next, sel_registerName("release"))
+		return false
+	}
+	msaa_color_desc := msg_id_u_u_u_bool(objc_getClass("MTLTextureDescriptor"), sel_registerName("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 80, vp_w, vp_h, false)
+	msg_void_u(msaa_color_desc, sel_registerName("setTextureType:"), 4) // 2DMultisample
+	msg_void_u(msaa_color_desc, sel_registerName("setSampleCount:"), 4)
+	msg_void_u(msaa_color_desc, sel_registerName("setStorageMode:"), 2)
+	msg_void_u(msaa_color_desc, sel_registerName("setUsage:"), 4)
+	scene_msaa := msg_id_id(renderer.device, sel_registerName("newTextureWithDescriptor:"), msaa_color_desc)
+	if scene_msaa == nil {
+		msg_void(screen_depth, sel_registerName("release"))
 		msg_void(next, sel_registerName("release"))
 		msg_void(ao_depth, sel_registerName("release"))
 		return false
 	}
+	color_descriptor := msg_id_u_u_u_bool(objc_getClass("MTLTextureDescriptor"), sel_registerName("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 80, vp_w, vp_h, false)
+	msg_void_u(color_descriptor, sel_registerName("setStorageMode:"), 2)
+	msg_void_u(color_descriptor, sel_registerName("setUsage:"), 5)
+	scene_texture := msg_id_id(renderer.device, sel_registerName("newTextureWithDescriptor:"), color_descriptor)
+	if scene_texture == nil {
+		msg_void(screen_depth, sel_registerName("release"))
+		msg_void(next, sel_registerName("release"))
+		msg_void(ao_depth, sel_registerName("release"))
+		msg_void(scene_msaa, sel_registerName("release"))
+		return false
+	}
+	if renderer.screen_depth_texture != nil {msg_void(renderer.screen_depth_texture, sel_registerName("release"))}
 	if renderer.depth_texture != nil {msg_void(renderer.depth_texture, sel_registerName("release"))}
 	if renderer.ao_depth != nil {msg_void(renderer.ao_depth, sel_registerName("release"))}
-	renderer.ao_depth = ao_depth
+	if renderer.scene_msaa != nil {msg_void(renderer.scene_msaa, sel_registerName("release"))}
 	if renderer.scene_texture != nil {msg_void(renderer.scene_texture, sel_registerName("release"))}
+	renderer.screen_depth_texture = screen_depth
+	renderer.ao_depth = ao_depth
+	renderer.scene_msaa = scene_msaa
 	renderer.scene_texture = scene_texture
 	renderer.depth_texture = next
 	renderer.depth_width = width
 	renderer.depth_height = height
+	renderer.ss_width = vp_w
+	renderer.ss_height = vp_h
 	return true
 }
 
@@ -760,7 +925,9 @@ renderer_draw :: proc(
 	renderer.last_triangles = 0
 	pixel_width := uint(max(1, width*scale))
 	pixel_height := uint(max(1, height*scale))
-	if !renderer_ensure_depth(renderer, pixel_width, pixel_height) {
+	vp_w := uint(max(1, viewport.w*scale))
+	vp_h := uint(max(1, viewport.h*scale))
+	if !renderer_ensure_depth(renderer, pixel_width, pixel_height, vp_w, vp_h) {
 		return .No_Depth_Texture
 	}
 	capture := len(renderer.capture_path) > 0 && !renderer.capture_written
@@ -832,16 +999,23 @@ renderer_draw :: proc(
 		camera = {eye.x, eye.y, eye.z, 1},
 		view_projection = mat4_mul(projection, view),
 		params = {near_z, far_z, max(f32(0.1), vec3_length(size)*0.025), 0 if wireframe else 1},
-		viewport = {f32(viewport.x/width), f32(viewport.y/height), f32(viewport.w/width), f32(viewport.h/height)},
+		viewport = {0, 0, 1, 1},
 		sh = renderer.harmonics,
 	}
-	copy_tex := transmute(proc "c" (Id, Sel, Id, uint, uint, MTL_Origin, MTL_Size, Id, uint, uint, MTL_Origin))objc_send_address
 	cull_back := visual.is_design && !wireframe
+	ao_vp := MTL_Viewport{0, 0, f64(vp_w), f64(vp_h), 0, 1}
+	ss_vp := MTL_Viewport{0, 0, f64(renderer.ss_width), f64(renderer.ss_height), 0, 1}
+
+	// Pass 1 (1x viewport): depth prepass into `ao_depth` for screen-space AO and floor reflections.
+	msg_void_id(color_attachment, sel_registerName("setTexture:"), nil)
+	msg_void_u(color_attachment, sel_registerName("setLoadAction:"), 0) // DontCare
+	msg_void_u(color_attachment, sel_registerName("setStoreAction:"), 0) // DontCare
 	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.ao_depth)
-	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 1)
+	msg_void_u(depth_attachment, sel_registerName("setLoadAction:"), 2) // Clear
+	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 1) // Store
 	prepass := msg_id_id(command_buffer, sel_registerName("renderCommandEncoderWithDescriptor:"), pass)
 	if prepass == nil {return .No_Encoder}
-	msg_void_viewport(prepass, sel_registerName("setViewport:"), {viewport.x*scale, viewport.y*scale, viewport.w*scale, viewport.h*scale, 0, 1})
+	msg_void_viewport(prepass, sel_registerName("setViewport:"), ao_vp)
 	msg_void_id(prepass, sel_registerName("setDepthStencilState:"), renderer.depth_state)
 	if cull_back {
 		msg_void_u(prepass, sel_registerName("setFrontFacingWinding:"), 1) // CCW
@@ -853,29 +1027,19 @@ renderer_draw :: proc(
 	renderer_draw_mesh(renderer, prepass, visual.finished_vertices, visual.partial)
 	msg_void(prepass, sel_registerName("endEncoding"))
 
-	// Seed `depth_texture` from the depth prepass (`ao_depth`) so `scene_encoder` rejects 100%
-	// of occluded inner/lower bead layers via hardware Early-Z before running PBR + SSAO.
-	depth_blit := msg_id(command_buffer, sel_registerName("blitCommandEncoder"))
-	if depth_blit != nil {
-		copy_tex(
-			depth_blit,
-			sel_registerName("copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
-			renderer.ao_depth, 0, 0, {0, 0, 0}, {pixel_width, pixel_height, 1},
-			renderer.depth_texture, 0, 0, {0, 0, 0},
-		)
-		msg_void(depth_blit, sel_registerName("endEncoding"))
-	}
-
-	// Render the shaded mesh once into `scene_texture` (with Early-Z from prepass),
-	// then blit `scene_texture` into `texture` instead of drawing the entire mesh a third time.
+	// Pass 2 (4x MSAA): shade mesh into on-tile `scene_msaa` and hardware-resolve into `scene_texture`.
 	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.depth_texture)
-	msg_void_u(depth_attachment, sel_registerName("setLoadAction:"), 1) // Load prepass depth
-	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 1)
-	msg_void_id(color_attachment, sel_registerName("setTexture:"), renderer.scene_texture)
+	msg_void_u(depth_attachment, sel_registerName("setLoadAction:"), 2) // Clear
+	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0) // DontCare
+	msg_void_id(color_attachment, sel_registerName("setTexture:"), renderer.scene_msaa)
+	msg_void_id(color_attachment, sel_registerName("setResolveTexture:"), renderer.scene_texture)
+	msg_void_u(color_attachment, sel_registerName("setLoadAction:"), 2) // Clear
+	msg_void_u(color_attachment, sel_registerName("setStoreAction:"), 2) // MultisampleResolve
+	msg_void_clear_color(color_attachment, sel_registerName("setClearColor:"), {f64(theme.canvas.x), f64(theme.canvas.y), f64(theme.canvas.z), 0})
 	scene_encoder := msg_id_id(command_buffer, sel_registerName("renderCommandEncoderWithDescriptor:"), pass)
 	if scene_encoder == nil {return .No_Encoder}
-	msg_void_viewport(scene_encoder, sel_registerName("setViewport:"), {viewport.x*scale, viewport.y*scale, viewport.w*scale, viewport.h*scale, 0, 1})
-	msg_void_id(scene_encoder, sel_registerName("setDepthStencilState:"), renderer.depth_equal_state)
+	msg_void_viewport(scene_encoder, sel_registerName("setViewport:"), ss_vp)
+	msg_void_id(scene_encoder, sel_registerName("setDepthStencilState:"), renderer.depth_state)
 	if cull_back {
 		msg_void_u(scene_encoder, sel_registerName("setFrontFacingWinding:"), 1) // CCW
 		msg_void_u(scene_encoder, sel_registerName("setCullMode:"), 2) // Back
@@ -895,21 +1059,15 @@ renderer_draw :: proc(
 	}
 	msg_void(scene_encoder, sel_registerName("endEncoding"))
 
-	blit := msg_id(command_buffer, sel_registerName("blitCommandEncoder"))
-	if blit != nil {
-		copy_tex(
-			blit,
-			sel_registerName("copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
-			renderer.scene_texture, 0, 0, {0, 0, 0}, {pixel_width, pixel_height, 1},
-			texture, 0, 0, {0, 0, 0},
-		)
-		msg_void(blit, sel_registerName("endEncoding"))
-	}
-
+	// Pass 3 (1x drawable): draw floor + grid, then composite the 2x2 Tent AA resolve over them.
+	msg_void_id(color_attachment, sel_registerName("setResolveTexture:"), nil)
 	msg_void_id(color_attachment, sel_registerName("setTexture:"), texture)
-	msg_void_u(color_attachment, sel_registerName("setLoadAction:"), 1) // Load blitted mesh
-	msg_void_u(depth_attachment, sel_registerName("setLoadAction:"), 1) // Load mesh depth
-	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0)
+	msg_void_u(color_attachment, sel_registerName("setLoadAction:"), 2) // Clear
+	msg_void_u(color_attachment, sel_registerName("setStoreAction:"), 1) // Store
+	msg_void_clear_color(color_attachment, sel_registerName("setClearColor:"), {f64(theme.canvas.x), f64(theme.canvas.y), f64(theme.canvas.z), 1})
+	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.screen_depth_texture)
+	msg_void_u(depth_attachment, sel_registerName("setLoadAction:"), 2) // Clear
+	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0) // DontCare
 	encoder := msg_id_id(
 		command_buffer,
 		sel_registerName("renderCommandEncoderWithDescriptor:"),
@@ -960,37 +1118,6 @@ renderer_draw :: proc(
 		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 6)
 	}
 
-	if face_hover >= 0 {
-		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
-		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.line_pipeline)
-		a := mesh.vertices[face_hover*3].position
-		n := vec3_normalize(vec3_cross(vec3_sub(mesh.vertices[face_hover*3+1].position,a), vec3_sub(mesh.vertices[face_hover*3+2].position,a)))
-		tolerance := max(f32(0.00001),vec3_length(mesh_size(mesh.bounds))*0.000001)
-		highlight := mesh_uniforms
-		highlight.color = COLOR_SECTION
-		depth_bias := transmute(proc "c" (Id, Sel, f32, f32, f32))objc_send_address
-		depth_bias(encoder, sel_registerName("setDepthBias:slopeScale:clamp:"), -1, -1, 0)
-		msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
-		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &highlight, size_of(Scene_Uniforms), 1)
-		run_start := -1
-		for triangle in 0..<int(mesh.triangle_count) {
-			coplanar := true
-			for corner in 0..<3 {
-				if abs(vec3_dot(n,vec3_sub(mesh.vertices[triangle*3+corner].position,a))) > tolerance {coplanar = false}
-			}
-			if coplanar && run_start < 0 {run_start = triangle}
-			if !coplanar && run_start >= 0 {
-				msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
-				                  3, uint(run_start*3), uint((triangle-run_start)*3))
-				run_start = -1
-			}
-		}
-		if run_start >= 0 {
-			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
-			                  3, uint(run_start*3), uint((int(mesh.triangle_count)-run_start)*3))
-		}
-		depth_bias(encoder, sel_registerName("setDepthBias:slopeScale:clamp:"), 0, 0, 0)
-	}
 	grid_uniforms := Scene_Uniforms{
 		mvp = mat4_mul(projection, view),
 		model = mat4_identity(),
@@ -1027,6 +1154,47 @@ renderer_draw :: proc(
 		0,
 		uint(renderer.grid_vertex_count),
 	)
+
+	// Composite the 2x2 Tent AA resolved 3D scene over the floor and grid.
+	msg_void_id(encoder, sel_registerName("setDepthStencilState:"), renderer.ui_depth_state)
+	msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.resolve_pipeline)
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
+	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.scene_texture, 2)
+	msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 6)
+
+	if face_hover >= 0 {
+		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
+		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.line_pipeline)
+		a := mesh.vertices[face_hover*3].position
+		n := vec3_normalize(vec3_cross(vec3_sub(mesh.vertices[face_hover*3+1].position,a), vec3_sub(mesh.vertices[face_hover*3+2].position,a)))
+		tolerance := max(f32(0.00001),vec3_length(mesh_size(mesh.bounds))*0.000001)
+		highlight := mesh_uniforms
+		highlight.color = COLOR_SECTION
+		depth_bias := transmute(proc "c" (Id, Sel, f32, f32, f32))objc_send_address
+		depth_bias(encoder, sel_registerName("setDepthBias:slopeScale:clamp:"), -1, -1, 0)
+		msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &highlight, size_of(Scene_Uniforms), 1)
+		run_start := -1
+		for triangle in 0..<int(mesh.triangle_count) {
+			coplanar := true
+			for corner in 0..<3 {
+				if abs(vec3_dot(n,vec3_sub(mesh.vertices[triangle*3+corner].position,a))) > tolerance {coplanar = false}
+			}
+			if coplanar && run_start < 0 {run_start = triangle}
+			if !coplanar && run_start >= 0 {
+				msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
+				                  3, uint(run_start*3), uint((triangle-run_start)*3))
+				run_start = -1
+			}
+		}
+		if run_start >= 0 {
+			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
+			                  3, uint(run_start*3), uint((int(mesh.triangle_count)-run_start)*3))
+		}
+		depth_bias(encoder, sel_registerName("setDepthBias:slopeScale:clamp:"), 0, 0, 0)
+	}
 
 	if renderer.section_vertex_count > 0 {
 		section_uniforms := Scene_Uniforms{
