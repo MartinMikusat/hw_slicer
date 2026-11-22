@@ -404,7 +404,12 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 		return fail(p, head.line, "'%s' already has a base bevel or fillet", upper.name)
 	}
 	// Verify the flared footprint fits on the lower object's top face.
-	if !junction_fits_on_lower(lower^, upper^, s) {
+	max_flare := s
+	if is_fillet && upper.shape != .Box && upper.height > EPSILON {
+		m := (upper.size.x-upper.top_diameter)*0.5/upper.height
+		max_flare = s*(math.sqrt(1+m*m)-m)
+	}
+	if !junction_fits_on_lower(lower^, upper^, max_flare) {
 		return fail(p, head.line, "%s %.3f mm on '%s' extends past '%s' top face", head.text, s, upper.name, lower.name)
 	}
 	upper.base_transition = .Fillet if is_fillet else .Bevel

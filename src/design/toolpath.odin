@@ -58,17 +58,31 @@ object_layers :: proc(d: ^Design, object: Object) -> int {
 }
 
 // Outward base flare (mm per side) from a `bevel` or `fillet` junction at layer top `z`.
+// For `.Fillet`, computes the exact C1-tangent circular arc between the horizontal plane below
+// and the object's wall (accounting for cone slope `m = (R_base - R_top) / height`).
 object_base_flare :: proc(object: Object, z, thickness: f64) -> f64 {
 	if object.base_transition == .None || object.base_transition_size <= EPSILON {return 0}
 	s := object.base_transition_size
-	dz := clamp(z-object.z-0.5*thickness, 0, s)
-	if dz >= s-EPSILON {return 0}
+	dz := max(0, z-object.z-0.5*thickness)
 	switch object.base_transition {
-	case .None:   return 0
-	case .Bevel:  return s-dz
+	case .None:
+		return 0
+	case .Bevel:
+		if dz >= s-EPSILON {return 0}
+		return s-dz
 	case .Fillet:
+		m := 0.0
+		if object.shape != .Box && object.height > EPSILON {
+			m = (object.size.x-object.top_diameter)*0.5/object.height
+		}
+		hyp := math.sqrt(1+m*m)
+		z_tan := s*(1-m/hyp)
+		if dz >= z_tan-EPSILON {return 0}
+		r_c := s*(hyp-m)
 		rem := s-dz
-		return s-math.sqrt(max(0, s*s-rem*rem))
+		r_fillet := r_c-math.sqrt(max(0, s*s-rem*rem))
+		// Nominal cone radius at `dz` relative to base is `-m * dz`, so flare above nominal is `r_fillet + m * dz`.
+		return max(0, r_fillet+m*dz)
 	}
 	return 0
 }

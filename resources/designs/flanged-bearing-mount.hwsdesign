@@ -18,7 +18,7 @@ let cone_height = 8.0mm
 let sleeve_height = 8.0mm
 let bore_diameter = 20mm
 let bolt_offset = 28mm
-let root_bevel = 2.4mm
+let root_fillet = 6.0mm
 
 # Stage 1 (z = 0..2.4mm): solid rounded-corner mounting flange
 let flange = box(
@@ -44,14 +44,14 @@ let pedestal = cone(
     speed = 40, acceleration = 900, fan = 100
 )
 
-# Explicit bevels and root fillets where Stage 2 features meet the base flange
-bevel(flange, pedestal, size = root_bevel)
-fillet(flange, standoff_sw, radius = 1.2mm)
-fillet(flange, standoff_se, radius = 1.2mm)
-fillet(flange, standoff_ne, radius = 1.2mm)
-fillet(flange, standoff_nw, radius = 1.2mm)
-bevel(flange, lug_west, size = 1.6mm)
-bevel(flange, lug_east, size = 1.6mm)
+# Smooth concave root fillets where Stage 2 features meet the base flange
+fillet(flange, pedestal, radius = root_fillet)
+fillet(flange, standoff_sw, radius = 1.4mm)
+fillet(flange, standoff_se, radius = 1.4mm)
+fillet(flange, standoff_ne, radius = 1.4mm)
+fillet(flange, standoff_nw, radius = 1.4mm)
+fillet(flange, lug_west, radius = 1.8mm)
+fillet(flange, lug_east, radius = 1.8mm)
 
 # Stage 3 (z = 8.0..11.2mm): four hexagonal nut collars stacked on the corner standoffs
 let hex_sw = polygon(x = -bolt_offset, y = -bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)
