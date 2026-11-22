@@ -42,7 +42,6 @@ Renderer :: struct {
 	ui_depth_state:    Id,
 	mesh_buffer:      Id,
 	section_buffer:   Id,
-	grid_buffer:      Id,
 	marker_buffer:    Id,
 	capture_texture:  Id,
 	capture_path:     string,
@@ -52,7 +51,6 @@ Renderer :: struct {
 	depth_texture:    Id,
 	mesh_vertex_count: int,
 	section_vertex_count: int,
-	grid_vertex_count: int,
 	marker_vertex_count: int,
 	last_draw_calls:  int,
 	last_triangles:   int,
@@ -199,12 +197,24 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     return float4(sqrt(color), in.color.a);
 }
 
+static float grid_line(float2 coord, float2 fw_world, float spacing, float width_px) {
+    float2 p = coord / spacing;
+    float2 fw = max(fw_world / spacing, float2(1e-4));
+    float2 dist = abs(fract(p - 0.5) - 0.5);
+    float2 half_w = fw * (width_px * 0.5);
+    float2 cov = 1.0 - smoothstep(half_w - fw * 0.5, half_w + fw * 0.5, dist);
+    float2 nyquist = saturate(1.0 - smoothstep(0.18, 0.55, fw));
+    cov *= nyquist;
+    return max(cov.x, cov.y);
+}
+
 fragment float4 floor_fragment(MeshOut in [[stage_in]],
     constant SceneUniforms &scene [[buffer(1)]],
     depth2d<float> depth [[texture(1)]],
     texture2d<float> scene_color [[texture(2)]]) {
     constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
     constexpr sampler linear_sampler(filter::linear, address::clamp_to_edge);
+    float2 fw_world = fwidth(in.world.xy);
     float4 surf = scene.view_projection * float4(in.world, 1.0);
     float2 surf_uv = float2(surf.x / surf.w * 0.5 + 0.5, 0.5 - surf.y / surf.w * 0.5);
     float2 d_tex = float2(1.0 / float(depth.get_width()), 1.0 / float(depth.get_height()));
@@ -216,28 +226,46 @@ fragment float4 floor_fragment(MeshOut in [[stage_in]],
         return float4(in.color.rgb, 1.0);
     }
     float3 normal = float3(0, 0, 1);
-    float shade = ambient_occlusion(in, normal, scene, depth, 8);
+    float shade = in.camera.z > 0.0 ? ambient_occlusion(in, normal, scene, depth, 8) : 1.0;
     float3 color = in.color.rgb * shade;
-    float3 direction = reflect(normalize(in.world - in.camera), normal);
-    float radius = scene.params.z;
-    for (int i = 1; i <= 48; i++) {
-        float distance = radius * 0.5 * float(i);
-        float4 clip = scene.view_projection * float4(in.world + direction * distance, 1.0);
-        if (clip.w <= 0.0) {break;}
-        float2 local = float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
-        if (any(local < 0.0) || any(local >= 1.0)) {break;}
-        float2 uv = scene.viewport.xy + local * scene.viewport.zw;
-        float stored = depth.sample(nearest, uv);
-        if (stored >= 1.0) {continue;}
-        float near_z = scene.params.x, far_z = scene.params.y;
-        float surface_distance = near_z * far_z / (far_z - stored * (far_z - near_z));
-        float gap = clip.w - surface_distance;
-        float thickness = radius * 0.65;
-        if (gap > 0.0 && gap < thickness) {
-            float edge = saturate(min(min(local.x, local.y), min(1.0-local.x, 1.0-local.y)) * 8.0);
-            float fade = edge * (1.0 - float(i) / 48.0) * 0.24;
-            color = mix(color, scene_color.sample(linear_sampler, uv).rgb, fade);
-            break;
+
+    // Analytic screen-space-derivative build-plate grid: 10 mm minor, 50 mm major, 220x220 mm border.
+    float2 fw_safe = max(fw_world, float2(1e-4));
+    float2 abs_xy = abs(in.world.xy);
+    float2 inside_xy = 1.0 - smoothstep(float2(110.0) - fw_safe * 0.5, float2(110.0) + fw_safe * 0.5, abs_xy);
+    float inside = inside_xy.x * inside_xy.y;
+    float minor_g = grid_line(in.world.xy, fw_world, 10.0, 1.35) * inside;
+    float major_g = grid_line(in.world.xy, fw_world, 50.0, 1.85) * inside;
+    float2 b_dist = abs(abs_xy - float2(110.0));
+    float2 b_half = fw_safe * 0.95;
+    float2 b_cov = (1.0 - smoothstep(b_half - fw_safe * 0.5, b_half + fw_safe * 0.5, b_dist)) *
+        (1.0 - smoothstep(float2(110.0), float2(110.0) + fw_safe * 1.5, abs_xy.yx));
+    float border_g = max(b_cov.x, b_cov.y);
+    float grid_alpha = max(max(minor_g * 0.22, major_g * 0.42), border_g * 0.52);
+    color = mix(color, scene.arc_color.rgb * shade, grid_alpha);
+
+    if (in.camera.z > 0.0) {
+        float3 direction = reflect(normalize(in.world - in.camera), normal);
+        float radius = scene.params.z;
+        for (int i = 1; i <= 48; i++) {
+            float distance = radius * 0.5 * float(i);
+            float4 clip = scene.view_projection * float4(in.world + direction * distance, 1.0);
+            if (clip.w <= 0.0) {break;}
+            float2 local = float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+            if (any(local < 0.0) || any(local >= 1.0)) {break;}
+            float2 uv = scene.viewport.xy + local * scene.viewport.zw;
+            float stored = depth.sample(nearest, uv);
+            if (stored >= 1.0) {continue;}
+            float near_z = scene.params.x, far_z = scene.params.y;
+            float surface_distance = near_z * far_z / (far_z - stored * (far_z - near_z));
+            float gap = clip.w - surface_distance;
+            float thickness = radius * 0.65;
+            if (gap > 0.0 && gap < thickness) {
+                float edge = saturate(min(min(local.x, local.y), min(1.0-local.x, 1.0-local.y)) * 8.0);
+                float fade = edge * (1.0 - float(i) / 48.0) * 0.24;
+                color = mix(color, scene_color.sample(linear_sampler, uv).rgb, fade);
+                break;
+            }
         }
     }
     return float4(color, 1.0);
@@ -343,7 +371,7 @@ renderer_initialize :: proc(renderer: ^Renderer, layer: Id) -> bool {
 	if !text.init(&renderer.ui_text, device) {return false}
 	if !gpu.renderer_init(&renderer.ui_renderer, device, .BGRA8Unorm) {return false}
 	gpu.renderer_set_atlas(&renderer.ui_renderer, renderer.ui_text.atlas)
-	return renderer_environment_upload(renderer) && renderer_build_grid(renderer) && renderer_build_marker(renderer)
+	return renderer_environment_upload(renderer) && renderer_build_marker(renderer)
 }
 
 renderer_shutdown :: proc(renderer: ^Renderer) {
@@ -361,7 +389,6 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.ao_depth,
 		renderer.depth_texture,
 		renderer.capture_texture,
-		renderer.grid_buffer,
 		renderer.marker_buffer,
 		renderer.section_buffer,
 		renderer.mesh_buffer,
@@ -547,27 +574,6 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 		renderer.resolve_pipeline != nil &&
 		renderer.depth_state != nil &&
 		renderer.ui_depth_state != nil
-}
-
-renderer_build_grid :: proc(renderer: ^Renderer) -> bool {
-	vertices := make([dynamic]Mesh_Vertex, context.temp_allocator)
-	normal := Vec3{0, 0, 1}
-	for index in -11..=11 {
-		position := f32(index*10)
-		append(&vertices, Mesh_Vertex{{position, -BUILD_PLATE_HALF_EXTENT, 0}, normal})
-		append(&vertices, Mesh_Vertex{{position, BUILD_PLATE_HALF_EXTENT, 0}, normal})
-		append(&vertices, Mesh_Vertex{{-BUILD_PLATE_HALF_EXTENT, position, 0}, normal})
-		append(&vertices, Mesh_Vertex{{BUILD_PLATE_HALF_EXTENT, position, 0}, normal})
-	}
-	renderer.grid_buffer = msg_id_ptr_u_u(
-		renderer.device,
-		sel_registerName("newBufferWithBytes:length:options:"),
-		raw_data(vertices[:]),
-		uint(len(vertices))*size_of(Mesh_Vertex),
-		0,
-	)
-	renderer.grid_vertex_count = len(vertices)
-	return renderer.grid_buffer != nil
 }
 
 renderer_build_marker :: proc(renderer: ^Renderer) -> bool {
@@ -1096,19 +1102,21 @@ renderer_draw :: proc(
 	msg_void_u(encoder, sel_registerName("setCullMode:"), 0)
 	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
 
-	if eye.z > -0.01 {
+	{
+		plate := f32(BUILD_PLATE_HALF_EXTENT + 2.0)
 		floor_vertices := [6]Mesh_Vertex{
-			{{-BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-			{{ BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-			{{ BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-			{{-BUILD_PLATE_HALF_EXTENT, -BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-			{{ BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
-			{{-BUILD_PLATE_HALF_EXTENT,  BUILD_PLATE_HALF_EXTENT, -0.01}, {0, 0, 1}},
+			{{-plate, -plate, -0.01}, {0, 0, 1}},
+			{{ plate, -plate, -0.01}, {0, 0, 1}},
+			{{ plate,  plate, -0.01}, {0, 0, 1}},
+			{{-plate, -plate, -0.01}, {0, 0, 1}},
+			{{ plate,  plate, -0.01}, {0, 0, 1}},
+			{{-plate,  plate, -0.01}, {0, 0, 1}},
 		}
 		floor_uniforms := mesh_uniforms
 		floor_uniforms.model = mat4_identity()
 		floor_uniforms.mvp = mesh_uniforms.view_projection
 		floor_uniforms.color = {theme.canvas.x, theme.canvas.y, theme.canvas.z, 1}
+		floor_uniforms.arc_color = {theme.muted.x, theme.muted.y, theme.muted.z, 1}
 		msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
 		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.floor_pipeline)
 		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(floor_vertices[:]), size_of(floor_vertices), 0)
@@ -1117,43 +1125,6 @@ renderer_draw :: proc(
 		msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.scene_texture, 2)
 		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 6)
 	}
-
-	grid_uniforms := Scene_Uniforms{
-		mvp = mat4_mul(projection, view),
-		model = mat4_identity(),
-		color = Vec4{
-			theme.muted.x,
-			theme.muted.y,
-			theme.muted.z,
-			0.62,
-		},
-	}
-	msg_void_id(
-		encoder,
-		sel_registerName("setRenderPipelineState:"),
-		renderer.line_pipeline,
-	)
-	msg_void_id_u_u(
-		encoder,
-		sel_registerName("setVertexBuffer:offset:atIndex:"),
-		renderer.grid_buffer,
-		0,
-		0,
-	)
-	msg_void_ptr_u_u(
-		encoder,
-		sel_registerName("setVertexBytes:length:atIndex:"),
-		&grid_uniforms,
-		size_of(Scene_Uniforms),
-		1,
-	)
-	msg_void_u_u_u(
-		encoder,
-		sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
-		1,
-		0,
-		uint(renderer.grid_vertex_count),
-	)
 
 	// Composite the 2x2 Tent AA resolved 3D scene over the floor and grid.
 	msg_void_id(encoder, sel_registerName("setDepthStencilState:"), renderer.ui_depth_state)
