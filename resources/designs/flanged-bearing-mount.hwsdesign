@@ -17,12 +17,12 @@ let boss_height = 5.6mm
 let cone_height = 8.0mm
 let sleeve_height = 8.0mm
 let bore_diameter = 20mm
-let bolt_offset = 28mm
-let root_fillet = 6.0mm
+let bolt_offset = 32mm
+let root_fillet = 12.0mm
 
 # Stage 1 (z = 0..2.4mm): solid rounded-corner mounting flange
 let flange = box(
-    width = 84mm, depth = 84mm, radius = 12mm,
+    width = 96mm, depth = 96mm, radius = 14mm,
     height = base_height, walls = wall_lines, floor = base_layers,
     speed = 60, acceleration = 1500, fan = 80
 )
@@ -34,8 +34,8 @@ let standoff_ne = tube(x =  bolt_offset, y =  bolt_offset, z = base_height, diam
 let standoff_nw = tube(x = -bolt_offset, y =  bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
 
 # Stage 2 (z = 2.4mm): two side alignment lugs with filleted corners
-let lug_west = box(x = -33mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
-let lug_east = box(x =  33mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
+let lug_west = box(x = -38mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
+let lug_east = box(x =  38mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
 
 # Stage 2 (z = 2.4..10.4mm): central tapered conical pedestal with bearing bore
 let pedestal = cone(
@@ -46,12 +46,12 @@ let pedestal = cone(
 
 # Smooth concave root fillets where Stage 2 features meet the base flange
 fillet(flange, pedestal, radius = root_fillet)
-fillet(flange, standoff_sw, radius = 1.4mm)
-fillet(flange, standoff_se, radius = 1.4mm)
-fillet(flange, standoff_ne, radius = 1.4mm)
-fillet(flange, standoff_nw, radius = 1.4mm)
-fillet(flange, lug_west, radius = 1.8mm)
-fillet(flange, lug_east, radius = 1.8mm)
+fillet(flange, standoff_sw, radius = 2.8mm)
+fillet(flange, standoff_se, radius = 2.8mm)
+fillet(flange, standoff_ne, radius = 2.8mm)
+fillet(flange, standoff_nw, radius = 2.8mm)
+fillet(flange, lug_west, radius = 3.6mm)
+fillet(flange, lug_east, radius = 3.6mm)
 
 # Stage 3 (z = 8.0..11.2mm): four hexagonal nut collars stacked on the corner standoffs
 let hex_sw = polygon(x = -bolt_offset, y = -bolt_offset, z = base_height + boss_height, sides = 6, diameter = 14mm, inner_diameter = 6.4mm, height = 3.2mm, walls = wall_lines, speed = 35, acceleration = 700, fan = 100)

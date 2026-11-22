@@ -397,18 +397,21 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 		return fail(p, head.line, "'%s' and '%s' do not meet on a Z plane", a_tok.text, b_tok.text)
 	}
 	s := size_val.amount
-	if s > upper.height+EPSILON {
+	max_flare := s
+	eff_height := s
+	if is_fillet && upper.shape != .Box && upper.height > EPSILON {
+		m := (upper.size.x-upper.top_diameter)*0.5/upper.height
+		hyp := math.sqrt(1+m*m)
+		max_flare = s*(hyp-m)
+		eff_height = s*(1-m/hyp)
+	}
+	if eff_height > upper.height+EPSILON {
 		return fail(p, head.line, "%s %.3f mm exceeds '%s' height %.3f mm", head.text, s, upper.name, upper.height)
 	}
 	if upper.base_transition != .None {
 		return fail(p, head.line, "'%s' already has a base bevel or fillet", upper.name)
 	}
 	// Verify the flared footprint fits on the lower object's top face.
-	max_flare := s
-	if is_fillet && upper.shape != .Box && upper.height > EPSILON {
-		m := (upper.size.x-upper.top_diameter)*0.5/upper.height
-		max_flare = s*(math.sqrt(1+m*m)-m)
-	}
 	if !junction_fits_on_lower(lower^, upper^, max_flare) {
 		return fail(p, head.line, "%s %.3f mm on '%s' extends past '%s' top face", head.text, s, upper.name, lower.name)
 	}
