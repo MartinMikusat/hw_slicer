@@ -1900,9 +1900,9 @@ ui_draw_labels :: proc(
 		j := design_state.evaluated.junctions[design_state.selected_junction]
 		lower_name := design_state.evaluated.objects[j.lower_index].name
 		upper_name := design_state.evaluated.objects[j.upper_index].name
-		kind_text := "Fillet" if j.is_fillet else "Bevel"
+		kind_text := "Corner" if j.kind == .Corner_Radius else ("Fillet" if j.is_fillet else "Bevel")
 		ui_draw_text(painter, painter.font, ui, kind_text, ui_control_rect(ui, .Junction_Toggle_Kind), ui_control_ink(ui, .Junction_Toggle_Kind), 0, .Center)
-		title := fmt.tprintf("%s → %s", lower_name, upper_name)
+		title := fmt.tprintf("%s · radius", lower_name) if j.kind == .Corner_Radius else fmt.tprintf("%s → %s", lower_name, upper_name)
 		ui_draw_text(painter, painter.font, ui, title, {card.x+78, card.y+8, card.w-110, 22}, theme.text, 0)
 		ui_draw_text(painter, painter.font, ui, "×", ui_control_rect(ui, .Junction_Close), theme.muted, 0, .Center)
 		val_text := fmt.tprintf("%.1f mm", j.size)

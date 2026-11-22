@@ -592,8 +592,12 @@ app_pick_design_junction :: proc(px, py: f64) {
 	app_refresh_design_selection_mesh()
 	if picked >= 0 && picked < len(s.evaluated.junctions) {
 		j := s.evaluated.junctions[picked]
-		kind := "FILLET" if j.is_fillet else "BEVEL"
-		app_set_status(fmt.tprintf("%s: %s → %s (%.1f mm)", kind, s.evaluated.objects[j.lower_index].name, s.evaluated.objects[j.upper_index].name, j.size))
+		if j.kind == .Corner_Radius {
+			app_set_status(fmt.tprintf("CORNER RADIUS: %s (%.1f mm)", s.evaluated.objects[j.lower_index].name, j.size))
+		} else {
+			kind := "FILLET" if j.is_fillet else "BEVEL"
+			app_set_status(fmt.tprintf("%s: %s → %s (%.1f mm)", kind, s.evaluated.objects[j.lower_index].name, s.evaluated.objects[j.upper_index].name, j.size))
+		}
 	}
 }
 
@@ -647,7 +651,7 @@ renderer_draw_application :: proc() -> Render_Result {
 		j := app.design.evaluated.junctions[app.design.selected_junction]
 		app.ui.junction_selected = true
 		app.ui.junction_is_fillet = j.is_fillet
-		app.ui.junction_can_toggle = j.kind != .Cone_Fillet
+		app.ui.junction_can_toggle = j.kind != .Cone_Fillet && j.kind != .Corner_Radius
 		app.ui.junction_size = j.size
 		app.ui.junction_max_size = j.max_size
 	} else {

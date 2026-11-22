@@ -260,7 +260,7 @@ emit_loop :: proc(g: ^Generator, object: Object, inset: f64) -> bool {
 			travel(g, corners[0])
 			for corner in corners[1:] {extrude(g, corner)}
 		} else {
-			emit_rounded_box_loop(g, c, half, r_corner)
+			emit_rounded_box_loop(g, c, half, r_corner, object.corner_junction)
 		}
 	case .Cylinder, .Tube, .Cone, .Polygon:
 		emit_radial_loop(g, object, half.x)
@@ -269,19 +269,29 @@ emit_loop :: proc(g: ^Generator, object: Object, inset: f64) -> bool {
 }
 
 @(private)
-emit_rounded_box_loop :: proc(g: ^Generator, c, half: [2]f64, r: f64) {
+emit_rounded_box_loop :: proc(g: ^Generator, c, half: [2]f64, r: f64, corner_junction: i16) {
 	hx := max(0, half.x-r)
 	hy := max(0, half.y-r)
+	prev_j := g.junction
+	arc_j := corner_junction if (prev_j < 0 && corner_junction >= 0) else prev_j
 
 	travel(g, {c.x-hx, c.y-half.y})
 	if hx > EPSILON {extrude(g, {c.x+hx, c.y-half.y})}
+	g.junction = arc_j
 	extrude_arc(g, {c.x+half.x, c.y-hy}, {c.x+hx, c.y-hy}, .CCW)
+	g.junction = prev_j
 	if hy > EPSILON {extrude(g, {c.x+half.x, c.y+hy})}
+	g.junction = arc_j
 	extrude_arc(g, {c.x+hx, c.y+half.y}, {c.x+hx, c.y+hy}, .CCW)
+	g.junction = prev_j
 	if hx > EPSILON {extrude(g, {c.x-hx, c.y+half.y})}
+	g.junction = arc_j
 	extrude_arc(g, {c.x-half.x, c.y+hy}, {c.x-hx, c.y+hy}, .CCW)
+	g.junction = prev_j
 	if hy > EPSILON {extrude(g, {c.x-half.x, c.y-hy})}
+	g.junction = arc_j
 	extrude_arc(g, {c.x-hx, c.y-half.y}, {c.x-hx, c.y-hy}, .CCW)
+	g.junction = prev_j
 }
 
 @(private)

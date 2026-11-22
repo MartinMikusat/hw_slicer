@@ -61,9 +61,10 @@ Base_Transition :: enum u8 {
 }
 
 Junction_Kind :: enum u8 {
-	Base_Flare,   // horizontal-to-wall or horizontal-to-cone bevel/fillet
-	Cone_Fillet,  // C1-tangent fillet from a sloped cone into a vertical column
-	Radial_Morph, // coaxial radial shape morph (e.g. circle -> polygon)
+	Base_Flare,    // horizontal-to-wall or horizontal-to-cone bevel/fillet
+	Cone_Fillet,   // C1-tangent fillet from a sloped cone into a vertical column
+	Radial_Morph,  // coaxial radial shape morph (e.g. circle -> polygon)
+	Corner_Radius, // rounded XY corner radius on a box (`radius = ...`)
 }
 
 Junction :: struct {
@@ -102,6 +103,7 @@ Object :: struct {
 	base_junction:            i16, // index into Design.junctions, or -1
 	top_fillet_junction:      i16, // index into Design.junctions, or -1
 	top_morph_junction:       i16, // index into Design.junctions, or -1
+	corner_junction:          i16, // index into Design.junctions for box corner radius, or -1
 	settings:                 Feature_Settings,
 	given:                bit_set[Feature_Setting], // settings the feature sets itself
 }
@@ -170,6 +172,8 @@ set_junction_size :: proc(d: ^Design, idx: int, new_size: f64) -> bool {
 	case .Radial_Morph:
 		lower.top_morph_transition = tr
 		lower.top_morph_height = s if active else 0
+	case .Corner_Radius:
+		lower.radius = s if active else 0
 	}
 	return true
 }
@@ -178,7 +182,7 @@ set_junction_size :: proc(d: ^Design, idx: int, new_size: f64) -> bool {
 toggle_junction_fillet :: proc(d: ^Design, idx: int) -> bool {
 	if idx < 0 || idx >= len(d.junctions) {return false}
 	j := &d.junctions[idx]
-	if j.kind == .Cone_Fillet {return false}
+	if j.kind == .Cone_Fillet || j.kind == .Corner_Radius {return false}
 	j.is_fillet = !j.is_fillet
 	return set_junction_size(d, idx, j.size)
 }
@@ -693,6 +697,7 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 		base_junction       = -1,
 		top_fillet_junction = -1,
 		top_morph_junction  = -1,
+		corner_junction     = -1,
 		settings            = {values[.Speed].amount, values[.Acceleration].amount, values[.Fan].amount},
 	}
 	if .Speed in seen {object.given += {.Speed}}
@@ -730,6 +735,20 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	if object.floor < 0 {return fail(p, head.line, "floor must not be negative, got %d", object.floor)}
 	if object.size.x <= 0 || object.size.y <= 0 || object.height <= 0 {return fail(p, head.line, "%s sizes must be positive", head.text)}
 	if len(p.design.objects) >= MAX_OBJECTS {return fail(p, head.line, "more than %d objects", MAX_OBJECTS)}
+	obj_idx := len(p.design.objects)
+	if object.shape == .Box {
+		j_idx := i16(len(p.design.junctions))
+		object.corner_junction = j_idx
+		append(&p.design.junctions, Junction{
+			is_fillet   = true,
+			kind        = .Corner_Radius,
+			lower_index = obj_idx,
+			upper_index = obj_idx,
+			size        = object.radius,
+			max_size    = min(object.size.x, object.size.y)*0.5,
+			line        = head.line,
+		})
+	}
 	append(&p.design.objects, object)
 	return true
 }
