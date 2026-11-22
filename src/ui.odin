@@ -1859,10 +1859,20 @@ ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_S
 	gcode_text := filepath.base(s.export_path) if s.export_error == .None else design_export_error_text(s.export_error)
 	ui_draw_text(painter, painter.font, ui, gcode_text, {area.x, y, area.w, row}, theme.text, 0)
 	y += row
+	bottom := ui_left_rect(ui).y+ui_left_rect(ui).h-60
+	y += row*0.5
+	ui_draw_text(painter, painter.font, ui, "Features: mm/s, mm/s², fan", {area.x, y, area.w, row}, theme.muted, 0)
+	y += row
+	for object in s.evaluated.objects {
+		if y+row > bottom {break}
+		name := fmt.tprintf("%s, line %d", "box" if object.shape == .Box else "cylinder", object.line)
+		value := fmt.tprintf("%.0f  %.0f  %.0f%%", object.settings.speed, object.settings.acceleration, object.settings.fan)
+		ui_draw_measurement(painter, ui, name, value, {area.x, y, area.w, row}, label_width)
+		y += row
+	}
 	y += row*0.5
 	ui_draw_text(painter, painter.font, ui, "Parameters", {area.x, y, area.w, row}, theme.muted, 0)
 	y += row
-	bottom := ui_left_rect(ui).y+ui_left_rect(ui).h-60
 	for parameter in s.evaluated.parameters {
 		if y+row > bottom {break}
 		ui_draw_measurement(painter, ui, parameter.name, design.value_text(parameter.value), {area.x, y, area.w, row}, label_width)

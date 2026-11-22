@@ -12,6 +12,7 @@ Regular slicing converts a fixed-size model into toolpaths. The operator wants a
 
 - A design is a text program that generates toolpaths directly, in the style of FullControl. It does not produce a mesh, and it bypasses mesh intersection, regions, perimeters, and infill. The regular slicing pipeline stays unchanged for STL input.
 - The physical printer supplies the inputs: nozzle diameter and filament diameter. Process values such as line width and layer height are derived parameter nodes, for example `line_width = nozzle * 1.1`. In the first milestone, these nodes are `let` statements in the design file. A shared node-graph profile is a later step.
+- Motion and cooling (speed, acceleration, part-cooling fan) belong to each design feature, not to a role. A design-wide value is only a default. The G-code checker bounds each extrusion by the machine and material limits instead of one target per role.
 - Dimensions that depend on the printer are whole counts of a unit, limited by millimetre bounds through `fit`. The rounding is part of the design, so walls are always whole lines.
 - Agents write most designs. The format is plain text with line-numbered errors. The application reloads the file when it changes.
 - The simulation draws each extrusion move as a bead and reveals beads by print time in the existing 3D view. The simulation is the acceptance view before G-code goes to the printer.

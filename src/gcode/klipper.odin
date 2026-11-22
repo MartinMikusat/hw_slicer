@@ -646,13 +646,15 @@ klipper_operation_numeric_valid :: proc(
 		return operation.speed == process.travel.speed &&
 			operation.acceleration == process.travel.acceleration
 	case .Extrude:
-		target, target_ok :=
-			features.motion_role_target(profile.process, operation.role)
-		return target_ok &&
+		// Each extrusion carries its own feature's motion and cooling, so the bounds are the
+		// machine and material limits, not one setting per role.
+		_, role_ok := features.motion_role_target(profile.process, operation.role)
+		return role_ok &&
 			i64(operation.speed) >= i64(process.minimum_print_speed) &&
-			i64(operation.speed) <= i64(target.speed) &&
-			operation.acceleration == target.acceleration &&
-			operation.fan_ratio == target.fan_ratio
+			i64(operation.speed) <= i64(profile.printer.maximum_speed) &&
+			i64(operation.acceleration) <= i64(profile.printer.maximum_acceleration) &&
+			u32(operation.fan_ratio) >= u32(profile.material.minimum_fan_ratio) &&
+			u32(operation.fan_ratio) <= u32(profile.material.maximum_fan_ratio)
 	case .Dwell:
 		return true
 	case .Invalid:

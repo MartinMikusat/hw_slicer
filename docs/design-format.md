@@ -59,7 +59,13 @@ The application defines these names from the selected printer:
 | `layer_height` | length | yes | |
 | `first_layer_height` | length | no | `layer_height` |
 | `print_speed` | scalar, mm/s | no | 40 |
+| `print_acceleration` | scalar, mm/s² | no | 1000 |
+| `fan` | scalar, percent | no | 100 |
 | `travel_speed` | scalar, mm/s | no | 150 |
+| `travel_acceleration` | scalar, mm/s² | no | 3000 |
+
+`print_speed`, `print_acceleration`, and `fan` are defaults. Each feature can
+set its own values; see [Feature settings](#feature-settings).
 
 ## Functions
 
@@ -86,8 +92,21 @@ from the bed centre.
 | `height` | required | required | length |
 | `walls` | required | required | whole scalar, at least 1 |
 | `floor` | optional, 0 | optional, 0 | whole scalar, solid bottom layers |
+| `speed` | optional | optional | scalar, mm/s |
+| `acceleration` | optional | optional | scalar, mm/s² |
+| `fan` | optional | optional | scalar, percent |
 
 Each layer prints concentric loops from the outside in. A wall layer prints
 `walls` loops. A floor layer prints loops until the shape is full. Set
 `floor` to at least the layer count for a solid object. The object has
 `1 + round((height - first_layer_height) / layer_height)` layers.
+
+## Feature settings
+
+Motion and cooling belong to the feature, not to a role such as "perimeter".
+Every object prints with its own `speed`, `acceleration`, and `fan`. An unset
+value uses the design default. Evaluation rejects a feature, with its line,
+when its speed or acceleration exceeds the printer's limit or when
+`line_width × layer height × speed` exceeds the volumetric flow limit. The
+G-code sets `SET_VELOCITY_LIMIT ACCEL` and `M106` whenever the next feature
+needs another value. The results panel lists each feature's resolved values.

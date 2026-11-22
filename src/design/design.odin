@@ -11,9 +11,28 @@ Value :: struct {
 	length: bool,
 }
 
+// The physical printer: inputs that designs derive from, and the limits every feature must
+// stay within.
 Printer :: struct {
-	nozzle_diameter:   f64, // mm
-	filament_diameter: f64, // mm
+	nozzle_diameter:     f64, // mm
+	filament_diameter:   f64, // mm
+	max_speed:           f64, // mm/s
+	max_acceleration:    f64, // mm/s²
+	max_volumetric_flow: f64, // mm³/s
+}
+
+// Motion and cooling that one feature prints with. Every feature can set its own; unset values
+// come from the design-wide defaults.
+Feature_Setting :: enum u8 {
+	Speed,
+	Acceleration,
+	Fan,
+}
+
+Feature_Settings :: struct {
+	speed:        f64, // mm/s
+	acceleration: f64, // mm/s²
+	fan:          f64, // percent of full part cooling
 }
 
 Shape :: enum u8 {
@@ -29,6 +48,8 @@ Object :: struct {
 	height: f64,
 	walls:  int,
 	floor:  int,
+	settings: Feature_Settings,
+	given:    bit_set[Feature_Setting], // settings the feature sets itself
 }
 
 Parameter :: struct {
@@ -43,9 +64,10 @@ Design :: struct {
 	line_width:         f64,
 	layer_height:       f64,
 	first_layer_height: f64,
-	print_speed:        f64, // mm/s
-	travel_speed:       f64, // mm/s
-	filament_diameter:  f64,
+	defaults:            Feature_Settings,
+	travel_speed:        f64, // mm/s
+	travel_acceleration: f64, // mm/s²
+	filament_diameter:   f64,
 }
 
 Error :: struct {
@@ -54,7 +76,10 @@ Error :: struct {
 }
 
 DEFAULT_PRINT_SPEED :: 40
+DEFAULT_PRINT_ACCELERATION :: 1000
+DEFAULT_FAN :: 100
 DEFAULT_TRAVEL_SPEED :: 150
+DEFAULT_TRAVEL_ACCELERATION :: 3000
 MAX_OBJECTS :: 256
 MAX_PARAMETERS :: 256
 EPSILON :: 1e-9
@@ -76,6 +101,7 @@ error_destroy :: proc(e: ^Error, allocator := context.allocator) {
 evaluate :: proc(source: string, printer: Printer, allocator := context.allocator) -> (result: Design, err: Error, ok: bool) {
 	assert(printer.nozzle_diameter > 0)
 	assert(printer.filament_diameter > 0)
+	assert(printer.max_speed > 0 && printer.max_acceleration > 0 && printer.max_volumetric_flow > 0)
 	p := Parser{allocator = allocator}
 	p.design.parameters = make([dynamic]Parameter, allocator)
 	p.design.objects = make([dynamic]Object, allocator)
@@ -86,7 +112,7 @@ evaluate :: proc(source: string, printer: Printer, allocator := context.allocato
 		define(&p, "nozzle", {printer.nozzle_diameter, true}, 0) &&
 		define(&p, "filament", {printer.filament_diameter, true}, 0) &&
 		parse_statements(&p) &&
-		resolve_process(&p)
+		resolve_process(&p, printer)
 	if !ok {
 		design_destroy(&p.design)
 		return {}, p.err, false
@@ -281,6 +307,9 @@ Object_Key :: enum u8 {
 	Height,
 	Walls,
 	Floor,
+	Speed,
+	Acceleration,
+	Fan,
 }
 
 @(private)
@@ -293,12 +322,15 @@ OBJECT_KEY_NAMES := [Object_Key]string {
 	.Height   = "height",
 	.Walls    = "walls",
 	.Floor    = "floor",
+	.Speed        = "speed",
+	.Acceleration = "acceleration",
+	.Fan          = "fan",
 }
 
 @(private)
 parse_object :: proc(p: ^Parser, head: Token) -> bool {
 	shape := Shape.Box if head.text == "box" else Shape.Cylinder
-	allowed := bit_set[Object_Key]{.X, .Y, .Height, .Walls, .Floor}
+	allowed := bit_set[Object_Key]{.X, .Y, .Height, .Walls, .Floor, .Speed, .Acceleration, .Fan}
 	required := bit_set[Object_Key]{.Height, .Walls}
 	if shape == .Box {
 		allowed += {.Width, .Depth}
@@ -318,7 +350,7 @@ parse_object :: proc(p: ^Parser, head: Token) -> bool {
 		if key in seen {return fail(p, name.line, "argument '%s' is given twice", name.text)}
 		expect(p, .Equals, "'=' after the argument name") or_return
 		value := parse_expression(p) or_return
-		wants_length := key != .Walls && key != .Floor
+		wants_length := key not_in bit_set[Object_Key]{.Walls, .Floor, .Speed, .Acceleration, .Fan}
 		if value.length != wants_length {
 			return fail(p, name.line, "argument '%s' must be %s", name.text, "a length" if wants_length else "a scalar count")
 		}
@@ -340,7 +372,11 @@ parse_object :: proc(p: ^Parser, head: Token) -> bool {
 		height = values[.Height].amount,
 		walls  = int(math.round(values[.Walls].amount)),
 		floor  = int(math.round(values[.Floor].amount)),
+		settings = {values[.Speed].amount, values[.Acceleration].amount, values[.Fan].amount},
 	}
+	if .Speed in seen {object.given += {.Speed}}
+	if .Acceleration in seen {object.given += {.Acceleration}}
+	if .Fan in seen {object.given += {.Fan}}
 	if shape == .Box {
 		object.size = {values[.Width].amount, values[.Depth].amount}
 	} else {
@@ -479,7 +515,7 @@ call :: proc(p: ^Parser, name: Token, a: []Value) -> (result: Value, ok: bool) {
 }
 
 @(private)
-resolve_process :: proc(p: ^Parser) -> bool {
+resolve_process :: proc(p: ^Parser, printer: Printer) -> bool {
 	length :: proc(p: ^Parser, name: string, required: bool, fallback: f64) -> (f64, bool) {
 		for parameter in p.design.parameters {
 			if parameter.name != name {continue}
@@ -491,11 +527,11 @@ resolve_process :: proc(p: ^Parser) -> bool {
 		if required {return 0, fail(p, 1, "define '%s', for example 'let %s = nozzle * 1.1'", name, name)}
 		return fallback, true
 	}
-	speed :: proc(p: ^Parser, name: string, fallback: f64) -> (f64, bool) {
+	scalar :: proc(p: ^Parser, name, unit: string, fallback: f64) -> (f64, bool) {
 		for parameter in p.design.parameters {
 			if parameter.name != name {continue}
-			if parameter.value.length || parameter.value.amount <= 0 {
-				return 0, fail(p, parameter.line, "'%s' must be a positive scalar in mm/s", name)
+			if parameter.value.length || parameter.value.amount < 0 {
+				return 0, fail(p, parameter.line, "'%s' must be a scalar in %s", name, unit)
 			}
 			return parameter.value.amount, true
 		}
@@ -505,10 +541,36 @@ resolve_process :: proc(p: ^Parser) -> bool {
 	d.line_width = length(p, "line_width", true, 0) or_return
 	d.layer_height = length(p, "layer_height", true, 0) or_return
 	d.first_layer_height = length(p, "first_layer_height", false, d.layer_height) or_return
-	d.print_speed = speed(p, "print_speed", DEFAULT_PRINT_SPEED) or_return
-	d.travel_speed = speed(p, "travel_speed", DEFAULT_TRAVEL_SPEED) or_return
+	d.defaults.speed = scalar(p, "print_speed", "mm/s", DEFAULT_PRINT_SPEED) or_return
+	d.defaults.acceleration = scalar(p, "print_acceleration", "mm/s²", DEFAULT_PRINT_ACCELERATION) or_return
+	d.defaults.fan = scalar(p, "fan", "percent", DEFAULT_FAN) or_return
+	d.travel_speed = scalar(p, "travel_speed", "mm/s", DEFAULT_TRAVEL_SPEED) or_return
+	d.travel_acceleration = scalar(p, "travel_acceleration", "mm/s²", DEFAULT_TRAVEL_ACCELERATION) or_return
+	if d.travel_speed <= 0 || d.travel_speed > printer.max_speed {
+		return fail(p, 1, "travel_speed must be above 0 and at most the printer's %.0f mm/s", printer.max_speed)
+	}
+	if d.travel_acceleration <= 0 || d.travel_acceleration > printer.max_acceleration {
+		return fail(p, 1, "travel_acceleration must be above 0 and at most the printer's %.0f mm/s²", printer.max_acceleration)
+	}
 	if len(d.objects) == 0 {return fail(p, 1, "the design has no objects; add a box or cylinder")}
-	for object in d.objects {
+	for &object in d.objects {
+		if .Speed not_in object.given {object.settings.speed = d.defaults.speed}
+		if .Acceleration not_in object.given {object.settings.acceleration = d.defaults.acceleration}
+		if .Fan not_in object.given {object.settings.fan = d.defaults.fan}
+		settings := object.settings
+		if settings.speed <= 0 || settings.speed > printer.max_speed {
+			return fail(p, object.line, "speed %.1f mm/s must be above 0 and at most the printer's %.0f mm/s", settings.speed, printer.max_speed)
+		}
+		if settings.acceleration <= 0 || settings.acceleration > printer.max_acceleration {
+			return fail(p, object.line, "acceleration %.0f mm/s² must be above 0 and at most the printer's %.0f mm/s²", settings.acceleration, printer.max_acceleration)
+		}
+		if settings.fan < 0 || settings.fan > 100 {
+			return fail(p, object.line, "fan %.0f must be a percentage from 0 to 100", settings.fan)
+		}
+		flow := d.line_width*max(d.layer_height, d.first_layer_height)*settings.speed
+		if flow > printer.max_volumetric_flow {
+			return fail(p, object.line, "%.1f mm/s needs %.1f mm³/s, above the printer's %.1f mm³/s", settings.speed, flow, printer.max_volumetric_flow)
+		}
 		if min(object.size.x, object.size.y) < d.line_width {
 			return fail(p, object.line, "the object is narrower than one line (%.3f mm)", d.line_width)
 		}

@@ -5,11 +5,14 @@ import "core:math"
 // One nozzle move to `to`. Extruding moves lay a bead `width` wide whose top is at to.z and
 // that is `height` thick.
 Move :: struct {
-	to:      [3]f64,
-	width:   f64,
-	height:  f64,
-	speed:   f64, // mm/s
-	extrude: bool,
+	to:           [3]f64,
+	width:        f64,
+	height:       f64,
+	speed:        f64, // mm/s
+	acceleration: f64, // mm/s²
+	fan:          f64, // percent; extruding moves only
+	extrude:      bool,
+	feature:      int, // index of the object that extrudes it; -1 for travel
 }
 
 Toolpath :: struct {
@@ -46,9 +49,11 @@ generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
 	for layer in 0..<t.layers {
 		g.z = d.first_layer_height+f64(layer)*d.layer_height
 		g.thickness = d.first_layer_height if layer == 0 else d.layer_height
-		for object in d.objects {
+		for object, index in d.objects {
 			count := object_layers(d, object)
 			if layer >= count {continue}
+			g.feature = index
+			g.settings = object.settings
 			solid := layer < object.floor
 			loops := max(int) if solid else object.walls
 			for loop in 0..<loops {
@@ -71,6 +76,8 @@ Generator :: struct {
 	thickness: f64,
 	position:  [3]f64,
 	started:   bool,
+	feature:   int,
+	settings:  Feature_Settings,
 }
 
 // Emits the loop at `inset` from the outline; false when the loop would not fit.
@@ -137,7 +144,7 @@ travel :: proc(g: ^Generator, to: [2]f64) {
 	}
 	if target == g.position {return}
 	distance := length3(target-g.position)
-	append(&g.t.moves, Move{to = target, speed = g.d.travel_speed})
+	append(&g.t.moves, Move{to = target, speed = g.d.travel_speed, acceleration = g.d.travel_acceleration, feature = -1})
 	g.t.duration += distance/g.d.travel_speed
 	g.position = target
 }
@@ -149,13 +156,23 @@ extrude :: proc(g: ^Generator, to: [2]f64) {
 	distance := length3(target-g.position)
 	if distance <= 0 {return}
 	w, h := g.d.line_width, g.thickness
-	append(&g.t.moves, Move{to = target, width = w, height = h, speed = g.d.print_speed, extrude = true})
+	settings := g.settings
+	append(&g.t.moves, Move{
+		to = target,
+		width = w,
+		height = h,
+		speed = settings.speed,
+		acceleration = settings.acceleration,
+		fan = settings.fan,
+		extrude = true,
+		feature = g.feature,
+	})
 	// A bead's cross-section is a rectangle with semicircular sides.
 	area := (w-h)*h+math.PI*h*h/4
 	filament_area := math.PI*g.d.filament_diameter*g.d.filament_diameter/4
 	g.t.extruded_length += distance
 	g.t.filament_length += distance*area/filament_area
-	g.t.duration += distance/g.d.print_speed
+	g.t.duration += distance/settings.speed
 	g.position = target
 }
 

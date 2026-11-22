@@ -33,8 +33,6 @@ DEV_RETRACTION_SPEED :: 120_000
 DEV_NOZZLE_TEMPERATURE :: 210
 DEV_BED_TEMPERATURE :: 60
 DEV_MAX_VOLUMETRIC_FLOW :: 15_000_000_000 // µm³/s, 15 mm³/s
-DEV_PRINT_ACCELERATION :: 1_000_000
-DEV_TRAVEL_ACCELERATION :: 3_000_000
 DEV_MINIMUM_RETRACTION_TRAVEL_UM :: 1_500
 
 Design_Export_Error :: enum u8 {
@@ -60,6 +58,27 @@ design_export_error_text :: proc(error: Design_Export_Error) -> string {
 	return "unknown"
 }
 
+// The physical printer as designs see it: the selected nozzle and the machine limits.
+design_printer :: proc(nozzle_mm: f64) -> design.Printer {
+	return {
+		nozzle_diameter = nozzle_mm,
+		filament_diameter = DESIGN_FILAMENT_DIAMETER,
+		max_speed = f64(DEV_MAX_SPEED)/1000,
+		max_acceleration = f64(DEV_MAX_ACCELERATION)/1000,
+		max_volumetric_flow = f64(DEV_MAX_VOLUMETRIC_FLOW)/1e9,
+	}
+}
+
+// Accelerations in µm/s² rounded to the 1 mm/s² step that profiles require.
+design_acceleration :: proc(mm_per_second_squared: f64) -> profiles.Acceleration_Um_Per_Second_Squared {
+	return profiles.Acceleration_Um_Per_Second_Squared(max(i64(1), i64(math.round(mm_per_second_squared)))*1000)
+}
+
+// The fan percentage as a profile ratio.
+design_fan :: proc(percent: f64) -> profiles.Ratio_Ppm {
+	return profiles.Ratio_Ppm(u32(math.round(clamp(percent, 0, 100)*f64(profiles.RATIO_SCALE)/100)))
+}
+
 // Speeds in µm/s rounded to the 50 µm/s step that profiles require.
 design_speed :: proc(mm_per_second: f64) -> profiles.Speed_Um_Per_Second {
 	return profiles.Speed_Um_Per_Second(max(i64(1), i64(math.round(mm_per_second*1000/50)))*50)
@@ -72,11 +91,12 @@ design_um :: proc(mm: f64) -> contracts.Micrometres {
 // Builds and resolves the development profiles from the design's derived values.
 design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved_Profiles, profiles.Profile_Resolve_Error) {
 	nozzle := design_um(nozzle_mm)
+	// Role targets hold the design-wide defaults; each feature's own values travel on its moves.
 	role := profiles.Role_Target{
-		speed        = design_speed(d.print_speed),
-		acceleration = DEV_PRINT_ACCELERATION,
+		speed        = design_speed(d.defaults.speed),
+		acceleration = design_acceleration(d.defaults.acceleration),
 		flow_ratio   = profiles.Ratio_Ppm(profiles.RATIO_SCALE),
-		fan_ratio    = profiles.Ratio_Ppm(profiles.RATIO_SCALE),
+		fan_ratio    = design_fan(d.defaults.fan),
 	}
 	printer := profiles.Printer_Profile{
 		schema_version = profiles.PRINTER_PROFILE_SCHEMA_VERSION,
@@ -141,12 +161,12 @@ design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved
 		bridge = role,
 		support = role,
 		support_interface = role,
-		travel = {design_speed(d.travel_speed), DEV_TRAVEL_ACCELERATION},
+		travel = {design_speed(d.travel_speed), design_acceleration(d.travel_acceleration)},
 		nozzle_temperature = DEV_NOZZLE_TEMPERATURE,
 		bed_temperature = DEV_BED_TEMPERATURE,
 		minimum_layer_time = 5_000,
 		minimum_layer_time_policy = .Slowdown_Then_Dwell,
-		minimum_print_speed = min(design_speed(d.print_speed), 10_000),
+		minimum_print_speed = 50,
 		seam = .Deterministic_Cost,
 		seam_visibility = .Rear_Maximum_Y,
 		retraction = .Distance_And_Exterior_Crossing,
@@ -250,7 +270,6 @@ design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Prof
 	if !start_inside {cleanup(&b); return {}, .Outside_Bed}
 	b.position = start
 	process := profile.process.source
-	role, _ := features.motion_role_target(profile.process, .Perimeter)
 	filament_area := math.PI*f64(i64(profile.material.filament_diameter))*f64(i64(profile.material.filament_diameter))/4
 	z := t.start.z
 	append(&b.layers, features.Motion_Layer{z = design_um(z), speed_scale_ppm = profiles.RATIO_SCALE})
@@ -290,15 +309,15 @@ design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Prof
 		emitted := b.filament_nm/10*10
 		delta := max(emitted-b.emitted_nm, 10)
 		b.emitted_nm += delta
-		speed := role.speed
+		speed := design_speed(move.speed)
 		plan_operation(&b, {
 			kind = .Extrude,
 			role = .Perimeter,
 			point_a = b.position,
 			point_b = target,
 			speed = speed,
-			acceleration = role.acceleration,
-			fan_ratio = role.fan_ratio,
+			acceleration = design_acceleration(move.acceleration),
+			fan_ratio = design_fan(move.fan),
 			filament_delta_nm = delta,
 			duration_us = plan_duration_us(distance_um, speed),
 		})

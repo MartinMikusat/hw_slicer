@@ -1,10 +1,12 @@
-# A box and a cup whose walls follow the nozzle.
+# A box and a cup whose walls follow the nozzle. Each feature sets its own motion and cooling.
 let line_width = nozzle * 1.1
 let layer_height = nozzle * 0.5
 let first_layer_height = layer_height
 let print_speed = 40
+let print_acceleration = 1000
+let fan = 100
 let wall_lines = fit(5, line_width, 0mm, 2.6mm)
 let floor_layers = fit(3, layer_height, 0.8mm, 0mm)
 
 box(x = -20mm, width = 30mm, depth = 20mm, height = 12mm, walls = wall_lines, floor = floor_layers)
-cylinder(x = 20mm, diameter = 24mm, height = 18mm, walls = wall_lines, floor = floor_layers)
+cylinder(x = 20mm, diameter = 24mm, height = 18mm, walls = wall_lines, floor = floor_layers, speed = 25, acceleration = 600, fan = 40)

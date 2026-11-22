@@ -99,10 +99,7 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 		app_set_status("DESIGN TOO LARGE", true)
 		return false
 	}
-	printer := design.Printer{
-		nozzle_diameter   = design_nozzle(&app.design),
-		filament_diameter = DESIGN_FILAMENT_DIAMETER,
-	}
+	printer := design_printer(design_nozzle(&app.design))
 	evaluated, evaluate_error, ok := design.evaluate(string(source), printer)
 	if !ok {
 		defer design.error_destroy(&evaluate_error)
