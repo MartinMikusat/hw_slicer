@@ -60,6 +60,22 @@ Base_Transition :: enum u8 {
 	Fillet, // concave circular root fillet at the base junction
 }
 
+Junction_Kind :: enum u8 {
+	Base_Flare,   // horizontal-to-wall or horizontal-to-cone bevel/fillet
+	Cone_Fillet,  // C1-tangent fillet from a sloped cone into a vertical column
+	Radial_Morph, // coaxial radial shape morph (e.g. circle -> polygon)
+}
+
+Junction :: struct {
+	is_fillet:   bool,
+	kind:        Junction_Kind,
+	lower_index: int,
+	upper_index: int,
+	size:        f64,
+	max_size:    f64,
+	line:        int,
+}
+
 Object :: struct {
 	shape:                Shape,
 	name:                 string,
@@ -83,6 +99,9 @@ Object :: struct {
 	top_morph_sides:          int, // target polygon sides at top (0 for circle, >= 3 for N-gon)
 	top_morph_diameter:       f64, // target outer diameter at top (mm)
 	top_morph_inner_diameter: f64, // target inner diameter at top (mm)
+	base_junction:            i16, // index into Design.junctions, or -1
+	top_fillet_junction:      i16, // index into Design.junctions, or -1
+	top_morph_junction:       i16, // index into Design.junctions, or -1
 	settings:                 Feature_Settings,
 	given:                bit_set[Feature_Setting], // settings the feature sets itself
 }
@@ -96,6 +115,7 @@ Parameter :: struct {
 Design :: struct {
 	parameters:         [dynamic]Parameter,
 	objects:            [dynamic]Object,
+	junctions:          [dynamic]Junction,
 	line_width:         f64,
 	layer_height:       f64,
 	first_layer_height: f64,
@@ -124,7 +144,43 @@ design_destroy :: proc(d: ^Design) {
 	for object in d.objects {delete(object.name, d.objects.allocator)}
 	delete(d.parameters)
 	delete(d.objects)
+	delete(d.junctions)
 	d^ = {}
+}
+
+// Updates junction `idx` in-place (in-memory interactive edit without reparsing).
+set_junction_size :: proc(d: ^Design, idx: int, new_size: f64) -> bool {
+	if idx < 0 || idx >= len(d.junctions) {return false}
+	j := &d.junctions[idx]
+	s := clamp(new_size, 0, j.max_size)
+	j.size = s
+	lower := &d.objects[j.lower_index]
+	upper := &d.objects[j.upper_index]
+	active := s > 0.05
+	tr := Base_Transition.None
+	if active {tr = .Fillet if j.is_fillet else .Bevel}
+	switch j.kind {
+	case .Base_Flare:
+		upper.base_transition = tr
+		upper.base_transition_size = s if active else 0
+	case .Cone_Fillet:
+		lower.top_fillet_radius = s if active else 0
+		upper.base_transition = .Fillet if active else .None
+		upper.base_transition_size = s if active else 0
+	case .Radial_Morph:
+		lower.top_morph_transition = tr
+		lower.top_morph_height = s if active else 0
+	}
+	return true
+}
+
+// Toggles a junction between smooth Fillet and linear Bevel (where supported).
+toggle_junction_fillet :: proc(d: ^Design, idx: int) -> bool {
+	if idx < 0 || idx >= len(d.junctions) {return false}
+	j := &d.junctions[idx]
+	if j.kind == .Cone_Fillet {return false}
+	j.is_fillet = !j.is_fillet
+	return set_junction_size(d, idx, j.size)
 }
 
 error_destroy :: proc(e: ^Error, allocator := context.allocator) {
@@ -141,6 +197,7 @@ evaluate :: proc(source: string, printer: Printer, allocator := context.allocato
 	p := Parser{allocator = allocator}
 	p.design.parameters = make([dynamic]Parameter, allocator)
 	p.design.objects = make([dynamic]Object, allocator)
+	p.design.junctions = make([dynamic]Junction, allocator)
 	p.design.filament_diameter = printer.filament_diameter
 	p.tokens = make([dynamic]Token, context.temp_allocator)
 	defer delete(p.tokens)
@@ -396,10 +453,13 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 	a := &p.design.objects[a_idx]
 	b := &p.design.objects[b_idx]
 	lower, upper: ^Object
+	lower_idx, upper_idx: int
 	if abs((a.z+a.height)-b.z) <= 1e-4 {
 		lower, upper = a, b
+		lower_idx, upper_idx = a_idx, b_idx
 	} else if abs((b.z+b.height)-a.z) <= 1e-4 {
 		lower, upper = b, a
+		lower_idx, upper_idx = b_idx, a_idx
 	} else {
 		return fail(p, head.line, "'%s' and '%s' do not meet on a Z plane", a_tok.text, b_tok.text)
 	}
@@ -423,10 +483,21 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 		if z_bot > lower.height+EPSILON {
 			return fail(p, head.line, "%s %.3f mm exceeds '%s' height %.3f mm", head.text, s, lower.name, lower.height)
 		}
+		j_idx := i16(len(p.design.junctions))
+		max_s_top := upper.height*lower_slope/(hyp-1)
+		max_s_bot := lower.height*lower_slope*hyp/(hyp-1)
+		max_s := max(s, min(max_s_top, max_s_bot))
+		append(&p.design.junctions, Junction{
+			is_fillet = true, kind = .Cone_Fillet,
+			lower_index = lower_idx, upper_index = upper_idx,
+			size = s, max_size = max_s, line = head.line,
+		})
 		lower.top_fillet_radius = s
+		lower.top_fillet_junction = j_idx
 		upper.base_transition = .Fillet
 		upper.base_transition_size = s
 		upper.base_lower_slope = lower_slope
+		upper.base_junction = j_idx
 		return true
 	}
 
@@ -442,22 +513,33 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 		if s > lower.height+EPSILON {
 			return fail(p, head.line, "%s %.3f mm exceeds '%s' height %.3f mm", head.text, s, lower.name, lower.height)
 		}
+		j_idx := i16(len(p.design.junctions))
+		append(&p.design.junctions, Junction{
+			is_fillet = is_fillet, kind = .Radial_Morph,
+			lower_index = lower_idx, upper_index = upper_idx,
+			size = s, max_size = max(s, lower.height), line = head.line,
+		})
 		lower.top_morph_transition = .Fillet if is_fillet else .Bevel
 		lower.top_morph_height = s
 		lower.top_morph_sides = upper.sides
 		lower.top_morph_diameter = upper.size.x
 		lower.top_morph_inner_diameter = upper.inner_diameter
+		lower.top_morph_junction = j_idx
 		return true
 	}
 
 	// Case 3: Upper feature resting on a wider horizontal top face of `lower`.
 	max_flare := s
 	eff_height := s
+	flare_ratio := 1.0
+	height_ratio := 1.0
 	if is_fillet && upper.shape != .Box && upper.height > EPSILON {
 		m := (upper.size.x-upper.top_diameter)*0.5/upper.height
 		hyp := math.sqrt(1+m*m)
-		max_flare = s*(hyp-m)
-		eff_height = s*(1-m/hyp)
+		flare_ratio = hyp-m
+		height_ratio = 1-m/hyp
+		max_flare = s*flare_ratio
+		eff_height = s*height_ratio
 	}
 	if eff_height > upper.height+EPSILON {
 		return fail(p, head.line, "%s %.3f mm exceeds '%s' height %.3f mm", head.text, s, upper.name, upper.height)
@@ -466,8 +548,30 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 	if !junction_fits_on_lower(lower^, upper^, max_flare) {
 		return fail(p, head.line, "%s %.3f mm on '%s' extends past '%s' top face", head.text, s, upper.name, lower.name)
 	}
+	max_s := upper.height/max(height_ratio, 1e-4)
+	if lower.shape == .Box {
+		lh := lower.size*0.5
+		uh := upper.size*0.5
+		avail_x := min((lower.center.x+lh.x)-(upper.center.x+uh.x), (upper.center.x-uh.x)-(lower.center.x-lh.x))
+		avail_y := min((lower.center.y+lh.y)-(upper.center.y+uh.y), (upper.center.y-uh.y)-(lower.center.y-lh.y))
+		avail := max(0, min(avail_x, avail_y))
+		max_s = min(max_s, avail/max(flare_ratio, 1e-4))
+	} else {
+		lr := lower.top_diameter*0.5
+		dc := math.hypot(upper.center.x-lower.center.x, upper.center.y-lower.center.y)
+		ur := upper.size.x*0.5 if upper.shape != .Box else math.hypot(upper.size.x*0.5, upper.size.y*0.5)
+		avail := max(0, lr-dc-ur)
+		max_s = min(max_s, avail/max(flare_ratio, 1e-4))
+	}
+	j_idx := i16(len(p.design.junctions))
+	append(&p.design.junctions, Junction{
+		is_fillet = is_fillet, kind = .Base_Flare,
+		lower_index = lower_idx, upper_index = upper_idx,
+		size = s, max_size = max(s, max_s), line = head.line,
+	})
 	upper.base_transition = .Fillet if is_fillet else .Bevel
 	upper.base_transition_size = s
+	upper.base_junction = j_idx
 	return true
 }
 
@@ -584,9 +688,12 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 		center   = {values[.X].amount, values[.Y].amount},
 		z        = values[.Z].amount,
 		height   = values[.Height].amount,
-		walls    = int(math.round(values[.Walls].amount)),
-		floor    = int(math.round(values[.Floor].amount)),
-		settings = {values[.Speed].amount, values[.Acceleration].amount, values[.Fan].amount},
+		walls               = int(math.round(values[.Walls].amount)),
+		floor               = int(math.round(values[.Floor].amount)),
+		base_junction       = -1,
+		top_fillet_junction = -1,
+		top_morph_junction  = -1,
+		settings            = {values[.Speed].amount, values[.Acceleration].amount, values[.Fan].amount},
 	}
 	if .Speed in seen {object.given += {.Speed}}
 	if .Acceleration in seen {object.given += {.Acceleration}}

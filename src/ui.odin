@@ -104,6 +104,9 @@ UI_Action :: enum u64 {
 	Simulation_Time,
 	Design_Layer,
 	Design_Layer_Progress,
+	Junction_Size,
+	Junction_Toggle_Kind,
+	Junction_Close,
 	Evidence_Stage_Base = 1000,
 }
 
@@ -210,6 +213,12 @@ UI_State :: struct {
 	simulation_dragging: bool,
 	layer_dragging:      bool,
 	in_layer_dragging:   bool,
+	junction_selected:   bool,
+	junction_dragging:   bool,
+	junction_is_fillet:  bool,
+	junction_can_toggle: bool,
+	junction_size:       f64,
+	junction_max_size:   f64,
 	pressed_id: u64,
 	focused_id: u64,
 	hovered_id: u64,
@@ -710,6 +719,13 @@ ui_build_controls :: proc(
 		ui_add_control(ui, "layer", "active layer", ui_design_layer_slider_rect(ui), .Design_Layer)
 		ui_add_control(ui, "layer progress", "in-layer progress", ui_design_progress_slider_rect(ui), .Design_Layer_Progress)
 	}
+	if ui.design_active && ui.junction_selected {
+		card := ui_junction_card_rect(ui)
+		ui_add_control(ui, "junction card", "selected bevel or fillet", card, .Modal_Surface)
+		ui_add_control(ui, "junction kind", "toggle fillet or bevel", {card.x+10, card.y+8, 62, 22}, .Junction_Toggle_Kind, ui.junction_can_toggle, 1, ui.junction_is_fillet)
+		ui_add_control(ui, "junction close", "deselect bevel or fillet", {card.x+card.w-28, card.y+8, 20, 22}, .Junction_Close)
+		ui_add_control(ui, "junction size", "adjust bevel or fillet radius", ui_junction_slider_rect(ui), .Junction_Size)
+	}
 	if ui.stage_index == 0 && !ui.design_active && (!compact || ui.panel == .Section) {
 		section_rect := UI_Rect{20, 138, 204, 30}
 		if compact {section_rect = {20, 84, 156, 28}}
@@ -772,6 +788,17 @@ ui_design_progress_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	viewport := ui_viewport_rect(ui)
 	w := max(100.0, viewport.w-70)
 	return {viewport.x+16, viewport.y+viewport.h-40, w, 26}
+}
+
+ui_junction_card_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	viewport := ui_viewport_rect(ui)
+	w := min(310.0, max(220.0, viewport.w-80))
+	return {viewport.x+16, viewport.y+viewport.h-122, w, 72}
+}
+
+ui_junction_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	card := ui_junction_card_rect(ui)
+	return {card.x+10, card.y+38, max(80.0, card.w-88), 24}
 }
 
 ui_hit_test :: proc(ui: ^UI_State, x, y: f64) -> u64 {
@@ -1026,6 +1053,13 @@ ui_draw_controls :: proc(
 	for control in ui.controls {
 		hovered := control.enabled && control.id == ui.hovered_id
 		standing := ui_control_standing(ui, control)
+		if control.action == .Modal_Surface && control.name == "junction card" {
+			bg := theme.raised
+			bg.w = 0.94
+			ui_add_round_rect(painter, control.rect, 10, bg)
+			ui_add_border(painter, control.rect, Vec4{0.95, 0.52, 0.14, 0.75})
+			continue
+		}
 		if control.action == .None || control.action == .Modal_Surface || control.action == .Dismiss_Settings || control.action == .Dismiss_Evidence || control.action == .Dismiss_Help {continue}
 		window_control := control.action == .Window_Close || control.action == .Window_Minimize || control.action == .Window_Zoom
 		if window_control && modal_open {continue}
@@ -1066,6 +1100,15 @@ ui_draw_controls :: proc(
 			ink := theme.text if control.enabled else Vec4{0.501961, 0.501961, 0.501961, 1}
 			ui_add_round_rect(painter, {track.x, track.y, max(1.0, track.w*fraction), track.h}, 2, ink)
 			ui_add_round_rect(painter, {track.x+track.w*fraction-7, panel.y+(panel.h-14)/2, 14, 14}, 7, ink)
+			continue
+		}
+		if control.action == .Junction_Size {
+			track := UI_Rect{control.rect.x+6, control.rect.y+control.rect.h/2-2, max(1.0, control.rect.w-12), 4}
+			ui_add_round_rect(painter, track, 2, ui_theme_blend(theme, 0.24))
+			fraction := clamp(ui.junction_size/max(ui.junction_max_size, 0.001), 0, 1)
+			accent := Vec4{0.95, 0.52, 0.14, 1.0}
+			ui_add_round_rect(painter, {track.x, track.y, max(1.0, track.w*fraction), track.h}, 2, accent)
+			ui_add_round_rect(painter, {track.x+track.w*fraction-7, control.rect.y+(control.rect.h-14)/2, 14, 14}, 7, accent)
 			continue
 		}
 		if control.action == .Section_Height || control.action == .Simulation_Time {
@@ -1849,6 +1892,21 @@ ui_draw_labels :: proc(
 		tris_text := fmt.tprintf("%.2fM", f64(ui.render_tris)/1_000_000.0) if ui.render_tris >= 1_000_000 else fmt.tprintf("%dk", ui.render_tris/1000)
 		stats_text := fmt.tprintf("%.1f FPS · %.1f ms · %s tris · %d draws", ui.fps, ui.frame_ms, tris_text, ui.render_draws)
 		ui_draw_text(painter, painter.mono, ui, stats_text, pill, theme.text, 0, .Center)
+	}
+	// Floating bevel/fillet inspector card text when a junction is clicked in the 3D viewport.
+	if design_shown && ui.junction_selected && design_state != nil &&
+	   design_state.selected_junction >= 0 && design_state.selected_junction < len(design_state.evaluated.junctions) {
+		card := ui_junction_card_rect(ui)
+		j := design_state.evaluated.junctions[design_state.selected_junction]
+		lower_name := design_state.evaluated.objects[j.lower_index].name
+		upper_name := design_state.evaluated.objects[j.upper_index].name
+		kind_text := "Fillet" if j.is_fillet else "Bevel"
+		ui_draw_text(painter, painter.font, ui, kind_text, ui_control_rect(ui, .Junction_Toggle_Kind), ui_control_ink(ui, .Junction_Toggle_Kind), 0, .Center)
+		title := fmt.tprintf("%s → %s", lower_name, upper_name)
+		ui_draw_text(painter, painter.font, ui, title, {card.x+78, card.y+8, card.w-110, 22}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, "×", ui_control_rect(ui, .Junction_Close), theme.muted, 0, .Center)
+		val_text := fmt.tprintf("%.1f mm", j.size)
+		ui_draw_text(painter, painter.mono, ui, val_text, {card.x+card.w-74, card.y+38, 64, 24}, theme.text, 0, .Center)
 	}
 
 	ui_draw_text(

@@ -21,6 +21,7 @@ Move :: struct {
 	extrude:      bool,
 	arc:          Arc_Kind,
 	feature:      int, // index of the object that extrudes it; -1 for travel
+	junction:     i16, // index into Design.junctions when on a bevel/fillet; -1 otherwise
 }
 
 Toolpath :: struct {
@@ -59,16 +60,17 @@ object_layers :: proc(d: ^Design, object: Object) -> int {
 
 // Outward flare (mm per side) from base and top `bevel`/`fillet` junctions at layer top `z`.
 // Computes exact C1-tangent circular arcs for horizontal-to-wall, horizontal-to-cone, and
-// sloped-cone-to-vertical-column junctions.
-object_base_flare :: proc(object: Object, z, thickness: f64) -> f64 {
-	flare := 0.0
+// sloped-cone-to-vertical-column junctions, and returns the contributing junction index (-1 if none).
+object_base_flare_info :: proc(object: Object, z, thickness: f64) -> (flare: f64, junction: i16) {
+	junction = -1
 	if object.base_transition != .None && object.base_transition_size > EPSILON {
 		s := object.base_transition_size
 		dz := max(0, z-object.z-0.5*thickness)
+		base_flare := 0.0
 		switch object.base_transition {
 		case .None:
 		case .Bevel:
-			if dz < s-EPSILON {flare = max(flare, s-dz)}
+			if dz < s-EPSILON {base_flare = s-dz}
 		case .Fillet:
 			if object.base_lower_slope > 1e-4 {
 				// Upper half of a C1-tangent fillet from a sloped cone (slope m1) into a vertical column.
@@ -76,7 +78,7 @@ object_base_flare :: proc(object: Object, z, thickness: f64) -> f64 {
 				z_c := s*(math.sqrt(1+m1*m1)-1)/m1
 				if dz < z_c-EPSILON {
 					rem := z_c-dz
-					flare = max(flare, s-math.sqrt(max(0, s*s-rem*rem)))
+					base_flare = s-math.sqrt(max(0, s*s-rem*rem))
 				}
 			} else {
 				m := 0.0
@@ -89,9 +91,13 @@ object_base_flare :: proc(object: Object, z, thickness: f64) -> f64 {
 					r_c := s*(hyp-m)
 					rem := s-dz
 					r_fillet := r_c-math.sqrt(max(0, s*s-rem*rem))
-					flare = max(flare, r_fillet+m*dz)
+					base_flare = r_fillet+m*dz
 				}
 			}
+		}
+		if base_flare > flare {
+			flare = base_flare
+			junction = object.base_junction
 		}
 	}
 	if object.top_fillet_radius > EPSILON && object.shape != .Box && object.height > EPSILON {
@@ -106,11 +112,19 @@ object_base_flare :: proc(object: Object, z, thickness: f64) -> f64 {
 			if dz_top >= 0 && dz_top < z_bot-EPSILON {
 				rem := z_c+dz_top
 				r_fillet := s-math.sqrt(max(0, s*s-rem*rem)) // relative to R_top
-				// Nominal cone radius at `dz_top` below top is `R_top + m1 * dz_top`.
-				flare = max(flare, r_fillet-m1*dz_top)
+				top_flare := r_fillet-m1*dz_top
+				if top_flare > flare {
+					flare = top_flare
+					junction = object.top_fillet_junction
+				}
 			}
 		}
 	}
+	return
+}
+
+object_base_flare :: proc(object: Object, z, thickness: f64) -> f64 {
+	flare, _ := object_base_flare_info(object, z, thickness)
 	return flare
 }
 
@@ -141,11 +155,13 @@ generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
 			start_layer, end_layer := object_layer_span(d, object)
 			if layer < start_layer || layer >= end_layer {continue}
 			g.feature = index
+			g.junction = -1
 			g.settings = object.settings
 			if object.top_morph_transition != .None && object.top_morph_height > EPSILON {
 				morph_start := object.z+object.height-object.top_morph_height
 				z_mid := g.z-0.5*g.thickness
 				if z_mid > morph_start {
+					g.junction = object.top_morph_junction
 					t_morph := clamp((z_mid-morph_start)/object.top_morph_height, 0, 1)
 					s_morph := t_morph*t_morph*(3-2*t_morph) if object.top_morph_transition == .Fillet else t_morph
 					r_out_from := object_size_at_z(object, g.z, g.thickness).x*0.5
@@ -173,7 +189,8 @@ generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
 					continue
 				}
 			}
-			flare := object_base_flare(object, g.z, g.thickness)
+			flare, flare_junction := object_base_flare_info(object, g.z, g.thickness)
+			if flare > EPSILON {g.junction = flare_junction}
 			solid := (layer-start_layer) < object.floor
 			extra_walls := int(math.ceil(flare/d.line_width)) if flare > EPSILON else 0
 			loops := max(int) if solid else (object.walls+extra_walls)
@@ -211,6 +228,7 @@ Generator :: struct {
 	position:  [3]f64,
 	started:   bool,
 	feature:   int,
+	junction:  i16,
 	settings:  Feature_Settings,
 }
 
@@ -355,7 +373,7 @@ travel :: proc(g: ^Generator, to: [2]f64) {
 	}
 	if target == g.position {return}
 	distance := length3(target-g.position)
-	append(&g.t.moves, Move{to = target, speed = g.d.travel_speed, acceleration = g.d.travel_acceleration, feature = -1})
+	append(&g.t.moves, Move{to = target, speed = g.d.travel_speed, acceleration = g.d.travel_acceleration, feature = -1, junction = -1})
 	g.t.duration += distance/g.d.travel_speed
 	g.position = target
 }
@@ -377,6 +395,7 @@ extrude :: proc(g: ^Generator, to: [2]f64) {
 		fan = settings.fan,
 		extrude = true,
 		feature = g.feature,
+		junction = g.junction,
 	})
 	// A bead's cross-section is a rectangle with semicircular sides.
 	area := (w-h)*h+math.PI*h*h/4
@@ -422,6 +441,7 @@ extrude_arc :: proc(g: ^Generator, to, center: [2]f64, arc: Arc_Kind) {
 		extrude = true,
 		arc = arc,
 		feature = g.feature,
+		junction = g.junction,
 	})
 	area := (w-h)*h+math.PI*h*h/4
 	filament_area := math.PI*g.d.filament_diameter*g.d.filament_diameter/4

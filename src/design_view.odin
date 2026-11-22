@@ -33,6 +33,7 @@ Design_Bead :: struct {
 	t0, t1:        f64, // print time in seconds
 	arc:           design.Arc_Kind,
 	arc_radius:    f32,
+	junction:      i16, // index into evaluated.junctions, or -1
 }
 
 Design_Layer :: struct {
@@ -53,9 +54,10 @@ Design_State :: struct {
 	toolpath:       design.Toolpath,
 	beads:          [dynamic]Design_Bead,
 	arc_count:      int,
-	layers:         [dynamic]Design_Layer,
-	selected_layer: int,
-	clock:          f64, // simulated print time in seconds
+	layers:            [dynamic]Design_Layer,
+	selected_layer:    int,
+	selected_junction: int, // index into evaluated.junctions, or -1
+	clock:             f64, // simulated print time in seconds
 	playing:        bool,
 	rate_index:     int,
 	play_tick:      time.Tick,
@@ -67,6 +69,7 @@ Design_State :: struct {
 design_state_init :: proc(s: ^Design_State) {
 	s.nozzle_index = DESIGN_DEFAULT_NOZZLE
 	s.rate_index = DESIGN_DEFAULT_RATE
+	s.selected_junction = -1
 }
 
 design_state_clear :: proc(s: ^Design_State) {
@@ -79,6 +82,7 @@ design_state_clear :: proc(s: ^Design_State) {
 	nozzle, rate, pinned := s.nozzle_index, s.rate_index, s.pinned
 	s^ = {}
 	s.nozzle_index, s.rate_index, s.pinned = nozzle, rate, pinned
+	s.selected_junction = -1
 }
 
 design_nozzle :: proc(s: ^Design_State) -> f64 {
@@ -131,7 +135,7 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	beads := make([dynamic]Design_Bead)
 	layers := make([dynamic]Design_Layer)
 	arc_count := design_beads(&toolpath, &beads, &layers)
-	mesh := design_bead_mesh(beads[:])
+	mesh := design_bead_mesh(beads[:], -1)
 	if !renderer_set_mesh(&app.renderer, &mesh) {
 		mesh_destroy(&mesh)
 		delete(beads)
@@ -184,6 +188,107 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	}
 	if !keep_time {app_frame_camera()}
 	return true
+}
+
+// Re-slices the currently evaluated in-memory design (after interactive bevel/fillet edits),
+// preserving camera, playback layer/time, and selected junction.
+app_rebuild_design_mesh :: proc() -> bool {
+	s := &app.design
+	if !s.active {return false}
+	layer_idx, _, _, in_layer := design_layer_state(s)
+	toolpath := design.generate(&s.evaluated)
+	beads := make([dynamic]Design_Bead)
+	layers := make([dynamic]Design_Layer)
+	arc_count := design_beads(&toolpath, &beads, &layers)
+	mesh := design_bead_mesh(beads[:], s.selected_junction)
+	if !renderer_set_mesh(&app.renderer, &mesh) {
+		mesh_destroy(&mesh)
+		delete(beads)
+		delete(layers)
+		design.toolpath_destroy(&toolpath)
+		return false
+	}
+	design.toolpath_destroy(&s.toolpath)
+	delete(s.beads)
+	delete(s.layers)
+	s.toolpath = toolpath
+	s.beads = beads
+	s.arc_count = arc_count
+	s.layers = layers
+	design_set_layer(s, layer_idx, in_layer)
+	mesh_destroy(&app.mesh)
+	app.mesh = mesh
+	app.placement = {transform = mat4_identity(), bounds = mesh.bounds}
+	app.section_dirty = true
+	app.needs_redraw = true
+	return true
+}
+
+// Updates bead highlight colors in the GPU mesh without regenerating toolpaths.
+app_refresh_design_selection_mesh :: proc() {
+	s := &app.design
+	if !s.active || len(s.beads) == 0 {return}
+	mesh := design_bead_mesh(s.beads[:], s.selected_junction)
+	if renderer_set_mesh(&app.renderer, &mesh) {
+		mesh_destroy(&app.mesh)
+		app.mesh = mesh
+	} else {
+		mesh_destroy(&mesh)
+	}
+	app.needs_redraw = true
+}
+
+// Raycasts the camera ray through `(px, py)` against visible beads; returns the hit bead's
+// junction index (>= 0) or -1 if no junction bead was hit.
+design_pick_junction :: proc(s: ^Design_State, camera: Camera, viewport: UI_Rect, px, py: f64) -> int {
+	if !s.active || len(s.beads) == 0 || viewport.w <= 0 || viewport.h <= 0 {return -1}
+	eye := app_camera_eye(camera)
+	forward := vec3_normalize(vec3_sub(camera.target, eye))
+	right := vec3_normalize(vec3_cross(forward, {0, 0, 1}))
+	up := vec3_cross(right, forward)
+	h := f32(math.tan(0.78/2.0))
+	x := f32(2*(px-viewport.x)/viewport.w-1)*h*f32(viewport.w/viewport.h)
+	y := f32(1-2*(py-viewport.y)/viewport.h)*h
+	dir := vec3_normalize(vec3_add(forward, vec3_add(vec3_mul(right, x), vec3_mul(up, y))))
+	inv_x := f32(1.0)/dir.x if abs(dir.x) > 1e-8 else f32(1e30)
+	inv_y := f32(1.0)/dir.y if abs(dir.y) > 1e-8 else f32(1e30)
+	inv_z := f32(1.0)/dir.z if abs(dir.z) > 1e-8 else f32(1e30)
+
+	vis := design_visible(s)
+	count := min(len(s.beads), vis.finished_vertices/BEAD_VERTICES)
+	best_t := max(f32)
+	best_junction := -1
+	for i in 0..<count {
+		b := s.beads[i]
+		r := max(b.width, b.height)*0.65
+		min_x := min(b.a.x, b.b.x)-r
+		max_x := max(b.a.x, b.b.x)+r
+		min_y := min(b.a.y, b.b.y)-r
+		max_y := max(b.a.y, b.b.y)+r
+		min_z := min(b.a.z, b.b.z)-b.height
+		max_z := max(b.a.z, b.b.z)+r*0.35
+
+		tx1 := (min_x-eye.x)*inv_x
+		tx2 := (max_x-eye.x)*inv_x
+		tmin := min(tx1, tx2)
+		tmax := max(tx1, tx2)
+
+		ty1 := (min_y-eye.y)*inv_y
+		ty2 := (max_y-eye.y)*inv_y
+		tmin = max(tmin, min(ty1, ty2))
+		tmax = min(tmax, max(ty1, ty2))
+
+		tz1 := (min_z-eye.z)*inv_z
+		tz2 := (max_z-eye.z)*inv_z
+		tmin = max(tmin, min(tz1, tz2))
+		tmax = min(tmax, max(tz1, tz2))
+
+		if tmax >= max(tmin, f32(0)) && tmin < best_t {
+			best_t = tmin
+			best_junction = int(b.junction)
+		}
+	}
+	return best_junction
 }
 
 // The most recently modified design in DEV_DESIGN_DIRECTORY, allocated with the temp allocator.
@@ -343,6 +448,7 @@ design_beads :: proc(
 		w, h, t0, t1: f64,
 		arc: design.Arc_Kind,
 		arc_radius: f64,
+		junction: i16,
 	) {
 		bead_idx := len(beads)
 		append(beads, Design_Bead{
@@ -354,6 +460,7 @@ design_beads :: proc(
 			t1 = t1,
 			arc = arc,
 			arc_radius = f32(arc_radius),
+			junction = junction,
 		})
 		if len(layers) == 0 || abs(b.z-layers[len(layers)-1].z) > 1e-6 {
 			append(layers, Design_Layer{
@@ -394,7 +501,7 @@ design_beads :: proc(
 				}
 				t0 := clock+f64(i-1)*seg_dt
 				t1 := clock+f64(i)*seg_dt
-				append_bead(beads, layers, prev, next_pt, move.width, move.height, t0, t1, move.arc, radius)
+				append_bead(beads, layers, prev, next_pt, move.width, move.height, t0, t1, move.arc, radius, move.junction)
 				prev = next_pt
 			}
 			clock += duration
@@ -404,7 +511,7 @@ design_beads :: proc(
 		delta := move.to-position
 		duration := math.sqrt(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z)/move.speed
 		if move.extrude {
-			append_bead(beads, layers, position, move.to, move.width, move.height, clock, clock+duration, .None, 0)
+			append_bead(beads, layers, position, move.to, move.width, move.height, clock, clock+duration, .None, 0, move.junction)
 		}
 		clock += duration
 		position = move.to
@@ -412,13 +519,14 @@ design_beads :: proc(
 	return
 }
 
-design_bead_mesh :: proc(beads: []Design_Bead) -> Mesh {
+design_bead_mesh :: proc(beads: []Design_Bead, selected_junction := -1) -> Mesh {
 	mesh: Mesh
 	mesh.vertices = make([dynamic]Mesh_Vertex, 0, len(beads)*BEAD_VERTICES)
 	mesh.bounds = {{max(f32), max(f32), max(f32)}, {-max(f32), -max(f32), -max(f32)}}
 	vertices: [BEAD_VERTICES]Mesh_Vertex
 	for bead in beads {
-		design_bead_vertices(bead, 1, vertices[:])
+		selected := selected_junction >= 0 && int(bead.junction) == selected_junction
+		design_bead_vertices(bead, 1, vertices[:], selected)
 		append(&mesh.vertices, ..vertices[:])
 		for v in vertices {
 			mesh.bounds.minimum = {min(mesh.bounds.minimum.x, v.position.x), min(mesh.bounds.minimum.y, v.position.y), min(mesh.bounds.minimum.z, v.position.z)}
@@ -431,9 +539,9 @@ design_bead_mesh :: proc(beads: []Design_Bead) -> Mesh {
 }
 
 // Writes the bead from its start to `fraction` of its length. The ends extend by half a width
-// so consecutive beads close their corners. Arc beads encode `is_arc` by scaling normals by 2.0
-// so the GPU shades G2/G3 arcs in a single draw call without changing Mesh_Vertex layout.
-design_bead_vertices :: proc(bead: Design_Bead, fraction: f32, out: []Mesh_Vertex) {
+// so consecutive beads close their corners. Arc beads encode `is_arc` by scaling normals by 2.0,
+// and selected-junction beads encode `is_selected` by scaling normals by 3.0.
+design_bead_vertices :: proc(bead: Design_Bead, fraction: f32, out: []Mesh_Vertex, selected := false) {
 	assert(len(out) == BEAD_VERTICES)
 	end := vec3_add(bead.a, vec3_mul(vec3_sub(bead.b, bead.a), fraction))
 	along := vec3_sub(bead.b, bead.a)
@@ -453,7 +561,7 @@ design_bead_vertices :: proc(bead: Design_Bead, fraction: f32, out: []Mesh_Verte
 		{half-round, bead.height}, {-half+round, bead.height},
 		{-half, bead.height*0.5},
 	}
-	normal_scale := f32(2.0) if bead.arc != .None else f32(1.0)
+	normal_scale := f32(3.0) if selected else (f32(2.0) if bead.arc != .None else f32(1.0))
 	ring :: proc(origin, side: Vec3, p: [2]f32) -> Vec3 {
 		return {origin.x+side.x*p[0], origin.y+side.y*p[0], origin.z-p[1]}
 	}

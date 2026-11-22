@@ -13,6 +13,7 @@ import devlog "devlog:."
 import "rune:gpu"
 import "rune:text"
 
+import design "./design"
 import evidence "./evidence"
 
 Camera :: struct {
@@ -50,6 +51,8 @@ App_State :: struct {
 	needs_redraw:  bool,
 	dragging:      bool,
 	drag_button:   i32,
+	drag_start_x:  f64,
+	drag_start_y:  f64,
 	last_width:    f64,
 	last_height:   f64,
 	last_scale:           f64,
@@ -386,6 +389,19 @@ app_activate :: proc(action: UI_Action) -> bool {
 		rates := DESIGN_RATES
 		app.design.rate_index = (app.design.rate_index+1)%len(rates)
 		app.needs_redraw = true
+	case .Junction_Toggle_Kind:
+		if app.design.active && app.design.selected_junction >= 0 {
+			if design.toggle_junction_fillet(&app.design.evaluated, app.design.selected_junction) {
+				_ = app_rebuild_design_mesh()
+			}
+		}
+	case .Junction_Close:
+		if app.design.selected_junction >= 0 {
+			app.design.selected_junction = -1
+			app_refresh_design_selection_mesh()
+		}
+	case .Junction_Size:
+		return true
 	case .Open:
 		app_open_document()
 		app.needs_redraw = true
@@ -546,6 +562,41 @@ app_set_design_in_layer :: proc(x: f64) {
 	app.needs_redraw = true
 }
 
+app_set_junction_size :: proc(size_mm: f64) {
+	s := &app.design
+	if !s.active || s.selected_junction < 0 || s.selected_junction >= len(s.evaluated.junctions) {return}
+	snapped := math.round(size_mm*10.0)/10.0
+	if abs(snapped-s.evaluated.junctions[s.selected_junction].size) < 1e-4 {return}
+	if design.set_junction_size(&s.evaluated, s.selected_junction, snapped) {
+		_ = app_rebuild_design_mesh()
+	}
+}
+
+app_set_junction_size_from_x :: proc(x: f64) {
+	s := &app.design
+	if !s.active || s.selected_junction < 0 || s.selected_junction >= len(s.evaluated.junctions) {return}
+	rect := ui_junction_slider_rect(&app.ui)
+	track_left := rect.x+6
+	track_w := max(1.0, rect.w-12)
+	fraction := clamp((x-track_left)/track_w, 0, 1)
+	max_s := s.evaluated.junctions[s.selected_junction].max_size
+	app_set_junction_size(fraction*max_s)
+}
+
+app_pick_design_junction :: proc(px, py: f64) {
+	s := &app.design
+	if !s.active {return}
+	picked := design_pick_junction(s, app.camera, ui_viewport_rect(&app.ui), px, py)
+	if picked == s.selected_junction {return}
+	s.selected_junction = picked
+	app_refresh_design_selection_mesh()
+	if picked >= 0 && picked < len(s.evaluated.junctions) {
+		j := s.evaluated.junctions[picked]
+		kind := "FILLET" if j.is_fillet else "BEVEL"
+		app_set_status(fmt.tprintf("%s: %s → %s (%.1f mm)", kind, s.evaluated.objects[j.lower_index].name, s.evaluated.objects[j.upper_index].name, j.size))
+	}
+}
+
 app_rebuild_section :: proc() {
 	if !app.ui.section_enabled || app.mesh.triangle_count == 0 || app.design.active {
 		clear(&app.section_vertices)
@@ -592,6 +643,16 @@ renderer_draw_application :: proc() -> Render_Result {
 	app.ui.design_playing = app.design.playing
 	app.ui.design_fraction = app.design.clock/design_duration(&app.design) if design_duration(&app.design) > 0 else 0
 	app.ui.design_layer, app.ui.design_layers, app.ui.design_layer_z, app.ui.design_in_layer = design_layer_state(&app.design)
+	if app.design.active && app.design.selected_junction >= 0 && app.design.selected_junction < len(app.design.evaluated.junctions) {
+		j := app.design.evaluated.junctions[app.design.selected_junction]
+		app.ui.junction_selected = true
+		app.ui.junction_is_fillet = j.is_fillet
+		app.ui.junction_can_toggle = j.kind != .Cone_Fillet
+		app.ui.junction_size = j.size
+		app.ui.junction_max_size = j.max_size
+	} else {
+		app.ui.junction_selected = false
+	}
 	ui_build_controls(&app.ui, &evidence_view)
 	ui_scale := f32(app.ui.scale*app.ui.ui_scale)
 	text.begin_frame(&app.renderer.ui_text, ui_scale)
@@ -808,11 +869,16 @@ application_mouse :: proc "c" (
 		} else if id == u64(UI_Action.Design_Layer_Progress) {
 			app.ui.in_layer_dragging = true
 			app_set_design_in_layer(point_x)
+		} else if id == u64(UI_Action.Junction_Size) {
+			app.ui.junction_dragging = true
+			app_set_junction_size_from_x(point_x)
 		} else {
 			app.ui.section_dragging = false
 			if id == 0 && ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
 				app.dragging = true
 				app.drag_button = button
+				app.drag_start_x = point_x
+				app.drag_start_y = point_y
 			}
 		}
 	case 1:
@@ -825,6 +891,8 @@ application_mouse :: proc "c" (
 			app_set_design_layer(point_y)
 		} else if app.ui.in_layer_dragging {
 			app_set_design_in_layer(point_x)
+		} else if app.ui.junction_dragging {
+			app_set_junction_size_from_x(point_x)
 		} else if app.dragging {
 			if app.drag_button == 0 {
 				app.camera_goal.yaw -= f32(delta_x)*0.008
@@ -840,15 +908,20 @@ application_mouse :: proc "c" (
 		}
 	case 2:
 		if app.ui.pressed_id != 0 {app.needs_redraw = true}
-		if app.ui.section_dragging || app.ui.simulation_dragging || app.ui.layer_dragging || app.ui.in_layer_dragging {
+		if app.ui.section_dragging || app.ui.simulation_dragging || app.ui.layer_dragging || app.ui.in_layer_dragging || app.ui.junction_dragging {
 			app.ui.section_dragging = false
 			app.ui.simulation_dragging = false
 			app.ui.layer_dragging = false
 			app.ui.in_layer_dragging = false
+			app.ui.junction_dragging = false
 			app.ui.pressed_id = 0
 		} else {
 			id := ui_hit_test(&app.ui, point_x, point_y)
-			if !app.dragging && id != 0 && id == app.ui.pressed_id {
+			if app.dragging && app.drag_button == 0 && app.design.active && id == 0 &&
+			   math.hypot(point_x-app.drag_start_x, point_y-app.drag_start_y) < 4.0 &&
+			   ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
+				app_pick_design_junction(point_x, point_y)
+			} else if !app.dragging && id != 0 && id == app.ui.pressed_id {
 				_ = app_activate(UI_Action(id))
 			}
 			app.dragging = false
@@ -898,10 +971,12 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 			target = .Design_Layer
 		} else if ui_contains(prog_rect, px, py) {
 			target = .Design_Layer_Progress
+		} else if app.ui.junction_selected && ui_contains(ui_junction_card_rect(&app.ui), px, py) {
+			target = .Junction_Size
 		}
 		if target != .None {
 			delta := delta_y
-			if target == .Design_Layer_Progress && abs(delta_x) > abs(delta_y) {
+			if (target == .Design_Layer_Progress || target == .Junction_Size) && abs(delta_x) > abs(delta_y) {
 				delta = -delta_x
 			}
 			if delta == 0 {return}
@@ -925,6 +1000,11 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 				if target == .Design_Layer {
 					layer_idx, _, _, _ := design_layer_state(&app.design)
 					design_set_layer(&app.design, layer_idx+step, 1.0)
+				} else if target == .Junction_Size {
+					if app.design.selected_junction >= 0 && app.design.selected_junction < len(app.design.evaluated.junctions) {
+						cur := app.design.evaluated.junctions[app.design.selected_junction].size
+						app_set_junction_size(cur+f64(step)*0.2)
+					}
 				} else {
 					design_step_in_layer(&app.design, step)
 				}
@@ -984,6 +1064,9 @@ application_key :: proc "c" (
 			app.ui.focused_id = 0
 			app.ui.evidence_open = false
 			app.needs_redraw = true
+		} else if app.design.selected_junction >= 0 {
+			app.design.selected_junction = -1
+			app_refresh_design_selection_mesh()
 		}
 		return
 	}

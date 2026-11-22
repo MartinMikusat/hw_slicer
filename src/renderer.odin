@@ -100,11 +100,13 @@ vertex MeshOut mesh_vertex(
 ) {
     MeshVertex source = vertices[id];
     float3 raw_n = float3(source.normal);
-    bool is_arc = dot(raw_n, raw_n) > 2.25;
+    float n_len2 = dot(raw_n, raw_n);
+    bool is_selected = n_len2 > 6.25;
+    bool is_arc = !is_selected && n_len2 > 2.25;
     MeshOut out;
     out.position = scene.mvp * float4(source.position, 1.0);
     out.normal = normalize((scene.model * float4(raw_n, 0.0)).xyz);
-    out.color = (is_arc && scene.arc_color.a > 0.0) ? scene.arc_color : scene.color;
+    out.color = is_selected ? float4(0.95, 0.52, 0.14, 1.0) : ((is_arc && scene.arc_color.a > 0.0) ? scene.arc_color : scene.color);
     out.world = (scene.model * float4(source.position, 1.0)).xyz;
     out.camera = scene.camera.xyz;
     return out;
