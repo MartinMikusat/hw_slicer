@@ -12,14 +12,15 @@ foreign metal {
 }
 
 Scene_Uniforms :: struct {
-	mvp:       Mat4,
-	model:     Mat4,
-	color:     Vec4,
-	camera:    Vec4,
+	mvp:             Mat4,
+	model:           Mat4,
+	color:           Vec4,
+	arc_color:       Vec4, // a > 0 shades vertices with |normal| > 1.5 as G2/G3 arcs
+	camera:          Vec4,
 	view_projection: Mat4,
-	params: Vec4,
-	viewport: Vec4,
-	sh: [9]Vec4,
+	params:          Vec4,
+	viewport:        Vec4,
+	sh:              [9]Vec4,
 }
 
 Renderer :: struct {
@@ -34,8 +35,9 @@ Renderer :: struct {
 	mesh_pipeline:    Id,
 	depth_pipeline: Id,
 	line_pipeline:    Id,
-	depth_state:      Id,
-	ui_depth_state:   Id,
+	depth_state:       Id,
+	depth_equal_state: Id,
+	ui_depth_state:    Id,
 	mesh_buffer:      Id,
 	section_buffer:   Id,
 	grid_buffer:      Id,
@@ -52,6 +54,7 @@ Renderer :: struct {
 	marker_vertex_count: int,
 	last_draw_calls:  int,
 	last_triangles:   int,
+	bench_sync:       bool,
 	depth_width:      uint,
 	depth_height:     uint,
 	ui_renderer:      gpu.Renderer,
@@ -72,6 +75,7 @@ struct SceneUniforms {
     float4x4 mvp;
     float4x4 model;
     float4 color;
+    float4 arc_color;
     float4 camera;
     float4x4 view_projection;
     float4 params;
@@ -93,10 +97,12 @@ vertex MeshOut mesh_vertex(
     constant SceneUniforms &scene [[buffer(1)]]
 ) {
     MeshVertex source = vertices[id];
+    float3 raw_n = float3(source.normal);
+    bool is_arc = dot(raw_n, raw_n) > 2.25;
     MeshOut out;
     out.position = scene.mvp * float4(source.position, 1.0);
-    out.normal = normalize((scene.model * float4(source.normal, 0.0)).xyz);
-    out.color = scene.color;
+    out.normal = normalize((scene.model * float4(raw_n, 0.0)).xyz);
+    out.color = (is_arc && scene.arc_color.a > 0.0) ? scene.arc_color : scene.color;
     out.world = (scene.model * float4(source.position, 1.0)).xyz;
     out.camera = scene.camera.xyz;
     return out;
@@ -138,10 +144,10 @@ static float ambient_occlusion(MeshOut in, float3 normal, constant SceneUniforms
     float radius = scene.params.z;
     float blocked = 0.0;
     float4 surface = scene.view_projection * float4(in.world, 1.0);
-    for (int i = 0; i < 16; i++) {
-        float step = (float(i) + 0.5) / 16.0;
+    for (int i = 0; i < 8; i++) {
+        float step = (float(i) + 0.5) / 8.0;
         float azimuth = float(i) * 2.39996;
-        float lift = 0.12 + 0.88 * fract(step * 7.0);
+        float lift = 0.14 + 0.86 * fract(step * 5.0);
         float flat = sqrt(1.0 - lift * lift);
         float3 direction = tangent * (cos(azimuth) * flat) + bitangent * (sin(azimuth) * flat) + normal * lift;
         float4 clip = scene.view_projection * float4(in.world + direction * radius * (0.2 + 0.8 * step), 1.0);
@@ -157,7 +163,7 @@ static float ambient_occlusion(MeshOut in, float3 normal, constant SceneUniforms
         float range = saturate(radius / max(abs(surface.w - stored_distance), 1e-3));
         blocked += (gap > radius * 0.04 ? 1.0 : 0.0) * range;
     }
-    return 1.0 - 0.75 * blocked / 16.0;
+    return 1.0 - 0.75 * blocked / 8.0;
 }
 
 fragment float4 mesh_fragment(MeshOut in [[stage_in]],
@@ -195,8 +201,8 @@ fragment float4 floor_fragment(MeshOut in [[stage_in]],
     float3 color = in.color.rgb * shade;
     float3 direction = reflect(normalize(in.world - in.camera), normal);
     float radius = scene.params.z;
-    for (int i = 1; i <= 160; i++) {
-        float distance = radius * 0.16 * float(i);
+    for (int i = 1; i <= 48; i++) {
+        float distance = radius * 0.5 * float(i);
         float4 clip = scene.view_projection * float4(in.world + direction * distance, 1.0);
         if (clip.w <= 0.0) {break;}
         float2 local = float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
@@ -207,10 +213,10 @@ fragment float4 floor_fragment(MeshOut in [[stage_in]],
         float near_z = scene.params.x, far_z = scene.params.y;
         float surface_distance = near_z * far_z / (far_z - stored * (far_z - near_z));
         float gap = clip.w - surface_distance;
-        float thickness = radius * 0.4;
+        float thickness = radius * 0.65;
         if (gap > 0.0 && gap < thickness) {
             float edge = saturate(min(min(local.x, local.y), min(1.0-local.x, 1.0-local.y)) * 8.0);
-            float fade = edge * (1.0 - float(i) / 160.0) * 0.24;
+            float fade = edge * (1.0 - float(i) / 48.0) * 0.24;
             color = mix(color, scene_color.sample(linear_sampler, uv).rgb, fade);
             break;
         }
@@ -264,6 +270,7 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.section_buffer,
 		renderer.mesh_buffer,
 		renderer.ui_depth_state,
+		renderer.depth_equal_state,
 		renderer.depth_state,
 		renderer.line_pipeline,
 		renderer.mesh_pipeline,
@@ -403,6 +410,13 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 		sel_registerName("newDepthStencilStateWithDescriptor:"),
 		depth_descriptor,
 	)
+	msg_void_u(depth_descriptor, sel_registerName("setDepthCompareFunction:"), 3) // LessEqual
+	msg_void_bool(depth_descriptor, sel_registerName("setDepthWriteEnabled:"), false)
+	renderer.depth_equal_state = msg_id_id(
+		renderer.device,
+		sel_registerName("newDepthStencilStateWithDescriptor:"),
+		depth_descriptor,
+	)
 	ui_depth_descriptor := msg_id(
 		msg_id(objc_getClass("MTLDepthStencilDescriptor"), sel_registerName("alloc")),
 		sel_registerName("init"),
@@ -427,6 +441,7 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 	return renderer.mesh_pipeline != nil &&
 		renderer.line_pipeline != nil &&
 		renderer.depth_state != nil &&
+		renderer.depth_equal_state != nil &&
 		renderer.ui_depth_state != nil
 }
 
@@ -609,9 +624,9 @@ renderer_ensure_depth :: proc(
 }
 
 // Draws the first `count` uploaded mesh vertices, then `partial` from bytes.
-// When `show_arcs` is true and `runs` is provided, G2/G3 arc beads are shaded in `COLOR_ARC`
-// directly on the bead geometry. When `highlight_start >= 0`, the active layer's vertices
-// `[highlight_start ..< count)` and `partial` are shaded in `highlight_color`.
+// G2/G3 arc shading is handled in-shader via `uniforms.arc_color` so the full base mesh draws
+// in a single draw call; when `highlight_start >= 0`, the active layer `[highlight_start..<count)`
+// and `partial` draw in a second call with `highlight_color`.
 renderer_draw_mesh :: proc(
 	renderer: ^Renderer,
 	encoder: Id,
@@ -620,16 +635,11 @@ renderer_draw_mesh :: proc(
 	uniforms: ^Scene_Uniforms = nil,
 	highlight_start := -1,
 	highlight_color := COLOR_SECTION,
-	runs: []Design_Vertex_Run = nil,
-	show_arcs := false,
-	partial_is_arc := false,
 ) {
 	assert(count >= 0 && count <= renderer.mesh_vertex_count)
 	assert(len(partial)*size_of(Mesh_Vertex) <= 4096)
 	use_highlight := uniforms != nil && highlight_start >= 0 && highlight_start <= count
-	use_arcs := uniforms != nil && show_arcs && len(runs) > 0
-
-	if !use_highlight && !use_arcs {
+	if !use_highlight {
 		if count > 0 {
 			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(count))
 			renderer.last_draw_calls += 1
@@ -643,58 +653,31 @@ renderer_draw_mesh :: proc(
 		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 		return
 	}
-
-	set_color :: proc(encoder: Id, base: ^Scene_Uniforms, color: Vec4, current: ^Vec4) {
-		if color == current^ {return}
-		u := base^
-		u.color = color
-		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &u, size_of(Scene_Uniforms), 1)
-		msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &u, size_of(Scene_Uniforms), 1)
-		current^ = color
+	if highlight_start > 0 {
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(highlight_start))
+		renderer.last_draw_calls += 1
+		renderer.last_triangles += highlight_start/3
 	}
-
-	current_color := uniforms.color
-	base_limit := highlight_start if use_highlight else count
-	if base_limit > 0 {
-		if use_arcs {
-			for run in runs {
-				if run.start >= base_limit {break}
-				seg_end := min(run.start+run.count, base_limit)
-				seg_count := seg_end-run.start
-				if seg_count <= 0 {continue}
-				c := COLOR_ARC if run.is_arc else uniforms.color
-				set_color(encoder, uniforms, c, &current_color)
-				msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(run.start), uint(seg_count))
-				renderer.last_draw_calls += 1
-				renderer.last_triangles += seg_count/3
-			}
-		} else {
-			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(base_limit))
-			renderer.last_draw_calls += 1
-			renderer.last_triangles += base_limit/3
-		}
+	active_uniforms := uniforms^
+	active_uniforms.color = highlight_color
+	active_uniforms.arc_color = {}
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &active_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &active_uniforms, size_of(Scene_Uniforms), 1)
+	active_count := count-highlight_start
+	if active_count > 0 {
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(highlight_start), uint(active_count))
+		renderer.last_draw_calls += 1
+		renderer.last_triangles += active_count/3
 	}
-
-	if use_highlight {
-		set_color(encoder, uniforms, highlight_color, &current_color)
-		active_count := count-highlight_start
-		if active_count > 0 {
-			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(highlight_start), uint(active_count))
-			renderer.last_draw_calls += 1
-			renderer.last_triangles += active_count/3
-		}
-	}
-
 	if len(partial) > 0 {
-		p_color := highlight_color if use_highlight else (COLOR_ARC if (use_arcs && partial_is_arc) else uniforms.color)
-		set_color(encoder, uniforms, p_color, &current_color)
 		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(partial), uint(len(partial)*size_of(Mesh_Vertex)), 0)
 		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(len(partial)))
 		renderer.last_draw_calls += 1
 		renderer.last_triangles += len(partial)/3
 		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 	}
-	set_color(encoder, uniforms, uniforms.color, &current_color)
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
 }
 
 renderer_draw_marker :: proc(
@@ -718,6 +701,7 @@ renderer_draw_marker :: proc(
 	marker_uniforms.model = marker_model
 	marker_uniforms.mvp = mat4_mul(projection, mat4_mul(view, marker_model))
 	marker_uniforms.color = color
+	marker_uniforms.arc_color = {}
 	msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.marker_buffer, 0, 0)
 	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &marker_uniforms, size_of(Scene_Uniforms), 1)
 	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &marker_uniforms, size_of(Scene_Uniforms), 1)
@@ -844,30 +828,58 @@ renderer_draw :: proc(
 		mvp = mat4_mul(projection, mat4_mul(view, model)),
 		model = model,
 		color = COLOR_COFFEE,
+		arc_color = COLOR_ARC if show_arcs else Vec4{},
 		camera = {eye.x, eye.y, eye.z, 1},
 		view_projection = mat4_mul(projection, view),
 		params = {near_z, far_z, max(f32(0.1), vec3_length(size)*0.025), 0 if wireframe else 1},
 		viewport = {f32(viewport.x/width), f32(viewport.y/height), f32(viewport.w/width), f32(viewport.h/height)},
 		sh = renderer.harmonics,
 	}
+	copy_tex := transmute(proc "c" (Id, Sel, Id, uint, uint, MTL_Origin, MTL_Size, Id, uint, uint, MTL_Origin))objc_send_address
+	cull_back := visual.is_design && !wireframe
 	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.ao_depth)
 	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 1)
 	prepass := msg_id_id(command_buffer, sel_registerName("renderCommandEncoderWithDescriptor:"), pass)
 	if prepass == nil {return .No_Encoder}
 	msg_void_viewport(prepass, sel_registerName("setViewport:"), {viewport.x*scale, viewport.y*scale, viewport.w*scale, viewport.h*scale, 0, 1})
 	msg_void_id(prepass, sel_registerName("setDepthStencilState:"), renderer.depth_state)
+	if cull_back {
+		msg_void_u(prepass, sel_registerName("setFrontFacingWinding:"), 1) // CCW
+		msg_void_u(prepass, sel_registerName("setCullMode:"), 2) // Back
+	}
 	msg_void_id(prepass, sel_registerName("setRenderPipelineState:"), renderer.depth_pipeline)
 	msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 	msg_void_ptr_u_u(prepass, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 	renderer_draw_mesh(renderer, prepass, visual.finished_vertices, visual.partial)
 	msg_void(prepass, sel_registerName("endEncoding"))
+
+	// Seed `depth_texture` from the depth prepass (`ao_depth`) so `scene_encoder` rejects 100%
+	// of occluded inner/lower bead layers via hardware Early-Z before running PBR + SSAO.
+	depth_blit := msg_id(command_buffer, sel_registerName("blitCommandEncoder"))
+	if depth_blit != nil {
+		copy_tex(
+			depth_blit,
+			sel_registerName("copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
+			renderer.ao_depth, 0, 0, {0, 0, 0}, {pixel_width, pixel_height, 1},
+			renderer.depth_texture, 0, 0, {0, 0, 0},
+		)
+		msg_void(depth_blit, sel_registerName("endEncoding"))
+	}
+
+	// Render the shaded mesh once into `scene_texture` (with Early-Z from prepass),
+	// then blit `scene_texture` into `texture` instead of drawing the entire mesh a third time.
 	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.depth_texture)
-	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0)
+	msg_void_u(depth_attachment, sel_registerName("setLoadAction:"), 1) // Load prepass depth
+	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 1)
 	msg_void_id(color_attachment, sel_registerName("setTexture:"), renderer.scene_texture)
 	scene_encoder := msg_id_id(command_buffer, sel_registerName("renderCommandEncoderWithDescriptor:"), pass)
 	if scene_encoder == nil {return .No_Encoder}
 	msg_void_viewport(scene_encoder, sel_registerName("setViewport:"), {viewport.x*scale, viewport.y*scale, viewport.w*scale, viewport.h*scale, 0, 1})
-	msg_void_id(scene_encoder, sel_registerName("setDepthStencilState:"), renderer.depth_state)
+	msg_void_id(scene_encoder, sel_registerName("setDepthStencilState:"), renderer.depth_equal_state)
+	if cull_back {
+		msg_void_u(scene_encoder, sel_registerName("setFrontFacingWinding:"), 1) // CCW
+		msg_void_u(scene_encoder, sel_registerName("setCullMode:"), 2) // Back
+	}
 	msg_void_u(scene_encoder, sel_registerName("setTriangleFillMode:"), 1 if wireframe else 0)
 	msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.mesh_pipeline)
 	msg_void_id_u_u(scene_encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
@@ -875,12 +887,29 @@ renderer_draw :: proc(
 	msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-	renderer_draw_mesh(renderer, scene_encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION, visual.runs, show_arcs, visual.partial_is_arc)
+	renderer_draw_mesh(renderer, scene_encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION)
 	if visual.marker_active {
+		msg_void_u(scene_encoder, sel_registerName("setCullMode:"), 0)
+		msg_void_id(scene_encoder, sel_registerName("setDepthStencilState:"), renderer.depth_state)
 		renderer_draw_marker(renderer, scene_encoder, &mesh_uniforms, projection, view, model, visual.marker_pos, visual.marker_radius, COLOR_NOZZLE_MARKER)
 	}
 	msg_void(scene_encoder, sel_registerName("endEncoding"))
+
+	blit := msg_id(command_buffer, sel_registerName("blitCommandEncoder"))
+	if blit != nil {
+		copy_tex(
+			blit,
+			sel_registerName("copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
+			renderer.scene_texture, 0, 0, {0, 0, 0}, {pixel_width, pixel_height, 1},
+			texture, 0, 0, {0, 0, 0},
+		)
+		msg_void(blit, sel_registerName("endEncoding"))
+	}
+
 	msg_void_id(color_attachment, sel_registerName("setTexture:"), texture)
+	msg_void_u(color_attachment, sel_registerName("setLoadAction:"), 1) // Load blitted mesh
+	msg_void_u(depth_attachment, sel_registerName("setLoadAction:"), 1) // Load mesh depth
+	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0)
 	encoder := msg_id_id(
 		command_buffer,
 		sel_registerName("renderCommandEncoderWithDescriptor:"),
@@ -907,37 +936,7 @@ renderer_draw :: proc(
 		renderer.depth_state,
 	)
 	msg_void_u(encoder, sel_registerName("setCullMode:"), 0)
-	msg_void_u(
-		encoder,
-		sel_registerName("setTriangleFillMode:"),
-		1 if wireframe else 0,
-	)
-	msg_void_id(
-		encoder,
-		sel_registerName("setRenderPipelineState:"),
-		renderer.mesh_pipeline,
-	)
-	msg_void_id_u_u(
-		encoder,
-		sel_registerName("setVertexBuffer:offset:atIndex:"),
-		renderer.mesh_buffer,
-		0,
-		0,
-	)
-	msg_void_ptr_u_u(
-		encoder,
-		sel_registerName("setVertexBytes:length:atIndex:"),
-		&mesh_uniforms,
-		size_of(Scene_Uniforms),
-		1,
-	)
-	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
-	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-	renderer_draw_mesh(renderer, encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION, visual.runs, show_arcs, visual.partial_is_arc)
-	if visual.marker_active {
-		renderer_draw_marker(renderer, encoder, &mesh_uniforms, projection, view, model, visual.marker_pos, visual.marker_radius, COLOR_NOZZLE_MARKER)
-	}
 
 	if eye.z > -0.01 {
 		floor_vertices := [6]Mesh_Vertex{
@@ -1107,5 +1106,8 @@ renderer_draw :: proc(
 		drawable,
 	)
 	msg_void(command_buffer, sel_registerName("commit"))
+	if renderer.bench_sync {
+		msg_void(command_buffer, sel_registerName("waitUntilCompleted"))
+	}
 	return .Presented
 }

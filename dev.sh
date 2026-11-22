@@ -71,13 +71,13 @@ launch_app() {
       DYLD_INSERT_LIBRARIES="$asan_runtime" \
       HW_SLICER_ACTIVATE_ON_LAUNCH="$activate" \
       HW_SLICER_UI_SNAPSHOT="$SNAPSHOT" \
-      MTL_DEBUG_LAYER=1 \
+      MTL_DEBUG_LAYER="${MTL_DEBUG_LAYER:-0}" \
       "$HOST" &
   else
     env \
       HW_SLICER_ACTIVATE_ON_LAUNCH="$activate" \
       HW_SLICER_UI_SNAPSHOT="$SNAPSHOT" \
-      MTL_DEBUG_LAYER=1 \
+      MTL_DEBUG_LAYER="${MTL_DEBUG_LAYER:-0}" \
       "$HOST" &
   fi
   APP_PID=$!

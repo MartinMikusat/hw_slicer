@@ -22,9 +22,10 @@ DESIGN_EXTENSION :: ".hwsdesign"
 // ponytail: dev-only absolute directory; the focused interface shows its newest design.
 DEV_DESIGN_DIRECTORY :: "/Users/martin/projects/hw_slicer/resources/designs"
 
-// Vertices of one bead: eight side quads of an octagonal cross-section and two end caps.
-BEAD_SIDES :: 8
-BEAD_VERTICES :: BEAD_SIDES*6+2*(BEAD_SIDES-2)*3
+// Vertices of one bead: six side quads of a hexagonal cross-section (36 vertices, 12 triangles).
+BEAD_SIDES :: 6
+BEAD_VERTICES :: BEAD_SIDES*6
+VISUAL_CHORD_TOLERANCE :: 0.05 // mm between a preview arc and its visual chord
 
 Design_Bead :: struct {
 	a, b:          Vec3, // top centre line
@@ -32,12 +33,6 @@ Design_Bead :: struct {
 	t0, t1:        f64, // print time in seconds
 	arc:           design.Arc_Kind,
 	arc_radius:    f32,
-}
-
-Design_Vertex_Run :: struct {
-	start:  int,
-	count:  int,
-	is_arc: bool,
 }
 
 Design_Layer :: struct {
@@ -57,7 +52,6 @@ Design_State :: struct {
 	evaluated:      design.Design,
 	toolpath:       design.Toolpath,
 	beads:          [dynamic]Design_Bead,
-	vertex_runs:    [dynamic]Design_Vertex_Run,
 	arc_count:      int,
 	layers:         [dynamic]Design_Layer,
 	selected_layer: int,
@@ -79,7 +73,6 @@ design_state_clear :: proc(s: ^Design_State) {
 	design.design_destroy(&s.evaluated)
 	design.toolpath_destroy(&s.toolpath)
 	delete(s.beads)
-	delete(s.vertex_runs)
 	delete(s.layers)
 	delete(s.path)
 	delete(s.export_path)
@@ -137,14 +130,12 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	toolpath := design.generate(&evaluated)
 	beads := make([dynamic]Design_Bead)
 	layers := make([dynamic]Design_Layer)
-	vertex_runs := make([dynamic]Design_Vertex_Run)
-	arc_count := design_beads(&toolpath, &beads, &layers, &vertex_runs)
+	arc_count := design_beads(&toolpath, &beads, &layers)
 	mesh := design_bead_mesh(beads[:])
 	if !renderer_set_mesh(&app.renderer, &mesh) {
 		mesh_destroy(&mesh)
 		delete(beads)
 		delete(layers)
-		delete(vertex_runs)
 		design.toolpath_destroy(&toolpath)
 		design.design_destroy(&evaluated)
 		devlog.failed(devlog.global(), site, {reason = "renderer mesh upload failed", severity = .Critical}, {scope = "design", stage = "upload"})
@@ -164,7 +155,6 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	app.design.evaluated = evaluated
 	app.design.toolpath = toolpath
 	app.design.beads = beads
-	app.design.vertex_runs = vertex_runs
 	app.design.arc_count = arc_count
 	app.design.layers = layers
 	app.design.clock = fraction*toolpath.duration
@@ -340,18 +330,15 @@ design_step_in_layer :: proc(s: ^Design_State, delta: int) {
 	}
 }
 
-// Extruding moves become beads with their print-time interval, per-layer spans, and contiguous
-// G1 vs G2/G3 vertex runs so arc geometry can be shaded directly without an overlay.
+// Extruding moves become beads with their print-time interval and per-layer spans.
 design_beads :: proc(
 	t: ^design.Toolpath,
 	beads: ^[dynamic]Design_Bead,
 	layers: ^[dynamic]Design_Layer,
-	runs: ^[dynamic]Design_Vertex_Run,
 ) -> (arc_count: int) {
 	append_bead :: proc(
 		beads: ^[dynamic]Design_Bead,
 		layers: ^[dynamic]Design_Layer,
-		runs: ^[dynamic]Design_Vertex_Run,
 		a, b: [3]f64,
 		w, h, t0, t1: f64,
 		arc: design.Arc_Kind,
@@ -368,13 +355,6 @@ design_beads :: proc(
 			arc = arc,
 			arc_radius = f32(arc_radius),
 		})
-		is_arc := arc != .None
-		v_start := bead_idx*BEAD_VERTICES
-		if len(runs) > 0 && runs[len(runs)-1].is_arc == is_arc {
-			runs[len(runs)-1].count += BEAD_VERTICES
-		} else {
-			append(runs, Design_Vertex_Run{start = v_start, count = BEAD_VERTICES, is_arc = is_arc})
-		}
 		if len(layers) == 0 || abs(b.z-layers[len(layers)-1].z) > 1e-6 {
 			append(layers, Design_Layer{
 				z          = b.z,
@@ -398,8 +378,8 @@ design_beads :: proc(
 			distance := radius*abs(sweep)
 			duration := distance/move.speed
 			full_segs := design.MAX_CIRCLE_SEGMENTS
-			if radius > design.CHORD_TOLERANCE {
-				full_segs = int(math.ceil(math.PI/math.acos(1-design.CHORD_TOLERANCE/radius)))
+			if radius > VISUAL_CHORD_TOLERANCE {
+				full_segs = int(math.ceil(math.PI/math.acos(1-VISUAL_CHORD_TOLERANCE/radius)))
 			}
 			full_segs = clamp(full_segs, design.MIN_CIRCLE_SEGMENTS, design.MAX_CIRCLE_SEGMENTS)
 			segs := max(2, int(math.ceil(f64(full_segs)*abs(sweep)/(2*math.PI))))
@@ -414,7 +394,7 @@ design_beads :: proc(
 				}
 				t0 := clock+f64(i-1)*seg_dt
 				t1 := clock+f64(i)*seg_dt
-				append_bead(beads, layers, runs, prev, next_pt, move.width, move.height, t0, t1, move.arc, radius)
+				append_bead(beads, layers, prev, next_pt, move.width, move.height, t0, t1, move.arc, radius)
 				prev = next_pt
 			}
 			clock += duration
@@ -424,7 +404,7 @@ design_beads :: proc(
 		delta := move.to-position
 		duration := math.sqrt(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z)/move.speed
 		if move.extrude {
-			append_bead(beads, layers, runs, position, move.to, move.width, move.height, clock, clock+duration, .None, 0)
+			append_bead(beads, layers, position, move.to, move.width, move.height, clock, clock+duration, .None, 0)
 		}
 		clock += duration
 		position = move.to
@@ -451,7 +431,8 @@ design_bead_mesh :: proc(beads: []Design_Bead) -> Mesh {
 }
 
 // Writes the bead from its start to `fraction` of its length. The ends extend by half a width
-// so consecutive beads close their corners.
+// so consecutive beads close their corners. Arc beads encode `is_arc` by scaling normals by 2.0
+// so the GPU shades G2/G3 arcs in a single draw call without changing Mesh_Vertex layout.
 design_bead_vertices :: proc(bead: Design_Bead, fraction: f32, out: []Mesh_Vertex) {
 	assert(len(out) == BEAD_VERTICES)
 	end := vec3_add(bead.a, vec3_mul(vec3_sub(bead.b, bead.a), fraction))
@@ -464,14 +445,15 @@ design_bead_vertices :: proc(bead: Design_Bead, fraction: f32, out: []Mesh_Verte
 	start := vec3_sub(bead.a, extend)
 	stop := vec3_add(end, extend)
 	half := bead.width*0.5
-	round := min(bead.height*0.35, half)
-	// Octagon corners as (across, down) offsets from the top centre, counter-clockwise from above.
+	round := min(bead.height*0.42, half)
+	// Hexagonal bead profile as (across, down) offsets from the top centre, CCW from above.
 	profile := [BEAD_SIDES][2]f32{
 		{-half+round, 0}, {half-round, 0},
-		{half, round}, {half, bead.height-round},
+		{half, bead.height*0.5},
 		{half-round, bead.height}, {-half+round, bead.height},
-		{-half, bead.height-round}, {-half, round},
+		{-half, bead.height*0.5},
 	}
+	normal_scale := f32(2.0) if bead.arc != .None else f32(1.0)
 	ring :: proc(origin, side: Vec3, p: [2]f32) -> Vec3 {
 		return {origin.x+side.x*p[0], origin.y+side.y*p[0], origin.z-p[1]}
 	}
@@ -480,7 +462,7 @@ design_bead_vertices :: proc(bead: Design_Bead, fraction: f32, out: []Mesh_Verte
 		p := profile[k]
 		q := profile[(k+1)%BEAD_SIDES]
 		mid := [2]f32{(p[0]+q[0])*0.5, (p[1]+q[1])*0.5-bead.height*0.5}
-		normal := vec3_normalize(Vec3{side.x*mid[0], side.y*mid[0], -mid[1]})
+		normal := vec3_mul(vec3_normalize(Vec3{side.x*mid[0], side.y*mid[0], -mid[1]}), normal_scale)
 		a0 := ring(start, side, p)
 		a1 := ring(start, side, q)
 		b0 := ring(stop, side, p)
@@ -491,24 +473,13 @@ design_bead_vertices :: proc(bead: Design_Bead, fraction: f32, out: []Mesh_Verte
 			index += 1
 		}
 	}
-	caps := [2]struct {origin, normal: Vec3}{{start, vec3_mul(direction, -1)}, {stop, direction}}
-	for cap in caps {
-		center := ring(cap.origin, side, profile[0])
-		for k in 1..<BEAD_SIDES-1 {
-			out[index+0] = {center, cap.normal}
-			out[index+1] = {ring(cap.origin, side, profile[k]), cap.normal}
-			out[index+2] = {ring(cap.origin, side, profile[k+1]), cap.normal}
-			index += 3
-		}
-	}
 	assert(index == BEAD_VERTICES)
 }
 
 Design_Visual :: struct {
 	finished_vertices: int,
 	partial:           []Mesh_Vertex,
-	partial_is_arc:    bool,
-	runs:              []Design_Vertex_Run,
+	is_design:         bool,
 	highlight_start:   int, // vertex index where current layer begins; -1 when using default color
 	marker_active:     bool,
 	marker_pos:        Vec3,
@@ -537,7 +508,7 @@ design_current_move_info :: proc(s: ^Design_State) -> (arc: design.Arc_Kind, rad
 design_visible :: proc(s: ^Design_State) -> (v: Design_Visual) {
 	v.highlight_start = -1
 	if !s.active || len(s.beads) == 0 {return}
-	v.runs = s.vertex_runs[:]
+	v.is_design = true
 	low, high := 0, len(s.beads)
 	for low < high {
 		middle := (low+high)/2
@@ -551,7 +522,6 @@ design_visible :: proc(s: ^Design_State) -> (v: Design_Visual) {
 		fraction := f32((s.clock-bead.t0)/max(bead.t1-bead.t0, 0.000001))
 		design_bead_vertices(bead, fraction, s.partial[:])
 		v.partial = s.partial[:]
-		v.partial_is_arc = bead.arc != .None
 		tip = vec3_add(bead.a, vec3_mul(vec3_sub(bead.b, bead.a), fraction))
 	}
 	layer_idx, layer_count, _, in_layer := design_layer_state(s)

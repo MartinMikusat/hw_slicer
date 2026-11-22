@@ -64,6 +64,10 @@ startup_font_size: int
 startup_settings_open: bool
 startup_design: string
 startup_design_time := -1.0
+bench_frames_target: int
+bench_frames_done: int
+bench_start_tick: time.Tick
+bench_total_ms: f64
 
 app_context :: proc() -> runtime.Context {
 	result := runtime.default_context()
@@ -665,6 +669,12 @@ application_frame :: proc "c" (width, height, scale: f64) {
 	app_animate_camera()
 	app_poll_design()
 	if app_animate_design() {app.needs_redraw = true}
+	if bench_frames_target > 0 {
+		app.renderer.bench_sync = true
+		app.camera.yaw += 0.03
+		app.camera_goal.yaw = app.camera.yaw
+		app.needs_redraw = true
+	}
 	if app.needs_redraw {
 		t0 := time.tick_now()
 		if app.last_render_tick != {} {
@@ -681,6 +691,22 @@ application_frame :: proc "c" (width, height, scale: f64) {
 		app.ui.render_tris = app.renderer.last_triangles
 		app.ui.render_draws = app.renderer.last_draw_calls
 		if app.ui.fps <= 0 && draw_ms > 0 {app.ui.fps = min(120.0, 1000.0/draw_ms)}
+		if bench_frames_target > 0 && result == .Presented {
+			// Skip frame 0 warmup.
+			if bench_frames_done > 0 {
+				bench_total_ms += draw_ms
+			} else {
+				bench_start_tick = time.tick_now()
+			}
+			bench_frames_done += 1
+			if bench_frames_done > bench_frames_target {
+				avg_ms := bench_total_ms/f64(bench_frames_target)
+				est_fps := 1000.0/max(avg_ms, 0.001)
+				fmt.printf("BENCH: frames=%d avg_frame=%.2f ms est_fps=%.1f tris=%d draws=%d beads=%d\n",
+					bench_frames_target, avg_ms, est_fps, app.renderer.last_triangles, app.renderer.last_draw_calls, len(app.design.beads))
+				os.exit(0)
+			}
+		}
 		switch result {
 		case .Presented, .Captured:
 			if !app.first_frame_logged {
@@ -1235,6 +1261,10 @@ main :: proc() {
 		} else if strings.has_prefix(argument, "--design-time=") {
 			if parsed, ok := strconv.parse_f64(argument[len("--design-time="):]); ok {
 				startup_design_time = clamp(parsed, 0, 1)
+			}
+		} else if strings.has_prefix(argument, "--bench-frames=") {
+			if parsed, ok := strconv.parse_int(argument[len("--bench-frames="):], 10); ok && parsed > 0 {
+				bench_frames_target = parsed
 			}
 		}
 	}
