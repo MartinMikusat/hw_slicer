@@ -106,4 +106,7 @@ if [ "$MODE" != "release" ]; then
 fi
 
 codesign --force --deep --sign - "$APP"
+READY_STAMP="$ROOT/build/.ready-$MODE"
+printf '%s:%s\n' "$(date +%s)" "$$" > "$READY_STAMP.tmp"
+mv "$READY_STAMP.tmp" "$READY_STAMP"
 printf '[hw_slicer] built %s: %s\n' "$MODE" "${APP#"$ROOT/"}"
