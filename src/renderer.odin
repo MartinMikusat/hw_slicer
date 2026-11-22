@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:math"
+import "core:mem"
 import MTL "vendor:darwin/Metal"
 import "rune:gpu"
 import "rune:text"
@@ -23,6 +24,12 @@ Scene_Uniforms :: struct {
 	sh:              [9]Vec4,
 }
 
+Gpu_Bead :: struct {
+	a:    [4]f32, // xyz = start top-centre, w = width
+	b:    [4]f32, // xyz = end top-centre,   w = height
+	meta: [4]f32, // x = fraction, y = is_arc (0/1), z = junction (-1 or >=0), w = 0
+}
+
 Renderer :: struct {
 	environment: Id,
 	harmonics: [9]Vec4,
@@ -35,13 +42,18 @@ Renderer :: struct {
 	layer:            Id,
 	device:           Id,
 	queue:            Id,
-	mesh_pipeline:    Id,
-	depth_pipeline: Id,
-	line_pipeline:    Id,
-	depth_state:       Id,
-	ui_depth_state:    Id,
-	mesh_buffer:      Id,
-	section_buffer:   Id,
+	mesh_pipeline:       Id,
+	bead_pipeline:       Id,
+	depth_pipeline:      Id,
+	bead_depth_pipeline: Id,
+	line_pipeline:       Id,
+	depth_state:         Id,
+	ui_depth_state:      Id,
+	mesh_buffer:         Id,
+	bead_buffer:         Id,
+	bead_capacity:       int,
+	bead_count:          int,
+	section_buffer:      Id,
 	marker_buffer:    Id,
 	capture_texture:  Id,
 	capture_path:     string,
@@ -109,6 +121,70 @@ vertex MeshOut mesh_vertex(
     out.color = is_selected ? float4(0.95, 0.52, 0.14, 1.0) : ((is_arc && scene.arc_color.a > 0.0) ? scene.arc_color : scene.color);
     out.world = (scene.model * float4(source.position, 1.0)).xyz;
     out.camera = scene.camera.xyz;
+    return out;
+}
+
+struct GpuBead {
+    float4 a;    // xyz = start, w = width
+    float4 b;    // xyz = end,   w = height
+    float4 meta; // x = fraction, y = is_arc, z = junction, w = unused
+};
+
+vertex MeshOut bead_vertex(
+    uint id [[vertex_id]],
+    device const GpuBead *beads [[buffer(0)]],
+    constant SceneUniforms &scene [[buffer(1)]]
+) {
+    uint bead_idx = id / 36;
+    uint local_id = id % 36;
+    uint side_idx = local_id / 6;
+    uint tri_v    = local_id % 6;
+
+    GpuBead bead = beads[bead_idx];
+    float3 a = bead.a.xyz;
+    float3 b_pos = bead.b.xyz;
+    float width = bead.a.w;
+    float height = bead.b.w;
+    float fraction = bead.meta.x;
+
+    float3 end_p = a + (b_pos - a) * fraction;
+    float3 along = float3(b_pos.x - a.x, b_pos.y - a.y, 0.0);
+    float len = length(along);
+    float3 dir = len > 1e-6 ? (along / len) : float3(1.0, 0.0, 0.0);
+    float3 side = float3(-dir.y, dir.x, 0.0);
+    float half_w = width * 0.5;
+    float3 start_p = a - dir * half_w;
+    float3 stop_p  = end_p + dir * half_w;
+    float rnd = min(height * 0.42, half_w);
+
+    const float2 profile[6] = {
+        float2(-half_w + rnd, 0.0),
+        float2( half_w - rnd, 0.0),
+        float2( half_w,       height * 0.5),
+        float2( half_w - rnd, height),
+        float2(-half_w + rnd, height),
+        float2(-half_w,       height * 0.5),
+    };
+    float2 p = profile[side_idx];
+    float2 q = profile[(side_idx + 1) % 6];
+    float2 mid = (p + q) * 0.5 - float2(0.0, height * 0.5);
+    float3 raw_n = normalize(float3(side.x * mid.x, side.y * mid.x, -mid.y));
+
+    bool use_stop = (tri_v == 1 || tri_v == 2 || tri_v == 4);
+    bool use_q    = (tri_v == 2 || tri_v == 4 || tri_v == 5);
+    float3 origin = use_stop ? stop_p : start_p;
+    float2 prof   = use_q ? q : p;
+    float3 pos    = float3(origin.x + side.x * prof.x, origin.y + side.y * prof.x, origin.z - prof.y);
+
+    bool is_selected = (scene.camera.w >= 0.0 && abs(bead.meta.z - scene.camera.w) < 0.25);
+    bool is_arc      = (!is_selected && bead.meta.y > 0.5);
+
+    MeshOut out;
+    out.position = scene.mvp * float4(pos, 1.0);
+    out.normal   = normalize((scene.model * float4(raw_n, 0.0)).xyz);
+    out.color    = is_selected ? float4(0.95, 0.52, 0.14, 1.0) : ((is_arc && scene.arc_color.a > 0.0) ? scene.arc_color : scene.color);
+    out.world    = (scene.model * float4(pos, 1.0)).xyz;
+    out.camera   = scene.camera.xyz;
     return out;
 }
 
@@ -388,16 +464,19 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.floor_pipeline,
 		renderer.resolve_pipeline,
 		renderer.depth_pipeline,
+		renderer.bead_depth_pipeline,
 		renderer.ao_depth,
 		renderer.depth_texture,
 		renderer.capture_texture,
 		renderer.marker_buffer,
 		renderer.section_buffer,
 		renderer.mesh_buffer,
+		renderer.bead_buffer,
 		renderer.ui_depth_state,
 		renderer.depth_state,
 		renderer.line_pipeline,
 		renderer.mesh_pipeline,
+		renderer.bead_pipeline,
 		renderer.queue,
 		renderer.device,
 	}
@@ -513,12 +592,25 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 		false,
 		4,
 	)
+	renderer.bead_pipeline = renderer_build_pipeline(
+		renderer,
+		library,
+		"bead_vertex",
+		"mesh_fragment",
+		true,
+		false,
+		false,
+		4,
+	)
+	if renderer.bead_pipeline == nil {return false}
 	renderer.floor_pipeline = renderer_build_pipeline(renderer, library, "mesh_vertex", "floor_fragment", true, false)
 	if renderer.floor_pipeline == nil {return false}
 	renderer.resolve_pipeline = renderer_build_pipeline(renderer, library, "resolve_vertex", "resolve_fragment", true, true, false)
 	if renderer.resolve_pipeline == nil {return false}
 	renderer.depth_pipeline = renderer_build_pipeline(renderer, library, "mesh_vertex", "", true, false)
 	if renderer.depth_pipeline == nil {return false}
+	renderer.bead_depth_pipeline = renderer_build_pipeline(renderer, library, "bead_vertex", "", true, false)
+	if renderer.bead_depth_pipeline == nil {return false}
 	renderer.line_pipeline = renderer_build_pipeline(
 		renderer,
 		library,
@@ -627,6 +719,98 @@ renderer_set_mesh :: proc(renderer: ^Renderer, mesh: ^Mesh) -> bool {
 	renderer.mesh_buffer = next
 	renderer.mesh_vertex_count = len(mesh.vertices)
 	return true
+}
+
+// Uploads compact `Gpu_Bead` records into a reusable shared Metal buffer (0 allocs when
+// capacity fits, ~18x smaller than CPU-expanded vertex buffers).
+renderer_set_beads :: proc(renderer: ^Renderer, beads: []Gpu_Bead) -> bool {
+	count := len(beads)
+	if count == 0 {
+		renderer.bead_count = 0
+		return true
+	}
+	if renderer.bead_buffer == nil || count > renderer.bead_capacity {
+		new_cap := max(count, count*5/4)
+		new_buf := transmute(proc "c" (Id, Sel, uint, uint) -> Id)objc_send_address
+		next := new_buf(
+			renderer.device,
+			sel_registerName("newBufferWithLength:options:"),
+			uint(new_cap)*size_of(Gpu_Bead),
+			0,
+		)
+		if next == nil {return false}
+		if renderer.bead_buffer != nil {
+			msg_void(renderer.bead_buffer, sel_registerName("release"))
+		}
+		renderer.bead_buffer = next
+		renderer.bead_capacity = new_cap
+	}
+	get_contents := transmute(proc "c" (Id, Sel) -> rawptr)objc_send_address
+	dst := get_contents(renderer.bead_buffer, sel_registerName("contents"))
+	if dst == nil {return false}
+	mem.copy(dst, raw_data(beads), count*size_of(Gpu_Bead))
+	renderer.bead_count = count
+	return true
+}
+
+// Draws `finished_beads` from `renderer.bead_buffer` (36 vertices per bead expanded on GPU),
+// plus optional growing `partial_bead`, with optional active-layer highlight range.
+renderer_draw_beads :: proc(
+	renderer: ^Renderer,
+	encoder: Id,
+	finished_beads: int,
+	has_partial: bool,
+	partial_bead: Gpu_Bead,
+	uniforms: ^Scene_Uniforms = nil,
+	highlight_start_bead := -1,
+	highlight_color := COLOR_SECTION,
+) {
+	assert(finished_beads >= 0 && finished_beads <= renderer.bead_count)
+	use_highlight := uniforms != nil && highlight_start_bead >= 0 && highlight_start_bead <= finished_beads
+	if !use_highlight {
+		if finished_beads > 0 {
+			verts := finished_beads*BEAD_VERTICES
+			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(verts))
+			renderer.last_draw_calls += 1
+			renderer.last_triangles += verts/3
+		}
+		if !has_partial {return}
+		pb := partial_bead
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &pb, size_of(Gpu_Bead), 0)
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, BEAD_VERTICES)
+		renderer.last_draw_calls += 1
+		renderer.last_triangles += BEAD_VERTICES/3
+		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.bead_buffer, 0, 0)
+		return
+	}
+	if highlight_start_bead > 0 {
+		verts := highlight_start_bead*BEAD_VERTICES
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(verts))
+		renderer.last_draw_calls += 1
+		renderer.last_triangles += verts/3
+	}
+	active_uniforms := uniforms^
+	active_uniforms.color = highlight_color
+	active_uniforms.arc_color = {}
+	active_uniforms.camera.w = -1
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &active_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &active_uniforms, size_of(Scene_Uniforms), 1)
+	active_beads := finished_beads-highlight_start_bead
+	if active_beads > 0 {
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(highlight_start_bead*BEAD_VERTICES), uint(active_beads*BEAD_VERTICES))
+		renderer.last_draw_calls += 1
+		renderer.last_triangles += active_beads*BEAD_VERTICES/3
+	}
+	if has_partial {
+		pb := partial_bead
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &pb, size_of(Gpu_Bead), 0)
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, BEAD_VERTICES)
+		renderer.last_draw_calls += 1
+		renderer.last_triangles += BEAD_VERTICES/3
+		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.bead_buffer, 0, 0)
+	}
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
 }
 
 renderer_set_section :: proc(renderer: ^Renderer, vertices: []Mesh_Vertex) -> bool {
@@ -1004,7 +1188,7 @@ renderer_draw :: proc(
 		model = model,
 		color = COLOR_COFFEE,
 		arc_color = COLOR_ARC if show_arcs else Vec4{},
-		camera = {eye.x, eye.y, eye.z, 1},
+		camera = {eye.x, eye.y, eye.z, f32(visual.selected_junction) if visual.is_design else -1},
 		view_projection = mat4_mul(projection, view),
 		params = {near_z, far_z, max(f32(0.1), vec3_length(size)*0.025), 0 if wireframe else 1},
 		viewport = {0, 0, 1, 1},
@@ -1029,10 +1213,17 @@ renderer_draw :: proc(
 		msg_void_u(prepass, sel_registerName("setFrontFacingWinding:"), 1) // CCW
 		msg_void_u(prepass, sel_registerName("setCullMode:"), 2) // Back
 	}
-	msg_void_id(prepass, sel_registerName("setRenderPipelineState:"), renderer.depth_pipeline)
-	msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
-	msg_void_ptr_u_u(prepass, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
-	renderer_draw_mesh(renderer, prepass, visual.finished_vertices, visual.partial)
+	if visual.is_design {
+		msg_void_id(prepass, sel_registerName("setRenderPipelineState:"), renderer.bead_depth_pipeline)
+		msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.bead_buffer, 0, 0)
+		msg_void_ptr_u_u(prepass, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+		renderer_draw_beads(renderer, prepass, visual.finished_beads, visual.has_partial, visual.partial_bead)
+	} else {
+		msg_void_id(prepass, sel_registerName("setRenderPipelineState:"), renderer.depth_pipeline)
+		msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
+		msg_void_ptr_u_u(prepass, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+		renderer_draw_mesh(renderer, prepass, visual.finished_vertices, visual.partial)
+	}
 	msg_void(prepass, sel_registerName("endEncoding"))
 
 	// Pass 2 (4x MSAA): shade mesh into on-tile `scene_msaa` and hardware-resolve into `scene_texture`.
@@ -1053,15 +1244,26 @@ renderer_draw :: proc(
 		msg_void_u(scene_encoder, sel_registerName("setCullMode:"), 2) // Back
 	}
 	msg_void_u(scene_encoder, sel_registerName("setTriangleFillMode:"), 1 if wireframe else 0)
-	msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.mesh_pipeline)
-	msg_void_id_u_u(scene_encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
-	msg_void_ptr_u_u(scene_encoder, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
-	msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
-	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
-	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-	renderer_draw_mesh(renderer, scene_encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION)
+	if visual.is_design {
+		msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.bead_pipeline)
+		msg_void_id_u_u(scene_encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.bead_buffer, 0, 0)
+		msg_void_ptr_u_u(scene_encoder, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+		msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
+		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
+		renderer_draw_beads(renderer, scene_encoder, visual.finished_beads, visual.has_partial, visual.partial_bead, &mesh_uniforms, visual.highlight_start_bead, COLOR_SECTION)
+	} else {
+		msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.mesh_pipeline)
+		msg_void_id_u_u(scene_encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
+		msg_void_ptr_u_u(scene_encoder, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+		msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
+		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
+		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
+		renderer_draw_mesh(renderer, scene_encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION)
+	}
 	if visual.marker_active {
 		msg_void_u(scene_encoder, sel_registerName("setCullMode:"), 0)
+		msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.mesh_pipeline)
 		msg_void_id(scene_encoder, sel_registerName("setDepthStencilState:"), renderer.depth_state)
 		renderer_draw_marker(renderer, scene_encoder, &mesh_uniforms, projection, view, model, visual.marker_pos, visual.marker_radius, COLOR_NOZZLE_MARKER)
 	}

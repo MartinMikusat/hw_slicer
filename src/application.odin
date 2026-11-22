@@ -392,7 +392,8 @@ app_activate :: proc(action: UI_Action) -> bool {
 	case .Junction_Toggle_Kind:
 		if app.design.active && app.design.selected_junction >= 0 {
 			if design.toggle_junction_fillet(&app.design.evaluated, app.design.selected_junction) {
-				_ = app_rebuild_design_mesh()
+				app.design.dirty = true
+				app.needs_redraw = true
 			}
 		}
 	case .Junction_Close:
@@ -568,7 +569,8 @@ app_set_junction_size :: proc(size_mm: f64) {
 	snapped := math.round(size_mm*10.0)/10.0
 	if abs(snapped-s.evaluated.junctions[s.selected_junction].size) < 1e-4 {return}
 	if design.set_junction_size(&s.evaluated, s.selected_junction, snapped) {
-		_ = app_rebuild_design_mesh()
+		s.dirty = true
+		app.needs_redraw = true
 	}
 }
 
@@ -733,6 +735,10 @@ application_frame :: proc "c" (width, height, scale: f64) {
 	}
 	app_animate_camera()
 	app_poll_design()
+	if app.design.dirty {
+		app.design.dirty = false
+		_ = app_rebuild_design_mesh()
+	}
 	if app_animate_design() {app.needs_redraw = true}
 	if bench_frames_target > 0 {
 		app.renderer.bench_sync = true
