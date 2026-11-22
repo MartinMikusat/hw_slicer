@@ -596,9 +596,8 @@ renderer_draw_application :: proc() -> Render_Result {
 		app.status_failed,
 		&app.design,
 	)
-	mesh_vertices := app.renderer.mesh_vertex_count
-	mesh_partial: []Mesh_Vertex
-	if app.design.active {mesh_vertices, mesh_partial = design_visible(&app.design)}
+	visual := Design_Visual{finished_vertices = app.renderer.mesh_vertex_count, highlight_start = -1}
+	if app.design.active {visual = design_visible(&app.design)}
 	viewport := ui_viewport_rect(&app.ui)
 	viewport.x *= app.ui.ui_scale
 	viewport.y *= app.ui.ui_scale
@@ -613,8 +612,7 @@ renderer_draw_application :: proc() -> Render_Result {
 		viewport,
 		ui_theme(&app.ui),
 		app.ui.wireframe,
-		mesh_vertices,
-		mesh_partial,
+		visual,
 		&app.renderer.ui_list,
 		app.ui.physical_width,
 		app.ui.physical_height,

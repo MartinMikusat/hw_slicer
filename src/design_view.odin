@@ -405,20 +405,49 @@ design_bead_vertices :: proc(bead: Design_Bead, fraction: f32, out: []Mesh_Verte
 	assert(index == BEAD_VERTICES)
 }
 
-// The vertices to draw at the current time: a prefix of finished beads and the growing bead.
-design_visible :: proc(s: ^Design_State) -> (finished_vertices: int, partial: []Mesh_Vertex) {
-	if !s.active {return 0, nil}
+Design_Visual :: struct {
+	finished_vertices: int,
+	partial:           []Mesh_Vertex,
+	highlight_start:   int, // vertex index where current layer begins; -1 when using default color
+	marker_active:     bool,
+	marker_pos:        Vec3,
+	marker_radius:     f32,
+}
+
+// The vertices to draw at the current time: a prefix of finished beads, the growing bead,
+// optional current-layer highlight range, and the nozzle-tip marker sphere position.
+design_visible :: proc(s: ^Design_State) -> (v: Design_Visual) {
+	v.highlight_start = -1
+	if !s.active || len(s.beads) == 0 {return}
 	low, high := 0, len(s.beads)
 	for low < high {
 		middle := (low+high)/2
 		if s.beads[middle].t1 <= s.clock {low = middle+1} else {high = middle}
 	}
-	finished_vertices = low*BEAD_VERTICES
+	v.finished_vertices = low*BEAD_VERTICES
+	tip := s.beads[0].a
+	if low > 0 {tip = s.beads[low-1].b}
 	if low < len(s.beads) && s.beads[low].t0 < s.clock {
 		bead := s.beads[low]
 		fraction := f32((s.clock-bead.t0)/max(bead.t1-bead.t0, 0.000001))
 		design_bead_vertices(bead, fraction, s.partial[:])
-		partial = s.partial[:]
+		v.partial = s.partial[:]
+		tip = vec3_add(bead.a, vec3_mul(vec3_sub(bead.b, bead.a), fraction))
+	}
+	layer_idx, layer_count, _, in_layer := design_layer_state(s)
+	if layer_count > 0 {
+		layer := s.layers[layer_idx]
+		if in_layer < 1.0-1e-6 {
+			v.highlight_start = min(layer.first_bead*BEAD_VERTICES, v.finished_vertices)
+			if in_layer <= 1e-6 && layer.first_bead < len(s.beads) {
+				tip = s.beads[layer.first_bead].a
+			}
+		}
+		if in_layer < 1.0-1e-6 || layer_idx < layer_count-1 {
+			v.marker_active = true
+			v.marker_pos = tip
+			v.marker_radius = max(f32(1.1), f32(s.evaluated.line_width*2.5))
+		}
 	}
 	return
 }

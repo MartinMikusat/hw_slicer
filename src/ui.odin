@@ -158,6 +158,7 @@ DARK_THEME :: Theme{
 
 COLOR_COFFEE :: Vec4{0.698039, 0.490196, 0.341176, 1}
 COLOR_SECTION :: Vec4{0.980392, 0.427451, 0.121569, 1}
+COLOR_NOZZLE_MARKER :: Vec4{0.08, 0.85, 0.98, 1}
 
 UI_Panel :: enum {Models, Section, Mesh}
 UI_Evidence_Pane :: enum {Stages, Details}

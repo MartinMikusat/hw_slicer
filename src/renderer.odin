@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:math"
 import MTL "vendor:darwin/Metal"
 import "rune:gpu"
 import "rune:text"
@@ -38,6 +39,7 @@ Renderer :: struct {
 	mesh_buffer:      Id,
 	section_buffer:   Id,
 	grid_buffer:      Id,
+	marker_buffer:    Id,
 	capture_texture:  Id,
 	capture_path:     string,
 	capture_written:  bool,
@@ -47,6 +49,7 @@ Renderer :: struct {
 	mesh_vertex_count: int,
 	section_vertex_count: int,
 	grid_vertex_count: int,
+	marker_vertex_count: int,
 	depth_width:      uint,
 	depth_height:     uint,
 	ui_renderer:      gpu.Renderer,
@@ -239,7 +242,7 @@ renderer_initialize :: proc(renderer: ^Renderer, layer: Id) -> bool {
 	if !text.init(&renderer.ui_text, device) {return false}
 	if !gpu.renderer_init(&renderer.ui_renderer, device, .BGRA8Unorm) {return false}
 	gpu.renderer_set_atlas(&renderer.ui_renderer, renderer.ui_text.atlas)
-	return renderer_environment_upload(renderer) && renderer_build_grid(renderer)
+	return renderer_environment_upload(renderer) && renderer_build_grid(renderer) && renderer_build_marker(renderer)
 }
 
 renderer_shutdown :: proc(renderer: ^Renderer) {
@@ -255,6 +258,7 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.depth_texture,
 		renderer.capture_texture,
 		renderer.grid_buffer,
+		renderer.marker_buffer,
 		renderer.section_buffer,
 		renderer.mesh_buffer,
 		renderer.ui_depth_state,
@@ -445,6 +449,39 @@ renderer_build_grid :: proc(renderer: ^Renderer) -> bool {
 	return renderer.grid_buffer != nil
 }
 
+renderer_build_marker :: proc(renderer: ^Renderer) -> bool {
+	STACKS :: 12
+	SLICES :: 16
+	vertices := make([dynamic]Mesh_Vertex, 0, STACKS*SLICES*6, context.temp_allocator)
+	sphere_pt :: proc(stack, slice: int) -> Vec3 {
+		phi := math.PI*f64(stack)/f64(STACKS)
+		theta := 2*math.PI*f64(slice)/f64(SLICES)
+		sin_phi := math.sin(phi)
+		return {f32(sin_phi*math.cos(theta)), f32(sin_phi*math.sin(theta)), f32(math.cos(phi))}
+	}
+	for s in 0..<STACKS {
+		for k in 0..<SLICES {
+			p00 := sphere_pt(s, k)
+			p10 := sphere_pt(s+1, k)
+			p11 := sphere_pt(s+1, k+1)
+			p01 := sphere_pt(s, k+1)
+			append(&vertices,
+				Mesh_Vertex{p00, p00}, Mesh_Vertex{p10, p10}, Mesh_Vertex{p11, p11},
+				Mesh_Vertex{p00, p00}, Mesh_Vertex{p11, p11}, Mesh_Vertex{p01, p01},
+			)
+		}
+	}
+	renderer.marker_buffer = msg_id_ptr_u_u(
+		renderer.device,
+		sel_registerName("newBufferWithBytes:length:options:"),
+		raw_data(vertices[:]),
+		uint(len(vertices))*size_of(Mesh_Vertex),
+		0,
+	)
+	renderer.marker_vertex_count = len(vertices)
+	return renderer.marker_buffer != nil
+}
+
 renderer_set_mesh :: proc(renderer: ^Renderer, mesh: ^Mesh) -> bool {
 	if mesh == nil || len(mesh.vertices) == 0 {return false}
 	next := msg_id_ptr_u_u(
@@ -569,18 +606,79 @@ renderer_ensure_depth :: proc(
 	return true
 }
 
-// Draws the first `count` uploaded mesh vertices, then `partial` from bytes. The mesh buffer
-// stays bound at index 0 afterwards.
-renderer_draw_mesh :: proc(renderer: ^Renderer, encoder: Id, count: int, partial: []Mesh_Vertex) {
+// Draws the first `count` uploaded mesh vertices, then `partial` from bytes. When
+// `highlight_start >= 0`, vertices `[highlight_start ..< count)` and `partial` are drawn using
+// `highlight_color` so the active layer stands out while scrubbing in-layer progress.
+renderer_draw_mesh :: proc(
+	renderer: ^Renderer,
+	encoder: Id,
+	count: int,
+	partial: []Mesh_Vertex,
+	uniforms: ^Scene_Uniforms = nil,
+	highlight_start := -1,
+	highlight_color := COLOR_SECTION,
+) {
 	assert(count >= 0 && count <= renderer.mesh_vertex_count)
 	assert(len(partial)*size_of(Mesh_Vertex) <= 4096)
-	if count > 0 {
-		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(count))
+	use_highlight := uniforms != nil && highlight_start >= 0 && highlight_start <= count
+	if !use_highlight {
+		if count > 0 {
+			msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(count))
+		}
+		if len(partial) == 0 {return}
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(partial), uint(len(partial)*size_of(Mesh_Vertex)), 0)
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(len(partial)))
+		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
+		return
 	}
-	if len(partial) == 0 {return}
-	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(partial), uint(len(partial)*size_of(Mesh_Vertex)), 0)
-	msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(len(partial)))
+	if highlight_start > 0 {
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(highlight_start))
+	}
+	active_uniforms := uniforms^
+	active_uniforms.color = highlight_color
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &active_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &active_uniforms, size_of(Scene_Uniforms), 1)
+	active_count := count-highlight_start
+	if active_count > 0 {
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(highlight_start), uint(active_count))
+	}
+	if len(partial) > 0 {
+		msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), raw_data(partial), uint(len(partial)*size_of(Mesh_Vertex)), 0)
+		msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(len(partial)))
+		msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
+	}
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
+}
+
+renderer_draw_marker :: proc(
+	renderer: ^Renderer,
+	encoder: Id,
+	base_uniforms: ^Scene_Uniforms,
+	projection, view, model: Mat4,
+	pos: Vec3,
+	radius: f32,
+	color: Vec4,
+) {
+	if renderer.marker_buffer == nil || renderer.marker_vertex_count == 0 {return}
+	local := Mat4{
+		radius, 0, 0, 0,
+		0, radius, 0, 0,
+		0, 0, radius, 0,
+		pos.x, pos.y, pos.z, 1,
+	}
+	marker_model := mat4_mul(model, local)
+	marker_uniforms := base_uniforms^
+	marker_uniforms.model = marker_model
+	marker_uniforms.mvp = mat4_mul(projection, mat4_mul(view, marker_model))
+	marker_uniforms.color = color
+	msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.marker_buffer, 0, 0)
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), &marker_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &marker_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_u_u_u(encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, 0, uint(renderer.marker_vertex_count))
 	msg_void_id_u_u(encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
+	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), base_uniforms, size_of(Scene_Uniforms), 1)
+	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), base_uniforms, size_of(Scene_Uniforms), 1)
 }
 
 Render_Result :: enum u8 {
@@ -621,8 +719,7 @@ renderer_draw :: proc(
 	viewport: UI_Rect,
 	theme: Theme,
 	wireframe: bool,
-	mesh_vertices: int,
-	mesh_partial: []Mesh_Vertex,
+	visual: Design_Visual,
 	ui_list: ^gpu.Draw_List,
 	width, height, scale: f64,
 ) -> Render_Result {
@@ -713,7 +810,7 @@ renderer_draw :: proc(
 	msg_void_id(prepass, sel_registerName("setRenderPipelineState:"), renderer.depth_pipeline)
 	msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
 	msg_void_ptr_u_u(prepass, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
-	renderer_draw_mesh(renderer, prepass, mesh_vertices, mesh_partial)
+	renderer_draw_mesh(renderer, prepass, visual.finished_vertices, visual.partial)
 	msg_void(prepass, sel_registerName("endEncoding"))
 	msg_void_id(depth_attachment, sel_registerName("setTexture:"), renderer.depth_texture)
 	msg_void_u(depth_attachment, sel_registerName("setStoreAction:"), 0)
@@ -729,7 +826,10 @@ renderer_draw :: proc(
 	msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 	msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-	renderer_draw_mesh(renderer, scene_encoder, mesh_vertices, mesh_partial)
+	renderer_draw_mesh(renderer, scene_encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION)
+	if visual.marker_active {
+		renderer_draw_marker(renderer, scene_encoder, &mesh_uniforms, projection, view, model, visual.marker_pos, visual.marker_radius, COLOR_NOZZLE_MARKER)
+	}
 	msg_void(scene_encoder, sel_registerName("endEncoding"))
 	msg_void_id(color_attachment, sel_registerName("setTexture:"), texture)
 	encoder := msg_id_id(
@@ -785,7 +885,10 @@ renderer_draw :: proc(
 	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 	msg_void_id_u(encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
-	renderer_draw_mesh(renderer, encoder, mesh_vertices, mesh_partial)
+	renderer_draw_mesh(renderer, encoder, visual.finished_vertices, visual.partial, &mesh_uniforms, visual.highlight_start, COLOR_SECTION)
+	if visual.marker_active {
+		renderer_draw_marker(renderer, encoder, &mesh_uniforms, projection, view, model, visual.marker_pos, visual.marker_radius, COLOR_NOZZLE_MARKER)
+	}
 
 	if eye.z > -0.01 {
 		floor_vertices := [6]Mesh_Vertex{
