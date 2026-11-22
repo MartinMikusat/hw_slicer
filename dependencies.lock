@@ -6,5 +6,9 @@
   "hw_odin_devlog": {
     "url": "https://github.com/MartinMikusat/hw_odin_devlog.git",
     "commit": "5f44e3bb81677901635f9ab828fcae73d0cbb009"
+  },
+  "hw_odin_rune": {
+    "url": "https://github.com/MartinMikusat/hw_odin_rune.git",
+    "commit": "38993e4c6f1b01f1f6565c5642b46943a0def675"
   }
 }

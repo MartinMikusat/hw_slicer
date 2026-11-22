@@ -1,6 +1,9 @@
 package main
 
 import "core:fmt"
+import MTL "vendor:darwin/Metal"
+import "rune:gpu"
+import "rune:text"
 
 foreign import metal "system:Metal.framework"
 foreign metal {
@@ -18,17 +21,6 @@ Scene_Uniforms :: struct {
 	sh: [9]Vec4,
 }
 
-Solid_Vertex :: struct {
-	position: Vec2,
-	padding:  Vec2,
-	color:    Vec4,
-}
-
-Texture_Vertex :: struct {
-	position: Vec2,
-	uv:       Vec2,
-}
-
 Renderer :: struct {
 	environment: Id,
 	harmonics: [9]Vec4,
@@ -41,8 +33,6 @@ Renderer :: struct {
 	mesh_pipeline:    Id,
 	depth_pipeline: Id,
 	line_pipeline:    Id,
-	solid_pipeline:   Id,
-	texture_pipeline: Id,
 	depth_state:      Id,
 	ui_depth_state:   Id,
 	mesh_buffer:      Id,
@@ -53,15 +43,15 @@ Renderer :: struct {
 	capture_written:  bool,
 	capture_width:    uint,
 	capture_height:   uint,
-	text_texture:     Id,
 	depth_texture:    Id,
 	mesh_vertex_count: int,
 	section_vertex_count: int,
 	grid_vertex_count: int,
-	texture_width:    uint,
-	texture_height:   uint,
 	depth_width:      uint,
 	depth_height:     uint,
+	ui_renderer:      gpu.Renderer,
+	ui_text:          text.System,
+	ui_list:          gpu.Draw_List,
 }
 
 METAL_SOURCE :: `
@@ -228,62 +218,6 @@ fragment float4 depth_fragment(MeshOut in [[stage_in]]) {return float4(0);}
 fragment float4 line_fragment(MeshOut in [[stage_in]]) {
     return in.color;
 }
-
-struct SolidVertex {
-    float2 position;
-    float4 color;
-};
-
-struct SolidOut {
-    float4 position [[position]];
-    float4 color;
-};
-
-// Project code emits UI vertices in Metal clip space.
-vertex SolidOut solid_vertex(
-    uint id [[vertex_id]],
-    device const SolidVertex *vertices [[buffer(0)]]
-) {
-    SolidOut out;
-    out.position = float4(vertices[id].position, 0.0, 1.0);
-    out.color = vertices[id].color;
-    return out;
-}
-
-fragment float4 solid_fragment(SolidOut in [[stage_in]]) {
-    return in.color;
-}
-
-struct TextureVertex {
-    float2 position;
-    float2 uv;
-};
-
-struct TextureOut {
-    float4 position [[position]];
-    float2 uv;
-};
-
-vertex TextureOut texture_vertex(
-    uint id [[vertex_id]],
-    device const TextureVertex *vertices [[buffer(0)]]
-) {
-    TextureOut out;
-    out.position = float4(vertices[id].position, 0.0, 1.0);
-    out.uv = vertices[id].uv;
-    return out;
-}
-
-fragment float4 texture_fragment(
-    TextureOut in [[stage_in]],
-    texture2d<float> source [[texture(0)]]
-) {
-    constexpr sampler texture_sampler(
-        mag_filter::linear,
-        min_filter::linear
-    );
-    return source.sample(texture_sampler, in.uv);
-}
 `
 
 renderer_initialize :: proc(renderer: ^Renderer, layer: Id) -> bool {
@@ -300,10 +234,18 @@ renderer_initialize :: proc(renderer: ^Renderer, layer: Id) -> bool {
 	)
 	if renderer.queue == nil {return false}
 	if !renderer_build_pipelines(renderer) {return false}
+	device := (^MTL.Device)(renderer.device)
+	if gpu.draw_list_init(&renderer.ui_list) != nil {return false}
+	if !text.init(&renderer.ui_text, device) {return false}
+	if !gpu.renderer_init(&renderer.ui_renderer, device, .BGRA8Unorm) {return false}
+	gpu.renderer_set_atlas(&renderer.ui_renderer, renderer.ui_text.atlas)
 	return renderer_environment_upload(renderer) && renderer_build_grid(renderer)
 }
 
 renderer_shutdown :: proc(renderer: ^Renderer) {
+	if renderer.ui_renderer.pipeline != nil {gpu.renderer_destroy(&renderer.ui_renderer)}
+	if renderer.ui_text.device != nil {text.destroy(&renderer.ui_text)}
+	if renderer.ui_list.instances != nil {gpu.draw_list_destroy(&renderer.ui_list)}
 	objects := [?]Id{
 		renderer.environment,
 		renderer.scene_texture,
@@ -311,15 +253,12 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.depth_pipeline,
 		renderer.ao_depth,
 		renderer.depth_texture,
-		renderer.text_texture,
 		renderer.capture_texture,
 		renderer.grid_buffer,
 		renderer.section_buffer,
 		renderer.mesh_buffer,
 		renderer.ui_depth_state,
 		renderer.depth_state,
-		renderer.texture_pipeline,
-		renderer.solid_pipeline,
 		renderer.line_pipeline,
 		renderer.mesh_pipeline,
 		renderer.queue,
@@ -436,24 +375,6 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 		true,
 		false,
 	)
-	renderer.solid_pipeline = renderer_build_pipeline(
-		renderer,
-		library,
-		"solid_vertex",
-		"solid_fragment",
-		true,
-		true,
-		false,
-	)
-	renderer.texture_pipeline = renderer_build_pipeline(
-		renderer,
-		library,
-		"texture_vertex",
-		"texture_fragment",
-		true,
-		true,
-		true,
-	)
 
 	depth_descriptor := msg_id(
 		msg_id(objc_getClass("MTLDepthStencilDescriptor"), sel_registerName("alloc")),
@@ -499,8 +420,6 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 	)
 	return renderer.mesh_pipeline != nil &&
 		renderer.line_pipeline != nil &&
-		renderer.solid_pipeline != nil &&
-		renderer.texture_pipeline != nil &&
 		renderer.depth_state != nil &&
 		renderer.ui_depth_state != nil
 }
@@ -650,40 +569,6 @@ renderer_ensure_depth :: proc(
 	return true
 }
 
-renderer_ensure_text_texture :: proc(
-	renderer: ^Renderer,
-	width, height: uint,
-) -> bool {
-	if renderer.text_texture != nil &&
-	   renderer.texture_width == width &&
-	   renderer.texture_height == height {
-		return true
-	}
-	descriptor := msg_id_u_u_u_bool(
-		objc_getClass("MTLTextureDescriptor"),
-		sel_registerName(
-			"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
-		),
-		80,
-		width,
-		height,
-		false,
-	)
-	next := msg_id_id(
-		renderer.device,
-		sel_registerName("newTextureWithDescriptor:"),
-		descriptor,
-	)
-	if next == nil {return false}
-	if renderer.text_texture != nil {
-		msg_void(renderer.text_texture, sel_registerName("release"))
-	}
-	renderer.text_texture = next
-	renderer.texture_width = width
-	renderer.texture_height = height
-	return true
-}
-
 Render_Result :: enum u8 {
 	Presented,
 	Captured,
@@ -722,8 +607,7 @@ renderer_draw :: proc(
 	viewport: UI_Rect,
 	theme: Theme,
 	wireframe: bool,
-	solids: []Solid_Vertex,
-	text_pixels: []u8,
+	ui_list: ^gpu.Draw_List,
 	width, height, scale: f64,
 ) -> Render_Result {
 	if renderer.layer == nil {return .No_Layer}
@@ -1022,88 +906,14 @@ renderer_draw :: proc(
 		)
 	}
 
-	msg_void_viewport(
-		encoder,
-		sel_registerName("setViewport:"),
-		{0, 0, f64(pixel_width), f64(pixel_height), 0, 1},
-	)
-	msg_void_id(
-		encoder,
-		sel_registerName("setDepthStencilState:"),
-		renderer.ui_depth_state,
-	)
-	msg_void_id(
-		encoder,
-		sel_registerName("setRenderPipelineState:"),
-		renderer.solid_pipeline,
-	)
-	max_vertices := 111
-	for start := 0; start < len(solids); start += max_vertices {
-		count := min(max_vertices, len(solids)-start)
-		batch := solids[start:start+count]
-		msg_void_ptr_u_u(
-			encoder,
-			sel_registerName("setVertexBytes:length:atIndex:"),
-			raw_data(batch),
-			uint(len(batch))*size_of(Solid_Vertex),
-			0,
-		)
-		msg_void_u_u_u(
-			encoder,
-			sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
-			3,
-			0,
-			uint(len(batch)),
-		)
-	}
-
-	if renderer_ensure_text_texture(renderer, pixel_width, pixel_height) &&
-	   len(text_pixels) == int(pixel_width*pixel_height*4) {
-		msg_void_region(
-			renderer.text_texture,
-			sel_registerName(
-				"replaceRegion:mipmapLevel:withBytes:bytesPerRow:",
-			),
-			{{0, 0, 0}, {pixel_width, pixel_height, 1}},
-			0,
-			raw_data(text_pixels),
-			pixel_width*4,
-		)
-		texture_vertices := [6]Texture_Vertex{
-			{{-1, 1}, {0, 0}},
-			{{1, 1}, {1, 0}},
-			{{1, -1}, {1, 1}},
-			{{-1, 1}, {0, 0}},
-			{{1, -1}, {1, 1}},
-			{{-1, -1}, {0, 1}},
-		}
-		msg_void_id(
-			encoder,
-			sel_registerName("setRenderPipelineState:"),
-			renderer.texture_pipeline,
-		)
-		msg_void_ptr_u_u(
-			encoder,
-			sel_registerName("setVertexBytes:length:atIndex:"),
-			raw_data(texture_vertices[:]),
-			size_of(texture_vertices),
-			0,
-		)
-		msg_void_id_u(
-			encoder,
-			sel_registerName("setFragmentTexture:atIndex:"),
-			renderer.text_texture,
-			0,
-		)
-		msg_void_u_u_u(
-			encoder,
-			sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
-			3,
-			0,
-			6,
-		)
-	}
 	msg_void(encoder, sel_registerName("endEncoding"))
+	gpu.renderer_encode(
+		&renderer.ui_renderer,
+		(^MTL.CommandBuffer)(command_buffer),
+		(^MTL.Texture)(texture),
+		ui_list,
+		nil,
+	)
 	if capture {
 		msg_void(command_buffer, sel_registerName("commit"))
 		msg_void(command_buffer, sel_registerName("waitUntilCompleted"))

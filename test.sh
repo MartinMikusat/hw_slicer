@@ -20,7 +20,9 @@ elif [ -d "$ROOT/../odin_libraries/hw_odin_devlog" ]; then
 else
   DEVLOG_ROOT="$ROOT/../hw_odin_devlog"
 fi
+RUNE_ROOT="$ROOT/../hw_odin_rune"
 "$ROOT/scripts/dependencies.sh" check
+bash "$RUNE_ROOT/scripts/build-metallib.sh"
 python3 "$DEVLOG_ROOT/scripts/lint_devlog.py" "$ROOT"
 ODIN="$ROOT/scripts/odin.sh"
 "$ROOT/scripts/clipper2-build.sh" debug >/dev/null
@@ -29,6 +31,7 @@ ODIN="$ROOT/scripts/odin.sh"
   -o:none \
   -collection:flash="$FLASH_ROOT" \
   -collection:devlog="$DEVLOG_ROOT" \
+  -collection:rune="$RUNE_ROOT" \
   -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/debug/libhw_clipper2.a" \
   -extra-linker-flags:"-lc++ -framework Foundation -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics"
 "$ODIN" test "$ROOT/src/contracts" -debug -o:none

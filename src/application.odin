@@ -10,6 +10,8 @@ import "core:strings"
 import "core:time"
 import flash "flash:."
 import devlog "devlog:."
+import "rune:gpu"
+import "rune:text"
 
 import evidence "./evidence"
 
@@ -513,8 +515,12 @@ renderer_draw_application :: proc() -> Render_Result {
 	}
 	evidence_view := app_evidence_view()
 	ui_build_controls(&app.ui, &evidence_view)
-	solids := ui_build_geometry(&app.ui, &evidence_view)
-	pixels := ui_build_text_overlay(
+	ui_scale := f32(app.ui.scale*app.ui.ui_scale)
+	text.begin_frame(&app.renderer.ui_text, ui_scale)
+	gpu.draw_list_begin(&app.renderer.ui_list, ui_scale)
+	painter := UI_Painter{list = &app.renderer.ui_list, glyphs = &app.renderer.ui_text}
+	ui_draw(
+		&painter,
 		&app.ui,
 		&app.mesh,
 		app.model_name,
@@ -522,7 +528,6 @@ renderer_draw_application :: proc() -> Render_Result {
 		&evidence_view,
 		app.status_failed,
 	)
-	defer delete(pixels)
 	viewport := ui_viewport_rect(&app.ui)
 	viewport.x *= app.ui.ui_scale
 	viewport.y *= app.ui.ui_scale
@@ -537,13 +542,12 @@ renderer_draw_application :: proc() -> Render_Result {
 		viewport,
 		ui_theme(&app.ui),
 		app.ui.wireframe,
-		solids[:],
-		pixels,
+		&app.renderer.ui_list,
 		app.ui.physical_width,
 		app.ui.physical_height,
 		app.ui.scale,
 	)
-	app.needs_redraw = false
+	app.needs_redraw = text.end_frame(&app.renderer.ui_text)
 	return result
 }
 

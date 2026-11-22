@@ -7,6 +7,8 @@ import "core:path/filepath"
 import "core:strings"
 import CF "core:sys/darwin/CoreFoundation"
 import flash "flash:."
+import "rune:gpu"
+import "rune:text"
 
 import evidence "./evidence"
 
@@ -16,38 +18,6 @@ foreign core_graphics {
 	CGDataProviderRelease :: proc "c" (provider: rawptr) ---
 	CGFontCreateWithDataProvider :: proc "c" (provider: rawptr) -> rawptr ---
 	CGFontRelease :: proc "c" (font: rawptr) ---
-	CGColorSpaceCreateDeviceRGB :: proc "c" () -> rawptr ---
-	CGColorSpaceRelease :: proc "c" (space: rawptr) ---
-	CGBitmapContextCreate :: proc "c" (
-		data: rawptr,
-		width, height, bits_per_component, bytes_per_row: uint,
-		space: rawptr,
-		bitmap_info: u32,
-	) -> rawptr ---
-	CGContextRelease :: proc "c" (ctx: rawptr) ---
-	CGContextClearRect :: proc "c" (ctx: rawptr, rect: NS_Rect) ---
-	CGContextFillRect :: proc "c" (ctx: rawptr, rect: NS_Rect) ---
-	CGContextSetAlpha :: proc "c" (ctx: rawptr, alpha: f64) ---
-	CGContextSetRGBFillColor :: proc "c" (
-		ctx: rawptr,
-		red, green, blue, alpha: f64,
-	) ---
-	CGContextSetRGBStrokeColor :: proc "c" (
-		ctx: rawptr,
-		red, green, blue, alpha: f64,
-	) ---
-	CGContextSetLineWidth :: proc "c" (ctx: rawptr, width: f64) ---
-	CGContextSetLineCap :: proc "c" (ctx: rawptr, cap: i32) ---
-	CGContextSetLineJoin :: proc "c" (ctx: rawptr, join: i32) ---
-	CGContextBeginPath :: proc "c" (ctx: rawptr) ---
-	CGContextMoveToPoint :: proc "c" (ctx: rawptr, x, y: f64) ---
-	CGContextAddLineToPoint :: proc "c" (ctx: rawptr, x, y: f64) ---
-	CGContextStrokePath :: proc "c" (ctx: rawptr) ---
-	CGContextStrokeEllipseInRect :: proc "c" (ctx: rawptr, rect: NS_Rect) ---
-	CGContextSetTextPosition :: proc "c" (ctx: rawptr, x, y: f64) ---
-	CGContextSaveGState :: proc "c" (ctx: rawptr) ---
-	CGContextRestoreGState :: proc "c" (ctx: rawptr) ---
-	CGContextClipToRect :: proc "c" (ctx: rawptr, rect: NS_Rect) ---
 }
 
 foreign import core_text "system:CoreText.framework"
@@ -57,7 +27,6 @@ foreign core_text {
 		line: rawptr,
 		ascent, descent, leading: ^f64,
 	) -> f64 ---
-	CTLineDraw :: proc "c" (line, ctx: rawptr) ---
 	CTFontManagerRegisterGraphicsFont :: proc "c" (font: rawptr, error: ^rawptr) -> bool ---
 	CTFontCreateWithName :: proc "c" (name: rawptr, size: f64, transform: rawptr) -> rawptr ---
 	kCTKernAttributeName: rawptr
@@ -782,114 +751,62 @@ ui_begin_flash :: proc(ui: ^UI_State) {
 	)
 }
 
-ui_add_rect :: proc(
-	vertices: ^[dynamic]Solid_Vertex,
-	ui: ^UI_State,
-	rect: UI_Rect,
-	color: Vec4,
-) {
-	x0 := f32(rect.x/ui.width*2-1)
-	x1 := f32((rect.x+rect.w)/ui.width*2-1)
-	y0 := f32(1-rect.y/ui.height*2)
-	y1 := f32(1-(rect.y+rect.h)/ui.height*2)
-	a := Solid_Vertex{position = {x0, y0}, color = color}
-	b := Solid_Vertex{position = {x1, y0}, color = color}
-	c := Solid_Vertex{position = {x1, y1}, color = color}
-	d := Solid_Vertex{position = {x0, y1}, color = color}
-	append(vertices, a, b, c, a, c, d)
+UI_Painter :: struct {
+	list:    ^gpu.Draw_List,
+	glyphs:  ^text.System,
+	font:    text.Font,
+	mono:    text.Font,
+	tracked: text.Font,
 }
 
-ui_add_border :: proc(
-	vertices: ^[dynamic]Solid_Vertex,
-	ui: ^UI_State,
-	rect: UI_Rect,
-	color: Vec4,
-	width := 1.0,
-) {
-	ui_add_rect(vertices, ui, {rect.x, rect.y, rect.w, width}, color)
-	ui_add_rect(
-		vertices,
-		ui,
-		{rect.x, rect.y+rect.h-width, rect.w, width},
-		color,
-	)
-	ui_add_rect(vertices, ui, {rect.x, rect.y, width, rect.h}, color)
-	ui_add_rect(
-		vertices,
-		ui,
-		{rect.x+rect.w-width, rect.y, width, rect.h},
-		color,
+ui_painter_fonts :: proc(painter: ^UI_Painter, ui: ^UI_State) {
+	ui_register_fonts()
+	size := f32(f64(ui.font_size)/ui.ui_scale)
+	painter.font = text.font(painter.glyphs, {family = .Named, name = "Inter-Regular", size = size})
+	painter.mono = text.font(painter.glyphs, {family = .Named, name = "JetBrainsMono-Regular", size = size})
+	painter.tracked = text.font(
+		painter.glyphs,
+		{family = .Named, name = "JetBrainsMono-Regular", size = size, tracking = f32(-0.8/ui.ui_scale)},
 	)
 }
 
-ui_add_round_rect :: proc(
-	vertices: ^[dynamic]Solid_Vertex,
-	ui: ^UI_State,
-	rect: UI_Rect,
-	radius: f64,
-	color: Vec4,
-) {
-	r := min(radius, min(rect.w, rect.h)/2)
+ui_color :: proc(color: Vec4) -> gpu.Color {
+	return gpu.srgb({color.x, color.y, color.z, color.w})
+}
+
+ui_gpu_rect :: proc(rect: UI_Rect) -> gpu.Rect {
+	return {f32(rect.x), f32(rect.y), f32(rect.w), f32(rect.h)}
+}
+
+ui_add_rect :: proc(painter: ^UI_Painter, rect: UI_Rect, color: Vec4) {
+	gpu.draw_rect(painter.list, ui_gpu_rect(rect), ui_color(color))
+}
+
+ui_add_border :: proc(painter: ^UI_Painter, rect: UI_Rect, color: Vec4, width := 1.0) {
+	gpu.draw_box(painter.list, {rect = ui_gpu_rect(rect), border_color = ui_color(color), border_width = f32(width)})
+}
+
+ui_add_round_rect :: proc(painter: ^UI_Painter, rect: UI_Rect, radius: f64, color: Vec4) {
+	r := f32(min(radius, min(rect.w, rect.h)/2))
 	if r <= 0 {return}
-	ui_add_rect(vertices, ui, {rect.x+r, rect.y, rect.w-2*r, rect.h}, color)
-	ui_add_rect(vertices, ui, {rect.x, rect.y+r, r, rect.h-2*r}, color)
-	ui_add_rect(vertices, ui, {rect.x+rect.w-r, rect.y+r, r, rect.h-2*r}, color)
-	centers := [4][2]f64{
-		{rect.x+r, rect.y+r}, {rect.x+rect.w-r, rect.y+r},
-		{rect.x+rect.w-r, rect.y+rect.h-r}, {rect.x+r, rect.y+rect.h-r},
-	}
-	for center, corner in centers {
-		start := math.PI * (1 + f64(corner)/2)
-		for segment in 0..<8 {
-			a0 := start+f64(segment)*math.PI/16
-			a1 := start+f64(segment+1)*math.PI/16
-			points := [3][2]f64{center, {center[0]+r*math.cos(a0), center[1]+r*math.sin(a0)}, {center[0]+r*math.cos(a1), center[1]+r*math.sin(a1)}}
-			for point in points {
-				append(vertices, Solid_Vertex{position = {f32(point[0]/ui.width*2-1), f32(1-point[1]/ui.height*2)}, color = color})
-			}
-		}
-	}
-}
-
-ui_shadow_vertex :: proc(ui: ^UI_State, point: [2]f64, alpha: f32) -> Solid_Vertex {
-	return {position = {f32(point[0]/ui.width*2-1), f32(1-point[1]/ui.height*2)}, color = {0, 0, 0, alpha}}
+	gpu.draw_rect(painter.list, ui_gpu_rect(rect), ui_color(color), {r, r, r, r})
 }
 
 ui_shadow_layer :: proc(
-	vertices: ^[dynamic]Solid_Vertex,
-	ui: ^UI_State,
+	painter: ^UI_Painter,
 	rect: UI_Rect,
 	radius, blur, offset_y: f64,
 	opacity: f32,
 ) {
 	assert(blur > 0 && opacity >= 0 && opacity <= 1)
-	rect := rect
-	rect.y += offset_y
-	r := min(radius, min(rect.w, rect.h)/2)
+	r := f32(min(radius, min(rect.w, rect.h)/2))
 	if r <= 0 {return}
-	ui_add_round_rect(vertices, ui, rect, r, {0, 0, 0, opacity})
-	centers := [4][2]f64{
-		{rect.x+r, rect.y+r}, {rect.x+rect.w-r, rect.y+r},
-		{rect.x+rect.w-r, rect.y+rect.h-r}, {rect.x+r, rect.y+rect.h-r},
-	}
-	inner, outer: [36][2]f64
-	for center, corner in centers {
-		for segment in 0..=8 {
-			angle := math.PI*(1+f64(corner)/2)+f64(segment)*math.PI/16
-			direction := [2]f64{math.cos(angle), math.sin(angle)}
-			index := corner*9+segment
-			inner[index] = {center[0]+r*direction[0], center[1]+r*direction[1]}
-			outer[index] = {center[0]+(r+blur)*direction[0], center[1]+(r+blur)*direction[1]}
-		}
-	}
-	for index in 0..<len(inner) {
-		next := (index+1)%len(inner)
-		a := ui_shadow_vertex(ui, inner[index], opacity)
-		b := ui_shadow_vertex(ui, inner[next], opacity)
-		c := ui_shadow_vertex(ui, outer[next], 0)
-		d := ui_shadow_vertex(ui, outer[index], 0)
-		append(vertices, a, b, c, a, c, d)
-	}
+	gpu.draw_shadow(
+		painter.list,
+		ui_gpu_rect(rect),
+		{r, r, r, r},
+		{offset = {0, f32(offset_y)}, blur = f32(blur), spread = f32(blur/2), color = {0, 0, 0, opacity}},
+	)
 }
 
 ui_style_scale :: proc(ui: ^UI_State) -> f64 {
@@ -907,54 +824,46 @@ ui_pill_rect :: proc(ui: ^UI_State, hit: UI_Rect) -> UI_Rect {
 	return {hit.x+inset, hit.y+(hit.h-height)/2, hit.w-2*inset, height}
 }
 
-ui_pill_highlight :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect, radius: f64, color: Vec4) {
+ui_pill_highlight :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect, radius: f64, color: Vec4) {
 	scale := ui_style_scale(ui)
-	r := min(radius, min(rect.w, rect.h)/2)-1/scale
+	inset := 1/scale
+	r := min(radius, min(rect.w, rect.h)/2)-inset
 	thickness := 0.75/scale
 	if r <= thickness {return}
-	ui_add_rect(vertices, ui, {rect.x+radius, rect.y+1/scale, rect.w-2*radius, thickness}, color)
-	centers := [2][2]f64{{rect.x+radius, rect.y+radius}, {rect.x+rect.w-radius, rect.y+radius}}
-	for center, corner in centers {
-		start := math.PI*(1+f64(corner)/2)
-		for segment in 0..<8 {
-			a0 := start+f64(segment)*math.PI/16
-			a1 := start+f64(segment+1)*math.PI/16
-			points := [4][2]f64{
-				{center[0]+r*math.cos(a0), center[1]+r*math.sin(a0)},
-				{center[0]+r*math.cos(a1), center[1]+r*math.sin(a1)},
-				{center[0]+(r-thickness)*math.cos(a1), center[1]+(r-thickness)*math.sin(a1)},
-				{center[0]+(r-thickness)*math.cos(a0), center[1]+(r-thickness)*math.sin(a0)},
-			}
-			indices := [6]int{0, 1, 2, 0, 2, 3}
-			for index in indices {
-				point := points[index]
-				append(vertices, Solid_Vertex{position = {f32(point[0]/ui.width*2-1), f32(1-point[1]/ui.height*2)}, color = color})
-			}
-		}
-	}
+	inner := UI_Rect{rect.x+inset, rect.y+inset, rect.w-2*inset, rect.h-2*inset}
+	corner := f32(r)
+	gpu.draw_box(
+		painter.list,
+		{
+			rect = ui_gpu_rect(inner),
+			radii = {corner, corner, corner, corner},
+			border_color = ui_color(color),
+			border_sides = {f32(thickness), 0, 0, 0},
+		},
+	)
 }
 
-ui_pill_shadow :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect) {
+ui_pill_shadow :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect) {
 	scale := ui_style_scale(ui)
 	row := ui_style_row_height(ui)
 	radius := 6/scale
 	outer := 5*math.round(row*0.25)
-	ui_shadow_layer(vertices, ui, rect, radius, outer/scale, math.round(outer/6)/scale, 0.05)
-	ui_shadow_layer(vertices, ui, rect, radius, math.round(row*0.15)/scale, 1/scale, 55.0/255.0)
+	ui_shadow_layer(painter, rect, radius, outer/scale, math.round(outer/6)/scale, 0.05)
+	ui_shadow_layer(painter, rect, radius, math.round(row*0.15)/scale, 1/scale, 55.0/255.0)
 }
 
-ui_menu_shadow :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect) {
+ui_menu_shadow :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect) {
 	scale := ui_style_scale(ui)
 	blur := math.round(ui_style_row_height(ui)*0.15)/scale
-	ui_shadow_layer(vertices, ui, rect, 6/scale, blur, 1/scale, 60.0/255.0)
+	ui_shadow_layer(painter, rect, 6/scale, blur, 1/scale, 60.0/255.0)
 }
 
-ui_modal_shadow :: proc(vertices: ^[dynamic]Solid_Vertex, ui: ^UI_State, rect: UI_Rect) {
+ui_modal_shadow :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect) {
 	scale := ui_style_scale(ui)
 	row := ui_style_row_height(ui)
 	radius := 12/scale
-	ui_shadow_layer(vertices, ui, rect, radius, math.round(row*5)/scale, math.round(row)/scale, 0.07)
-	ui_shadow_layer(vertices, ui, rect, radius, math.round(row*1.5)/scale, 6/scale, 80.0/255.0)
+	ui_shadow_layer(painter, rect, radius, math.round(row*5)/scale, math.round(row)/scale, 0.07)
+	ui_shadow_layer(painter, rect, radius, math.round(row*1.5)/scale, 6/scale, 80.0/255.0)
 }
 
 ui_theme_blend :: proc(theme: Theme, amount: f32) -> Vec4 {
@@ -990,47 +899,35 @@ ui_control_ink :: proc(ui: ^UI_State, action: UI_Action) -> Vec4 {
 	return theme.text
 }
 
-ui_build_geometry :: proc(
+ui_draw_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
+	theme := ui_theme(ui)
+	ui_add_rect(painter, {0, 0, ui.width, 40}, theme.header)
+	ui_add_rect(painter, ui_left_rect(ui), theme.surface)
+	ui_add_rect(painter, ui_right_rect(ui), theme.surface)
+	ui_add_rect(painter, ui_action_bar_rect(ui), theme.header)
+}
+
+ui_draw_modal_surface :: proc(painter: ^UI_Painter, ui: ^UI_State, modal: UI_Rect) {
+	theme := ui_theme(ui)
+	ui_modal_shadow(painter, ui, modal)
+	scale := ui_style_scale(ui)
+	radius := 12/scale
+	edge := 1/scale
+	if ui.dark {
+		ui_add_round_rect(painter, modal, radius, {0.192, 0.192, 0.192, 1})
+		ui_add_round_rect(painter, {modal.x+edge, modal.y+edge, modal.w-2*edge, modal.h-2*edge}, radius-edge, theme.overlay)
+	} else {
+		ui_add_round_rect(painter, modal, radius, theme.overlay)
+	}
+}
+
+ui_draw_controls :: proc(
+	painter: ^UI_Painter,
 	ui: ^UI_State,
 	evidence_view: ^UI_Evidence_View = nil,
-) -> [dynamic]Solid_Vertex {
-	vertices := make([dynamic]Solid_Vertex, context.temp_allocator)
+) {
 	theme := ui_theme(ui)
 	modal_open := ui.help_open || (ui.evidence_open && ui_evidence_available(evidence_view)) || ui.settings_open
-	if modal_open {
-		underlay := ui^
-		underlay.controls = make([dynamic]UI_Control)
-		underlay.help_open = false
-		underlay.evidence_open = false
-		underlay.settings_open = false
-		underlay.hovered_id = 0
-		underlay.pressed_id = 0
-		underlay.focused_id = 0
-		ui_build_controls(&underlay)
-		base := ui_build_geometry(&underlay)
-		append(&vertices, ..base[:])
-		delete(underlay.controls)
-		modal := ui_settings_modal_rect(ui)
-		if ui.help_open {modal = ui_help_modal_rect(ui)}
-		if ui.evidence_open && ui_evidence_available(evidence_view) {modal = ui_evidence_modal_rect(ui)}
-		ui_add_rect(&vertices, ui, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.8})
-		ui_modal_shadow(&vertices, ui, modal)
-		scale := ui_style_scale(ui)
-		radius := 12/scale
-		edge := 1/scale
-		if ui.dark {
-			ui_add_round_rect(&vertices, ui, modal, radius, {0.192, 0.192, 0.192, 1})
-			ui_add_round_rect(&vertices, ui, {modal.x+edge, modal.y+edge, modal.w-2*edge, modal.h-2*edge}, radius-edge, theme.overlay)
-		} else {
-			ui_add_round_rect(&vertices, ui, modal, radius, theme.overlay)
-		}
-	} else {
-		ui_add_rect(&vertices, ui, {0, 0, ui.width, 40}, theme.header)
-		ui_add_rect(&vertices, ui, ui_left_rect(ui), theme.surface)
-		ui_add_rect(&vertices, ui, ui_right_rect(ui), theme.surface)
-		ui_add_rect(&vertices, ui, ui_action_bar_rect(ui), theme.header)
-	}
-
 	for control in ui.controls {
 		hovered := control.enabled && control.id == ui.hovered_id
 		standing := ui_control_standing(ui, control)
@@ -1038,18 +935,18 @@ ui_build_geometry :: proc(
 		window_control := control.action == .Window_Close || control.action == .Window_Minimize || control.action == .Window_Zoom
 		if window_control && modal_open {continue}
 		if control.action == .Section_Height {
-			if control.id == ui.focused_id {ui_add_border(&vertices, ui, control.rect, theme.text)}
+			if control.id == ui.focused_id {ui_add_border(painter, control.rect, theme.text)}
 			track := UI_Rect{control.rect.x+4, control.rect.y+control.rect.h/2-2, control.rect.w-8, 4}
-			ui_add_round_rect(&vertices, ui, track, 2, ui_theme_blend(theme, 0.2))
+			ui_add_round_rect(painter, track, 2, ui_theme_blend(theme, 0.2))
 			fraction := 0.0
 			if ui.section_max > 0 {fraction = clamp(f64(ui.section_z/ui.section_max), 0, 1)}
 			ink := theme.text if control.enabled else Vec4{0.501961, 0.501961, 0.501961, 1}
-			ui_add_round_rect(&vertices, ui, {track.x, track.y, max(1, track.w*fraction), track.h}, 2, ink)
-			ui_add_round_rect(&vertices, ui, {track.x+track.w*fraction-6, control.rect.y+(control.rect.h-12)/2, 12, 12}, 6, ink)
+			ui_add_round_rect(painter, {track.x, track.y, max(1, track.w*fraction), track.h}, 2, ink)
+			ui_add_round_rect(painter, {track.x+track.w*fraction-6, control.rect.y+(control.rect.h-12)/2, 12, 12}, 6, ink)
 			continue
 		}
 		if control.action == .Toggle_Section {
-			if control.id == ui.focused_id {ui_add_border(&vertices, ui, control.rect, theme.text)}
+			if control.id == ui.focused_id {ui_add_border(painter, control.rect, theme.text)}
 			scale := ui_style_scale(ui)
 			height_px := math.round(ui_style_row_height(ui)*0.85)
 			height := height_px/scale
@@ -1059,13 +956,13 @@ ui_build_geometry :: proc(
 			track_color := ui_theme_blend(theme, 0.22 if hovered else 0.16)
 			if !control.enabled {track_color = ui_theme_blend(theme, 0.04)}
 			if ui.section_enabled && control.enabled {track_color = theme.text}
-			ui_add_round_rect(&vertices, ui, track, height/2, track_color)
+			ui_add_round_rect(painter, track, height/2, track_color)
 			thumb_size := height-2*inset
 			thumb_x := track.x+inset
 			if ui.section_enabled {thumb_x = track.x+track.w-inset-thumb_size}
 			thumb := theme.raised
 			if ui.section_enabled || !control.enabled {thumb = theme.canvas}
-			ui_add_round_rect(&vertices, ui, {thumb_x, track.y+inset, thumb_size, thumb_size}, thumb_size/2, thumb)
+			ui_add_round_rect(painter, {thumb_x, track.y+inset, thumb_size, thumb_size}, thumb_size/2, thumb)
 			continue
 		}
 		menu := control.action == .Evidence_Stages || control.action == .Evidence_Details || control.action == .Panel_Models || control.action == .Panel_Section || control.action == .Panel_Mesh || control.action == .Select_Benchy || control.action == .Select_All_In_One || control.action == .Select_Bunny
@@ -1099,27 +996,18 @@ ui_build_geometry :: proc(
 			}
 		}
 		if menu && !hovered && !standing {continue}
-		if !menu {ui_pill_shadow(&vertices, ui, rect)}
-		if menu && standing {ui_menu_shadow(&vertices, ui, rect)}
+		if !menu {ui_pill_shadow(painter, ui, rect)}
+		if menu && standing {ui_menu_shadow(painter, ui, rect)}
 		scale := ui_style_scale(ui)
 		radius := 6/scale
-		ui_add_round_rect(&vertices, ui, rect, radius, fill)
+		ui_add_round_rect(painter, rect, radius, fill)
 		if !menu && !standing {
 			highlight_alpha := (f32(0.24) if hovered else f32(0.14)) if ui.dark else (f32(0.45) if hovered else f32(0.9))
 			highlight := Vec4{1, 1, 1, highlight_alpha}
 			if window_control {highlight = {fill.x+(1-fill.x)*0.35, fill.y+(1-fill.y)*0.35, fill.z+(1-fill.z)*0.35, 1}}
-			ui_pill_highlight(&vertices, ui, rect, radius, highlight)
+			ui_pill_highlight(painter, ui, rect, radius, highlight)
 		}
 	}
-	for hint in flash.visible_hints(&ui.flash_state) {
-		width := max(16.0, 8.0+8.0*f64(len(hint.label)))
-		rect := UI_Rect{hint.target.rect.x+2, hint.target.rect.y+2, width, 18}
-		rect.x = min(rect.x, ui.width-rect.w)
-		rect.y = min(rect.y, ui.height-rect.h)
-		ui_add_rect(&vertices, ui, rect, theme.text)
-		if hint.selected {ui_add_border(&vertices, ui, {hint.target.rect.x, hint.target.rect.y, hint.target.rect.w, hint.target.rect.h}, theme.text)}
-	}
-	return vertices
 }
 
 Text_Run :: struct {
@@ -1182,65 +1070,56 @@ ui_text_run :: proc(font: rawptr, text: string, tracking := f64(0)) -> Text_Run 
 
 Text_Alignment :: enum {Start, Center, End}
 
-ui_cg_rect :: proc(ui: ^UI_State, rect: UI_Rect) -> NS_Rect {
-	scale := ui.ui_scale*ui.scale
-	return {
-		{rect.x*scale, (ui.height*ui.ui_scale-(rect.y+rect.h)*ui.ui_scale)*ui.scale},
-		{rect.w*scale, rect.h*scale},
-	}
-}
-
 ui_draw_text :: proc(
-	ctx, font: rawptr,
+	painter: ^UI_Painter,
+	font: text.Font,
 	ui: ^UI_State,
-	text: string,
+	value: string,
 	rect: UI_Rect,
 	color: Vec4,
 	inset := 8.0,
 	alignment := Text_Alignment.Start,
 	tracked := false,
 ) {
-	run := ui_text_run(font, text, -0.8*ui.scale if tracked else 0)
-	if run.line == nil {return}
-	defer CFRelease(run.line)
-	cg_rect := ui_cg_rect(ui, rect)
-	CGContextSaveGState(ctx)
-	CGContextClipToRect(ctx, cg_rect)
-	CGContextSetRGBFillColor(
-		ctx,
-		f64(color.x),
-		f64(color.y),
-		f64(color.z),
-		f64(color.w),
-	)
-	inset_scaled := inset*ui.ui_scale*ui.scale
-	x := cg_rect.origin.x+inset_scaled
+	if len(value) == 0 || rect.w <= 0 || rect.h <= 0 {return}
+	font := font
+	if tracked {
+		assert(font == painter.mono)
+		font = painter.tracked
+	}
+	layout := text.layout(painter.glyphs, value, font)
+	if len(layout.lines) == 0 {return}
+	line := layout.lines[0]
+	advance := f64(line.advance)
+	x := rect.x+inset
 	switch alignment {
-	case .Center:
-		x = cg_rect.origin.x+(cg_rect.size.width-run.advance)/2
-	case .End:
-		x = cg_rect.origin.x+cg_rect.size.width-inset_scaled-run.advance
+	case .Center: x = rect.x+(rect.w-advance)/2
+	case .End:    x = rect.x+rect.w-inset-advance
 	case .Start:
 	}
-	y := cg_rect.origin.y+
-		(cg_rect.size.height-(run.ascent+run.descent))/2+
-		run.descent
-	CGContextSetTextPosition(ctx, x, y)
-	CTLineDraw(run.line, ctx)
-	CGContextRestoreGState(ctx)
+	baseline := rect.y+(rect.h-f64(line.ascent+line.descent))/2+f64(line.ascent)
+	gpu.push_clip(painter.list, ui_gpu_rect(rect))
+	text.draw_layout(
+		painter.glyphs,
+		painter.list,
+		layout,
+		{f32(x), f32(baseline)-layout.baseline},
+		ui_color(color),
+	)
+	gpu.pop_clip(painter.list)
 }
 
-ui_draw_evidence_line :: proc(ctx, font, mono: rawptr, ui: ^UI_State, line: UI_Evidence_Line, rect: UI_Rect) {
+ui_draw_evidence_line :: proc(painter: ^UI_Painter, ui: ^UI_State, line: UI_Evidence_Line, rect: UI_Rect) {
 	color := ui_theme(ui).text
 	label_width := rect.w if line.value == "" else line.value_offset
-	ui_draw_text(ctx, font, ui, line.label, {rect.x, rect.y, label_width, rect.h}, color, 0)
+	ui_draw_text(painter, painter.font, ui, line.label, {rect.x, rect.y, label_width, rect.h}, color, 0)
 	if line.value != "" {
-		ui_draw_text(ctx, mono if line.value_mono else font, ui, line.value,
+		ui_draw_text(painter, painter.mono if line.value_mono else painter.font, ui, line.value,
 			{rect.x+line.value_offset, rect.y, rect.w-line.value_offset, rect.h}, color, 0, tracked = line.value_mono)
 	}
 }
 
-ui_draw_status :: proc(ctx, font: rawptr, ui: ^UI_State, status: string, failed: bool) {
+ui_draw_status :: proc(painter: ^UI_Painter, ui: ^UI_State, status: string, failed: bool) {
 	if status == "" {return}
 	compact := ui_compact(ui)
 	area := ui_right_rect(ui)
@@ -1255,28 +1134,24 @@ ui_draw_status :: proc(ctx, font: rawptr, ui: ^UI_State, status: string, failed:
 	row := ui_style_row_height(ui)/ui_style_scale(ui)
 	height := f64(len(lines))*row
 	y := area.y+area.h-8-height
-	if compact {
-		background := ui_theme(ui).canvas
-		CGContextSetRGBFillColor(ctx, f64(background.x), f64(background.y), f64(background.z), 1)
-		CGContextFillRect(ctx, ui_cg_rect(ui, {x-4, y-2, width+8, height+4}))
-	}
+	if compact {ui_add_rect(painter, {x-4, y-2, width+8, height+4}, ui_theme(ui).canvas)}
 	color := ui_theme(ui).text
 	if failed {color = {0.956863, 0.203922, 0.203922, 1} if ui.dark else {0.768627, 0.145098, 0.145098, 1}}
 	for line, index in lines {
-		ui_draw_text(ctx, font, ui, line, {x, y+f64(index)*row, width, row}, color, 0)
+		ui_draw_text(painter, painter.font, ui, line, {x, y+f64(index)*row, width, row}, color, 0)
 	}
 }
 
 ui_draw_measurement :: proc(
-	ctx, font, mono: rawptr,
+	painter: ^UI_Painter,
 	ui: ^UI_State,
 	label, value: string,
 	rect: UI_Rect,
 	label_width: f64,
 ) {
 	color := ui_theme(ui).text
-	ui_draw_text(ctx, font, ui, label, {rect.x, rect.y, label_width, rect.h}, color, 0)
-	ui_draw_text(ctx, mono, ui, value, {rect.x+label_width, rect.y, rect.w-label_width, rect.h}, color, 0, tracked = true)
+	ui_draw_text(painter, painter.font, ui, label, {rect.x, rect.y, label_width, rect.h}, color, 0)
+	ui_draw_text(painter, painter.mono, ui, value, {rect.x+label_width, rect.y, rect.w-label_width, rect.h}, color, 0, tracked = true)
 }
 
 UI_INTER_FONT :: #load("../resources/fonts/Inter-Regular.woff2")
@@ -1311,30 +1186,16 @@ ui_font :: proc(name: string, size: f64) -> rawptr {
 	return CTFontCreateWithName(font_name, size, nil)
 }
 
-ui_draw_flash_hint_text :: proc(
-	ctx, font: rawptr,
-	ui: ^UI_State,
-) {
+ui_draw_flash_hints :: proc(painter: ^UI_Painter, ui: ^UI_State) {
+	theme := ui_theme(ui)
 	for hint in flash.visible_hints(&ui.flash_state) {
 		width := max(16.0, 8.0+8.0*f64(len(hint.label)))
-		rect := UI_Rect{
-			hint.target.rect.x+2,
-			hint.target.rect.y+2,
-			width,
-			18,
-		}
+		rect := UI_Rect{hint.target.rect.x+2, hint.target.rect.y+2, width, 18}
 		rect.x = min(rect.x, ui.width-rect.w)
 		rect.y = min(rect.y, ui.height-rect.h)
-		ui_draw_text(
-			ctx,
-			font,
-			ui,
-			hint.label,
-			rect,
-			ui_theme(ui).canvas,
-			0,
-			.Center,
-		)
+		ui_add_rect(painter, rect, theme.text)
+		if hint.selected {ui_add_border(painter, {hint.target.rect.x, hint.target.rect.y, hint.target.rect.w, hint.target.rect.h}, theme.text)}
+		ui_draw_text(painter, painter.font, ui, hint.label, rect, theme.canvas, 0, .Center)
 	}
 }
 
@@ -1522,7 +1383,7 @@ ui_evidence_graph_state :: proc(
 }
 
 ui_draw_evidence_overlay :: proc(
-	ctx, font, mono: rawptr,
+	painter: ^UI_Painter,
 	ui: ^UI_State,
 	view: ^UI_Evidence_View,
 ) {
@@ -1532,8 +1393,8 @@ ui_draw_evidence_overlay :: proc(
 	theme := ui_theme(ui)
 
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"Evidence inspector",
 		{modal.x+20, modal.y+12, modal.w-40, 26},
@@ -1545,7 +1406,7 @@ ui_draw_evidence_overlay :: proc(
 		labels := [2]string{"Stages", "Details"}
 		for label, index in labels {
 			action := panes[index]
-			ui_draw_text(ctx, font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
+			ui_draw_text(painter, painter.font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
 		}
 		position := ui.evidence_scroll
 		total := len(replay.root.stages)
@@ -1553,7 +1414,7 @@ ui_draw_evidence_overlay :: proc(
 			for stage, index in replay.root.stages {
 				if index < ui.evidence_scroll || index >= ui.evidence_scroll+ui_evidence_visible_stages(ui) {continue}
 				action := ui_evidence_stage_action(index)
-				ui_draw_text(ctx, mono, ui, fmt.tprintf("%02d  %s", stage.ordinal, stage.stage.name), ui_control_rect(ui, action), ui_control_ink(ui, action), 8, tracked = true)
+				ui_draw_text(painter, painter.mono, ui, fmt.tprintf("%02d  %s", stage.ordinal, stage.stage.name), ui_control_rect(ui, action), ui_control_ink(ui, action), 8, tracked = true)
 			}
 		} else {
 			lines := ui_evidence_detail_lines(ui, view)
@@ -1563,23 +1424,22 @@ ui_draw_evidence_overlay :: proc(
 			total = len(lines)
 			for line, index in lines {
 				if index < ui.evidence_detail_scroll || index >= ui.evidence_detail_scroll+visible {continue}
-				ui_draw_evidence_line(ctx, font, mono, ui, line, {modal.x+20, modal.y+80+f64(index-ui.evidence_detail_scroll)*20, modal.w-40, 20})
+				ui_draw_evidence_line(painter, ui, line, {modal.x+20, modal.y+80+f64(index-ui.evidence_detail_scroll)*20, modal.w-40, 20})
 			}
 		}
-		ui_draw_text(ctx, font, ui, fmt.tprintf("Scroll %d / %d", min(position+1, total), total), {modal.x+20, modal.y+modal.h-40, modal.w-160, 24}, theme.text, 0)
-		ui_draw_text(ctx, font, ui, "1  Close", ui_control_rect(ui, .Close_Evidence), ui_control_ink(ui, .Close_Evidence), 0, .Center)
-		ui_draw_flash_hint_text(ctx, font, ui)
+		ui_draw_text(painter, painter.font, ui, fmt.tprintf("Scroll %d / %d", min(position+1, total), total), {modal.x+20, modal.y+modal.h-40, modal.w-160, 24}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, "1  Close", ui_control_rect(ui, .Close_Evidence), ui_control_ink(ui, .Close_Evidence), 0, .Center)
 		return
 	}
 
-	ui_draw_text(ctx, font, ui, "Select a stage", {modal.x+20, modal.y+42, 270, 22}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, "Select a stage", {modal.x+20, modal.y+42, 270, 22}, theme.text, 0)
 
 	for stage, stage_index in replay.root.stages {
 		if stage_index < ui.evidence_scroll || stage_index >= ui.evidence_scroll+ui_evidence_visible_stages(ui) {continue}
 		color := ui_control_ink(ui, ui_evidence_stage_action(stage_index))
 		ui_draw_text(
-			ctx,
-			mono,
+			painter,
+			painter.mono,
 			ui,
 			fmt.tprintf("%02d  %s", stage.ordinal, stage.stage.name),
 			{
@@ -1599,13 +1459,13 @@ ui_draw_evidence_overlay :: proc(
 	ui.evidence_detail_scroll = clamp(ui.evidence_detail_scroll, 0, max(0, len(lines)-visible))
 	for line, index in lines {
 		if index < ui.evidence_detail_scroll || index >= ui.evidence_detail_scroll+visible {continue}
-		ui_draw_evidence_line(ctx, font, mono, ui, line, {detail.x, detail.y+f64(index-ui.evidence_detail_scroll)*20, detail.w, 20})
+		ui_draw_evidence_line(painter, ui, line, {detail.x, detail.y+f64(index-ui.evidence_detail_scroll)*20, detail.w, 20})
 	}
-	ui_draw_text(ctx, font, ui, fmt.tprintf("Scroll %d / %d", min(ui.evidence_detail_scroll+1, len(lines)), len(lines)), {detail.x, modal.y+modal.h-40, max(1, detail.w-140), 24}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, fmt.tprintf("Scroll %d / %d", min(ui.evidence_detail_scroll+1, len(lines)), len(lines)), {detail.x, modal.y+modal.h-40, max(1, detail.w-140), 24}, theme.text, 0)
 
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"1  Close",
 		{modal.x+modal.w-132, modal.y+modal.h-48, 112, 32},
@@ -1613,18 +1473,17 @@ ui_draw_evidence_overlay :: proc(
 		0,
 		.Center,
 	)
-	ui_draw_flash_hint_text(ctx, font, ui)
 }
 
 ui_draw_settings_overlay :: proc(
-	ctx, font, mono: rawptr,
+	painter: ^UI_Painter,
 	ui: ^UI_State,
 ) {
 	theme := ui_theme(ui)
 	modal := ui_settings_modal_rect(ui)
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"Settings",
 		{modal.x+20, modal.y+14, modal.w-40, 32},
@@ -1632,8 +1491,8 @@ ui_draw_settings_overlay :: proc(
 		0,
 	)
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"Font size",
 		{modal.x+24, modal.y+54, modal.w-48, 24},
@@ -1641,8 +1500,8 @@ ui_draw_settings_overlay :: proc(
 		0,
 	)
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"−",
 		{modal.x+24, modal.y+96, 48, 40},
@@ -1651,8 +1510,8 @@ ui_draw_settings_overlay :: proc(
 		.Center,
 	)
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"+",
 		{modal.x+82, modal.y+96, 48, 40},
@@ -1661,8 +1520,8 @@ ui_draw_settings_overlay :: proc(
 		.Center,
 	)
 	ui_draw_text(
-		ctx,
-		mono,
+		painter,
+		painter.mono,
 		ui,
 		fmt.tprintf("%d PT", ui.font_size),
 		{modal.x+142, modal.y+96, modal.w-166, 40},
@@ -1670,8 +1529,8 @@ ui_draw_settings_overlay :: proc(
 		0, tracked = true,
 	)
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"Close",
 		{modal.x+modal.w-120, modal.y+modal.h-52, 96, 36},
@@ -1681,68 +1540,68 @@ ui_draw_settings_overlay :: proc(
 	)
 }
 
-ui_build_text_overlay :: proc(
+ui_draw :: proc(
+	painter: ^UI_Painter,
 	ui: ^UI_State,
 	mesh: ^Mesh,
 	model_name, status: string,
 	evidence_view: ^UI_Evidence_View = nil,
 	status_failed := false,
-) -> []u8 {
-	width := uint(max(1, ui.physical_width*ui.scale))
-	height := uint(max(1, ui.physical_height*ui.scale))
-	pixels := make([]u8, int(width*height*4))
-	space := CGColorSpaceCreateDeviceRGB()
-	ctx := CGBitmapContextCreate(
-		raw_data(pixels),
-		width,
-		height,
-		8,
-		width*4,
-		space,
-		0x2002,
-	)
-	CGColorSpaceRelease(space)
-	if ctx == nil {return pixels}
-	defer CGContextRelease(ctx)
-	CGContextClearRect(ctx, {{0, 0}, {f64(width), f64(height)}})
-	font := ui_font("Inter-Regular", f64(ui.font_size)*ui.scale)
-	if font == nil {return pixels}
-	defer CFRelease(font)
-	mono := ui_font("JetBrainsMono-Regular", f64(ui.font_size)*ui.scale)
-	assert(mono != nil)
-	defer CFRelease(mono)
-	theme := ui_theme(ui)
-
-	ui := ui
-	modal_ui := ui
+) {
+	ui_painter_fonts(painter, ui)
 	modal_open := ui.help_open || ui.settings_open || (ui.evidence_open && ui_evidence_available(evidence_view))
-	underlay: UI_State
-	defer delete(underlay.controls)
-	if modal_open {
-		underlay = ui^
-		underlay.controls = make([dynamic]UI_Control)
-		underlay.help_open = false
-		underlay.evidence_open = false
-		underlay.settings_open = false
-		underlay.hovered_id = 0
-		underlay.pressed_id = 0
-		underlay.focused_id = 0
-		ui_build_controls(&underlay)
-		ui = &underlay
-		CGContextSetAlpha(ctx, 0.2)
+	if !modal_open {
+		ui_draw_panels(painter, ui)
+		ui_draw_controls(painter, ui, evidence_view)
+		ui_draw_labels(painter, ui, mesh, model_name, status, status_failed)
+		ui_draw_flash_hints(painter, ui)
+		return
 	}
+	underlay := ui^
+	underlay.controls = make([dynamic]UI_Control)
+	defer delete(underlay.controls)
+	underlay.help_open = false
+	underlay.evidence_open = false
+	underlay.settings_open = false
+	underlay.hovered_id = 0
+	underlay.pressed_id = 0
+	underlay.focused_id = 0
+	ui_build_controls(&underlay)
+	ui_draw_panels(painter, &underlay)
+	ui_draw_controls(painter, &underlay)
+	ui_add_rect(painter, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.8})
+	gpu.push_opacity(painter.list, 0.2)
+	ui_draw_labels(painter, &underlay, mesh, model_name, status, status_failed)
+	gpu.pop_opacity(painter.list)
+	modal := ui_settings_modal_rect(ui)
+	if ui.help_open {modal = ui_help_modal_rect(ui)}
+	if ui.evidence_open && ui_evidence_available(evidence_view) {modal = ui_evidence_modal_rect(ui)}
+	ui_draw_modal_surface(painter, ui, modal)
+	ui_draw_controls(painter, ui, evidence_view)
+	ui_draw_modal_labels(painter, ui, evidence_view)
+	ui_draw_flash_hints(painter, ui)
+}
+
+ui_draw_labels :: proc(
+	painter: ^UI_Painter,
+	ui: ^UI_State,
+	mesh: ^Mesh,
+	model_name, status: string,
+	status_failed: bool,
+) {
+	theme := ui_theme(ui)
 	title_width := max(0.0, ui.width-383)
 	title := fmt.tprintf("HW Slicer / %s", ui_stage_names[ui.stage_index]) if title_width >= 230 else "Slicer"
-	ui_draw_text(ctx, font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
 	window_labels := [3]string{"−", "+", "×"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
 	for label, index in window_labels {
 		action := window_actions[index]
-		ui_draw_text(ctx, mono, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center, tracked = true)
+		ui_draw_text(painter, painter.mono, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center, tracked = true)
 	}
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"Dark" if !ui.dark else "Light",
 		{ui.width-255, 5, 74, 30},
@@ -1751,8 +1610,8 @@ ui_build_text_overlay :: proc(
 		.Center,
 	)
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"Settings",
 		{ui.width-359, 5, 97, 30},
@@ -1760,7 +1619,7 @@ ui_build_text_overlay :: proc(
 		0,
 		.Center,
 	)
-	ui_draw_text(ctx, font, ui, "Help", ui_control_rect(ui, .Show_Help), ui_control_ink(ui, .Show_Help), 0, .Center)
+	ui_draw_text(painter, painter.font, ui, "Help", ui_control_rect(ui, .Show_Help), ui_control_ink(ui, .Show_Help), 0, .Center)
 
 	compact := ui_compact(ui)
 	if compact {
@@ -1768,38 +1627,38 @@ ui_build_text_overlay :: proc(
 		labels := [3]string{"Settings", "Section", "Details"}
 		for label, index in labels {
 			action := panels[index]
-			ui_draw_text(ctx, font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
+			ui_draw_text(painter, painter.font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
 		}
 		if ui.stage_index > 0 && ui.panel != .Mesh {
-			ui_draw_text(ctx, font, ui, "Not implemented", {20, 88, 156, 24}, theme.text, 0)
+			ui_draw_text(painter, painter.font, ui, "Not implemented", {20, 88, 156, 24}, theme.text, 0)
 		} else if ui.panel == .Section && ui.stage_index == 0 {
-			ui_draw_text(ctx, font, ui, "Enabled" if ui.section_enabled else "Disabled", {64, 84, 112, 28}, ui_control_ink(ui, .Toggle_Section), 0)
-			ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 138, 156, 18}, 70)
-			ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 158, 156, 18}, 70)
+			ui_draw_text(painter, painter.font, ui, "Enabled" if ui.section_enabled else "Disabled", {64, 84, 112, 28}, ui_control_ink(ui, .Toggle_Section), 0)
+			ui_draw_measurement(painter, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 138, 156, 18}, 70)
+			ui_draw_measurement(painter, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 158, 156, 18}, 70)
 		}
 	} else if ui.stage_index == 0 {
-		ui_draw_text(ctx, font, ui, "Model settings", {20, 58, 190, 24}, theme.text, 0)
-		ui_draw_text(ctx, font, ui, "Section", {20, 114, 190, 24}, theme.muted, 0)
+		ui_draw_text(painter, painter.font, ui, "Model settings", {20, 58, 190, 24}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, "Section", {20, 114, 190, 24}, theme.muted, 0)
 		ui_draw_text(
-			ctx,
-			font,
+			painter,
+			painter.font,
 			ui,
 			"Enabled" if ui.section_enabled else "Disabled",
 			{64, 138, 152, 30},
 			ui_control_ink(ui, .Toggle_Section),
 			0,
 		)
-		ui_draw_measurement(ctx, font, mono, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 204, 204, 22}, 90)
-		ui_draw_measurement(ctx, font, mono, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 228, 204, 22}, 90)
+		ui_draw_measurement(painter, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 204, 204, 22}, 90)
+		ui_draw_measurement(painter, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 228, 204, 22}, 90)
 	} else {
-		ui_draw_text(ctx, font, ui, "Stage settings", {20, 58, 190, 24}, theme.text, 0)
-		ui_draw_text(ctx, font, ui, "Not implemented", {20, 92, 190, 24}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, "Stage settings", {20, 58, 190, 24}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, "Not implemented", {20, 92, 190, 24}, theme.text, 0)
 	}
 
 	viewport := ui_viewport_rect(ui)
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"Frame",
 		ui_control_rect(ui, .Frame_Mesh),
@@ -1808,8 +1667,8 @@ ui_build_text_overlay :: proc(
 		.Center,
 	)
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"Wireframe",
 		ui_control_rect(ui, .Toggle_Wireframe),
@@ -1819,8 +1678,8 @@ ui_build_text_overlay :: proc(
 	)
 
 	ui_draw_text(
-		ctx,
-		font,
+		painter,
+		painter.font,
 		ui,
 		"Lay on face",
 		ui_control_rect(ui, .Lay_On_Face),
@@ -1830,16 +1689,16 @@ ui_build_text_overlay :: proc(
 	)
 	if ui.stage_index > 0 && !compact {
 		right := ui_right_rect(ui)
-		ui_draw_text(ctx, font, ui, "Stage results", {right.x+12, right.y+8, 252, 28}, theme.text, 0)
-		ui_draw_text(ctx, font, ui, "Not implemented", {right.x+12, right.y+42, 252, 24}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, "Stage results", {right.x+12, right.y+8, 252, 28}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, "Not implemented", {right.x+12, right.y+42, 252, 24}, theme.text, 0)
 	} else if compact && ui.stage_index > 0 {
 		if ui.panel == .Mesh {
-			ui_draw_text(ctx, font, ui, "Stage results", {20, 82, 156, 20}, theme.text, 0)
-			ui_draw_text(ctx, font, ui, "Not implemented", {20, 106, 156, 20}, theme.text, 0)
+			ui_draw_text(painter, painter.font, ui, "Stage results", {20, 82, 156, 20}, theme.text, 0)
+			ui_draw_text(painter, painter.font, ui, "Not implemented", {20, 106, 156, 20}, theme.text, 0)
 		}
 	} else if compact {
 		if ui.panel == .Mesh {
-			ui_draw_text(ctx, font, ui, model_name, {20, 82, 156, 20}, theme.text, 0)
+			ui_draw_text(painter, painter.font, ui, model_name, {20, 82, 156, 20}, theme.text, 0)
 			if mesh != nil && mesh.triangle_count > 0 {
 				size := mesh_size(mesh.bounds)
 				labels := [4]string{"Triangles", "Width", "Depth", "Height"}
@@ -1850,14 +1709,14 @@ ui_build_text_overlay :: proc(
 					fmt.tprintf("%.2f mm", size.z),
 				}
 				for label, index in labels {
-					ui_draw_measurement(ctx, font, mono, ui, label, values[index], {20, f64(102+index*18), 156, 18}, 70)
+					ui_draw_measurement(painter, ui, label, values[index], {20, f64(102+index*18), 156, 18}, 70)
 				}
 			}
 		}
 	} else {
 		right := ui_right_rect(ui)
-		ui_draw_text(ctx, font, ui, "Model details", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
-		ui_draw_text(ctx, font, ui, model_name, {right.x+12, right.y+42, 252, 32}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, "Model details", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
+		ui_draw_text(painter, painter.font, ui, model_name, {right.x+12, right.y+42, 252, 32}, theme.text, 0)
 		if mesh != nil && mesh.triangle_count > 0 {
 			size := mesh_size(mesh.bounds)
 			labels := [4]string{"Triangles", "Width", "Depth", "Height"}
@@ -1868,11 +1727,11 @@ ui_build_text_overlay :: proc(
 				fmt.tprintf("%.2f mm", size.z),
 			}
 			for label, index in labels {
-				ui_draw_measurement(ctx, font, mono, ui, label, values[index], {right.x+12, right.y+86+f64(index*26), 252, 24}, 90)
+				ui_draw_measurement(painter, ui, label, values[index], {right.x+12, right.y+86+f64(index*26), 252, 24}, 90)
 			}
-			ui_draw_text(ctx, font, ui, "Binary STL / expanded vertices", {right.x+12, right.y+190, 252, 24}, theme.text, 0)
+			ui_draw_text(painter, painter.font, ui, "Binary STL / expanded vertices", {right.x+12, right.y+190, 252, 24}, theme.text, 0)
 		}
-		ui_draw_text(ctx, font, ui, "Camera", {right.x+12, right.y+242, 240, 24}, theme.muted, 0)
+		ui_draw_text(painter, painter.font, ui, "Camera", {right.x+12, right.y+242, 240, 24}, theme.muted, 0)
 		camera_lines := [4]struct {input, action: string}{
 			{"Left drag", "Orbit"},
 			{"Right drag", "Pan"},
@@ -1881,95 +1740,89 @@ ui_build_text_overlay :: proc(
 		}
 		for line, index in camera_lines {
 			rect := UI_Rect{right.x+12, right.y+270+f64(index*25), 252, 22}
-			ui_draw_text(ctx, font, ui, line.input, {rect.x, rect.y, 100, rect.h}, theme.text, 0)
-			ui_draw_text(ctx, font, ui, line.action, {rect.x+100, rect.y, rect.w-100, rect.h}, theme.text, 0)
+			ui_draw_text(painter, painter.font, ui, line.input, {rect.x, rect.y, 100, rect.h}, theme.text, 0)
+			ui_draw_text(painter, painter.font, ui, line.action, {rect.x+100, rect.y, rect.w-100, rect.h}, theme.text, 0)
 		}
 
 	}
 
-	ui_draw_status(ctx, font, ui, status, status_failed)
-	ui_draw_text(ctx, font, ui, "Previous", ui_control_rect(ui, .Previous_Stage), ui_control_ink(ui, .Previous_Stage), 0, .Center)
-	ui_draw_text(ctx, font, ui, "Next", ui_control_rect(ui, .Next_Stage), ui_control_ink(ui, .Next_Stage), 0, .Center)
+	ui_draw_status(painter, ui, status, status_failed)
+	ui_draw_text(painter, painter.font, ui, "Previous", ui_control_rect(ui, .Previous_Stage), ui_control_ink(ui, .Previous_Stage), 0, .Center)
+	ui_draw_text(painter, painter.font, ui, "Next", ui_control_rect(ui, .Next_Stage), ui_control_ink(ui, .Next_Stage), 0, .Center)
 	bar := ui_action_bar_rect(ui)
-	ui_draw_text(ctx, font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(ui_stage_names), ui_stage_names[ui.stage_index]), {bar.x+248, bar.y+8, max(0, bar.w-248), 32}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(ui_stage_names), ui_stage_names[ui.stage_index]), {bar.x+248, bar.y+8, max(0, bar.w-248), 32}, theme.text, 0)
+}
 
-	if modal_open {
-		ui = modal_ui
-		modal := ui_settings_modal_rect(ui)
-		if ui.help_open {modal = ui_help_modal_rect(ui)}
-		if ui.evidence_open && ui_evidence_available(evidence_view) {modal = ui_evidence_modal_rect(ui)}
-		CGContextClearRect(ctx, ui_cg_rect(ui, modal))
-		CGContextSetAlpha(ctx, 1)
-		if ui.help_open {
-			modal := ui_help_modal_rect(ui)
+ui_draw_modal_labels :: proc(
+	painter: ^UI_Painter,
+	ui: ^UI_State,
+	evidence_view: ^UI_Evidence_View,
+) {
+	theme := ui_theme(ui)
+	if ui.help_open {
+		modal := ui_help_modal_rect(ui)
+		ui_draw_text(
+			painter,
+			painter.font,
+			ui,
+			"Mesh viewer help",
+			{modal.x+20, modal.y+14, 440, 32},
+			theme.text,
+			0,
+		)
+		help_lines := [7]string{
+			"Left drag rotates the camera around the mesh target.",
+			"Right or middle drag translates the camera target.",
+			"Scroll changes camera distance.",
+			"Frame recalculates the target and distance from the placed model bounds.",
+			"Wireframe changes Metal triangle fill mode.",
+			"Open accepts exact STL files and validated evidence bundles.",
+			"Section drags a cutting plane; its contour draws over the mesh.",
+		}
+		line_y, line_step, line_height := f64(66), f64(30), f64(26)
+		if modal.h < 320 || modal.w < 470 {
+			help_lines = [7]string{
+				"Left drag: orbit the model.",
+				"Right or middle drag: pan.",
+				"Scroll: zoom.",
+				"Frame: fit the placed model.",
+				"Wireframe: change triangle fill.",
+				"Open: load STL or evidence.",
+				"Section: move the cutting plane.",
+			}
+			line_y, line_step, line_height = 54, 20, 18
+		}
+		for line, index in help_lines {
 			ui_draw_text(
-				ctx,
-				font,
+				painter,
+				painter.font,
 				ui,
-				"Mesh viewer help",
-				{modal.x+20, modal.y+14, 440, 32},
+				line,
+				{modal.x+20, modal.y+line_y+f64(index)*line_step, modal.w-40, line_height},
 				theme.text,
 				0,
 			)
-			help_lines := [7]string{
-				"Left drag rotates the camera around the mesh target.",
-				"Right or middle drag translates the camera target.",
-				"Scroll changes camera distance.",
-				"Frame recalculates the target and distance from the placed model bounds.",
-				"Wireframe changes Metal triangle fill mode.",
-				"Open accepts exact STL files and validated evidence bundles.",
-				"Section drags a cutting plane; its contour draws over the mesh.",
-			}
-			line_y, line_step, line_height := f64(66), f64(30), f64(26)
-			if modal.h < 320 || modal.w < 470 {
-				help_lines = [7]string{
-					"Left drag: orbit the model.",
-					"Right or middle drag: pan.",
-					"Scroll: zoom.",
-					"Frame: fit the placed model.",
-					"Wireframe: change triangle fill.",
-					"Open: load STL or evidence.",
-					"Section: move the cutting plane.",
-				}
-				line_y, line_step, line_height = 54, 20, 18
-			}
-			for line, index in help_lines {
-				ui_draw_text(
-					ctx,
-					font,
-					ui,
-					line,
-					{modal.x+20, modal.y+line_y+f64(index)*line_step, modal.w-40, line_height},
-					theme.text,
-					0,
-				)
-			}
-			ui_draw_text(
-				ctx,
-				font,
-				ui,
-				"1  Close",
-				{modal.x+modal.w-132, modal.y+modal.h-54, 112, 36},
-				ui_control_ink(ui, .Close_Help),
-				0,
-				.Center,
-			)
-			ui_draw_flash_hint_text(ctx, font, ui)
-			return pixels
 		}
-		if ui.evidence_open && ui_evidence_available(evidence_view) {
-			ui_draw_evidence_overlay(ctx, font, mono, ui, evidence_view)
-			return pixels
-		}
-		if ui.settings_open {
-			ui_draw_settings_overlay(ctx, font, mono, ui)
-			return pixels
-		}
+		ui_draw_text(
+			painter,
+			painter.font,
+			ui,
+			"1  Close",
+			{modal.x+modal.w-132, modal.y+modal.h-54, 112, 36},
+			ui_control_ink(ui, .Close_Help),
+			0,
+			.Center,
+		)
+		return
 	}
-
-	ui_draw_flash_hint_text(ctx, font, ui)
-
-	return pixels
+	if ui.evidence_open && ui_evidence_available(evidence_view) {
+		ui_draw_evidence_overlay(painter, ui, evidence_view)
+		return
+	}
+	if ui.settings_open {
+		ui_draw_settings_overlay(painter, ui)
+		return
+	}
 }
 
 ui_snapshot_text :: proc(ui: ^UI_State) -> string {

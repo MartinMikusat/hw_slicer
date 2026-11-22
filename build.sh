@@ -20,6 +20,7 @@ elif [ -d "$ROOT/../odin_libraries/hw_odin_devlog" ]; then
 else
   DEVLOG_ROOT="$ROOT/../hw_odin_devlog"
 fi
+RUNE_ROOT="$ROOT/../hw_odin_rune"
 MODE=${1:-debug}
 
 case "$MODE" in
@@ -45,6 +46,7 @@ case "$MODE" in
 esac
 
 "$ROOT/scripts/dependencies.sh" check
+bash "$RUNE_ROOT/scripts/build-metallib.sh"
 "$ROOT/scripts/clipper2-build.sh" "$MODE" >/dev/null
 ODIN="$ROOT/scripts/odin.sh"
 CLANG=$(xcrun --find clang)
@@ -79,6 +81,7 @@ fi
     $ODIN_FLAGS \
     -collection:flash="$FLASH_ROOT" \
     -collection:devlog="$DEVLOG_ROOT" \
+    -collection:rune="$RUNE_ROOT" \
     -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$MODE/libhw_clipper2.a" \
     -extra-linker-flags:"$HOST_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
 )

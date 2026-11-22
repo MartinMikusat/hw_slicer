@@ -41,15 +41,16 @@ The viewer uses Apple system APIs and project-owned code:
 - AppKit creates the window and sends input events.
 - `CAMetalLayer` presents frames.
 - Metal allocates the mesh buffers, depth texture, pipeline states, and command
-  buffers directly.
-- Core Text shapes AppKit's system monospaced font.
+  buffers directly for the 3D scene.
+- `hw_odin_rune` (`rune:gpu`, `rune:text`) draws the 2D interface and its
+  Core Text glyphs into the same command buffer after the scene passes.
 - Project code parses STL files and constructs the camera, interface, and
   control registry.
 - `hw_odin_ui_flash` selects keyboard targets. It does not render controls or
   own application actions.
 
-The implementation does not use a rendering engine, scene library, MetalKit,
-or GUI framework.
+The implementation does not use a scene library, MetalKit, or a layout or
+widget framework.
 
 The viewer loads the three bundled reference models or an exact binary STL
 selected through `01 OPEN`. The same action opens a validated `.hwsdebug`
@@ -567,10 +568,11 @@ The project compiler wrapper forwards every command to `hw-odin` and disables
 the threaded semantic checker because concurrent checks can crash on these
 packages. Test execution and optimized code generation remain parallel.
 
-`dependencies.lock` pins `hw_odin_ui_flash` to repository
-`https://github.com/MartinMikusat/hw_odin_ui_flash.git` at commit
-`d06e98a40640b13eea5b979319022aad0a470d72`. The build rejects a different
-sibling checkout.
+`dependencies.lock` pins the sibling checkouts of `hw_odin_ui_flash`,
+`hw_odin_devlog`, and `hw_odin_rune` to their repository URLs and commits.
+The build rejects a different sibling checkout. The build compiles the rune
+shaders into `hw_odin_rune/build/rune.metallib` before it compiles the
+application.
 
 ## Bundled third-party assets
 

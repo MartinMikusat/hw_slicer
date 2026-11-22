@@ -48,17 +48,3 @@ ui_settings_modal_registers_font_controls_test :: proc(t: ^testing.T) {
 		u64(UI_Action.Dismiss_Settings),
 	)
 }
-
-@(test)
-ui_content_scale_applies_to_text_rects_test :: proc(t: ^testing.T) {
-	ui: UI_State
-	ui_initialize(&ui)
-	defer ui_destroy(&ui)
-	ui.ui_scale = 2
-	ui.scale = 1
-	ui.height = 800
-	rect := ui_cg_rect(&ui, {10, 10, 100, 20})
-	testing.expect_value(t, rect.origin.x, f64(20))
-	testing.expect_value(t, rect.size.width, f64(200))
-	testing.expect_value(t, rect.size.height, f64(40))
-}

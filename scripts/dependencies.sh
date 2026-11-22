@@ -20,10 +20,13 @@ elif [ -d "$ROOT/../odin_libraries/hw_odin_devlog" ]; then
 else
   DEVLOG_ROOT="$ROOT/../hw_odin_devlog"
 fi
+RUNE_ROOT="$ROOT/../hw_odin_rune"
 EXPECTED_FLASH_URL="https://github.com/MartinMikusat/hw_odin_ui_flash.git"
 EXPECTED_FLASH_COMMIT="f4744a6e76c04e99e54fa8e4205de416b612f1db"
 EXPECTED_DEVLOG_URL="https://github.com/MartinMikusat/hw_odin_devlog.git"
 EXPECTED_DEVLOG_COMMIT="5f44e3bb81677901635f9ab828fcae73d0cbb009"
+EXPECTED_RUNE_URL="https://github.com/MartinMikusat/hw_odin_rune.git"
+EXPECTED_RUNE_COMMIT="38993e4c6f1b01f1f6565c5642b46943a0def675"
 
 if [ "${1:-}" != "check" ]; then
   echo "usage: scripts/dependencies.sh check" >&2
@@ -58,6 +61,7 @@ check_pin() {
 
 check_pin "Flash" "$FLASH_ROOT" "$EXPECTED_FLASH_URL" "$EXPECTED_FLASH_COMMIT"
 check_pin "devlog" "$DEVLOG_ROOT" "$EXPECTED_DEVLOG_URL" "$EXPECTED_DEVLOG_COMMIT"
+check_pin "rune" "$RUNE_ROOT" "$EXPECTED_RUNE_URL" "$EXPECTED_RUNE_COMMIT"
 
 (
   cd "$ROOT"
