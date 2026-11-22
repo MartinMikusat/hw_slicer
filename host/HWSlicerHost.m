@@ -465,7 +465,7 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
 
     __block unsigned snapshotTick = 0;
     self.timer = [NSTimer
-        scheduledTimerWithTimeInterval:1.0 / 60.0
+        scheduledTimerWithTimeInterval:1.0 / 120.0
         repeats:YES
         block:^(NSTimer *timer) {
             (void)timer;

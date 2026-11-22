@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:math"
+import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -59,6 +60,10 @@ Design_State :: struct {
 	selected_layer:    int,
 	selected_junction: int, // index into evaluated.junctions, or -1
 	dirty:             bool, // pending in-memory rebuild coalesced once per frame
+	scratch_toolpath:  design.Toolpath,
+	scratch_beads:     [dynamic]Design_Bead,
+	scratch_gpu_beads: [dynamic]Gpu_Bead,
+	scratch_layers:    [dynamic]Design_Layer,
 	clock:             f64, // simulated print time in seconds
 	playing:        bool,
 	rate_index:     int,
@@ -76,9 +81,13 @@ design_state_init :: proc(s: ^Design_State) {
 design_state_clear :: proc(s: ^Design_State) {
 	design.design_destroy(&s.evaluated)
 	design.toolpath_destroy(&s.toolpath)
+	design.toolpath_destroy(&s.scratch_toolpath)
 	delete(s.beads)
 	delete(s.gpu_beads)
 	delete(s.layers)
+	delete(s.scratch_beads)
+	delete(s.scratch_gpu_beads)
+	delete(s.scratch_layers)
 	delete(s.path)
 	delete(s.export_path)
 	nozzle, rate, pinned := s.nozzle_index, s.rate_index, s.pinned
@@ -204,12 +213,97 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	return true
 }
 
-// Re-slices the currently evaluated in-memory design (after interactive bevel/fillet edits),
-// reusing bead buffers and uploading compact Gpu_Beads directly into Metal without CPU meshing.
+// Re-slices the affected layer span of the currently evaluated in-memory design
+// (after interactive bevel/fillet/corner edits), splicing into the existing bead buffers
+// and uploading to the next ping-pong Metal buffer.
 app_rebuild_design_mesh :: proc() -> bool {
 	s := &app.design
 	if !s.active {return false}
 	layer_idx, _, _, in_layer := design_layer_state(s)
+	n_layers := len(s.layers)
+
+	// Fast path: splice only the layers touched by the edited junction.
+	if s.selected_junction >= 0 && s.selected_junction < len(s.evaluated.junctions) && n_layers > 0 {
+		j := s.evaluated.junctions[s.selected_junction]
+		lo_l, hi_l := design.object_layer_span(&s.evaluated, s.evaluated.objects[j.lower_index])
+		lo_u, hi_u := design.object_layer_span(&s.evaluated, s.evaluated.objects[j.upper_index])
+		lo := clamp(min(lo_l, lo_u), 0, n_layers)
+		hi := clamp(max(hi_l, hi_u), lo, n_layers)
+		if lo < hi {
+			design.generate_layers(&s.evaluated, lo, hi, &s.scratch_toolpath)
+			clear(&s.scratch_beads)
+			clear(&s.scratch_gpu_beads)
+			clear(&s.scratch_layers)
+			_, _ = design_beads(&s.scratch_toolpath, &s.scratch_beads, &s.scratch_gpu_beads, &s.scratch_layers)
+			if len(s.scratch_layers) == hi-lo {
+				old_start := s.layers[lo].first_bead
+				old_end := s.layers[hi-1].end_bead
+				old_t0 := s.layers[lo].t0
+				old_t1 := s.layers[hi-1].t1
+				old_count := old_end-old_start
+				new_count := len(s.scratch_beads)
+				delta := new_count-old_count
+				suffix_count := len(s.beads)-old_end
+				new_total := len(s.beads)+delta
+
+				// Shift new beads' timestamps to start at `old_t0`.
+				for &b in s.scratch_beads {
+					b.t0 += old_t0
+					b.t1 += old_t0
+				}
+				new_t1 := s.scratch_layers[len(s.scratch_layers)-1].t1+old_t0
+				dt_delta := new_t1-old_t1
+
+				if delta > 0 {
+					resize(&s.beads, new_total)
+					resize(&s.gpu_beads, new_total)
+				}
+				if delta != 0 && suffix_count > 0 {
+					mem.copy(&s.beads[old_start+new_count], &s.beads[old_end], suffix_count*size_of(Design_Bead))
+					mem.copy(&s.gpu_beads[old_start+new_count], &s.gpu_beads[old_end], suffix_count*size_of(Gpu_Bead))
+				}
+				if new_count > 0 {
+					mem.copy(&s.beads[old_start], &s.scratch_beads[0], new_count*size_of(Design_Bead))
+					mem.copy(&s.gpu_beads[old_start], &s.scratch_gpu_beads[0], new_count*size_of(Gpu_Bead))
+				}
+				if delta < 0 {
+					resize(&s.beads, new_total)
+					resize(&s.gpu_beads, new_total)
+				}
+				for k in 0..<len(s.scratch_layers) {
+					ml := s.scratch_layers[k]
+					s.layers[lo+k] = {
+						z          = ml.z,
+						t0         = ml.t0+old_t0,
+						t1         = ml.t1+old_t0,
+						first_bead = ml.first_bead+old_start,
+						end_bead   = ml.end_bead+old_start,
+					}
+				}
+				if delta != 0 || abs(dt_delta) > 1e-9 {
+					for L in hi..<n_layers {
+						s.layers[L].first_bead += delta
+						s.layers[L].end_bead += delta
+						s.layers[L].t0 += dt_delta
+						s.layers[L].t1 += dt_delta
+					}
+					if abs(dt_delta) > 1e-9 && suffix_count > 0 {
+						for i in old_start+new_count..<new_total {
+							s.beads[i].t0 += dt_delta
+							s.beads[i].t1 += dt_delta
+						}
+					}
+					s.toolpath.duration += dt_delta
+				}
+				if !renderer_set_beads(&app.renderer, s.gpu_beads[:]) {return false}
+				design_set_layer(s, layer_idx, in_layer)
+				app.mesh.triangle_count = u32(len(s.beads)*BEAD_VERTICES/3)
+				app.needs_redraw = true
+				return true
+			}
+		}
+	}
+
 	toolpath := design.generate(&s.evaluated)
 	clear(&s.beads)
 	clear(&s.gpu_beads)
@@ -512,14 +606,20 @@ design_beads :: proc(
 			}
 			full_segs = clamp(full_segs, design.MIN_CIRCLE_SEGMENTS, design.MAX_CIRCLE_SEGMENTS)
 			segs := max(2, int(math.ceil(f64(full_segs)*abs(sweep)/(2*math.PI))))
-			start_angle := math.atan2(position.y-move.center.y, position.x-move.center.x)
+			rx := position.x-move.center.x
+			ry := position.y-move.center.y
+			d_ang := sweep/f64(segs)
+			dc := math.cos(d_ang)
+			ds := math.sin(d_ang)
 			prev := position
 			seg_dt := duration/f64(segs)
 			for i in 1..=segs {
 				next_pt := move.to
 				if i < segs {
-					ang := start_angle+sweep*f64(i)/f64(segs)
-					next_pt = {move.center.x+radius*math.cos(ang), move.center.y+radius*math.sin(ang), move.to.z}
+					next_rx := rx*dc-ry*ds
+					ry = rx*ds+ry*dc
+					rx = next_rx
+					next_pt = {move.center.x+rx, move.center.y+ry, move.to.z}
 				}
 				t0 := clock+f64(i-1)*seg_dt
 				t1 := clock+f64(i)*seg_dt

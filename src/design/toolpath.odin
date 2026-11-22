@@ -140,15 +140,21 @@ object_size_at_z :: proc(object: Object, z, thickness: f64) -> [2]f64 {
 	return {base.x+2*flare, base.y+2*flare}
 }
 
-// Generates layer-ordered moves. Each layer prints the objects in file order, each as
-// concentric loops from the outside in (plus inner bore wall loops on hollow tubes).
-generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
+// Generates layer-ordered moves for `[start_layer, end_layer)` into `t` (reusing `t.moves`).
+generate_layers :: proc(d: ^Design, start_layer, end_layer: int, t: ^Toolpath) {
 	assert(d.line_width > 0 && d.layer_height > 0 && d.first_layer_height > 0)
 	assert(len(d.objects) > 0)
-	t := Toolpath{moves = make([dynamic]Move, allocator)}
+	clear(&t.moves)
+	t.start = {}
+	t.layers = 0
+	t.extruded_length = 0
+	t.filament_length = 0
+	t.duration = 0
 	for object in d.objects {t.layers = max(t.layers, object_layers(d, object))}
-	g := Generator{d = d, t = &t}
-	for layer in 0..<t.layers {
+	lo := clamp(start_layer, 0, t.layers)
+	hi := clamp(end_layer, lo, t.layers)
+	g := Generator{d = d, t = t}
+	for layer in lo..<hi {
 		g.z = d.first_layer_height+f64(layer)*d.layer_height
 		g.thickness = d.first_layer_height if layer == 0 else d.layer_height
 		for object, index in d.objects {
@@ -216,6 +222,13 @@ generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
 			}
 		}
 	}
+}
+
+// Generates layer-ordered moves. Each layer prints the objects in file order, each as
+// concentric loops from the outside in (plus inner bore wall loops on hollow tubes).
+generate :: proc(d: ^Design, allocator := context.allocator) -> Toolpath {
+	t := Toolpath{moves = make([dynamic]Move, allocator)}
+	generate_layers(d, 0, max(int), &t)
 	return t
 }
 
@@ -342,13 +355,20 @@ emit_morphed_radial_loop :: proc(
 	n := max(sides_from, sides_to)
 	sub := max(6, int(math.ceil(64.0/f64(n))))
 	total := n*sub
+	d_ang := 2*math.PI/f64(total)
+	dc := math.cos(d_ang)
+	ds := math.sin(d_ang)
+	ca, sa := 1.0, 0.0
 	for i in 0..=total {
-		angle := 2*math.PI*f64(i)/f64(total)
+		angle := f64(i)*d_ang
 		rf := radial_radius_at_angle(r_from, sides_from, angle)
 		rt := radial_radius_at_angle(r_to, sides_to, angle)
 		r := rf*(1-s)+rt*s
-		pt := [2]f64{c.x+r*math.cos(angle), c.y+r*math.sin(angle)}
+		pt := [2]f64{c.x+r*ca, c.y+r*sa}
 		if i == 0 {travel(g, pt)} else {extrude(g, pt)}
+		next_ca := ca*dc-sa*ds
+		sa = ca*ds+sa*dc
+		ca = next_ca
 	}
 }
 

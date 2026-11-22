@@ -50,8 +50,10 @@ Renderer :: struct {
 	depth_state:         Id,
 	ui_depth_state:      Id,
 	mesh_buffer:         Id,
+	bead_buffers:        [2]Id,
+	bead_capacities:     [2]int,
+	bead_slot:           int,
 	bead_buffer:         Id,
-	bead_capacity:       int,
 	bead_count:          int,
 	section_buffer:      Id,
 	marker_buffer:    Id,
@@ -471,7 +473,8 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.marker_buffer,
 		renderer.section_buffer,
 		renderer.mesh_buffer,
-		renderer.bead_buffer,
+		renderer.bead_buffers[0],
+		renderer.bead_buffers[1],
 		renderer.ui_depth_state,
 		renderer.depth_state,
 		renderer.line_pipeline,
@@ -721,15 +724,16 @@ renderer_set_mesh :: proc(renderer: ^Renderer, mesh: ^Mesh) -> bool {
 	return true
 }
 
-// Uploads compact `Gpu_Bead` records into a reusable shared Metal buffer (0 allocs when
-// capacity fits, ~18x smaller than CPU-expanded vertex buffers).
+// Uploads compact `Gpu_Bead` records into a ping-pong pair of shared Metal buffers
+// so live slider edits never stall or race an in-flight GPU frame.
 renderer_set_beads :: proc(renderer: ^Renderer, beads: []Gpu_Bead) -> bool {
 	count := len(beads)
 	if count == 0 {
 		renderer.bead_count = 0
 		return true
 	}
-	if renderer.bead_buffer == nil || count > renderer.bead_capacity {
+	slot := (renderer.bead_slot+1)&1
+	if renderer.bead_buffers[slot] == nil || count > renderer.bead_capacities[slot] {
 		new_cap := max(count, count*5/4)
 		new_buf := transmute(proc "c" (Id, Sel, uint, uint) -> Id)objc_send_address
 		next := new_buf(
@@ -739,16 +743,18 @@ renderer_set_beads :: proc(renderer: ^Renderer, beads: []Gpu_Bead) -> bool {
 			0,
 		)
 		if next == nil {return false}
-		if renderer.bead_buffer != nil {
-			msg_void(renderer.bead_buffer, sel_registerName("release"))
+		if renderer.bead_buffers[slot] != nil {
+			msg_void(renderer.bead_buffers[slot], sel_registerName("release"))
 		}
-		renderer.bead_buffer = next
-		renderer.bead_capacity = new_cap
+		renderer.bead_buffers[slot] = next
+		renderer.bead_capacities[slot] = new_cap
 	}
 	get_contents := transmute(proc "c" (Id, Sel) -> rawptr)objc_send_address
-	dst := get_contents(renderer.bead_buffer, sel_registerName("contents"))
+	dst := get_contents(renderer.bead_buffers[slot], sel_registerName("contents"))
 	if dst == nil {return false}
 	mem.copy(dst, raw_data(beads), count*size_of(Gpu_Bead))
+	renderer.bead_slot = slot
+	renderer.bead_buffer = renderer.bead_buffers[slot]
 	renderer.bead_count = count
 	return true
 }
