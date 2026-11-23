@@ -38,6 +38,7 @@ CLI_Options :: struct {
 	rot_z:              f64,
 	lay_flat:           bool,
 	use_native_polygon: bool,
+	use_gpu:            bool,
 	overrides:          [dynamic]CLI_Override,
 }
 
@@ -150,6 +151,7 @@ main :: proc() {
 		profiles_dir = "resources/profiles",
 		clone_count  = 1,
 		scale        = 1.0,
+		use_gpu      = true,
 		input_paths  = make([dynamic]string),
 		overrides    = make([dynamic]CLI_Override),
 	}
@@ -189,6 +191,10 @@ main :: proc() {
 			opts.use_native_polygon = true
 		} else if arg == "--polygon-provider=clipper2" {
 			opts.use_native_polygon = false
+		} else if arg == "--gpu" {
+			opts.use_gpu = true
+		} else if arg == "--no-gpu" {
+			opts.use_gpu = false
 		} else if strings.has_prefix(arg, "--clone=") {
 			if n, ok := strconv.parse_int(arg[len("--clone="):]); ok && n >= 1 {
 				opts.clone_count = n
@@ -319,6 +325,7 @@ main :: proc() {
 	run_opts.support_style_tree = extras.support_style != "grid"
 	run_opts.adaptive_layers = opts.adaptive_layers || extras.adaptive_layers
 	run_opts.use_native_polygon = opts.use_native_polygon
+	run_opts.use_gpu = opts.use_gpu
 	raw_stem := strings.trim_suffix(filepath.base(opts.input_path), filepath.ext(opts.input_path))
 	run_opts.object_name = strings.clone(raw_stem, context.temp_allocator)
 

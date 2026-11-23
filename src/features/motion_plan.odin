@@ -2,6 +2,7 @@ package features
 
 import contracts "../contracts"
 import geometry "../geometry"
+import gpu "../gpu"
 import polygon "../polygon"
 import profiles "../profiles"
 
@@ -58,6 +59,7 @@ Motion_Plan_Options :: struct {
 	wipe_distance_um:          contracts.Micrometres,
 	overhang_slowdown_enabled: bool,
 	overhang_speed_percent:    u32,
+	use_gpu:                   bool,
 }
 
 Motion_Plan_Result :: struct {
@@ -165,6 +167,18 @@ motion_plan_build :: proc(
 		delete(layer_dwells, allocator)
 	}
 
+	// Precompute per-move overhang flags in one headless Metal GPU compute batch when enabled.
+	gpu_overhang_flags: []bool
+	gpu_overhang_ready := false
+	if options.use_gpu && options.overhang_slowdown_enabled && len(plan.moves) > 0 && len(model_layers) > 1 {
+		gpu_overhang_flags, gpu_overhang_ready = motion_gpu_compute_overhangs(
+			model_layers,
+			plan,
+			allocator,
+		)
+	}
+	defer delete(gpu_overhang_flags, allocator)
+
 	extrusion_cursor := 0
 	has_extruded := false
 	retraction_count: u64
@@ -268,10 +282,17 @@ motion_plan_build :: proc(
 				source.base_speed = target.speed
 				source.acceleration = target.acceleration
 				source.fan_ratio = target.fan_ratio
+				is_ov := false
 				if options.overhang_slowdown_enabled &&
 				   layer_index > 0 &&
-				   (move.role == .Perimeter || move.role == .Thin_Wall) &&
-				   motion_segment_is_overhang(move.point_a, move.point_b, model_layers[layer_index - 1]) {
+				   (move.role == .Perimeter || move.role == .Thin_Wall) {
+					if gpu_overhang_ready {
+						is_ov = gpu_overhang_flags[move_index]
+					} else {
+						is_ov = motion_segment_is_overhang(move.point_a, move.point_b, model_layers[layer_index - 1])
+					}
+				}
+				if is_ov {
 					pct := options.overhang_speed_percent
 					if pct == 0 || pct > 100 {pct = 50}
 					ov_scale := u32((u64(pct) * u64(profiles.RATIO_SCALE)) / 100)
@@ -935,6 +956,75 @@ motion_compute_wipe :: proc(
 		return {}, 0, 0, false
 	}
 	return wipe_pt, w_len, t_len, true
+}
+
+@(private = "file")
+motion_gpu_compute_overhangs :: proc(
+	model_layers: []polygon.Polygon_Set,
+	plan: Unified_Path_Plan_Result,
+	allocator := context.allocator,
+) -> (flags: []bool, ok: bool) {
+	// Flatten all model layer polygon edges once for shared-memory Metal upload.
+	total_edges := 0
+	for ml in model_layers {
+		for p in ml.paths {total_edges += int(p.count)}
+	}
+	edges := make([]gpu.Poly_Edge, total_edges, context.temp_allocator)
+	ranges := make([]gpu.Layer_Edge_Range, len(model_layers), context.temp_allocator)
+	ew := 0
+	for ml, li in model_layers {
+		start := ew
+		for p in ml.paths {
+			ps := int(p.offset)
+			cnt := int(p.count)
+			for ei in 0..<cnt {
+				pa := ml.points[ps + ei]
+				pb := ml.points[ps + (ei + 1) % cnt]
+				edges[ew] = {ax = i64(pa.x), ay = i64(pa.y), bx = i64(pb.x), by = i64(pb.y)}
+				ew += 1
+			}
+		}
+		ranges[li] = {offset = u32(start), count = u32(ew - start)}
+	}
+
+	// Gather 3 sample queries per eligible perimeter/thin-wall extrusion move.
+	queries := make([dynamic]gpu.Point_Query, 0, len(plan.moves) / 2, context.temp_allocator)
+	move_indices := make([dynamic]int, 0, len(plan.moves) / 4, context.temp_allocator)
+	for layer, li in plan.layers {
+		if li == 0 || len(model_layers[li - 1].paths) == 0 {continue}
+		ms := int(layer.move_offset)
+		me := ms + int(layer.move_count)
+		prev_li := u32(li - 1)
+		for mi in ms..<me {
+			m := plan.moves[mi]
+			if m.kind != .Extrude || (m.role != .Perimeter && m.role != .Thin_Wall) {continue}
+			ax, ay := i64(m.point_a.x), i64(m.point_a.y)
+			bx, by := i64(m.point_b.x), i64(m.point_b.y)
+			append(&move_indices, mi)
+			append(&queries, gpu.Point_Query{x2 = ax + bx, y2 = ay + by, layer_idx = prev_li})
+			append(&queries, gpu.Point_Query{x2 = (3*ax + bx)/2, y2 = (3*ay + by)/2, layer_idx = prev_li})
+			append(&queries, gpu.Point_Query{x2 = (ax + 3*bx)/2, y2 = (ay + 3*by)/2, layer_idx = prev_li})
+		}
+	}
+
+	flags = make([]bool, len(plan.moves), allocator)
+	if len(queries) == 0 {return flags, true}
+
+	out_res := make([]u8, len(queries), context.temp_allocator)
+	if !gpu.metal_batch_point_in_polygon(edges, ranges, queries[:], out_res) {
+		delete(flags, allocator)
+		return nil, false
+	}
+
+	for mi, idx in move_indices {
+		base := idx * 3
+		unsupported := 0
+		if out_res[base + 0] == 0 {unsupported += 1}
+		if out_res[base + 1] == 0 {unsupported += 1}
+		if out_res[base + 2] == 0 {unsupported += 1}
+		flags[mi] = unsupported >= 2
+	}
+	return flags, true
 }
 
 motion_segment_is_overhang :: proc(

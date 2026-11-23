@@ -61,10 +61,19 @@ SDK_ROOT=$(xcrun --sdk macosx --show-sdk-path)
 BUILD_DIR="$ROOT/build/application/$CLIPPER_MODE"
 EXECUTABLE="$APP/Contents/MacOS/HWSlicer"
 HOST_OBJECT="$BUILD_DIR/HWSlicerHost.o"
+METAL_COMPUTE_OBJECT="$BUILD_DIR/HWSlicerMetalCompute.o"
 FRAMEWORKS="-framework AppKit -framework Foundation -framework Metal -framework QuartzCore -framework UniformTypeIdentifiers -framework CoreText -framework CoreGraphics"
+CLI_FRAMEWORKS="-framework Foundation -framework Metal"
 ASAN_COMPAT_OBJECT=""
 
 mkdir -p "$BUILD_DIR"
+
+# Compile headless Metal compute bridge (used by both GUI and CLI; no AppKit dependency).
+# shellcheck disable=SC2086
+"$CLANG" -fobjc-arc -Wall -Wextra -Werror $CLANG_FLAGS \
+  -isysroot "$SDK_ROOT" \
+  -c "$ROOT/host/HWSlicerMetalCompute.m" \
+  -o "$METAL_COMPUTE_OBJECT"
 
 if [ "$MODE" != "cli-release" ]; then
   mkdir -p "$APP/Contents/MacOS"
@@ -92,7 +101,7 @@ if [ "$MODE" != "cli-release" ]; then
       -collection:devlog="$DEVLOG_ROOT" \
       -collection:rune="$RUNE_ROOT" \
       -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$CLIPPER_MODE/libhw_clipper2.a" \
-      -extra-linker-flags:"$HOST_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
+      -extra-linker-flags:"$HOST_OBJECT $METAL_COMPUTE_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
   )
 fi
 
@@ -109,7 +118,7 @@ fi
     $ODIN_FLAGS \
     -collection:devlog="$DEVLOG_ROOT" \
     -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$CLIPPER_MODE/libhw_clipper2.a" \
-    -extra-linker-flags:"$ASAN_COMPAT_OBJECT -lc++"
+    -extra-linker-flags:"$METAL_COMPUTE_OBJECT $ASAN_COMPAT_OBJECT -lc++ $CLI_FRAMEWORKS"
 )
 
 if [ "$MODE" = "cli-release" ]; then

@@ -59,6 +59,8 @@ Slice_Run_Options :: struct {
 	adaptive_layers:               bool,
 	// Milestone 5: Pure-Odin polygon engine toggle
 	use_native_polygon:            bool,
+	// Milestone 6: Metal GPU compute acceleration toggle
+	use_gpu:                       bool,
 }
 
 DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
@@ -91,6 +93,7 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	variable_walls_enabled        = true,
 	support_style_tree            = true,
 	adaptive_layers               = false,
+	use_gpu                       = true,
 }
 
 Slice_Run_Result :: struct {
@@ -940,6 +943,7 @@ slice_run_decoded_mesh :: proc(
 			wipe_distance_um          = options.wipe_distance_um,
 			overhang_slowdown_enabled = options.overhang_slowdown_enabled,
 			overhang_speed_percent    = options.overhang_speed_percent,
+			use_gpu                   = options.use_gpu,
 		},
 	)
 	if mot_err != .None {
