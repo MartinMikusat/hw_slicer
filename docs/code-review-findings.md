@@ -217,10 +217,10 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
 
 ### High Severity (Pass 4)
 
-### [CR-31] Every Model Prints One Layer Short
+### [CR-31] Every Model Prints One Layer Short — **RESOLVED**
 - **Locations:** `src/slicing/layers.odin:48-54`, `src/pipeline/spine.odin:314-345`
 - **Issue:** The layer Z is also the slicing plane, and the fixed schedule creates planes from `minimum_z + first_layer_height` strictly below `maximum_z`. The model top is never reached: a 5 mm box prints to 4.8 mm and a 6 mm cylinder to 5.8 mm (0.20 mm layers). A plane at exactly `maximum_z` would only touch the top face, so the gap cannot be closed by adding one plane.
-- **Fix:** Slice each layer at its mid-height (`layer_z - layer_height/2`) and print it at `layer_z`, with layers up to `maximum_z`. This changes the slicing contract and every pinned topology, region, and path-plan fixture hash, so it needs an explicit decision.
+- **Resolution:** Each layer is sectioned at its mid-height (`layer_z`) and printed at its top (`print_z`, new schedule field). A layer exists while its section plane lies below `maximum_z`, so the printed height is the model height rounded to the nearest layer: the 5 mm box, 6 mm cylinder, and Benchy now print to 5.000, 6.000, and 48.000 mm. The schedule stores `first_layer_height`. The schedule hash moves to schema 2 and covers `print_z`, and the layer-schedule artifact moves to schema 2 with the first-layer height in its header. Motion planning, layer heights, tree supports, and pattern infill use `print_z`. Pinned fixture hashes derived from the schedule (for example `testdata/feature-probes/stanford-bunny-v1.json` and the hashes in `notes/hw-slicer-roadmap-progress.md`) are stale until the fixtures are regenerated.
 
 ### [CR-32] Tree Supports Ignore the Overhang Angle — **RESOLVED**
 - **Location:** `src/features/tree_supports.odin`
@@ -239,10 +239,10 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
 - **Issue:** A branch whose centre is inside the model, or whose ring no longer fits the clearance, emits nothing on that layer but continues downward. Its ring sections above the gap rest on nothing.
 - **Fix:** Route branches around the model before they enter it, or end a branch where it meets the model (allowed only with `support_mode = everywhere`) and remove its upper sections when it cannot reach the plate.
 
-### [CR-35] Inconsistent Triangle Winding Is Not Detected
+### [CR-35] Inconsistent Triangle Winding Is Not Repaired
 - **Location:** mesh audit and `src/repair/mesh_repair.odin`
-- **Issue:** A mesh with mixed face orientation (signed volume −603 mm³ for a 1,810 mm³ part) slices with `repairs=0`. Support classification then reads downward faces as upward, and grid supports silently produce nothing.
-- **Fix:** Detect inconsistent orientation in the mesh audit (directed-edge pairing), report it, and repair it by propagating orientation across shared edges.
+- **Issue:** A mesh with mixed face orientation (signed volume −603 mm³ for a 1,810 mm³ part) slices with `repairs=0`. The mesh audit reports inconsistent winding, but the slice pipeline neither repairs nor rejects it. Support classification then reads downward faces as upward, and grid supports silently produce nothing.
+- **Fix:** Repair orientation by propagating it across shared edges when the audit reports inconsistent winding, or reject the mesh with the audit report.
 
 ### [CR-36] Skin Lines Outside Every Perimeter Loop on Benchy (Needs Diagnosis)
 - **Location:** unknown; observed in the Benchy layer 59 path plan

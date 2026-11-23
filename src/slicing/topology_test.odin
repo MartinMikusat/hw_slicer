@@ -9,7 +9,7 @@ topology_test_schedule :: proc() -> (Fixed_Layer_Schedule, Schedule_Error) {
 	return fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 0,
+		first_layer_height = 0,
 		layer_step = 1000,
 		max_layer_count = 1,
 	})

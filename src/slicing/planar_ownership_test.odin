@@ -57,7 +57,7 @@ planar_test_schedule :: proc() -> (Fixed_Layer_Schedule, Schedule_Error) {
 	return fixed_layer_schedule_build({
 		minimum_z = -1000,
 		maximum_z = 1000,
-		first_plane_z = 0,
+		first_layer_height = 1000,
 		layer_step = 1000,
 		max_layer_count = 1,
 	})
@@ -245,7 +245,7 @@ planar_ownership_closes_a_manifold_bipyramid_midplane_test :: proc(
 	schedule, schedule_error := fixed_layer_schedule_build({
 		minimum_z = -1000,
 		maximum_z = 1000,
-		first_plane_z = 0,
+		first_layer_height = 1000,
 		layer_step = 1000,
 		max_layer_count = 1,
 	})

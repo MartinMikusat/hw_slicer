@@ -12,7 +12,7 @@ slicing_stage_hashes_are_stable_test :: proc(t: ^testing.T) {
 		request_hash = request_hash,
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 200,
+		first_layer_height = 200,
 		layer_step = 200,
 		max_layer_count = 10,
 	})
@@ -52,7 +52,7 @@ slicing_stage_hashes_reject_inconsistent_arrays_test :: proc(t: ^testing.T) {
 	schedule, schedule_error := fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 200,
+		first_layer_height = 200,
 		layer_step = 200,
 		max_layer_count = 10,
 	})
@@ -86,7 +86,7 @@ layer_span_hash_rejects_semantic_mutations_test :: proc(t: ^testing.T) {
 	schedule, schedule_error := fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 200,
+		first_layer_height = 200,
 		layer_step = 200,
 		max_layer_count = 10,
 	})
@@ -126,7 +126,7 @@ intersection_and_snapped_segment_hashes_are_stable_test :: proc(
 	schedule, schedule_error := fixed_layer_schedule_build({
 		minimum_z = -1000,
 		maximum_z = 1500,
-		first_plane_z = 0,
+		first_layer_height = 1000,
 		layer_step = 1000,
 		max_layer_count = 3,
 	})

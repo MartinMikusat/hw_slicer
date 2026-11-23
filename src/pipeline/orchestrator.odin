@@ -490,8 +490,8 @@ slice_run_decoded_mesh :: proc(
 	defer delete(layer_heights, allocator)
 	for i in 0..<layer_count {
 		if options.adaptive_layers {
-			prev_z := i64(result.spine.schedule.minimum_z) if i == 0 else i64(result.spine.schedule.layer_z[i-1])
-			dz := i64(result.spine.schedule.layer_z[i]) - prev_z
+			prev_z := i64(result.spine.schedule.minimum_z) if i == 0 else i64(result.spine.schedule.print_z[i-1])
+			dz := i64(result.spine.schedule.print_z[i]) - prev_z
 			layer_heights[i] = contracts.Micrometres(max(i64(10), dz))
 		} else {
 			layer_heights[i] = proc_src.first_layer_height if i == 0 else proc_src.layer_height
@@ -695,7 +695,7 @@ slice_run_decoded_mesh :: proc(
 			active_topo,
 			result.regions,
 			skins,
-			result.spine.schedule.layer_z,
+			result.spine.schedule.print_z,
 			provider,
 			{
 				pattern        = options.infill_pattern,
@@ -767,7 +767,7 @@ slice_run_decoded_mesh :: proc(
 			active_topo,
 			result.regions,
 			model_sets_sup,
-			result.spine.schedule.layer_z,
+			result.spine.schedule.print_z,
 			{
 				overhang_angle_deg  = f64(i32(proc_src.support_overhang_angle)) / 1000.0,
 				branch_angle_deg    = 45.0,
@@ -1007,7 +1007,7 @@ slice_run_decoded_mesh :: proc(
 	mot_err: features.Motion_Plan_Error
 	result.motion, mot_err = features.motion_plan_build(
 		result.spine.schedule.layer_ids,
-		result.spine.schedule.layer_z,
+		result.spine.schedule.print_z,
 		model_sets,
 		result.unified_plan,
 		result.extrusion,

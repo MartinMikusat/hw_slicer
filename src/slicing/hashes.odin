@@ -5,7 +5,7 @@ import "core:math"
 import contracts "../contracts"
 import geometry "../geometry"
 
-SCHEMA_VERSION_FIXED_LAYER_SCHEDULE_HASH :: u32(1)
+SCHEMA_VERSION_FIXED_LAYER_SCHEDULE_HASH :: u32(2)
 SCHEMA_VERSION_LAYER_SPAN_INDEX_HASH :: u32(1)
 SCHEMA_VERSION_CPU_INTERSECTION_HASH :: u32(1)
 SCHEMA_VERSION_SNAPPED_SEGMENT_HASH :: u32(1)
@@ -17,50 +17,59 @@ fixed_layer_schedule_hash :: proc(
 	schedule: Fixed_Layer_Schedule,
 ) -> (contracts.Content_Hash, bool) {
 	layer_count := len(schedule.layer_z)
-	if layer_count == 0 || len(schedule.layer_ids) != layer_count {
+	if layer_count == 0 ||
+	   len(schedule.layer_ids) != layer_count ||
+	   len(schedule.print_z) != layer_count {
 		return {}, false
 	}
 	minimum_z := i64(schedule.minimum_z)
 	maximum_z := i64(schedule.maximum_z)
-	first_plane_z := i64(schedule.first_plane_z)
+	first_layer_height := i64(schedule.first_layer_height)
 	layer_step := i64(schedule.layer_step)
 	if minimum_z >= maximum_z ||
-	   first_plane_z < minimum_z ||
-	   first_plane_z >= maximum_z ||
-	   layer_step <= 0 {
+	   first_layer_height <= 0 ||
+	   layer_step <= 0 ||
+	   schedule.first_plane_z != schedule.layer_z[0] {
 		return {}, false
 	}
 	schedule_root_id :=
 		contracts.stable_id_root(schedule.request_hash, .Layer)
 	if schedule.adaptive {
-		prev_z := minimum_z
+		// Each section plane lies strictly inside its layer, below the model top.
+		prev_print := minimum_z
 		for layer_z, layer_index in schedule.layer_z {
+			print_z := i64(schedule.print_z[layer_index])
 			expected_id := contracts.stable_id_child(
 				schedule_root_id,
 				.Layer,
 				u64(layer_index),
 			)
-			if i64(layer_z) <= prev_z ||
-			   i64(layer_z) > maximum_z ||
+			if i64(layer_z) <= prev_print ||
+			   i64(layer_z) >= print_z ||
+			   i64(layer_z) >= maximum_z ||
 			   schedule.layer_ids[layer_index] != expected_id {
 				return {}, false
 			}
-			prev_z = i64(layer_z)
+			prev_print = print_z
 		}
 	} else {
-		span := i128(maximum_z)-i128(first_plane_z)
-		expected_count := (span+i128(layer_step)-1)/i128(layer_step)
+		expected_count := fixed_layer_count(minimum_z, maximum_z, first_layer_height, layer_step)
 		if expected_count != i128(layer_count) {return {}, false}
 		for layer_z, layer_index in schedule.layer_z {
-			expected_z :=
-				i128(first_plane_z)+i128(layer_index)*i128(layer_step)
+			expected_section, expected_print := fixed_layer_planes(
+				minimum_z,
+				first_layer_height,
+				layer_step,
+				layer_index,
+			)
 			expected_id := contracts.stable_id_child(
 				schedule_root_id,
 				.Layer,
 				u64(layer_index),
 			)
-			if expected_z >= i128(maximum_z) ||
-			   i128(i64(layer_z)) != expected_z ||
+			if expected_section >= i128(maximum_z) ||
+			   i128(i64(layer_z)) != expected_section ||
+			   i128(i64(schedule.print_z[layer_index])) != expected_print ||
 			   schedule.layer_ids[layer_index] != expected_id {
 				return {}, false
 			}
@@ -79,10 +88,12 @@ fixed_layer_schedule_hash :: proc(
 	contracts.canonical_hash_append_i64(&hash, i64(schedule.minimum_z))
 	contracts.canonical_hash_append_i64(&hash, i64(schedule.maximum_z))
 	contracts.canonical_hash_append_i64(&hash, i64(schedule.first_plane_z))
+	contracts.canonical_hash_append_i64(&hash, i64(schedule.first_layer_height))
 	contracts.canonical_hash_append_i64(&hash, i64(schedule.layer_step))
 	contracts.canonical_hash_append_u64(&hash, u64(layer_count))
 	for layer_z, layer_index in schedule.layer_z {
 		contracts.canonical_hash_append_i64(&hash, i64(layer_z))
+		contracts.canonical_hash_append_i64(&hash, i64(schedule.print_z[layer_index]))
 		contracts.canonical_hash_append_stable_id(
 			&hash,
 			schedule.layer_ids[layer_index],

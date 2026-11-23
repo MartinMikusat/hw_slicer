@@ -153,7 +153,7 @@ layer_schedule_artifact_test_result :: proc(
 		request_hash = request_hash,
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 200,
+		first_layer_height = 200,
 		layer_step = 200,
 		max_layer_count = 10,
 	})

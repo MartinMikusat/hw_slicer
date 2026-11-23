@@ -311,12 +311,6 @@ slice_spine_decoded_mesh :: proc(
 		slice_spine_result_destroy(&result, allocator)
 		return {}, .Schedule
 	}
-	first_plane_128 := i128(i64(minimum_z))+
-		i128(i64(config.first_layer_height))
-	if first_plane_128 > i128(max(i64)) {
-		slice_spine_result_destroy(&result, allocator)
-		return {}, .Schedule
-	}
 	schedule_error: slicing.Schedule_Error
 	if config.adaptive_layers {
 		min_ah := config.min_adaptive_height if i64(config.min_adaptive_height) > 0 else contracts.Micrometres(80)
@@ -340,7 +334,7 @@ slice_spine_decoded_mesh :: proc(
 				request_hash = result.hashes.request,
 				minimum_z = minimum_z,
 				maximum_z = maximum_z,
-				first_plane_z = contracts.Micrometres(i64(first_plane_128)),
+				first_layer_height = config.first_layer_height,
 				layer_step = config.layer_height,
 				max_layer_count = config.max_layer_count,
 			},

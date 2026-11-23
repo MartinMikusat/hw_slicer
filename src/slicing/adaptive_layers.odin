@@ -104,36 +104,44 @@ adaptive_layer_schedule_build :: proc(
 		copy(bin_h, tmp_h)
 	}
 
-	// Walk Z from first_layer_height up to max_z_um using smoothed target height (quantized to 10 um).
+	// Walk layer tops from the first layer upward using the smoothed target height (quantized to
+	// 10 um). Each layer is sectioned at its mid-height and exists while that plane lies below
+	// the model top.
 	z_list := make([dynamic]contracts.Micrometres, 0, 512, allocator)
-	cur_z := min_z_um + first_h
-	if cur_z >= max_z_um {
-		cur_z = max_z_um
+	top_list := make([dynamic]contracts.Micrometres, 0, 512, allocator)
+	cleanup :: proc(a, b: ^[dynamic]contracts.Micrometres) {
+		delete(a^)
+		delete(b^)
 	}
-	append(&z_list, contracts.Micrometres(cur_z))
+	if min_z_um + first_h/2 >= max_z_um {
+		cleanup(&z_list, &top_list)
+		return {}, .Invalid_Bounds
+	}
+	cur_top := min_z_um + first_h
+	append(&z_list, contracts.Micrometres(min_z_um + first_h/2))
+	append(&top_list, contracts.Micrometres(cur_top))
 
-	for cur_z < max_z_um {
+	for {
 		if u32(len(z_list)) >= config.max_layer_count {
-			delete(z_list)
+			cleanup(&z_list, &top_list)
 			return {}, .Layer_Limit
 		}
-		b := clamp(int(f64(cur_z - min_z_um) / bin_um), 0, bin_count - 1)
+		b := clamp(int(f64(cur_top - min_z_um) / bin_um), 0, bin_count - 1)
 		step := i64(math.round(bin_h[b] / 10.0)) * 10
 		if step < i64(min_h) {step = i64(min_h)}
 		if step > i64(max_h) {step = i64(max_h)}
 		if step < 10 {step = 10}
-		next_z := cur_z + step
-		if next_z >= max_z_um {
-			break
-		}
-		if next_z <= cur_z {break}
-		append(&z_list, contracts.Micrometres(next_z))
-		cur_z = next_z
+		next_top := cur_top + step
+		section := next_top - step/2
+		if section >= max_z_um {break}
+		append(&z_list, contracts.Micrometres(section))
+		append(&top_list, contracts.Micrometres(next_top))
+		cur_top = next_top
 	}
 
 	layer_ids := make([]contracts.Stable_ID, len(z_list), allocator)
 	if layer_ids == nil {
-		delete(z_list)
+		cleanup(&z_list, &top_list)
 		return {}, .Allocation_Failed
 	}
 	root_id := contracts.stable_id_root(config.request_hash, .Layer)
@@ -146,9 +154,11 @@ adaptive_layer_schedule_build :: proc(
 		minimum_z     = contracts.Micrometres(min_z_um),
 		maximum_z     = contracts.Micrometres(max_z_um),
 		first_plane_z = z_list[0],
+		first_layer_height = config.first_layer_height,
 		layer_step    = config.nominal_height,
 		adaptive      = true,
 		layer_z       = z_list[:],
+		print_z       = top_list[:],
 		layer_ids     = layer_ids,
 	}, .None
 }

@@ -249,7 +249,7 @@ support_geometry_test_layers :: proc(
 	schedule, schedule_error := slicing.fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1_200,
-		first_plane_z = 200,
+		first_layer_height = 200,
 		layer_step = 200,
 		max_layer_count = u32(layer_count),
 	})

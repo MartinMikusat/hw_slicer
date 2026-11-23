@@ -22,7 +22,7 @@ skin_bundle_replays_dependent_graph_from_package_and_directory_test :: proc(
 		request_hash = Skin_Bundle_Schedule_Request_Hash,
 		minimum_z = 0,
 		maximum_z = 200,
-		first_plane_z = 100,
+		first_layer_height = 100,
 		layer_step = 200,
 		max_layer_count = 1,
 	})

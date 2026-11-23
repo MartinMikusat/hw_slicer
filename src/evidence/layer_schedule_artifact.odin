@@ -3,7 +3,7 @@ package evidence
 import contracts "../contracts"
 import slicing "../slicing"
 
-LAYER_SCHEDULE_ARTIFACT_SCHEMA_VERSION :: u32(1)
+LAYER_SCHEDULE_ARTIFACT_SCHEMA_VERSION :: u32(2)
 LAYER_SCHEDULE_ARTIFACT_HEADER_SIZE    :: u32(160)
 LAYER_SCHEDULE_ARTIFACT_LAYER_SIZE     :: u32(16)
 LAYER_SCHEDULE_ARTIFACT_FORMAT         :: "hws-layer-schedule-le"
@@ -105,6 +105,11 @@ layer_schedule_artifact_encode :: proc(
 		i64(result.layer_step),
 	)
 	layer_schedule_artifact_put_u64(bytes, 120, layer_count)
+	layer_schedule_artifact_put_i64(
+		bytes,
+		128,
+		i64(result.first_layer_height),
+	)
 	offset := int(LAYER_SCHEDULE_ARTIFACT_HEADER_SIZE)
 	for layer_z, layer_index in result.layer_z {
 		layer_schedule_artifact_put_i64(bytes, offset, i64(layer_z))
@@ -142,6 +147,9 @@ layer_schedule_artifact_decode :: proc(
 	result.layer_step = contracts.Micrometres(
 		layer_schedule_artifact_get_i64(bytes, 112),
 	)
+	result.first_layer_height = contracts.Micrometres(
+		layer_schedule_artifact_get_i64(bytes, 128),
+	)
 	result.layer_z = make(
 		[]contracts.Micrometres,
 		int(summary.layer_count),
@@ -152,8 +160,13 @@ layer_schedule_artifact_decode :: proc(
 		int(summary.layer_count),
 		allocator,
 	)
+	result.print_z = make(
+		[]contracts.Micrometres,
+		int(summary.layer_count),
+		allocator,
+	)
 	if summary.layer_count > 0 &&
-	   (result.layer_z == nil || result.layer_ids == nil) {
+	   (result.layer_z == nil || result.layer_ids == nil || result.print_z == nil) {
 		layer_schedule_artifact_destroy(&artifact, allocator)
 		return {}, .Allocation_Failed
 	}
@@ -165,6 +178,14 @@ layer_schedule_artifact_decode :: proc(
 		result.layer_ids[layer_index] = contracts.Stable_ID(
 			layer_schedule_artifact_get_u64(bytes, offset+8),
 		)
+		// The artifact stores fixed schedules; their print heights follow from the header.
+		_, print_z := slicing.fixed_layer_planes(
+			i64(result.minimum_z),
+			i64(result.first_layer_height),
+			i64(result.layer_step),
+			layer_index,
+		)
+		result.print_z[layer_index] = contracts.Micrometres(i64(print_z))
 		offset += int(LAYER_SCHEDULE_ARTIFACT_LAYER_SIZE)
 	}
 	calculated_hash, result_ok :=
@@ -199,7 +220,7 @@ layer_schedule_artifact_preflight :: proc(
 	   LAYER_SCHEDULE_ARTIFACT_LAYER_SIZE ||
 	   layer_schedule_artifact_get_u32(bytes, 20) !=
 	   slicing.SCHEMA_VERSION_FIXED_LAYER_SCHEDULE_HASH ||
-	   !layer_schedule_artifact_bytes_zero(bytes, 128, 160) {
+	   !layer_schedule_artifact_bytes_zero(bytes, 136, 160) {
 		return {}, .Malformed
 	}
 	layer_count := layer_schedule_artifact_get_u64(bytes, 120)

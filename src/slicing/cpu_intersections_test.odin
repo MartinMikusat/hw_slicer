@@ -53,7 +53,7 @@ cpu_intersections_compacts_segments_and_planar_candidates_test :: proc(
 	schedule, schedule_error := fixed_layer_schedule_build({
 		minimum_z = -1000,
 		maximum_z = 1500,
-		first_plane_z = 0,
+		first_layer_height = 1000,
 		layer_step = 1000,
 		max_layer_count = 3,
 	})
@@ -115,7 +115,7 @@ cpu_intersections_enforces_output_limits_before_output_allocation_test :: proc(
 	schedule, schedule_error := fixed_layer_schedule_build({
 		minimum_z = -1000,
 		maximum_z = 1500,
-		first_plane_z = 0,
+		first_layer_height = 1000,
 		layer_step = 1000,
 		max_layer_count = 3,
 	})

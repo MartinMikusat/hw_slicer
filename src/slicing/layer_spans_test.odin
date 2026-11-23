@@ -34,7 +34,7 @@ layer_span_index_applies_half_open_and_planar_candidate_rules_test :: proc(
 	schedule, schedule_error := fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 200,
+		first_layer_height = 200,
 		layer_step = 200,
 		max_layer_count = 10,
 	})
@@ -94,7 +94,7 @@ layer_span_index_rejects_pair_limit_before_pair_allocation_test :: proc(
 	schedule, schedule_error := fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 200,
+		first_layer_height = 200,
 		layer_step = 200,
 		max_layer_count = 10,
 	})

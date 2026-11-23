@@ -170,9 +170,13 @@ The current engine implementation provides:
 - Exact-coordinate vertex welding for immutable mesh-defect audits.
 - Degenerate face, duplicate face, boundary edge, non-manifold edge, and
   inconsistent-winding reports with triangle provenance.
-- Fixed micrometre layer schedules with canonical Z values and stable IDs.
+- Fixed micrometre layer schedules with canonical Z values and stable IDs. Each
+  layer is sectioned at its mid-height and printed at its top, and layers
+  continue while the section plane is below the model top, so the printed
+  height is the model height rounded to the nearest layer.
 - A bounded little-endian layer-schedule artifact that retains the request and
-  result hashes, Z bounds, first plane, step, and every scheduled layer.
+  result hashes, Z bounds, first plane, first-layer height, step, and every
+  scheduled layer.
 - Two-pass triangle span indexes with canonical range and pair validation.
 - A bounded little-endian layer-span artifact that retains each triangle range,
   layer descriptor, triangle-layer pair, stable ID, and dependency hash.

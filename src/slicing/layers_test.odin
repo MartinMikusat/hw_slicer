@@ -14,7 +14,7 @@ fixed_schedule_excludes_upper_bound_and_preserves_exact_step_test :: proc(
 		request_hash = request_hash,
 		minimum_z = 0,
 		maximum_z = 1050,
-		first_plane_z = 200,
+		first_layer_height = 200,
 		layer_step = 200,
 		max_layer_count = 10,
 	})
@@ -39,28 +39,28 @@ fixed_schedule_rejects_invalid_bounds_step_and_limit_test :: proc(t: ^testing.T)
 	_, bounds_error := fixed_layer_schedule_build({
 		minimum_z = 1000,
 		maximum_z = 1000,
-		first_plane_z = 1000,
+		first_layer_height = 0,
 		layer_step = 200,
 		max_layer_count = 10,
 	})
 	_, first_error := fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 1000,
+		first_layer_height = 1000,
 		layer_step = 200,
 		max_layer_count = 10,
 	})
 	_, step_error := fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 200,
+		first_layer_height = 200,
 		layer_step = 0,
 		max_layer_count = 10,
 	})
 	_, limit_error := fixed_layer_schedule_build({
 		minimum_z = 0,
 		maximum_z = 1000,
-		first_plane_z = 100,
+		first_layer_height = 100,
 		layer_step = 100,
 		max_layer_count = 5,
 	})
