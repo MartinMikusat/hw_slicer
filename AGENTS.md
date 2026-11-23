@@ -32,7 +32,7 @@ For pipeline workspace design and development priorities, follow [TODO.md](TODO.
 
 Lay on face uses one placement transform for rendering, face selection, and layer sections. The imported mesh stays unchanged.
 
-## Printer-parametric designs
+## Toolpath Design
 
 `.hwsdesign` files generate toolpaths directly from physical printer inputs and bypass mesh slicing (`src/design/`, simulation in `src/design_view.odin`, G-code in `src/design_export.odin`). The format is [docs/design-format.md](docs/design-format.md). The app shows the newest design in `resources/designs/` without input and writes its G-code to `build/gcode/`. `--design=<path>` pins a file, and `--design-time=<0..1>` sets the captured moment.
 

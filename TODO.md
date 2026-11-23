@@ -52,7 +52,7 @@ Done means: the app loads a model, slices it with printer, material, and process
 
 Open decisions:
 
-- When the app interface switches from printer-parametric designs to the slicer workspace (step 3).
+- When the app interface switches from Toolpath Design to the slicer workspace (step 3).
 - Whether vase mode omits top solid layers.
 - Whether the probe tools are removed or become thin wrappers over the production slice.
 - Whether step 5 requires physical prints or accepts simulator verification for now.
@@ -65,7 +65,7 @@ Open decisions:
 - [ ] Add a settings sweep for tuning. Define ranges for relevant settings on a test model, such as a bridging test. Place several copies on the build plate, each with a different combination of the sampled settings, to compare configurations in one print.
 - [ ] Allow configuring settings directly from the sliced preview. Selecting a feature in the preview, such as a bridge, shows the settings that govern it and allows changing them there, so the user does not have to search for the right setting.
 - [ ] Add MCP servers for the slicer and for the printer, so an AI agent can change slicer settings and control the printer directly. Implement the slicer side here and the printer side in `hw_ratos`.
-- [ ] Printer-parametric designs ([ADR 0001](docs/adr/0001-printer-parametric-toolpath-design.md), [format](docs/design-format.md)). Done: `.hwsdesign` text with derived parameters over the physical nozzle and filament, `fit` counts, boxes and cylinders as concentric loops, and a time-revealed bead simulation with nozzle switching and live reload, and Klipper G-code export through `START_PRINT` and `END_PRINT`. Next: material profiles instead of the PLA assumptions, first-layer cooling, a shared node-graph profile, more primitives and explicit paths, then re-evaluation during a print.
+- [ ] Toolpath Design ([ADR 0001](docs/adr/0001-printer-parametric-toolpath-design.md), [format](docs/design-format.md)). Done: `.hwsdesign` text with derived parameters over the physical nozzle and filament, `fit` counts, boxes and cylinders as concentric loops, and a time-revealed bead simulation with nozzle switching and live reload, and Klipper G-code export through `START_PRINT` and `END_PRINT`. Next: material profiles instead of the PLA assumptions, first-layer cooling, a shared node-graph profile, more primitives and explicit paths, then re-evaluation during a print.
 - [ ] Integrate FullControl-style explicit toolpath design: user-defined paths with per-point state such as speed, extrusion, and temperature, previewed and exported through the pipeline. See [references](docs/references.md).
 - [ ] Keep abstract motion behaviors, such as z-hop, in the sliced file instead of baking in their values. The printer resolves them while it streams the file, so the user can change them during a running print (larger z-hop, no z-hop) along with as many other abstracted settings as practical, beyond simple overrides like flow multiplier. Pairs with the printer MCP and `hw_ratos`.
 - [ ] Own the stack as one native Odin "golden" setup: a printer host that replaces Klipper's host, Moonraker, Mainsail, and RatOS, and talks to the stock Klipper microcontroller firmware. The host is `../hw_printer`; see its [plan](../hw_printer/docs/plan.md).

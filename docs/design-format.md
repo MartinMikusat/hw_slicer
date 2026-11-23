@@ -1,7 +1,9 @@
-# Design format (`.hwsdesign`)
+# Toolpath Design file format (`.hwsdesign`)
 
-A design file is a printer-parametric toolpath program. See
-[ADR 0001](adr/0001-printer-parametric-toolpath-design.md).
+Toolpath Design is the workflow for designing parts by defining how the printer
+lays down material. A `.hwsdesign` program uses printer inputs such as nozzle
+diameter to generate toolpaths directly. See the
+[Toolpath Design decision](adr/0001-printer-parametric-toolpath-design.md).
 
 The application shows the most recently modified design in
 `resources/designs/` and follows it when another design there changes.
