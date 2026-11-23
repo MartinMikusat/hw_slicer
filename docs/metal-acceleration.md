@@ -54,14 +54,16 @@ All four configurations were measured on the same `cli-release` (`-o:speed`) bin
 - **(c) Single-core CPU + Metal:** `--threads=1 --gpu`
 - **(d) Multicore CPU (8 threads) + Metal:** `--threads=8 --gpu`
 
-### Total Slice Time
+### Total Slice Time (with Established Reference: OrcaSlicer 2.5.1)
 
-| Model | (a) 1-Core CPU | (b) 8-Core CPU | (c) 1-Core + Metal | (d) 8-Core + Metal | (d) vs (a) | (d) vs (b) |
-|---|---:|---:|---:|---:|---:|---:|
-| `all-in-one-test.stl` | 3,439.74 ms | 2,333.52 ms | 2,467.76 ms | **1,804.80 ms** | **1.91×** | **1.29×** |
-| `benchy.stl` | 15,057.83 ms | 6,615.45 ms | 7,845.97 ms | **5,056.34 ms** | **2.98×** | **1.31×** |
-| `stanford-bunny.stl` | 20,319.75 ms | 8,609.76 ms | 13,794.78 ms | **6,987.01 ms** | **2.91×** | **1.23×** |
-| **Combined 3-Model Suite** | **38,817.32 ms** | **17,558.73 ms** | **24,108.51 ms** | **13,848.15 ms** | **2.80×** | **1.27×** |
+External reference baseline: **OrcaSlicer 2.5.1** (C++, multi-threaded, native Apple Silicon) run headlessly on the same machine with matched settings (`gcode_flavor=klipper`, `0.20 mm` layer height, `3` wall loops, `4` top/bottom shells, `15%` Gyroid infill, supports off).
+
+| Model | (a) 1-Core CPU | (b) 8-Core CPU | (c) 1-Core + Metal | (d) 8-Core + Metal | (d) vs (a) | (d) vs (b) | OrcaSlicer 2.5.1 | (d) / Orca |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `all-in-one-test.stl` | 3,439.74 ms | 2,333.52 ms | 2,467.76 ms | **1,804.80 ms** | **1.91×** | **1.29×** | 1,052.69 ms | 1.71× |
+| `benchy.stl` | 15,057.83 ms | 6,615.45 ms | 7,845.97 ms | **5,056.34 ms** | **2.98×** | **1.31×** | 1,034.08 ms | 4.89× |
+| `stanford-bunny.stl` | 20,319.75 ms | 8,609.76 ms | 13,794.78 ms | **6,987.01 ms** | **2.91×** | **1.23×** | 2,013.38 ms | 3.47× |
+| **Combined 3-Model Suite** | **38,817.32 ms** | **17,558.73 ms** | **24,108.51 ms** | **13,848.15 ms** | **2.80×** | **1.27×** | **4,100.15 ms** | **3.38×** |
 
 ### Accelerated Stage Breakdown
 

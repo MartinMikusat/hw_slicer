@@ -193,7 +193,62 @@ T_1G="$(sed -n 's/.*total=\([0-9.]*\) ms.*/\1/p' "$OUT_DIR/b-1g.log" | head -n 1
 T_8G="$(sed -n 's/.*total=\([0-9.]*\) ms.*/\1/p' "$OUT_DIR/b-8g.log" | head -n 1)"
 awk -v a="$T_1C" -v d="$T_8G" 'BEGIN { if (d >= a) exit 1 }' \
   || fail "8-core+Metal ($T_8G ms) was not faster than 1-core CPU ($T_1C ms)"
-pass "4-way determinism (filament=${F_1C}mm) & speedup (1c=${T_1C}ms, 8c=${T_8C}ms, 1c+gpu=${T_1G}ms, 8c+gpu=${T_8G}ms)"
+
+ORCA_BIN="/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer"
+ORCA_INFO="OrcaSlicer=not-installed"
+if [ -x "$ORCA_BIN" ]; then
+  ORCA_DIR="$OUT_DIR/orca-ref"
+  mkdir -p "$ORCA_DIR"
+  cat > "$ORCA_DIR/machine.json" <<'EOF'
+{
+  "type": "machine",
+  "name": "Bench_VCore3_0.4",
+  "from": "User",
+  "gcode_flavor": "klipper",
+  "nozzle_diameter": ["0.4"],
+  "printable_area": ["0x0", "300x0", "300x300", "0x300"],
+  "printable_height": "300",
+  "before_layer_change_gcode": "G92 E0\n",
+  "layer_change_gcode": "G92 E0\n",
+  "use_relative_e_distances": "1"
+}
+EOF
+  cat > "$ORCA_DIR/process.json" <<'EOF'
+{
+  "type": "process",
+  "name": "Bench_0.20_Standard",
+  "from": "User",
+  "layer_height": "0.2",
+  "initial_layer_print_height": "0.2",
+  "wall_loops": "3",
+  "top_shell_layers": "4",
+  "bottom_shell_layers": "4",
+  "sparse_infill_density": "15%",
+  "sparse_infill_pattern": "gyroid",
+  "enable_support": "0"
+}
+EOF
+  T_ORCA="$(python3 -c '
+import subprocess, time, sys, os
+t0 = time.perf_counter()
+r = subprocess.run([
+  sys.argv[1],
+  "--load-settings", f"{sys.argv[2]}/machine.json;{sys.argv[2]}/process.json",
+  "--slice", "0",
+  "--outputdir", sys.argv[2],
+  sys.argv[3],
+], capture_output=True, text=True)
+dt = (time.perf_counter() - t0) * 1000.0
+gcode = os.path.join(sys.argv[2], "plate_1.gcode")
+if r.returncode != 0 or not os.path.exists(gcode) or os.path.getsize(gcode) == 0:
+  sys.stderr.write(r.stderr + "\n")
+  sys.exit(1)
+print(f"{dt:.2f}")
+' "$ORCA_BIN" "$ORCA_DIR" "$ROOT_DIR/resources/models/benchy.stl")" || fail "OrcaSlicer reference benchmark failed"
+  RATIO="$(awk -v d="$T_8G" -v o="$T_ORCA" 'BEGIN { printf "%.2f", d / o }')"
+  ORCA_INFO="OrcaSlicer=${T_ORCA}ms (hw/orca=${RATIO}x)"
+fi
+pass "4-way determinism (filament=${F_1C}mm) & speedup (1c=${T_1C}ms, 8c=${T_8C}ms, 1c+gpu=${T_1G}ms, 8c+gpu=${T_8G}ms | ${ORCA_INFO})"
 
 echo "=== 5. Closed-Loop hw-printer-sim Verification ==="
 if [ "$SKIP_SIM" = "1" ]; then
