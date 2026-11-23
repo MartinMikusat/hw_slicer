@@ -108,6 +108,7 @@ klipper_emit :: proc(
 	if !klipper_motion_valid(motion, profile) {
 		return {}, .Invalid_Motion
 	}
+	object_name := klipper_object_name(object_name, context.temp_allocator) if len(object_name) > 0 else ""
 	maximum_commands :=
 		u64(36)+u64(len(motion.layers))*5+
 		u64(len(motion.operations))*5
@@ -267,9 +268,10 @@ klipper_emit :: proc(
 			delete(commands, allocator)
 			return {}, .Command_Limit
 		}
+		layer_start_z := klipper_layer_start_z(motion, layer)
 		start = klipper_command_begin(builder)
 		strings.write_string(&builder, "G0 Z")
-		klipper_append_coordinate(&builder, layer.z)
+		klipper_append_coordinate(&builder, layer_start_z)
 		fmt.sbprintf(
 			&builder,
 			" F%d\n",
@@ -287,7 +289,7 @@ klipper_emit :: proc(
 			return {}, .Command_Limit
 		}
 		state.z = layer.z
-		state.physical_z = layer.z
+		state.physical_z = layer_start_z
 
 		for pl in pause_layers {
 			if pl == layer.layer_index {
@@ -450,6 +452,7 @@ klipper_emit_operation :: proc(
 		klipper_append_extrusion(builder, operation.filament_delta_nm)
 		klipper_append_feed(builder, klipper_feed_rate(operation.speed))
 	case .Travel:
+		travel_z := contracts.Micrometres(max(i64(0), i64(state.z)+i64(operation.z_offset_um)))
 		if i64(operation.z_hop_um) > 0 {
 			hop_z := contracts.Micrometres(i64(state.z) + i64(operation.z_hop_um))
 			strings.write_string(builder, "G0 Z")
@@ -472,10 +475,10 @@ klipper_emit_operation :: proc(
 		klipper_append_coordinate(builder, operation.point_b.x)
 		strings.write_string(builder, " Y")
 		klipper_append_coordinate(builder, operation.point_b.y)
-		if i64(operation.z_hop_um) <= 0 && state.physical_z != state.z {
+		if i64(operation.z_hop_um) <= 0 && state.physical_z != travel_z {
 			strings.write_string(builder, " Z")
-			klipper_append_coordinate(builder, state.z)
-			state.physical_z = state.z
+			klipper_append_coordinate(builder, travel_z)
+			state.physical_z = travel_z
 		}
 		klipper_append_feed(builder, klipper_feed_rate(operation.speed))
 		if i64(operation.z_hop_um) > 0 {
@@ -492,9 +495,9 @@ klipper_emit_operation :: proc(
 			}
 			start = klipper_command_begin(builder^)
 			strings.write_string(builder, "G0 Z")
-			klipper_append_coordinate(builder, state.z)
+			klipper_append_coordinate(builder, travel_z)
 			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
-			state.physical_z = state.z
+			state.physical_z = travel_z
 		}
 	case .Extrude:
 		target_z := contracts.Micrometres(max(i64(0), i64(state.z) + i64(operation.z_offset_um)))
@@ -581,6 +584,36 @@ klipper_extrusion_area :: proc(motion: features.Motion_Plan_Result) -> (area: [2
 		}
 	}
 	return
+}
+
+// Klipper splits extended G-code parameters on whitespace, so object names keep only
+// [A-Za-z0-9_.-] and replace every other byte with '_'.
+klipper_object_name :: proc(name: string, allocator := context.allocator) -> string {
+	if len(name) == 0 {return strings.clone("object", allocator)}
+	out := make([]u8, len(name), allocator)
+	for i in 0..<len(name) {
+		c := name[i]
+		switch c {
+		case 'A'..='Z', 'a'..='z', '0'..='9', '_', '.', '-':
+			out[i] = c
+		case:
+			out[i] = '_'
+		}
+	}
+	return string(out)
+}
+
+// The Z that a layer starts at: the layer Z plus the Z offset of its first travel or extrusion,
+// so a spiral vase layer or a scarf seam starts at its ramped height instead of lifting first.
+klipper_layer_start_z :: proc(motion: features.Motion_Plan_Result, layer: features.Motion_Layer) -> contracts.Micrometres {
+	operation_start := int(layer.operation_offset)
+	operation_end := operation_start+int(layer.operation_count)
+	for operation in motion.operations[operation_start:operation_end] {
+		if operation.kind == .Travel || operation.kind == .Extrude {
+			return contracts.Micrometres(max(i64(0), i64(layer.z)+i64(operation.z_offset_um)))
+		}
+	}
+	return layer.z
 }
 
 klipper_emit_acceleration :: proc(
@@ -814,7 +847,7 @@ klipper_write_literal :: proc(
 		builder^,
 		commands,
 		command_write,
-		.Set_Acceleration,
+		kind,
 		start,
 		source_operation_id,
 		layer_index,

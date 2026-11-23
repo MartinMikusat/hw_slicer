@@ -67,6 +67,12 @@ motion_plan_apply_z_ramps :: proc(
 				accum := 0.0
 				for oi in op_start..<op_end {
 					op := &motion.operations[oi]
+					if op.kind == .Travel {
+						// Travels stay on the helix so the nozzle does not return to the layer Z.
+						t := clamp(accum / total_len, 0.0, 1.0)
+						op.z_offset_um = contracts.Micrometres(i64(math.round(-f64(lh) * (1.0 - t))))
+						continue
+					}
 					if op.kind != .Extrude || op.role != .Perimeter {continue}
 					seg_len := math.hypot(f64(i64(op.point_b.x) - i64(op.point_a.x)), f64(i64(op.point_b.y) - i64(op.point_a.y)))
 					accum += seg_len

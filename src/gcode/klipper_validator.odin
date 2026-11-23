@@ -322,12 +322,12 @@ klipper_validate_print_move :: proc(
 		   command.kind != .G0 ||
 		   command.has_x || command.has_y || command.has_e ||
 		   !command.has_z || !command.has_f ||
-		   command.z != i64(layer.z) ||
+		   command.z != i64(klipper_layer_start_z(motion, layer)) ||
 		   command.f != travel_feed ||
 		   state.acceleration != travel_acceleration {
 			return .Motion_Mismatch
 		}
-		state.z = command.z
+		state.z = i64(layer.z)
 		state.physical_z = command.z
 		state.layer_z_emitted = true
 		return .None
@@ -368,6 +368,7 @@ klipper_validate_print_move :: proc(
 			return .Motion_Mismatch
 		}
 	case .Travel:
+		travel_z := max(i64(0), i64(layer.z)+i64(operation.z_offset_um))
 		if i64(operation.z_hop_um) > 0 {
 			hop_z := i64(layer.z) + i64(operation.z_hop_um)
 			switch state.z_hop_stage {
@@ -405,23 +406,23 @@ klipper_validate_print_move :: proc(
 				   command.has_x || command.has_y ||
 				   !command.has_z || command.has_e ||
 				   !command.has_f ||
-				   command.z != i64(layer.z) ||
+				   command.z != travel_z ||
 				   command.f != expected_feed ||
 				   state.acceleration != expected_acceleration {
 					return .Motion_Mismatch
 				}
-				state.z = command.z
+				state.z = i64(layer.z)
 				state.physical_z = command.z
 				state.z_hop_stage = 0
 			case:
 				return .Motion_Mismatch
 			}
 		} else {
-			need_z_restore := state.physical_z != state.z
+			need_z_restore := state.physical_z != travel_z
 			if command.kind != .G0 ||
 			   !command.has_x || !command.has_y ||
 			   command.has_z != need_z_restore ||
-			   (need_z_restore && command.z != state.z) ||
+			   (need_z_restore && command.z != travel_z) ||
 			   command.has_e ||
 			   !command.has_f ||
 			   command.x != i64(operation.point_b.x) ||

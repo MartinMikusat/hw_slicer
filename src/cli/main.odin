@@ -120,10 +120,18 @@ write_trace_json :: proc(
 ) -> bool {
 	b := strings.builder_make(0, 4096, context.temp_allocator)
 	strings.write_string(&b, "{\n")
-	fmt.sbprintf(&b, "  \"input\": \"%s\",\n", filepath.base(opts.input_path))
-	fmt.sbprintf(&b, "  \"printer\": \"%s\",\n", opts.printer)
-	fmt.sbprintf(&b, "  \"material\": \"%s\",\n", opts.material)
-	fmt.sbprintf(&b, "  \"process\": \"%s\",\n", opts.process)
+	fmt.sbprintf(&b, "  \"input\": ")
+	write_json_string(&b, filepath.base(opts.input_path))
+	strings.write_string(&b, ",\n")
+	fmt.sbprintf(&b, "  \"printer\": ")
+	write_json_string(&b, opts.printer)
+	strings.write_string(&b, ",\n")
+	fmt.sbprintf(&b, "  \"material\": ")
+	write_json_string(&b, opts.material)
+	strings.write_string(&b, ",\n")
+	fmt.sbprintf(&b, "  \"process\": ")
+	write_json_string(&b, opts.process)
+	strings.write_string(&b, ",\n")
 	fmt.sbprintf(&b, "  \"triangles\": %d,\n", len(res.spine.mesh.triangle_ids))
 	fmt.sbprintf(&b, "  \"layers\": %d,\n", len(res.spine.schedule.layer_ids))
 	fmt.sbprintf(&b, "  \"contour_repairs\": %d,\n", res.contour_repairs)
@@ -136,11 +144,35 @@ write_trace_json :: proc(
 	strings.write_string(&b, "  \"stages\": [\n")
 	for st, idx in res.stages {
 		comma := "," if idx+1 < len(res.stages) else ""
-		fmt.sbprintf(&b, "    {\"name\": \"%s\", \"duration_ms\": %.3f, \"count_a\": %d, \"count_b\": %d}%s\n",
-			st.name, st.duration_ms, st.count_a, st.count_b, comma)
+		strings.write_string(&b, "    {\"name\": ")
+		write_json_string(&b, st.name)
+		fmt.sbprintf(&b, ", \"duration_ms\": %.3f, \"count_a\": %d, \"count_b\": %d}%s\n",
+			st.duration_ms, st.count_a, st.count_b, comma)
 	}
 	strings.write_string(&b, "  ]\n}\n")
 	return os.write_entire_file(dest_path, b.buf[:]) == nil
+}
+
+// Writes `value` as a quoted JSON string with quote, backslash and control characters escaped.
+write_json_string :: proc(b: ^strings.Builder, value: string) {
+	strings.write_byte(b, '"')
+	for i in 0..<len(value) {
+		c := value[i]
+		switch c {
+		case '"':  strings.write_string(b, "\\\"")
+		case '\\': strings.write_string(b, "\\\\")
+		case '\n': strings.write_string(b, "\\n")
+		case '\r': strings.write_string(b, "\\r")
+		case '\t': strings.write_string(b, "\\t")
+		case:
+			if c < 0x20 {
+				fmt.sbprintf(b, "\\u%04x", c)
+			} else {
+				strings.write_byte(b, c)
+			}
+		}
+	}
+	strings.write_byte(b, '"')
 }
 
 print_usage :: proc() {
@@ -429,7 +461,13 @@ main :: proc() {
 				append(&plate_objs, cloned)
 			}
 		}
-		if !pipeline.plate_auto_arrange(plate_objs[:], resolved.printer) {
+		// Sequential printing needs the extruder clearance between neighbours, plus a margin
+		// because the clearance check treats touching bounds as a collision.
+		arrange_gap_mm := 8.0
+		if opts.sequential {
+			arrange_gap_mm = pipeline.DEFAULT_SEQUENTIAL_CLEARANCE.extruder_radius_mm + 1.0
+		}
+		if !pipeline.plate_auto_arrange(plate_objs[:], resolved.printer, arrange_gap_mm) {
 			fmt.eprintln("error: plate objects do not fit on build plate")
 			os.exit(1)
 		}
