@@ -43,6 +43,7 @@ Solid_Path_Result :: struct {
 	layers:           []Solid_Path_Layer,
 	paths:            []Solid_Path,
 	hits:             []Bridge_Path_Hit,
+	connector_boundaries: []polygon.Polygon_Set,
 	scanline_count:   u64,
 	skin_mask_count:  u64,
 	collapsed_count:  u64,
@@ -112,14 +113,26 @@ solid_paths_generate :: proc(
 		}
 		delete(boundaries, allocator)
 	}
+	// Skin connectors may leave the scan boundary by up to a quarter line width.
+	connector_boundaries := make([]polygon.Polygon_Set, len(overlap.masks), allocator)
+	connector_inset := contracts.Micrometres(max(i64(0), i64(boundary_inset) - i64(line_width)/4))
+	connectors_owned := false
+	defer if !connectors_owned {
+		for &boundary in connector_boundaries {
+			polygon.polygon_set_destroy(&boundary, allocator)
+		}
+		delete(connector_boundaries, allocator)
+	}
 	mask_errors := make([]Solid_Path_Error, len(overlap.masks), allocator)
 	defer delete(mask_errors, allocator)
 
 	Solid_Par_Ctx :: struct {
 		overlap:        Role_Overlap_Result,
 		boundaries:     []polygon.Polygon_Set,
+		connector_boundaries: []polygon.Polygon_Set,
 		mask_errors:    []Solid_Path_Error,
 		boundary_inset: contracts.Micrometres,
+		connector_inset: contracts.Micrometres,
 		provider:       polygon.Polygon_Provider,
 		limits:         Solid_Path_Limits,
 		allocator:      mem.Allocator,
@@ -127,8 +140,10 @@ solid_paths_generate :: proc(
 	spctx := Solid_Par_Ctx{
 		overlap        = overlap,
 		boundaries     = boundaries,
+		connector_boundaries = connector_boundaries,
 		mask_errors    = mask_errors,
 		boundary_inset = boundary_inset,
+		connector_inset = connector_inset,
 		provider       = provider,
 		limits         = limits,
 		allocator      = allocator,
@@ -151,6 +166,17 @@ solid_paths_generate :: proc(
 			c.limits.polygon,
 			c.allocator,
 		)
+		if provider_error == .None && len(c.boundaries[mask_index].paths) > 0 {
+			c.connector_boundaries[mask_index], provider_error = c.provider.offset(
+				input,
+				-contracts.Micrometres(i64(c.connector_inset)),
+				.Miter,
+				2,
+				0,
+				c.limits.polygon,
+				c.allocator,
+			)
+		}
 		polygon.polygon_set_destroy(&input, c.allocator)
 		if provider_error != .None {
 			c.mask_errors[mask_index] = .Provider
@@ -322,6 +348,8 @@ solid_paths_generate :: proc(
 		solid_path_result_destroy(&result, allocator)
 		return {}, .Arithmetic
 	}
+	result.connector_boundaries = connector_boundaries
+	connectors_owned = true
 	return result, .None
 }
 
@@ -519,5 +547,9 @@ solid_path_result_destroy :: proc(
 	delete(result.layers, allocator)
 	delete(result.paths, allocator)
 	delete(result.hits, allocator)
+	for &boundary in result.connector_boundaries {
+		polygon.polygon_set_destroy(&boundary, allocator)
+	}
+	delete(result.connector_boundaries, allocator)
 	result^ = {}
 }

@@ -297,7 +297,6 @@ unified_path_sources_build :: proc(
 		connect_limit := 2*i128(i64(solids.spacing))
 		chain := make([dynamic]polygon.Polygon_Point, 0, 64, context.temp_allocator)
 		chain_first := -1
-		chain_last := -1
 		flush_chain :: proc(
 			result: ^Unified_Path_Source_Result,
 			source_write, point_write: ^int,
@@ -337,39 +336,66 @@ unified_path_sources_build :: proc(
 				unified_path_source_result_destroy(&result, allocator)
 				return {}, .Invalid_Input
 			}
-			joined := false
-			if chain_last >= 0 {
-				prev := solids.paths[chain_last]
-				end := chain[len(chain)-1]
-				da := path_plan_distance_2(end, path.point_a)
-				db := path_plan_distance_2(end, path.point_b)
-				if prev.overlap_mask_index == path.overlap_mask_index &&
-				   prev.role == path.role &&
-				   prev.angle == path.angle &&
-				   prev.line_width == path.line_width &&
-				   path.scanline_index == prev.scanline_index+1 &&
-				   i128(min(da, db)) <= connect_limit*connect_limit {
-					if da <= db {
-						append(&chain, path.point_a, path.point_b)
-					} else {
-						append(&chain, path.point_b, path.point_a)
-					}
-					joined = true
-				}
+		}
+		// Within each run of paths sharing mask, role, angle and width (emitted in scanline
+		// order), a chain extends to the nearest unused path on the next scanline whose end is
+		// within the connect limit and whose connector stays inside the mask.
+		used := make([]bool, path_end-path_start, context.temp_allocator)
+		group_start := path_start
+		for group_start < path_end {
+			g0 := solids.paths[group_start]
+			group_end := group_start+1
+			for group_end < path_end {
+				q := solids.paths[group_end]
+				if q.overlap_mask_index != g0.overlap_mask_index || q.role != g0.role ||
+				   q.angle != g0.angle || q.line_width != g0.line_width {break}
+				group_end += 1
 			}
-			if !joined {
+			for seed in group_start..<group_end {
+				if used[seed-path_start] {continue}
+				used[seed-path_start] = true
+				seed_path := solids.paths[seed]
+				append(&chain, seed_path.point_a, seed_path.point_b)
+				chain_first = seed
+				last := seed
+				for {
+					end := chain[len(chain)-1]
+					next_scanline := solids.paths[last].scanline_index+1
+					best := -1
+					best_d: u128
+					best_a := true
+					for k in seed+1..<group_end {
+						cand := solids.paths[k]
+						if cand.scanline_index > next_scanline {break}
+						if used[k-path_start] || cand.scanline_index != next_scanline {continue}
+						da := path_plan_distance_2(end, cand.point_a)
+						db := path_plan_distance_2(end, cand.point_b)
+						d := min(da, db)
+						if i128(d) > connect_limit*connect_limit {continue}
+						if !solid_connector_inside(solids, cand.overlap_mask_index, end, cand.point_a if da <= db else cand.point_b) {continue}
+						if best < 0 || d < best_d {
+							best = k
+							best_d = d
+							best_a = da <= db
+						}
+					}
+					if best < 0 {break}
+					used[best-path_start] = true
+					cand := solids.paths[best]
+					if best_a {
+						append(&chain, cand.point_a, cand.point_b)
+					} else {
+						append(&chain, cand.point_b, cand.point_a)
+					}
+					last = best
+				}
 				if !flush_chain(&result, &source_write, &point_write, solids, &chain, chain_first, layer_id, layer_index, &source_order) {
 					unified_path_source_result_destroy(&result, allocator)
 					return {}, .Invalid_Input
 				}
-				append(&chain, path.point_a, path.point_b)
-				chain_first = path_index
+				chain_first = -1
 			}
-			chain_last = path_index
-		}
-		if !flush_chain(&result, &source_write, &point_write, solids, &chain, chain_first, layer_id, layer_index, &source_order) {
-			unified_path_source_result_destroy(&result, allocator)
-			return {}, .Invalid_Input
+			group_start = group_end
 		}
 
 		infill_layer := infill.layers[layer_index]
@@ -652,4 +678,43 @@ unified_path_source_result_destroy :: proc(
 	delete(result.points, allocator)
 	delete(result.line_widths, allocator)
 	result^ = {}
+}
+
+// A skin connector from p to q prints inside its mask when it crosses no edge of the connector
+// boundary and its midpoint lies inside that boundary. Without a boundary the scanlines stay
+// separate.
+@(private = "file")
+solid_connector_inside :: proc(solids: Solid_Path_Result, mask_index: u32, p, q: polygon.Polygon_Point) -> bool {
+	if int(mask_index) >= len(solids.connector_boundaries) {return false}
+	boundary := solids.connector_boundaries[mask_index]
+	if len(boundary.paths) == 0 {return false}
+	ENDPOINT_TOLERANCE_UM :: 5.0
+	min_x, max_x := min(i64(p.x), i64(q.x)), max(i64(p.x), i64(q.x))
+	min_y, max_y := min(i64(p.y), i64(q.y)), max(i64(p.y), i64(q.y))
+	orient :: proc(a, b, c: polygon.Polygon_Point) -> i128 {
+		return (i128(i64(b.x))-i128(i64(a.x)))*(i128(i64(c.y))-i128(i64(a.y))) -
+		       (i128(i64(b.y))-i128(i64(a.y)))*(i128(i64(c.x))-i128(i64(a.x)))
+	}
+	sgn :: proc(v: i128) -> int {return 1 if v > 0 else (-1 if v < 0 else 0)}
+	chord_length := f64(path_plan_distance_2(p, q))
+	for path in boundary.paths {
+		ring := boundary.points[path.offset:path.offset+path.count]
+		for a, ai in ring {
+			b := ring[(ai+1) % len(ring)]
+			if max(i64(a.x), i64(b.x)) < min_x || min(i64(a.x), i64(b.x)) > max_x ||
+			   max(i64(a.y), i64(b.y)) < min_y || min(i64(a.y), i64(b.y)) > max_y {continue}
+			o1 := orient(p, q, a)
+			o2 := orient(p, q, b)
+			o3 := orient(a, b, p)
+			o4 := orient(a, b, q)
+			if sgn(o1)*sgn(o2) > 0 || sgn(o3)*sgn(o4) >= 0 || (o1 == 0 && o2 == 0) {continue}
+			t := f64(o3) / (f64(o3) - f64(o4))
+			along := t * t * chord_length
+			tail := (1 - t) * (1 - t) * chord_length
+			if along < ENDPOINT_TOLERANCE_UM*ENDPOINT_TOLERANCE_UM ||
+			   tail < ENDPOINT_TOLERANCE_UM*ENDPOINT_TOLERANCE_UM {continue}
+			return false
+		}
+	}
+	return bridge_polygon_contains_twice(boundary, i64(p.x)+i64(q.x), i64(p.y)+i64(q.y))
 }
