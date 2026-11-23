@@ -6,11 +6,13 @@ import contracts "../contracts"
 import polygon "../polygon"
 
 // Solid bands that keep the shell thick under sloped surfaces (Orca and PrusaSlicer
-// "ensure vertical shell thickness"). With I_k the area inside the perimeters of layer k, layer
-// i gets top band I_i minus the intersection of I over the `top_layers` layers above it, and
-// bottom band I_i minus the intersection over the `bottom_layers` layers below it. Layers past
-// the model's top or bottom count as empty, so the bands also contain the ordinary top and
-// bottom skin areas.
+// "ensure vertical shell thickness"). With L_k the outline of layer k and I_k the area inside its
+// perimeters, layer i gets top band I_i minus the intersection of L over the `top_layers` layers
+// above it, and bottom band I_i minus the intersection over the `bottom_layers` layers below it:
+// a point needs solid fill when one of those layers has no material over or under it. On a
+// steep wall the perimeters already give that thickness and the band is empty. Layers past the
+// model's top or bottom count as empty, so the bands also contain the ordinary top and bottom
+// skin areas.
 Vertical_Shell_Result :: struct {
 	top:    []polygon.Polygon_Set,
 	bottom: []polygon.Polygon_Set,
@@ -62,10 +64,10 @@ vertical_shells_build :: proc(
 		c.inner[li] = set
 	})
 
-	// pair[k] = inner[k] intersect inner[k+1]; a window of layers is then a few pair
-	// intersections instead of one intersection per layer.
+	// pair[k] = L_k intersect L_(k+1); a window of layers is then a few pair intersections
+	// instead of one intersection per layer.
 	Pair_Ctx :: struct {
-		inner, pair: []polygon.Polygon_Set,
+		layers, pair: []polygon.Polygon_Set,
 		provider:    polygon.Polygon_Provider,
 		allocator:   mem.Allocator,
 	}
@@ -74,10 +76,10 @@ vertical_shells_build :: proc(
 		for &set in pair {polygon.polygon_set_destroy(&set, allocator)}
 		delete(pair, allocator)
 	}
-	pctx := Pair_Ctx{inner, pair, provider, allocator}
+	pctx := Pair_Ctx{model_layers, pair, provider, allocator}
 	parallel_for(layer_count - 1, &pctx, proc(c: ^Pair_Ctx, k: int) {
-		if len(c.inner[k].paths) == 0 || len(c.inner[k + 1].paths) == 0 {return}
-		set, err := c.provider.boolean(c.inner[k], c.inner[k + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
+		if len(c.layers[k].paths) == 0 || len(c.layers[k + 1].paths) == 0 {return}
+		set, err := c.provider.boolean(c.layers[k], c.layers[k + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
 		if err != .None {
 			polygon.polygon_set_destroy(&set, c.allocator)
 			return
@@ -103,8 +105,8 @@ vertical_shells_build :: proc(
 			object_volume, _ = c.provider.boolean(c.model_layers[li - 1], c.model_layers[li + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
 		}
 		defer polygon.polygon_set_destroy(&object_volume, c.allocator)
-		top := vertical_shell_band(c.inner, c.pair, li, li + 1, li + c.top_layers, c.provider, c.allocator)
-		bottom := vertical_shell_band(c.inner, c.pair, li, li - c.bottom_layers, li - 1, c.provider, c.allocator)
+		top := vertical_shell_band(c.model_layers, c.inner, c.pair, li, li + 1, li + c.top_layers, c.provider, c.allocator)
+		bottom := vertical_shell_band(c.model_layers, c.inner, c.pair, li, li - c.bottom_layers, li - 1, c.provider, c.allocator)
 		c.top[li] = vertical_shell_regularize(top, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
 		c.bottom[li] = vertical_shell_regularize(bottom, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
 		polygon.polygon_set_destroy(&top, c.allocator)
@@ -113,12 +115,12 @@ vertical_shells_build :: proc(
 	return result
 }
 
-// inner[li] minus the intersection of inner[first..last]; a layer outside the model empties the
+// inner[li] minus the intersection of layers[first..last]; a layer outside the model empties the
 // intersection, so the band is all of inner[li]. The intersection is built from pair[k] =
-// inner[k] intersect inner[k+1], stepping two layers at a time.
+// layers[k] intersect layers[k+1], stepping two layers at a time.
 @(private = "file")
 vertical_shell_band :: proc(
-	inner, pair: []polygon.Polygon_Set,
+	layers, inner, pair: []polygon.Polygon_Set,
 	li, first, last: int,
 	provider: polygon.Polygon_Provider,
 	allocator: mem.Allocator,
@@ -131,13 +133,13 @@ vertical_shell_band :: proc(
 		return {points = points, paths = paths}
 	}
 	if last < first {return {}}
-	if first < 0 || last >= len(inner) {return clone(inner[li], allocator)}
+	if first < 0 || last >= len(layers) {return clone(inner[li], allocator)}
 	// Pieces covering [first, last]: pairs (k, k+1) and, for an odd count, the last single layer.
 	covered: polygon.Polygon_Set
 	have := false
 	k := first
 	for k <= last {
-		piece := pair[k] if k + 1 <= last else inner[k]
+		piece := pair[k] if k + 1 <= last else layers[k]
 		k += 2 if k + 1 <= last else 1
 		if len(piece.paths) == 0 {
 			polygon.polygon_set_destroy(&covered, allocator)
