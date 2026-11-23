@@ -126,8 +126,13 @@ adaptive_layer_schedule_build :: proc(
 			cleanup(&z_list, &top_list)
 			return {}, .Layer_Limit
 		}
-		b := clamp(int(f64(cur_top - min_z_um) / bin_um), 0, bin_count - 1)
-		step := i64(math.round(bin_h[b] / 10.0)) * 10
+		// Take the finest target height over the whole span the new layer would cover, so a
+		// coarse layer does not step over the start of a shallow-slope region.
+		b0 := clamp(int(f64(cur_top - min_z_um) / bin_um), 0, bin_count - 1)
+		target := bin_h[b0]
+		b1 := clamp(int(f64(cur_top + i64(math.ceil(target)) - min_z_um) / bin_um), 0, bin_count - 1)
+		for b in b0..=b1 {target = min(target, bin_h[b])}
+		step := i64(math.round(target / 10.0)) * 10
 		if step < i64(min_h) {step = i64(min_h)}
 		if step > i64(max_h) {step = i64(max_h)}
 		if step < 10 {step = 10}

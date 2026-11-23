@@ -555,28 +555,7 @@ slice_run_decoded_mesh :: proc(
 		return {}, {stage = "perimeters", detail = fmt.tprintf("perimeters error: %v", perim_err)}
 	}
 	defer features.perimeter_result_destroy(&perimeters, allocator)
-	adhesion := features.adhesion_build(
-		provider,
-		active_topo,
-		result.regions,
-		{
-			skirt_loops                   = options.skirt_loops,
-			skirt_distance_um             = options.skirt_distance_um,
-			skirt_height_layers           = options.skirt_height_layers,
-			brim_width_um                 = options.brim_width_um,
-			brim_gap_um                   = options.brim_gap_um,
-			brim_inner                    = options.brim_inner,
-			elephant_foot_compensation_um = options.elephant_foot_compensation_um,
-			line_width_um                 = proc_src.nominal_line_width,
-			bed_min_x                     = profile.printer.axis_minimum_x,
-			bed_max_x                     = profile.printer.axis_maximum_x,
-			bed_min_y                     = profile.printer.axis_minimum_y,
-			bed_max_y                     = profile.printer.axis_maximum_y,
-		},
-		allocator = allocator,
-	)
-	defer features.adhesion_result_destroy(&adhesion, allocator)
-	record_stage(&result.stages, "perimeters", t0, u64(len(perimeters.paths)), u64(len(adhesion.loops)))
+	record_stage(&result.stages, "perimeters", t0, u64(len(perimeters.paths)), 0)
 
 	// Stage 4: Surfaces & Skin propagation.
 	t0 = time.tick_now()
@@ -774,6 +753,8 @@ slice_run_decoded_mesh :: proc(
 	t0 = time.tick_now()
 	supports: features.Support_Path_Result
 	tree_supports: features.Tree_Support_Result
+	support_footprint: polygon.Polygon_Set // first-layer support area, for the skirt
+	defer polygon.polygon_set_destroy(&support_footprint, allocator)
 	if options.enable_supports && options.support_style_tree {
 		supports.pattern = proc_src.support_pattern
 		supports.line_width = proc_src.nominal_line_width
@@ -837,6 +818,18 @@ slice_run_decoded_mesh :: proc(
 			return {}, {stage = "support_geometry", detail = fmt.tprintf("support geometry error: %v", sg_err)}
 		}
 		defer features.support_geometry_result_destroy(&sup_geom, allocator)
+		if len(sup_geom.layers) > 0 {
+			layer0 := sup_geom.layers[0]
+			footprint_points := make([dynamic]polygon.Polygon_Point, 0, 64, allocator)
+			footprint_paths := make([dynamic]polygon.Polygon_Path, 0, 8, allocator)
+			for mask in sup_geom.masks[layer0.mask_offset:layer0.mask_offset+u64(layer0.mask_count)] {
+				for path in sup_geom.paths[mask.path_offset:mask.path_offset+u64(mask.path_count)] {
+					append(&footprint_paths, polygon.Polygon_Path{offset = u64(len(footprint_points)), count = u64(path.point_count)})
+					append(&footprint_points, ..sup_geom.points[path.point_offset:path.point_offset+u64(path.point_count)])
+				}
+			}
+			support_footprint = {points = footprint_points[:], paths = footprint_paths[:]}
+		}
 		sp_err: features.Support_Path_Error
 		supports, sp_err = features.support_paths_generate(sup_geom, process, provider, allocator = allocator)
 		if sp_err != .None {
@@ -853,6 +846,39 @@ slice_run_decoded_mesh :: proc(
 	sup_count := u64(len(tree_supports.paths)) if (options.enable_supports && options.support_style_tree) else u64(len(supports.paths))
 	record_stage(&result.stages, "supports", t0, sup_count, 2 if (options.enable_supports && options.support_style_tree) else (1 if options.enable_supports else 0))
 
+	if options.enable_supports && options.support_style_tree {
+		footprint_points := make([dynamic]polygon.Polygon_Point, 0, 64, allocator)
+		footprint_paths := make([dynamic]polygon.Polygon_Path, 0, 8, allocator)
+		for path in tree_supports.paths {
+			if path.layer_index != 0 {continue}
+			append(&footprint_paths, polygon.Polygon_Path{offset = u64(len(footprint_points)), count = u64(len(path.points))})
+			append(&footprint_points, ..path.points)
+		}
+		support_footprint = {points = footprint_points[:], paths = footprint_paths[:]}
+	}
+	// Skirt and brim, built after supports so the skirt surrounds the first-layer supports.
+	adhesion := features.adhesion_build(
+		provider,
+		active_topo,
+		result.regions,
+		{
+			skirt_loops                   = options.skirt_loops,
+			skirt_distance_um             = options.skirt_distance_um,
+			skirt_height_layers           = options.skirt_height_layers,
+			brim_width_um                 = options.brim_width_um,
+			brim_gap_um                   = options.brim_gap_um,
+			brim_inner                    = options.brim_inner,
+			elephant_foot_compensation_um = options.elephant_foot_compensation_um,
+			line_width_um                 = proc_src.nominal_line_width,
+			bed_min_x                     = profile.printer.axis_minimum_x,
+			bed_max_x                     = profile.printer.axis_maximum_x,
+			bed_min_y                     = profile.printer.axis_minimum_y,
+			bed_max_y                     = profile.printer.axis_maximum_y,
+		},
+		allocator = allocator,
+		support_footprint = support_footprint,
+	)
+	defer features.adhesion_result_destroy(&adhesion, allocator)
 	// Stage 10: Unified path sources & unified path plan (seam + travel ordering).
 	t0 = time.tick_now()
 	u_sources, us_err := features.unified_path_sources_build(

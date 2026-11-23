@@ -46,6 +46,7 @@ adhesion_build :: proc(
 	regions: slicing.Region_Result,
 	config: Adhesion_Config,
 	allocator := context.allocator,
+	support_footprint: polygon.Polygon_Set = {}, // first-layer support area that the skirt also surrounds
 ) -> Adhesion_Result {
 	if provider.offset == nil || len(regions.layers) == 0 || i64(config.line_width_um) <= 0 {
 		return {}
@@ -72,6 +73,37 @@ adhesion_build :: proc(
 		if skirt_layers > u32(len(regions.layers)) {
 			skirt_layers = u32(len(regions.layers))
 		}
+		// The skirt surrounds the model and the first-layer supports; the brim stays on the model.
+		skirt_set := outer_set
+		owned_skirt_set: polygon.Polygon_Set
+		defer polygon.polygon_set_destroy(&owned_skirt_set, allocator)
+		if len(support_footprint.paths) > 0 && provider.boolean != nil {
+			union_set, union_err := provider.boolean(
+				outer_set,
+				support_footprint,
+				.Union,
+				.Non_Zero,
+				polygon.DEFAULT_POLYGON_LIMITS,
+				allocator,
+			)
+			if union_err == .None && len(union_set.paths) > 0 {
+				// Keep only outer boundaries: holes enclosed between the model and supports would
+				// otherwise get skirt loops of their own.
+				kept := 0
+				for path in union_set.paths {
+					ring := union_set.points[path.offset:path.offset+path.count]
+					if polygon.polygon_path_area_2(ring) > 0 {
+						union_set.paths[kept] = path
+						kept += 1
+					}
+				}
+				union_set.paths = union_set.paths[:kept]
+				owned_skirt_set = union_set
+				skirt_set = owned_skirt_set
+			} else {
+				polygon.polygon_set_destroy(&union_set, allocator)
+			}
+		}
 		base_dist := i64(config.skirt_distance_um)
 		if i64(config.brim_width_um) > 0 {
 			base_dist = max(base_dist, i64(config.brim_width_um) + i64(config.brim_gap_um) + lw)
@@ -80,7 +112,7 @@ adhesion_build :: proc(
 			for k := int(config.skirt_loops) - 1; k >= 0; k -= 1 {
 				offset_um := contracts.Micrometres(base_dist + i64(k)*lw + lw/2)
 				expanded, err := provider.offset(
-					outer_set,
+					skirt_set,
 					offset_um,
 					.Round,
 					2.0,
@@ -92,6 +124,15 @@ adhesion_build :: proc(
 					polygon.polygon_set_destroy(&expanded, allocator)
 					continue
 				}
+				// A skirt is the outer boundary only: merging islands can leave holes in the offset.
+				outer_kept := 0
+				for path in expanded.paths {
+					if polygon.polygon_path_area_2(expanded.points[path.offset:path.offset+path.count]) > 0 {
+						expanded.paths[outer_kept] = path
+						outer_kept += 1
+					}
+				}
+				expanded.paths = expanded.paths[:outer_kept]
 				adhesion_append_loops(&loops, expanded, li, false, config, allocator)
 				polygon.polygon_set_destroy(&expanded, allocator)
 			}
