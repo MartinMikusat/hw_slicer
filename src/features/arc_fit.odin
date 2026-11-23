@@ -54,7 +54,7 @@ motion_plan_fit_arcs :: proc(
 		i := op_start
 		for i < op_end {
 			op0 := motion.operations[i]
-			if op0.kind != .Extrude || op0.arc != .None ||
+			if op0.kind != .Extrude || op0.arc != .None || op0.z_offset_um != 0 ||
 			   op0.role == .Sparse_Infill || op0.role == .Support || op0.role == .Support_Interface {
 				append(&new_ops, op0)
 				i += 1
@@ -66,7 +66,7 @@ motion_plan_fit_arcs :: proc(
 			for run_end < op_end {
 				prev := motion.operations[run_end - 1]
 				cur := motion.operations[run_end]
-				if cur.kind != .Extrude || cur.arc != .None ||
+				if cur.kind != .Extrude || cur.arc != .None || cur.z_offset_um != 0 ||
 				   cur.path_id != op0.path_id ||
 				   cur.role != op0.role ||
 				   cur.speed != op0.speed ||

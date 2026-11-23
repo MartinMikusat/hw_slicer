@@ -107,13 +107,20 @@ modifiers_apply_motion :: proc(
 				}
 				if mod.has_speed_scale {
 					raw_v := i64(math.round(f64(i64(op.speed)) * mod.speed_scale))
+					raw_v = clamp(raw_v, i64(process.minimum_print_speed), i64(profile.printer.maximum_speed))
 					qv := (raw_v / 50) * 50
-					qv = clamp(qv, i64(process.minimum_print_speed), i64(profile.printer.maximum_speed))
+					if qv < i64(process.minimum_print_speed) {
+						qv = ((i64(process.minimum_print_speed) + 49) / 50) * 50
+					}
 					op.speed = profiles.Speed_Um_Per_Second(qv)
 				}
 				if mod.has_fan_pct {
 					ppm := profiles.Ratio_Ppm(u32(math.round(mod.fan_pct * 10_000.0)))
-					op.fan_ratio = clamp(ppm, profile.material.minimum_fan_ratio, profile.material.maximum_fan_ratio)
+					if ppm == 0 {
+						op.fan_ratio = 0
+					} else {
+						op.fan_ratio = clamp(ppm, profile.material.minimum_fan_ratio, profile.material.maximum_fan_ratio)
+					}
 				}
 				if mod.has_flow_scale {
 					raw_e := i128(math.round(f64(op.filament_delta_nm) * mod.flow_scale))

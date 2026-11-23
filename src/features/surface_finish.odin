@@ -1,5 +1,6 @@
 package features
 
+import "base:runtime"
 import "core:math"
 import "core:slice"
 
@@ -78,6 +79,7 @@ ironing_paths_generate :: proc(
 	for mask in overlap.masks {
 		if mask.role != .Top_Skin && mask.role != .Top_Bottom_Skin {continue}
 		if mask.path_count == 0 {continue}
+		runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 
 		// Build temporary Polygon_Set for this top-skin mask.
 		p_start := int(mask.path_offset)

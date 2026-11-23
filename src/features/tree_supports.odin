@@ -1,5 +1,6 @@
 package features
 
+import "base:runtime"
 import "core:math"
 
 import contracts "../contracts"
@@ -86,6 +87,7 @@ tree_supports_generate :: proc(
 	model_cy := cy_sum / f64(c_cnt) if c_cnt > 0 else 0.5 * f64(i64(config.bed_min_y) + i64(config.bed_max_y))
 
 	// Step 1: Detect overhang tip clusters per layer (sampling outer contour vertices unsupported by layer-1).
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	tips_per_layer := make([][dynamic][2]f64, layer_count, context.temp_allocator)
 	total_tips: u64
 	for li := 1; li < layer_count; li += 1 {
@@ -118,6 +120,9 @@ tree_supports_generate :: proc(
 					}
 				}
 				if !too_close {
+					if tips_per_layer[li].allocator.procedure == nil {
+						tips_per_layer[li] = make([dynamic][2]f64, 0, 8, context.temp_allocator)
+					}
 					append(&tips_per_layer[li], [2]f64{px, py})
 					total_tips += 1
 				}

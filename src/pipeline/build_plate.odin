@@ -156,10 +156,12 @@ plate_object_apply_transform :: proc(obj: ^Plate_Object) {
 @(private = "file")
 plate_object_lay_flat :: proc(obj: ^Plate_Object) {
 	if len(obj.mesh.triangle_a) == 0 {return}
+	nverts := u32(min(len(obj.mesh.vertex_x), min(len(obj.mesh.vertex_y), len(obj.mesh.vertex_z))))
 	best_area := 0.0
 	best_n := [3]f64{0, 0, -1}
 	for ti in 0..<len(obj.mesh.triangle_a) {
 		ia, ib, ic := obj.mesh.triangle_a[ti], obj.mesh.triangle_b[ti], obj.mesh.triangle_c[ti]
+		if ia >= nverts || ib >= nverts || ic >= nverts {continue}
 		ux := obj.mesh.vertex_x[ib] - obj.mesh.vertex_x[ia]
 		uy := obj.mesh.vertex_y[ib] - obj.mesh.vertex_y[ia]
 		uz := obj.mesh.vertex_z[ib] - obj.mesh.vertex_z[ia]

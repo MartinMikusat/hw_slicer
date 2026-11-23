@@ -41,8 +41,41 @@ motion_plan_estimate_klipper_time :: proc(
 			dx := f64(i64(op.point_b.x) - i64(op.point_a.x)) / 1000.0
 			dy := f64(i64(op.point_b.y) - i64(op.point_a.y)) / 1000.0
 			dist := math.hypot(dx, dy)
-			if dist < 1e-6 {continue}
-			ux, uy := dx / dist, dy / dist
+			ux, uy: f64
+			exit_ux, exit_uy: f64
+			if op.kind == .Extrude && op.arc != .None {
+				rx0 := f64(i64(op.point_a.x) - i64(op.arc_center.x)) / 1000.0
+				ry0 := f64(i64(op.point_a.y) - i64(op.arc_center.y)) / 1000.0
+				rx1 := f64(i64(op.point_b.x) - i64(op.arc_center.x)) / 1000.0
+				ry1 := f64(i64(op.point_b.y) - i64(op.arc_center.y)) / 1000.0
+				r := math.hypot(rx0, ry0)
+				if r > 1e-6 {
+					a0 := math.atan2(ry0, rx0)
+					a1 := math.atan2(ry1, rx1)
+					sweep := a1 - a0
+					if op.arc == .CCW {
+						if sweep <= 0 {sweep += 2.0 * math.PI}
+						ux, uy = -ry0 / r, rx0 / r
+						r1 := max(1e-6, math.hypot(rx1, ry1))
+						exit_ux, exit_uy = -ry1 / r1, rx1 / r1
+					} else {
+						if sweep >= 0 {sweep -= 2.0 * math.PI}
+						sweep = -sweep
+						ux, uy = ry0 / r, -rx0 / r
+						r1 := max(1e-6, math.hypot(rx1, ry1))
+						exit_ux, exit_uy = ry1 / r1, -rx1 / r1
+					}
+					dist = r * sweep
+				} else {
+					if dist < 1e-6 {continue}
+					ux, uy = dx / dist, dy / dist
+					exit_ux, exit_uy = ux, uy
+				}
+			} else {
+				if dist < 1e-6 {continue}
+				ux, uy = dx / dist, dy / dist
+				exit_ux, exit_uy = ux, uy
+			}
 			v_cruise := max(0.1, f64(i64(op.speed)) / 1000.0)
 			accel := max(10.0, f64(i64(op.acceleration)) / 1000.0)
 
@@ -74,7 +107,7 @@ motion_plan_estimate_klipper_time :: proc(
 			}
 			est.total_seconds += dt
 			has_prev = true
-			prev_dx, prev_dy = ux, uy
+			prev_dx, prev_dy = exit_ux, exit_uy
 			prev_v = v_cruise
 		case .Invalid:
 		}

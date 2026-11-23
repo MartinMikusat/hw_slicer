@@ -36,7 +36,7 @@ variable_walls_adapt :: proc(
 	stats := Variable_Wall_Stats{}
 
 	for &src in sources {
-		if src.source_kind != .Perimeter || !src.closed || len(src.points) < 4 {
+		if src.source_kind != .Perimeter || !src.closed || len(src.points) < 4 || len(src.line_widths) != len(src.points) {
 			continue
 		}
 		n := len(src.points)

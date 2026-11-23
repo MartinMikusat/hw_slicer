@@ -99,25 +99,25 @@ Comprehensive static & architectural code review of `/Users/martin/projects/hw_s
 
 ### High Severity (Pass 2)
 
-### [CR-13] `arc_fit.odin` Does Not Guard Against Merging `z_offset_um != 0` Operations
+### [CR-13] `arc_fit.odin` Does Not Guard Against Merging `z_offset_um != 0` Operations — **RESOLVED**
 - **Location:** `src/features/arc_fit.odin:57-79`
 - **Issue:** `motion_plan_fit_arcs` checks `kind`, `arc`, `path_id`, `role`, `speed`, `acceleration`, `fan_ratio`, and `point_a == prev.point_b`, but never checks `op.z_offset_um == 0`. If invoked after `motion_plan_apply_z_ramps` (or on helical/vase-mode operations), it would collapse Z-ramped segments into a single planar arc and drop intermediate Z offsets.
-- **Fix:** Reject any operation with `op.z_offset_um != 0` in both the initial filter (`op0.z_offset_um != 0`) and the contiguous-run loop (`cur.z_offset_um != 0`).
+- **Resolution:** Added `op0.z_offset_um != 0` and `cur.z_offset_um != 0` guards in `motion_plan_fit_arcs`.
 
-### [CR-14] `variable_walls_adapt` Missing `len(src.line_widths)` Bounds Check
+### [CR-14] `variable_walls_adapt` Missing `len(src.line_widths)` Bounds Check — **RESOLVED**
 - **Location:** `src/features/variable_walls.odin:39, 69-70`
 - **Issue:** Checks `len(src.points) < 4` and iterates `vi in 0..<n`, then indexes `src.line_widths[vi]` without checking `len(src.line_widths) == n`. Any source with a shorter `line_widths` slice panics.
-- **Fix:** Add `|| len(src.line_widths) != len(src.points)` to the loop guard on line 39.
+- **Resolution:** Added `len(src.line_widths) != len(src.points)` to the loop guard.
 
-### [CR-15] `plate_object_lay_flat` Missing Triangle Vertex Index Bounds Checks
+### [CR-15] `plate_object_lay_flat` Missing Triangle Vertex Index Bounds Checks — **RESOLVED**
 - **Location:** `src/pipeline/build_plate.odin:162-168`
 - **Issue:** Indexes `obj.mesh.vertex_x[ia/ib/ic]` without checking `ia, ib, ic < u32(len(obj.mesh.vertex_x))`, risking an out-of-bounds panic on malformed meshes (same class as `CR-08`).
-- **Fix:** Validate `ia, ib, ic < nverts` before indexing in `plate_object_lay_flat`.
+- **Resolution:** Added `ia >= nverts || ib >= nverts || ic >= nverts` validation before indexing.
 
-### [CR-16] `tree_supports_generate` Heap Memory Leak in `tips_per_layer`
+### [CR-16] `tree_supports_generate` Heap Memory Leak in `tips_per_layer` — **RESOLVED**
 - **Location:** `src/features/tree_supports.odin:89, 121`
 - **Issue:** `tips_per_layer := make([][dynamic][2]f64, layer_count, context.temp_allocator)` allocates the outer slice on `temp_allocator`, leaving each inner `[dynamic][2]f64` zero-initialized with `context.allocator` (heap). Every `append(&tips_per_layer[li], ...)` allocates on the heap and is never freed before returning, leaking up to `layer_count` heap allocations per tree-support slice. Also lacks `DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()`.
-- **Fix:** Add `runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()` and initialize each `tips_per_layer[li]` with `context.temp_allocator` (or `defer` delete each non-empty inner dynamic array).
+- **Resolution:** Added `runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()` and initialized each `tips_per_layer[li]` on `context.temp_allocator` before appending.
 
 ### Medium Severity (Pass 2)
 
@@ -126,19 +126,19 @@ Comprehensive static & architectural code review of `/Users/martin/projects/hw_s
 - **Issue:** Comment states scarf ramps apply to outer perimeter loops, but line 76 filters only on `op.role != .Perimeter`, applying scarf Z/E ramps to inner perimeter walls as well.
 - **Fix:** Restrict scarf ramping to outer perimeter paths (e.g. via an `is_outer_perimeter` flag on `Motion_Operation` or `Unified_Path` / `Extrusion_Path`, matching `CR-06`).
 
-### [CR-18] `modifiers.odin` Prevents `fan=0` From Turning Fan Off & Quantizes Speed Before Clamping
+### [CR-18] `modifiers.odin` Prevents `fan=0` From Turning Fan Off & Quantizes Speed Before Clamping — **RESOLVED**
 - **Location:** `src/pipeline/modifiers.odin:109-117`
 - **Issue:**
   1. `clamp(ppm, profile.material.minimum_fan_ratio, profile.material.maximum_fan_ratio)` forces `fan=0` up to `minimum_fan_ratio` (e.g. 35% for PLA), making it impossible to disable the fan in a modifier zone.
   2. Speed quantization `(raw_v / 50) * 50` runs before `clamp(qv, minimum_print_speed, maximum_speed)`, which can break the `% 50` Klipper invariant if either bound is not divisible by 50.
-- **Fix:** Allow `ppm == 0` to bypass `minimum_fan_ratio` (or clamp to `[0, maximum_fan_ratio]`), and quantize `qv` after clamping.
+- **Resolution:** Allowed `ppm == 0` to set `op.fan_ratio = 0`, and moved speed quantization after clamping while preserving `>= minimum_print_speed`.
 
-### [CR-19] `ironing_paths_generate` Unbounded `temp_allocator` Growth Across Top-Skin Masks
+### [CR-19] `ironing_paths_generate` Unbounded `temp_allocator` Growth Across Top-Skin Masks — **RESOLVED**
 - **Location:** `src/features/surface_finish.odin:78-121`
 - **Issue:** Allocates `pts`, `paths`, and `tmp_infill` from `context.temp_allocator` inside the per-mask loop without a per-iteration temp guard, accumulating temp memory linearly with top-skin mask count.
-- **Fix:** Wrap the per-mask loop body in `runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()`.
+- **Resolution:** Added `runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()` inside the per-mask loop.
 
-### [CR-20] `motion_plan_estimate_klipper_time` Uses Straight Chord Length for `G2`/`G3` Arcs
+### [CR-20] `motion_plan_estimate_klipper_time` Uses Straight Chord Length for `G2`/`G3` Arcs — **RESOLVED**
 - **Location:** `src/features/time_estimate.odin:41-44`
 - **Issue:** Computes `dist := math.hypot(dx, dy)` for all `.Extrude` operations, ignoring `op.arc != .None`. For curved `G2`/`G3` arcs, chord length underestimates true arc length `r * |sweep|` (severely for large-sweep arcs).
-- **Fix:** When `op.arc != .None`, compute radius `r` and signed angular sweep from `op.point_a` to `op.point_b` around `op.arc_center` (using CW/CCW direction) and use `dist = r * sweep` and entry/exit tangent vectors.
+- **Resolution:** Computed true arc length `r * sweep` and entry/exit tangent unit vectors for `G2`/`G3` arcs around `op.arc_center`.
