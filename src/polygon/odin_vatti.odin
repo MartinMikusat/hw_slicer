@@ -102,51 +102,17 @@ odin_vatti_boolean :: proc(
 	vatti_collect_segs(clips, true, &all_segs)
 	if len(all_segs) == 0 {return {}, .None}
 
-	n_segs := len(all_segs)
-	Seg_Ord :: struct {idx: int, min_x: i64}
-	seg_ords := make([]Seg_Ord, n_segs, context.temp_allocator)
-	for i in 0..<n_segs {seg_ords[i] = {idx = i, min_x = all_segs[i].min_x}}
-	slice.sort_by(seg_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
-
-	// Step 2: Sweep-line intersection & collinear overlap splitting into a single flat buffer.
-	Flat_Split :: struct {
-		seg_idx: int,
-		t:       f64,
-		px, py:  i64,
-	}
-	flat_splits := make([dynamic]Flat_Split, 0, 64, context.temp_allocator)
-	has_split := make([]bool, n_segs, context.temp_allocator)
+	// Step 2: Snap rounding (Hobby). Every vertex and every rounded intersection point is a hot
+	// pixel, a unit square around an integer point. Each segment is routed through the centre of
+	// every hot pixel it passes through, and collinear overlaps are split at existing endpoints.
+	// The resulting edges meet only at endpoints or coincide, so no two edges cross inside a
+	// scanbeam slab. (Rounding split points and re-splitting does not converge in general.)
 	skip_same_set := len(clips.paths) > 0 && (operation == .Intersection || operation == .Difference)
-	for oi in 0..<n_segs {
-		i := seg_ords[oi].idx
-		sa := all_segs[i]
-		for oj := oi + 1; oj < n_segs; oj += 1 {
-			if seg_ords[oj].min_x > sa.max_x {break}
-			j := seg_ords[oj].idx
-			sb := all_segs[j]
-			if skip_same_set && sa.is_clip == sb.is_clip {continue}
-			if sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
-
-			if px, py, ta, tb, hit := vatti_seg_intersect(sa, sb); hit {
-				if ta > 1e-9 && ta < 1.0 - 1e-9 {
-					append(&flat_splits, Flat_Split{seg_idx = i, t = ta, px = px, py = py})
-					has_split[i] = true
-				}
-				if tb > 1e-9 && tb < 1.0 - 1e-9 {
-					append(&flat_splits, Flat_Split{seg_idx = j, t = tb, px = px, py = py})
-					has_split[j] = true
-				}
-			} else if vatti_segs_collinear(sa, sb) {
-				if vatti_maybe_split_flat(&flat_splits, i, sa, sb.ax, sb.ay) {has_split[i] = true}
-				if vatti_maybe_split_flat(&flat_splits, i, sa, sb.bx, sb.by) {has_split[i] = true}
-				if vatti_maybe_split_flat(&flat_splits, j, sb, sa.ax, sa.ay) {has_split[j] = true}
-				if vatti_maybe_split_flat(&flat_splits, j, sb, sa.bx, sa.by) {has_split[j] = true}
-			}
-		}
-	}
+	segs, crossing_count := vatti_snap_round(all_segs[:], skip_same_set)
+	first_pass_splits := crossing_count
 
 	// Fast path for non-self-intersecting single-ring Union (covers ~80% of odin_offset calls!).
-	if len(flat_splits) == 0 && operation == .Union && len(clips.paths) == 0 && len(subjects.paths) == 1 {
+	if first_pass_splits == 0 && operation == .Union && len(clips.paths) == 0 && len(subjects.paths) == 1 {
 		area := polygon_path_area_2(subjects.points)
 		if area == 0 {return {}, .None}
 		if fill_rule == .Positive && area < 0 {return {}, .None}
@@ -156,39 +122,14 @@ odin_vatti_boolean :: proc(
 		}
 	}
 
-	// Build CSR lookup for split segments only when any splits occurred.
-	split_offsets: []int
-	split_items: []Vatti_Split
-	if len(flat_splits) > 0 {
-		split_counts := make([]int, n_segs, context.temp_allocator)
-		for fs in flat_splits {split_counts[fs.seg_idx] += 1}
-		split_offsets = make([]int, n_segs + 1, context.temp_allocator)
-		for i in 0..<n_segs {split_offsets[i + 1] = split_offsets[i] + split_counts[i]}
-		split_items = make([]Vatti_Split, len(flat_splits), context.temp_allocator)
-		split_cur := make([]int, n_segs, context.temp_allocator)
-		copy(split_cur, split_offsets[:n_segs])
-		for fs in flat_splits {
-			split_items[split_cur[fs.seg_idx]] = {t = fs.t, px = fs.px, py = fs.py}
-			split_cur[fs.seg_idx] += 1
-		}
-	}
-
 	// Build flat atomic vertical/slanted edges and horizontal edges (no hash maps).
-	verts := make([dynamic]Vatti_Atomic_Vert, 0, n_segs, context.temp_allocator)
-	horizs := make([dynamic]Vatti_Atomic_Horiz, 0, n_segs / 4 + 8, context.temp_allocator)
-	pts_scratch := make([dynamic]Vatti_Split, 0, 16, context.temp_allocator)
-
-	add_atomic := proc(
-		ax, ay, bx, by: i64,
-		is_clip: bool,
-		verts: ^[dynamic]Vatti_Atomic_Vert,
-		horizs: ^[dynamic]Vatti_Atomic_Horiz,
-	) {
-		if ax == bx && ay == by {return}
+	verts := make([dynamic]Vatti_Atomic_Vert, 0, len(segs), context.temp_allocator)
+	horizs := make([dynamic]Vatti_Atomic_Horiz, 0, len(segs) / 4 + 8, context.temp_allocator)
+	for seg in segs {
+		ax, ay, bx, by := seg.ax, seg.ay, seg.bx, seg.by
 		if ay == by {
-			x0, x1 := min(ax, bx), max(ax, bx)
-			append(horizs, Vatti_Atomic_Horiz{x0 = x0, x1 = x1, y = ay})
-			return
+			append(&horizs, Vatti_Atomic_Horiz{x0 = min(ax, bx), x1 = max(ax, bx), y = ay})
+			continue
 		}
 		x0, y0, x1, y1: i64
 		dw: i32
@@ -199,34 +140,15 @@ odin_vatti_boolean :: proc(
 			x0, y0, x1, y1 = bx, by, ax, ay
 			dw = +1
 		}
-		append(verts, Vatti_Atomic_Vert{
+		append(&verts, Vatti_Atomic_Vert{
 			x0      = x0,
 			y0      = y0,
 			x1      = x1,
 			y1      = y1,
 			slope   = f64(x1 - x0) / f64(y1 - y0),
-			dw_subj = 0 if is_clip else dw,
-			dw_clip = dw if is_clip else 0,
+			dw_subj = 0 if seg.is_clip else dw,
+			dw_clip = dw if seg.is_clip else 0,
 		})
-	}
-
-	for i in 0..<n_segs {
-		s := all_segs[i]
-		if !has_split[i] {
-			add_atomic(s.ax, s.ay, s.bx, s.by, s.is_clip, &verts, &horizs)
-			continue
-		}
-		clear(&pts_scratch)
-		append(&pts_scratch, Vatti_Split{t = 0.0, px = s.ax, py = s.ay})
-		for sp in split_items[split_offsets[i]:split_offsets[i + 1]] {
-			append(&pts_scratch, sp)
-		}
-		append(&pts_scratch, Vatti_Split{t = 1.0, px = s.bx, py = s.by})
-		slice.sort_by(pts_scratch[:], proc(a, b: Vatti_Split) -> bool {return a.t < b.t})
-
-		for k in 0..<len(pts_scratch)-1 {
-			add_atomic(pts_scratch[k].px, pts_scratch[k].py, pts_scratch[k + 1].px, pts_scratch[k + 1].py, s.is_clip, &verts, &horizs)
-		}
 	}
 
 	if len(verts) == 0 {return {}, .None}
@@ -415,6 +337,173 @@ odin_vatti_boolean :: proc(
 	raw_loops := vatti_trace_loops(kept_edges[:], context.temp_allocator)
 	if len(raw_loops) == 0 {return {}, .None}
 	return vatti_canonicalize_loops(raw_loops, limits, allocator)
+}
+
+// Snap-rounds `segs` (see step 2 of `odin_vatti_boolean`) into pieces allocated on the temp
+// allocator. Returns the pieces and the number of proper intersections or overlaps found, which is
+// zero exactly when the input segments neither cross nor overlap.
+@(private = "file")
+vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dynamic]Vatti_Seg, crossings: int) {
+	n_segs := len(segs)
+	Seg_Ord :: struct {idx: int, min_x: i64}
+	seg_ords := make([]Seg_Ord, n_segs, context.temp_allocator)
+	for i in 0..<n_segs {seg_ords[i] = {idx = i, min_x = segs[i].min_x}}
+	slice.sort_by(seg_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
+
+	// Hot pixels: every endpoint and every rounded proper intersection.
+	hot := make([dynamic][2]i64, 0, n_segs * 2 + 16, context.temp_allocator)
+	for sg in segs {
+		append(&hot, [2]i64{sg.ax, sg.ay})
+		append(&hot, [2]i64{sg.bx, sg.by})
+	}
+	for oi in 0..<n_segs {
+		i := seg_ords[oi].idx
+		sa := segs[i]
+		for oj := oi + 1; oj < n_segs; oj += 1 {
+			if seg_ords[oj].min_x > sa.max_x {break}
+			j := seg_ords[oj].idx
+			sb := segs[j]
+			if skip_same_set && sa.is_clip == sb.is_clip {continue}
+			if sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
+			if px, py, ta, tb, hit := vatti_seg_intersect(sa, sb); hit {
+				if (ta > 1e-9 && ta < 1.0 - 1e-9) || (tb > 1e-9 && tb < 1.0 - 1e-9) {
+					append(&hot, [2]i64{px, py})
+					crossings += 1
+				}
+			} else if vatti_segs_collinear(sa, sb) &&
+			          max(sa.min_x, sb.min_x) <= min(sa.max_x, sb.max_x) &&
+			          max(sa.min_y, sb.min_y) <= min(sa.max_y, sb.max_y) {
+				crossings += 1
+			}
+		}
+	}
+	slice.sort_by(hot[:], proc(a, b: [2]i64) -> bool {
+		if a[0] != b[0] {return a[0] < b[0]}
+		return a[1] < b[1]
+	})
+	unique := 0
+	for h in hot {
+		if unique == 0 || hot[unique - 1] != h {
+			hot[unique] = h
+			unique += 1
+		}
+	}
+	resize(&hot, unique)
+
+	// Route each segment through the hot pixels it passes through.
+	Snap :: struct {t: f64, x, y: i64}
+	snaps := make([dynamic]Snap, 0, 16, context.temp_allocator)
+	routed := make([dynamic]Vatti_Seg, 0, n_segs + len(hot), context.temp_allocator)
+	for sg in segs {
+		clear(&snaps)
+		dx := f64(sg.bx - sg.ax)
+		dy := f64(sg.by - sg.ay)
+		l2 := dx*dx + dy*dy
+		// First hot pixel with x >= min_x - 1.
+		lo, hi := 0, len(hot)
+		for lo < hi {
+			mid := (lo + hi) / 2
+			if hot[mid][0] < sg.min_x - 1 {lo = mid + 1} else {hi = mid}
+		}
+		for k := lo; k < len(hot) && hot[k][0] <= sg.max_x + 1; k += 1 {
+			h := hot[k]
+			if h[1] < sg.min_y - 1 || h[1] > sg.max_y + 1 {continue}
+			if (h[0] == sg.ax && h[1] == sg.ay) || (h[0] == sg.bx && h[1] == sg.by) {continue}
+			if !vatti_segment_hits_pixel(sg, h) {continue}
+			t := (f64(h[0] - sg.ax)*dx + f64(h[1] - sg.ay)*dy) / l2
+			append(&snaps, Snap{t = t, x = h[0], y = h[1]})
+		}
+		if len(snaps) == 0 {
+			append(&routed, sg)
+			continue
+		}
+		slice.sort_by(snaps[:], proc(a, b: Snap) -> bool {return a.t < b.t})
+		px, py := sg.ax, sg.ay
+		for sn in snaps {
+			vatti_append_piece(&routed, px, py, sn.x, sn.y, sg.is_clip)
+			px, py = sn.x, sn.y
+		}
+		vatti_append_piece(&routed, px, py, sg.bx, sg.by, sg.is_clip)
+	}
+
+	// Split collinear overlaps at the other piece's endpoints (exact points, no rounding).
+	n_routed := len(routed)
+	route_ords := make([]Seg_Ord, n_routed, context.temp_allocator)
+	for i in 0..<n_routed {route_ords[i] = {idx = i, min_x = routed[i].min_x}}
+	slice.sort_by(route_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
+	Flat_Split :: struct {
+		seg_idx: int,
+		t:       f64,
+		px, py:  i64,
+	}
+	splits := make([dynamic]Flat_Split, 0, 16, context.temp_allocator)
+	for oi in 0..<n_routed {
+		i := route_ords[oi].idx
+		sa := routed[i]
+		for oj := oi + 1; oj < n_routed; oj += 1 {
+			if route_ords[oj].min_x > sa.max_x {break}
+			j := route_ords[oj].idx
+			sb := routed[j]
+			if sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
+			if !vatti_segs_collinear(sa, sb) {continue}
+			vatti_maybe_split_flat(&splits, i, sa, sb.ax, sb.ay)
+			vatti_maybe_split_flat(&splits, i, sa, sb.bx, sb.by)
+			vatti_maybe_split_flat(&splits, j, sb, sa.ax, sa.ay)
+			vatti_maybe_split_flat(&splits, j, sb, sa.bx, sa.by)
+		}
+	}
+	pieces = make([dynamic]Vatti_Seg, 0, n_routed + len(splits), context.temp_allocator)
+	if len(splits) == 0 {
+		append(&pieces, ..routed[:])
+		return
+	}
+	slice.sort_by(splits[:], proc(a, b: Flat_Split) -> bool {
+		if a.seg_idx != b.seg_idx {return a.seg_idx < b.seg_idx}
+		return a.t < b.t
+	})
+	k := 0
+	for i in 0..<n_routed {
+		sg := routed[i]
+		px, py := sg.ax, sg.ay
+		for k < len(splits) && splits[k].seg_idx == i {
+			vatti_append_piece(&pieces, px, py, splits[k].px, splits[k].py, sg.is_clip)
+			px, py = splits[k].px, splits[k].py
+			k += 1
+		}
+		vatti_append_piece(&pieces, px, py, sg.bx, sg.by, sg.is_clip)
+	}
+	return
+}
+
+// Whether segment `sg` passes through the closed unit square centred on hot pixel `h`.
+@(private = "file")
+vatti_segment_hits_pixel :: proc(sg: Vatti_Seg, h: [2]i64) -> bool {
+	x0, y0 := f64(sg.ax - h[0]), f64(sg.ay - h[1])
+	dx, dy := f64(sg.bx - sg.ax), f64(sg.by - sg.ay)
+	t0, t1 := 0.0, 1.0
+	p := [4]f64{-dx, dx, -dy, dy}
+	q := [4]f64{x0 + 0.5, 0.5 - x0, y0 + 0.5, 0.5 - y0}
+	for i in 0..<4 {
+		if p[i] == 0 {
+			if q[i] < 0 {return false}
+		} else {
+			t := q[i] / p[i]
+			if p[i] < 0 {t0 = max(t0, t)} else {t1 = min(t1, t)}
+			if t0 > t1 {return false}
+		}
+	}
+	return true
+}
+
+@(private = "file")
+vatti_append_piece :: proc(out: ^[dynamic]Vatti_Seg, ax, ay, bx, by: i64, is_clip: bool) {
+	if ax == bx && ay == by {return}
+	append(out, Vatti_Seg{
+		ax = ax, ay = ay, bx = bx, by = by,
+		min_x = min(ax, bx), max_x = max(ax, bx),
+		min_y = min(ay, by), max_y = max(ay, by),
+		is_clip = is_clip,
+	})
 }
 
 @(private = "file")

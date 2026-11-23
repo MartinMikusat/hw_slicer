@@ -107,7 +107,10 @@ support_faces_classify :: proc(
 		if length_squared > 0 && normal_z < 0 &&
 		   normal_z*normal_z >
 		    length_squared*threshold_sine_squared {
-			overhang_count += 1
+			indices := [3]u32{mesh.triangle_a[triangle_index], mesh.triangle_b[triangle_index], mesh.triangle_c[triangle_index]}
+			if _, _, degenerate := support_face_projected_triangle(mesh, indices); !degenerate {
+				overhang_count += 1
+			}
 		}
 	}
 	if overhang_count > limits.max_projection_points/3 ||
@@ -179,13 +182,25 @@ support_faces_classify :: proc(
 		}
 		kind := Support_Face_Kind.Upward_Or_Vertical
 		downward_z_squared: f64
+		// A downward face whose XY projection quantizes to zero area needs no support.
+		projected: [3]polygon.Polygon_Point
+		projection_degenerate := false
+		if length_squared != 0 && normal_z < 0 {
+			projection_ok: bool
+			projected, projection_ok, projection_degenerate = support_face_projected_triangle(mesh, indices)
+			if !projection_ok {
+				support_face_result_destroy(&result, allocator)
+				return {}, .Coordinate_Range
+			}
+		}
 		if length_squared == 0 {
 			kind = .Degenerate
 			result.degenerate_count += 1
 		} else if normal_z < 0 {
 			downward_z_squared = normal_z*normal_z
 			if downward_z_squared >
-			   length_squared*threshold_sine_squared {
+			   length_squared*threshold_sine_squared &&
+			   !projection_degenerate {
 				kind = .Downward_Overhang
 				result.overhang_count += 1
 			} else {
@@ -210,12 +225,6 @@ support_faces_classify :: proc(
 			maximum_z = maximum_z_um,
 		}
 		if kind == .Downward_Overhang {
-			projected, projection_ok :=
-				support_face_projected_triangle(mesh, indices)
-			if !projection_ok {
-				support_face_result_destroy(&result, allocator)
-				return {}, .Coordinate_Range
-			}
 			if point_write+len(projected) > len(result.points) {
 				support_face_result_destroy(&result, allocator)
 				return {}, .Arithmetic
@@ -284,11 +293,12 @@ support_face_normal :: proc(
 	return normal_x, normal_y, normal_z, length_squared, true
 }
 
+// The face's XY projection in micrometres, counter-clockwise. `ok` is false only when a
+// coordinate is out of range; `degenerate` is true when the projection has zero area.
 support_face_projected_triangle :: proc(
 	mesh: geometry.Canonical_Mesh,
 	indices: [3]u32,
-) -> ([3]polygon.Polygon_Point, bool) {
-	points: [3]polygon.Polygon_Point
+) -> (points: [3]polygon.Polygon_Point, ok: bool, degenerate: bool) {
 	for index in 0..<3 {
 		x, x_error := geometry.millimetres_to_micrometres(
 			contracts.Millimetres(mesh.vertex_x[indices[index]]),
@@ -297,12 +307,12 @@ support_face_projected_triangle :: proc(
 			contracts.Millimetres(mesh.vertex_y[indices[index]]),
 		)
 		if x_error != .None || y_error != .None {
-			return {}, false
+			return {}, false, false
 		}
 		points[index] = {x, y}
 	}
 	area_2 := polygon.polygon_path_area_2(points[:])
-	if area_2 == 0 {return {}, false}
+	if area_2 == 0 {return {}, true, true}
 	if area_2 < 0 {
 		points[1], points[2] = points[2], points[1]
 	}
@@ -313,7 +323,7 @@ support_face_projected_triangle :: proc(
 			points[index] = source[(rotation+index)%len(points)]
 		}
 	}
-	return points, true
+	return points, true, false
 }
 
 support_face_result_destroy :: proc(
