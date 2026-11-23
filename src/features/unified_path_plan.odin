@@ -1,5 +1,6 @@
 package features
 
+import "base:runtime"
 import "core:slice"
 
 import contracts "../contracts"
@@ -234,6 +235,23 @@ unified_path_plan_build :: proc(
 		layer_move_start := move_write
 		for order_cursor < len(orders) &&
 		    orders[order_cursor].layer_index == u32(layer_index) {
+			// A run of open paths with one priority is chained greedily by nearest endpoint from
+			// the current position; closed paths (perimeters) keep their order.
+			if order_cursor == 0 ||
+			   orders[order_cursor - 1].layer_index != orders[order_cursor].layer_index ||
+			   orders[order_cursor - 1].priority != orders[order_cursor].priority {
+				run_end := order_cursor
+				all_open := true
+				for run_end < len(orders) &&
+				    orders[run_end].layer_index == orders[order_cursor].layer_index &&
+				    orders[run_end].priority == orders[order_cursor].priority {
+					if sources[orders[run_end].source_slice_index].closed {all_open = false}
+					run_end += 1
+				}
+				if all_open && run_end - order_cursor > 2 {
+					unified_path_plan_chain_nearest(orders[order_cursor:run_end], sources, current)
+				}
+			}
 			order := orders[order_cursor]
 			source := sources[order.source_slice_index]
 			emit_ok := unified_path_plan_emit_source(
@@ -555,6 +573,78 @@ unified_path_plan_emit_extrude :: proc(
 	move_write^ += 1
 	result.extrude_move_count += 1
 	return true
+}
+
+// Reorders `run` (open paths) greedily: each next path is the one with the endpoint nearest to
+// the current position, which then moves to that path's other end. Ties go to the earlier order,
+// so the result is deterministic.
+unified_path_plan_chain_nearest :: proc(
+	run: []Unified_Path_Order,
+	sources: []Unified_Path_Source,
+	start: polygon.Polygon_Point,
+) {
+	CELL :: i64(4000)
+	cell_of :: proc(p: polygon.Polygon_Point) -> [2]i64 {
+		x, y := i64(p.x), i64(p.y)
+		return {x / CELL - (1 if x < 0 && x % CELL != 0 else 0), y / CELL - (1 if y < 0 && y % CELL != 0 else 0)}
+	}
+	n := len(run)
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+	original := make([]Unified_Path_Order, n, context.temp_allocator)
+	copy(original, run)
+	used := make([]bool, n, context.temp_allocator)
+	grid := make(map[[2]i64][dynamic]int, n, context.temp_allocator)
+	min_c, max_c := [2]i64{max(i64), max(i64)}, [2]i64{min(i64), min(i64)}
+	for o, i in original {
+		pts := sources[o.source_slice_index].points
+		for p in ([2]polygon.Polygon_Point{pts[0], pts[len(pts) - 1]}) {
+			c := cell_of(p)
+			bucket, found := grid[c]
+			if !found {bucket = make([dynamic]int, 0, 4, context.temp_allocator)}
+			append(&bucket, i)
+			grid[c] = bucket
+			min_c = {min(min_c[0], c[0]), min(min_c[1], c[1])}
+			max_c = {max(max_c[0], c[0]), max(max_c[1], c[1])}
+		}
+	}
+	current := start
+	for k in 0..<n {
+		center := cell_of(current)
+		best := -1
+		best_d: u128
+		max_ring := max(abs(center[0] - min_c[0]), abs(center[0] - max_c[0]), abs(center[1] - min_c[1]), abs(center[1] - max_c[1]))
+		for ring := i64(0); ring <= max_ring; ring += 1 {
+			// Once a candidate exists, a ring whose nearest possible point is farther stops the search.
+			if best >= 0 && ring > 0 {
+				reach := u128((ring - 1) * CELL)
+				if reach * reach > best_d {break}
+			}
+			for dy := -ring; dy <= ring; dy += 1 {
+				for dx := -ring; dx <= ring; dx += 1 {
+					if max(abs(dx), abs(dy)) != ring {continue}
+					bucket, found := grid[{center[0] + dx, center[1] + dy}]
+					if !found {continue}
+					for i in bucket {
+						if used[i] {continue}
+						pts := sources[original[i].source_slice_index].points
+						d := min(path_plan_distance_2(current, pts[0]), path_plan_distance_2(current, pts[len(pts) - 1]))
+						if best < 0 || d < best_d || (d == best_d && i < best) {
+							best = i
+							best_d = d
+						}
+					}
+				}
+			}
+		}
+		used[best] = true
+		run[k] = original[best]
+		pts := sources[original[best].source_slice_index].points
+		if path_plan_distance_2(current, pts[len(pts) - 1]) < path_plan_distance_2(current, pts[0]) {
+			current = pts[0]
+		} else {
+			current = pts[len(pts) - 1]
+		}
+	}
 }
 
 unified_path_order_less :: proc(
