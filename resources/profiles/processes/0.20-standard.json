@@ -49,5 +49,13 @@
   "z_hop_mm": 0.4,
   "wipe_distance_mm": 1.5,
   "overhang_slowdown_enabled": true,
-  "overhang_speed_percent": 50
+  "overhang_speed_percent": 50,
+  "infill_pattern": "gyroid",
+  "monotonic_skin": true,
+  "ironing_enabled": false,
+  "ironing_spacing_mm": 0.15,
+  "ironing_flow_percent": 15,
+  "arc_fitting_enabled": true,
+  "arc_tolerance_mm": 0.02,
+  "variable_walls_enabled": true
 }

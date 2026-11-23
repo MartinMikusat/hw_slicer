@@ -45,6 +45,15 @@ Slice_Run_Options :: struct {
 	overhang_slowdown_enabled:     bool,
 	overhang_speed_percent:        u32,
 	object_name:                   string,
+	// Milestone 3: Infill patterns, monotonic/ironing, G2/G3 arcs, variable walls
+	infill_pattern:                features.Infill_Pattern,
+	monotonic_skin:                bool,
+	ironing_enabled:               bool,
+	ironing_spacing_um:            contracts.Micrometres,
+	ironing_flow_percent:          u32,
+	arc_fitting_enabled:           bool,
+	arc_tolerance_um:              f64,
+	variable_walls_enabled:        bool,
 }
 
 DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
@@ -67,6 +76,14 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	overhang_slowdown_enabled     = true,
 	overhang_speed_percent        = 50,
 	object_name                   = "",
+	infill_pattern                = .Gyroid,
+	monotonic_skin                = true,
+	ironing_enabled               = false,
+	ironing_spacing_um            = 150,
+	ironing_flow_percent          = 15,
+	arc_fitting_enabled           = true,
+	arc_tolerance_um              = 20.0,
+	variable_walls_enabled        = true,
 }
 
 Slice_Run_Result :: struct {
@@ -545,36 +562,75 @@ slice_run_bytes :: proc(
 		return {}, {stage = "solid_paths", detail = fmt.tprintf("solid paths error: %v", sol_err)}
 	}
 	defer features.solid_path_result_destroy(&solids, allocator)
-	record_stage(&result.stages, "solid_paths", t0, u64(len(overlap.masks)), u64(len(solids.paths)))
+	if options.monotonic_skin {
+		features.solid_paths_sort_monotonic(&solids)
+	}
+	max_lh := max(proc_src.first_layer_height, proc_src.layer_height)
+	ironing := features.ironing_paths_generate(
+		overlap,
+		{
+			enabled      = options.ironing_enabled,
+			spacing_um   = options.ironing_spacing_um,
+			flow_percent = options.ironing_flow_percent,
+			line_width   = proc_src.nominal_line_width,
+			min_width_um = max_lh,
+		},
+		allocator,
+	)
+	defer features.ironing_result_destroy(&ironing, allocator)
+	record_stage(&result.stages, "solid_paths", t0, u64(len(solids.paths)), u64(len(ironing.paths)))
 
-	// Stage 7: Sparse infill.
+	// Stage 7: Sparse infill (Rectilinear fast path or general pattern generator).
 	t0 = time.tick_now()
 	density := clamp(options.infill_density_percent, 1.0, 100.0)
 	infill_spacing := contracts.Micrometres(max(i64(proc_src.nominal_line_width), i64(math.round(f64(proc_src.nominal_line_width)*100.0/density))))
 	infill_inset := contracts.Micrometres(i64(proc_src.perimeter_count)*i64(proc_src.nominal_line_width))
-	infill, inf_err := features.infill_generate(
-		active_topo,
-		result.regions,
-		provider,
-		{
-			spacing              = infill_spacing,
-			boundary_inset       = infill_inset,
-			phase                = 0,
-			base_axis            = .Vertical,
-			alternate_each_layer = true,
-			topology_policy      = .Diagnostic_Closed_Regions,
-			join_type            = .Miter,
-			miter_limit          = 2.0,
-			arc_tolerance        = 0.0,
-		},
-		allocator = allocator,
-	)
-	if inf_err != .None {
-		slice_run_result_destroy(&result, allocator)
-		return {}, {stage = "infill", detail = fmt.tprintf("infill error: %v", inf_err)}
+	infill: features.Infill_Result
+	pattern_infill: features.Infill_Pattern_Result
+	if options.infill_pattern == .Rectilinear {
+		inf_err: features.Infill_Error
+		infill, inf_err = features.infill_generate(
+			active_topo,
+			result.regions,
+			provider,
+			{
+				spacing              = infill_spacing,
+				boundary_inset       = infill_inset,
+				phase                = 0,
+				base_axis            = .Vertical,
+				alternate_each_layer = true,
+				topology_policy      = .Diagnostic_Closed_Regions,
+				join_type            = .Miter,
+				miter_limit          = 2.0,
+				arc_tolerance        = 0.0,
+			},
+			allocator = allocator,
+		)
+		if inf_err != .None {
+			slice_run_result_destroy(&result, allocator)
+			return {}, {stage = "infill", detail = fmt.tprintf("infill error: %v", inf_err)}
+		}
+		record_stage(&result.stages, "infill", t0, u64(len(infill.segments)), u64(infill_spacing))
+	} else {
+		infill.layers = make([]features.Infill_Layer, layer_count, allocator)
+		pattern_infill = features.infill_pattern_generate(
+			active_topo,
+			result.regions,
+			skins,
+			result.spine.schedule.layer_z,
+			provider,
+			{
+				pattern        = options.infill_pattern,
+				spacing_um     = infill_spacing,
+				line_width_um  = proc_src.nominal_line_width,
+				boundary_inset = infill_inset,
+			},
+			allocator,
+		)
+		record_stage(&result.stages, "infill", t0, u64(len(pattern_infill.paths)), u64(infill_spacing))
 	}
 	defer features.infill_result_destroy(&infill, allocator)
-	record_stage(&result.stages, "infill", t0, u64(len(infill.segments)), u64(infill_spacing))
+	defer features.infill_pattern_result_destroy(&pattern_infill, allocator)
 
 	// Stage 8: Gap fill (evidence -> samples -> centerlines).
 	t0 = time.tick_now()
@@ -689,8 +745,13 @@ slice_run_bytes :: proc(
 		return {}, {stage = "unified_sources", detail = fmt.tprintf("unified sources error: %v", us_err)}
 	}
 	defer features.unified_path_source_result_destroy(&u_sources, allocator)
-	// Inject adhesion loops (skirt & brim) ahead of perimeters with priority 0.
-	all_sources := make([dynamic]features.Unified_Path_Source, 0, len(u_sources.sources) + len(adhesion.loops), allocator)
+	// Inject adhesion loops (skirt & brim), custom pattern infill, and top-surface ironing passes.
+	all_sources := make(
+		[dynamic]features.Unified_Path_Source,
+		0,
+		len(u_sources.sources) + len(adhesion.loops) + len(pattern_infill.paths) + len(ironing.paths),
+		allocator,
+	)
 	defer delete(all_sources)
 	for loop, li in adhesion.loops {
 		if int(loop.layer_index) >= len(result.spine.schedule.layer_ids) {continue}
@@ -710,6 +771,45 @@ slice_run_bytes :: proc(
 	}
 	for s in u_sources.sources {
 		append(&all_sources, s)
+	}
+	for ip, pi in pattern_infill.paths {
+		if int(ip.layer_index) >= len(result.spine.schedule.layer_ids) {continue}
+		layer_id := result.spine.schedule.layer_ids[ip.layer_index]
+		append(&all_sources, features.Unified_Path_Source{
+			stable_id    = contracts.stable_id_child(layer_id, .Feature, u64(1)<<61 | u64(pi)),
+			layer_id     = layer_id,
+			layer_index  = ip.layer_index,
+			role         = .Sparse_Infill,
+			source_kind  = .Sparse_Infill,
+			source_index = u32(pi),
+			source_order = u64(pi),
+			closed       = false,
+			points       = ip.points,
+			line_widths  = ip.line_widths,
+		})
+	}
+	for ir, ii in ironing.paths {
+		if int(ir.layer_index) >= len(result.spine.schedule.layer_ids) {continue}
+		layer_id := result.spine.schedule.layer_ids[ir.layer_index]
+		append(&all_sources, features.Unified_Path_Source{
+			stable_id    = contracts.stable_id_child(layer_id, .Feature, u64(1)<<60 | u64(ii)),
+			layer_id     = layer_id,
+			layer_index  = ir.layer_index,
+			role         = .Top_Skin,
+			source_kind  = .Solid,
+			source_index = u32(ii),
+			source_order = (u64(1) << 40) + u64(ii),
+			closed       = false,
+			points       = ir.points,
+			line_widths  = ir.line_widths,
+		})
+	}
+	if options.variable_walls_enabled {
+		_ = features.variable_walls_adapt(all_sources[:], {
+			enabled          = true,
+			nominal_width_um = proc_src.nominal_line_width,
+			min_width_um     = max(max_lh, contracts.Micrometres((i64(proc_src.nominal_line_width)*65)/100)),
+		})
 	}
 	plan_err: features.Unified_Path_Plan_Error
 	result.unified_plan, plan_err = features.unified_path_plan_build(
@@ -765,6 +865,15 @@ slice_run_bytes :: proc(
 		return {}, {stage = "motion_plan", detail = fmt.tprintf("motion plan error: %v", mot_err)}
 	}
 	record_stage(&result.stages, "extrusion_and_motion", t0, u64(len(result.motion.operations)), u64(result.extrusion.total_filament_nm/1_000_000))
+
+	// Stage 11b: G2/G3 Circular Arc Fitting.
+	if options.arc_fitting_enabled {
+		t0 = time.tick_now()
+		arc_cfg := features.DEFAULT_ARC_FIT_CONFIG
+		if options.arc_tolerance_um > 0 {arc_cfg.max_chord_error_um = options.arc_tolerance_um}
+		arc_stats := features.motion_plan_fit_arcs(&result.motion, profile.printer, arc_cfg, allocator)
+		record_stage(&result.stages, "arc_fitting", t0, arc_stats.arcs_fitted, arc_stats.segments_replaced)
+	}
 
 	// Stage 12: Klipper G-code emission & validation.
 	t0 = time.tick_now()

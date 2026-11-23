@@ -32,6 +32,15 @@ Process_JSON_Extras :: struct {
 	wipe_distance_mm:              f64,
 	overhang_slowdown_enabled:     bool,
 	overhang_speed_percent:        u32,
+	// Milestone 3
+	infill_pattern:                string, // "rectilinear"|"grid"|"triangles"|"gyroid"|"cubic"|"honeycomb"|"lightning"
+	monotonic_skin:                bool,
+	ironing_enabled:               bool,
+	ironing_spacing_mm:            f64,
+	ironing_flow_percent:          u32,
+	arc_fitting_enabled:           bool,
+	arc_tolerance_mm:              f64,
+	variable_walls_enabled:        bool,
 }
 
 @(private = "file")
@@ -119,6 +128,15 @@ Process_JSON :: struct {
 	wipe_distance_mm:              f64,
 	overhang_slowdown_enabled:     bool,
 	overhang_speed_percent:        u32,
+	// Milestone 3
+	infill_pattern:                string, // "rectilinear"|"grid"|"triangles"|"gyroid"|"cubic"|"honeycomb"|"lightning"
+	monotonic_skin:                bool,
+	ironing_enabled:               bool,
+	ironing_spacing_mm:            f64,
+	ironing_flow_percent:          u32,
+	arc_fitting_enabled:           bool,
+	arc_tolerance_mm:              f64,
+	variable_walls_enabled:        bool,
 }
 
 @(private = "file")
@@ -301,6 +319,8 @@ process_profile_load_json :: proc(
 	}
 	seam_pos := raw.seam_position
 	if len(seam_pos) == 0 {seam_pos = "aligned"}
+	infill_pat := raw.infill_pattern
+	if len(infill_pat) == 0 {infill_pat = "gyroid"}
 	extras := Process_JSON_Extras{
 		infill_density_percent        = raw.infill_density_percent if raw.infill_density_percent > 0 else 15.0,
 		skirt_loops                   = raw.skirt_loops,
@@ -314,6 +334,14 @@ process_profile_load_json :: proc(
 		wipe_distance_mm              = max(0.0, raw.wipe_distance_mm),
 		overhang_slowdown_enabled     = raw.overhang_slowdown_enabled,
 		overhang_speed_percent        = raw.overhang_speed_percent if raw.overhang_speed_percent > 0 else 50,
+		infill_pattern                = infill_pat,
+		monotonic_skin                = raw.monotonic_skin,
+		ironing_enabled               = raw.ironing_enabled,
+		ironing_spacing_mm            = raw.ironing_spacing_mm if raw.ironing_spacing_mm > 0 else 0.15,
+		ironing_flow_percent          = raw.ironing_flow_percent if raw.ironing_flow_percent > 0 else 15,
+		arc_fitting_enabled           = raw.arc_fitting_enabled,
+		arc_tolerance_mm              = raw.arc_tolerance_mm if raw.arc_tolerance_mm > 0 else 0.02,
+		variable_walls_enabled        = raw.variable_walls_enabled,
 	}
 	return p, extras, .None
 }
@@ -360,6 +388,32 @@ profile_apply_override :: proc(
 	}
 	if key == "overhang_slowdown" || key == "overhang_slowdown_enabled" {
 		extras.overhang_slowdown_enabled = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "infill_pattern" {
+		pats := [?]string{"rectilinear", "grid", "triangles", "gyroid", "cubic", "honeycomb", "lightning"}
+		for p in pats {
+			if strings.equal_fold(val, p) {
+				extras.infill_pattern = p
+				return .None
+			}
+		}
+		return .Invalid_Override_Value
+	}
+	if key == "monotonic_skin" {
+		extras.monotonic_skin = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "ironing" || key == "ironing_enabled" {
+		extras.ironing_enabled = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "arc_fitting" || key == "arc_fitting_enabled" {
+		extras.arc_fitting_enabled = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "variable_walls" || key == "variable_walls_enabled" {
+		extras.variable_walls_enabled = strings.equal_fold(val, "true") || val == "1"
 		return .None
 	}
 	num, ok := strconv.parse_f64(val)
@@ -429,6 +483,12 @@ profile_apply_override :: proc(
 		extras.wipe_distance_mm = max(0.0, num)
 	case "overhang_speed", "overhang_speed_percent":
 		extras.overhang_speed_percent = u32(math.round(clamp(num, 10.0, 100.0)))
+	case "ironing_spacing", "ironing_spacing_mm":
+		extras.ironing_spacing_mm = max(0.05, num)
+	case "ironing_flow", "ironing_flow_percent":
+		extras.ironing_flow_percent = u32(math.round(clamp(num, 5.0, 50.0)))
+	case "arc_tolerance", "arc_tolerance_mm":
+		extras.arc_tolerance_mm = max(0.005, num)
 	case:
 		return .Unknown_Override
 	}

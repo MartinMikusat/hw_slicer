@@ -260,6 +260,22 @@ main :: proc() {
 	case "nearest":  run_opts.seam_strategy = .Nearest
 	case:            run_opts.seam_strategy = .Aligned
 	}
+	switch extras.infill_pattern {
+	case "rectilinear": run_opts.infill_pattern = .Rectilinear
+	case "grid":        run_opts.infill_pattern = .Grid
+	case "triangles":   run_opts.infill_pattern = .Triangles
+	case "cubic":       run_opts.infill_pattern = .Cubic
+	case "honeycomb":   run_opts.infill_pattern = .Honeycomb
+	case "lightning":   run_opts.infill_pattern = .Lightning
+	case:               run_opts.infill_pattern = .Gyroid
+	}
+	run_opts.monotonic_skin = extras.monotonic_skin
+	run_opts.ironing_enabled = extras.ironing_enabled
+	run_opts.ironing_spacing_um = contracts.Micrometres(i64(math.round(extras.ironing_spacing_mm*1000.0)))
+	run_opts.ironing_flow_percent = extras.ironing_flow_percent
+	run_opts.arc_fitting_enabled = extras.arc_fitting_enabled
+	run_opts.arc_tolerance_um = extras.arc_tolerance_mm * 1000.0
+	run_opts.variable_walls_enabled = extras.variable_walls_enabled
 	raw_stem := strings.trim_suffix(filepath.base(opts.input_path), filepath.ext(opts.input_path))
 	run_opts.object_name = strings.clone(raw_stem, context.temp_allocator)
 
