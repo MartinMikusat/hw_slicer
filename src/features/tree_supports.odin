@@ -51,6 +51,8 @@ Tree_Branch :: struct {
 	y:           f64,
 	radius:      f64,
 	tip_layers:  u32, // layers remaining in interface zone at top of branch
+	paths:       [dynamic]int, // indices of the rings this branch (and branches merged into it) emitted
+	dead:        bool,
 }
 
 // Generates organic/tree support rings from overhang tips routed top-down to the build plate.
@@ -148,7 +150,7 @@ tree_supports_generate :: proc(
 	// Step 2: Top-down branch propagation, obstacle avoidance, and merging.
 	active := make([dynamic]Tree_Branch, 0, 64, context.temp_allocator)
 	out_paths := make([dynamic]Tree_Support_Path, 0, 256, allocator)
-	total_nodes: u64
+	dead_paths := make([dynamic]bool, 0, 256, context.temp_allocator)
 
 	for li := layer_count - 1; li >= 0; li -= 1 {
 		// Spawn new branches for tips detected at li + 1 (so tips terminate 1 layer below the overhang).
@@ -168,6 +170,7 @@ tree_supports_generate :: proc(
 						y          = tip[1],
 						radius     = tip_r,
 						tip_layers = iface_layers,
+						paths      = make([dynamic]int, 0, 8, context.temp_allocator),
 					})
 				}
 			}
@@ -225,6 +228,7 @@ tree_supports_generate :: proc(
 					if other.tip_layers > acc.tip_layers {
 						acc.tip_layers = other.tip_layers
 					}
+					append(&acc.paths, ..other.paths[:])
 				}
 			}
 			acc.x = wx / w_sum
@@ -234,59 +238,152 @@ tree_supports_generate :: proc(
 		clear(&active)
 		for m in merged {append(&active, m)}
 
-		// Emit hollow 16-gon ring per active branch on layer `li` (if inside bed and clear of model).
-		for &b in active {
+		// Emit hollow 16-gon ring per active branch on layer `li`. A branch that cannot keep the
+		// clearance, even after moving away from the model by up to one branch-angle step, or that
+		// leaves the bed, ends here and its rings above are removed: a trunk with a gap would leave
+		// those rings resting on nothing.
+		min_clear := f64(i64(lw)) + keep_out
+		Emitted_Ring :: struct {
+			branch: int,
+			x, y:   f64,
+			radius: f64,
+		}
+		emitted := make([dynamic]Emitted_Ring, 0, len(active), context.temp_allocator)
+		blocked := make([dynamic]int, 0, 8, context.temp_allocator)
+		for &b, branch_index in active {
 			is_iface := b.tip_layers > 0
 			if b.tip_layers > 0 {b.tip_layers -= 1}
 
-			bx_i := i64(math.round(b.x))
-			by_i := i64(math.round(b.y))
-			// Skip emitting if still inside the model interior.
-			if bridge_polygon_contains_twice(cur_model, bx_i*2, by_i*2) {
-				continue
+			inside := bridge_polygon_contains_twice(cur_model, i64(math.round(b.x))*2, i64(math.round(b.y))*2)
+			distance, near_x, near_y := tree_support_nearest_boundary(cur_model, b.x, b.y)
+			if inside || distance < min_clear {
+				// Move from the nearest boundary point outward until the clearance holds.
+				dx, dy := b.x - near_x, b.y - near_y
+				if inside {dx, dy = -dx, -dy}
+				dlen := math.hypot(dx, dy)
+				target_x, target_y := b.x, b.y
+				if dlen > 1e-9 {
+					target_x = near_x + dx / dlen * min_clear * 1.01
+					target_y = near_y + dy / dlen * min_clear * 1.01
+				}
+				// A new branch has no rings yet, so it may move the full clearance off the overhang
+				// edge where its tip was found; later layers move at most one branch-angle step.
+				allowed_move := max_step if len(b.paths) > 0 else max(max_step, min_clear * 1.01)
+				if math.hypot(target_x - b.x, target_y - b.y) <= allowed_move {
+					b.x, b.y = target_x, target_y
+					inside = bridge_polygon_contains_twice(cur_model, i64(math.round(b.x))*2, i64(math.round(b.y))*2)
+					distance, _, _ = tree_support_nearest_boundary(cur_model, b.x, b.y)
+				}
 			}
-			// A ring whose radius is below the centre's distance to the model, less the keep-out,
-			// cannot touch the model because the centre lies outside it.
-			ring_r := min(b.radius, tree_support_boundary_distance(cur_model, b.x, b.y) - keep_out)
-			if ring_r < f64(i64(lw)) {
-				continue
-			}
+			ring_r := min(b.radius, distance - keep_out)
+			fits := !inside && ring_r >= f64(i64(lw))
 
 			sides :: 16
-			pts := make([]polygon.Polygon_Point, sides, allocator)
-			in_bounds := true
-			for s in 0..<sides {
-				ang := (2.0 * math.PI * f64(s)) / f64(sides)
-				px := contracts.Micrometres(i64(math.round(b.x + ring_r * math.cos(ang))))
-				py := contracts.Micrometres(i64(math.round(b.y + ring_r * math.sin(ang))))
-				if i64(px) < i64(config.bed_min_x) || i64(px) > i64(config.bed_max_x) ||
-				   i64(py) < i64(config.bed_min_y) || i64(py) > i64(config.bed_max_y) {
-					in_bounds = false
-					break
+			pts: []polygon.Polygon_Point
+			if fits {
+				pts = make([]polygon.Polygon_Point, sides, allocator)
+				for s in 0..<sides {
+					ang := (2.0 * math.PI * f64(s)) / f64(sides)
+					px := contracts.Micrometres(i64(math.round(b.x + ring_r * math.cos(ang))))
+					py := contracts.Micrometres(i64(math.round(b.y + ring_r * math.sin(ang))))
+					if i64(px) < i64(config.bed_min_x) || i64(px) > i64(config.bed_max_x) ||
+					   i64(py) < i64(config.bed_min_y) || i64(py) > i64(config.bed_max_y) {
+						fits = false
+						break
+					}
+					pts[s] = {x = px, y = py}
 				}
-				pts[s] = {x = px, y = py}
 			}
-			if !in_bounds {
+			if !fits {
 				delete(pts, allocator)
+				append(&blocked, branch_index)
 				continue
 			}
+			append(&emitted, Emitted_Ring{branch_index, b.x, b.y, ring_r})
 			ws := make([]contracts.Micrometres, sides, allocator)
 			for s in 0..<sides {ws[s] = lw}
+			append(&b.paths, len(out_paths))
 			append(&out_paths, Tree_Support_Path{
 				layer_index  = u32(li),
 				is_interface = is_iface,
 				points       = pts,
 				line_widths  = ws,
 			})
-			total_nodes += 1
+			append(&dead_paths, false)
+		}
+		// A blocked branch ends. If a ring emitted on this layer overlaps its footprint, that ring
+		// carries it: its rings join that branch and are removed only if that branch dies later.
+		// Otherwise its rings would float and are removed now.
+		for branch_index in blocked {
+			b := &active[branch_index]
+			carrier := -1
+			for ring in emitted {
+				if math.hypot(b.x - ring.x, b.y - ring.y) <= b.radius + ring.radius {
+					carrier = ring.branch
+					break
+				}
+			}
+			if carrier >= 0 {
+				append(&active[carrier].paths, ..b.paths[:])
+			} else {
+				for index in b.paths {dead_paths[index] = true}
+			}
+			b.dead = true
+		}
+		for i := len(active) - 1; i >= 0; i -= 1 {
+			if active[i].dead {unordered_remove(&active, i)}
 		}
 	}
+
+	// Keep only rings of branches that reached the build plate.
+	kept := 0
+	for path, index in out_paths {
+		if dead_paths[index] {
+			delete(path.points, allocator)
+			delete(path.line_widths, allocator)
+			continue
+		}
+		out_paths[kept] = path
+		kept += 1
+	}
+	resize(&out_paths, kept)
+	total_nodes := u64(kept)
 
 	return Tree_Support_Result{
 		paths        = out_paths[:],
 		tip_count    = total_tips,
 		branch_nodes = total_nodes,
 	}
+}
+
+// The distance from (x, y) to the nearest edge of any path in `set` and that nearest point, or
+// +Inf for an empty set.
+@(private = "file")
+tree_support_nearest_boundary :: proc(set: polygon.Polygon_Set, x, y: f64) -> (distance, near_x, near_y: f64) {
+	best_sq := math.INF_F64
+	near_x, near_y = x, y
+	for path in set.paths {
+		n := int(path.count)
+		if n < 2 || path.offset+path.count > u64(len(set.points)) {continue}
+		start := int(path.offset)
+		prev := set.points[start + n - 1]
+		for i in 0..<n {
+			cur := set.points[start + i]
+			ax, ay := f64(i64(prev.x)), f64(i64(prev.y))
+			dx, dy := f64(i64(cur.x)) - ax, f64(i64(cur.y)) - ay
+			len_sq := dx*dx + dy*dy
+			t := 0.0
+			if len_sq > 0 {t = clamp(((x - ax)*dx + (y - ay)*dy) / len_sq, 0.0, 1.0)}
+			px, py := ax + t*dx, ay + t*dy
+			d_sq := (x - px)*(x - px) + (y - py)*(y - py)
+			if d_sq < best_sq {
+				best_sq = d_sq
+				near_x, near_y = px, py
+			}
+			prev = cur
+		}
+	}
+	return math.sqrt(best_sq), near_x, near_y
 }
 
 // The distance from (x, y) to the nearest edge of any path in `set`, or +Inf for an empty set.

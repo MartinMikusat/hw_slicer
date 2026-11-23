@@ -234,10 +234,10 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
 
 ### Medium Severity (Pass 4)
 
-### [CR-34] Tree Support Trunks Have Gaps
+### [CR-34] Tree Support Trunks Have Gaps — **RESOLVED**
 - **Location:** `src/features/tree_supports.odin`
 - **Issue:** A branch whose centre is inside the model, or whose ring no longer fits the clearance, emits nothing on that layer but continues downward. Its ring sections above the gap rest on nothing.
-- **Fix:** Route branches around the model before they enter it, or end a branch where it meets the model (allowed only with `support_mode = everywhere`) and remove its upper sections when it cannot reach the plate.
+- **Resolution:** A branch that cannot keep the clearance first moves away from the nearest model boundary: by up to one branch-angle step per layer, or by the full clearance on a new branch's first layer, since a tip starts on the overhang edge. If it still does not fit, or its ring would leave the bed, the branch ends. A ring emitted on the same layer that overlaps the blocked branch's footprint carries it, and its rings are then removed only if that carrier later dies. Without a carrier its rings are removed at once. Measured with a harness over every layer: no ring lacks an overlapping ring below on Benchy, the Stanford Bunny, the all-in-one model, or the T-shape. Interface rings directly under overhangs rose from 1 to 81 (Benchy), 25 to 324 (Bunny), and 67 to 199 (all-in-one): the old code usually could not place a new tip's ring at the overhang edge, so supports started below the overhang. Redundant trunk sections under carrying rings are gone (Benchy 3,999 → 2,426 rings above the first layer).
 
 ### [CR-35] Inconsistent Triangle Winding Is Not Repaired — **RESOLVED**
 - **Location:** mesh audit and `src/repair/mesh_repair.odin`
