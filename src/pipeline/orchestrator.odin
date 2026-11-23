@@ -57,6 +57,8 @@ Slice_Run_Options :: struct {
 	// Milestone 4: Tree supports & Adaptive layer height
 	support_style_tree:            bool,
 	adaptive_layers:               bool,
+	// Milestone 5: Pure-Odin polygon engine toggle
+	use_native_polygon:            bool,
 }
 
 DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
@@ -372,7 +374,7 @@ slice_run_decoded_mesh :: proc(
 ) -> (result: Slice_Run_Result, err: Slice_Run_Error) {
 	t_total := time.tick_now()
 	result.stages = make([dynamic]Stage_Trace, 0, 20, allocator)
-	provider := polygon.CLIPPER2_PROVIDER
+	provider := polygon.NATIVE_PROVIDER if options.use_native_polygon else polygon.CLIPPER2_PROVIDER
 	process := profile.process
 	proc_src := process.source
 

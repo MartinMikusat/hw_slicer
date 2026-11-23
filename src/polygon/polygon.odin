@@ -97,6 +97,13 @@ CLIPPER2_PROVIDER :: Polygon_Provider{
 	offset = clipper2_offset,
 }
 
+NATIVE_PROVIDER :: Polygon_Provider{
+	name = "OdinPolygon",
+	version = {1, 0, 0},
+	boolean = odin_boolean,
+	offset = odin_offset,
+}
+
 polygon_set_destroy :: proc(
 	set: ^Polygon_Set,
 	allocator := context.allocator,
