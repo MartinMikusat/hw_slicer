@@ -775,10 +775,10 @@ ui_build_controls :: proc(
 	}
 	if ui.design_active && ui.junction_selected {
 		card := ui_junction_card_rect(ui)
-		ui_add_control(ui, "junction card", "selected bevel or fillet", card, .Modal_Surface)
+		ui_add_control(ui, "junction card", "selected junction", card, .Modal_Surface)
 		ui_add_control(ui, "junction kind", "toggle fillet or bevel", {card.x+10, card.y+8, 62, 22}, .Junction_Toggle_Kind, ui.junction_can_toggle, 1, ui.junction_is_fillet)
-		ui_add_control(ui, "junction close", "deselect bevel or fillet", {card.x+card.w-28, card.y+8, 20, 22}, .Junction_Close)
-		ui_add_control(ui, "junction size", "adjust bevel or fillet radius", ui_junction_slider_rect(ui), .Junction_Size)
+		ui_add_control(ui, "junction close", "deselect junction", {card.x+card.w-28, card.y+8, 20, 22}, .Junction_Close)
+		ui_add_control(ui, "junction size", "adjust junction size", ui_junction_slider_rect(ui), .Junction_Size)
 	}
 	if ui.stage_index == 0 && !ui.design_active && (!compact || ui.panel == .Section) {
 		section_rect := UI_Rect{20, 138, 204, 30}
@@ -1987,7 +1987,7 @@ ui_draw_labels :: proc(
 		j := design_state.evaluated.junctions[design_state.selected_junction]
 		lower_name := design_state.evaluated.objects[j.lower_index].name
 		upper_name := design_state.evaluated.objects[j.upper_index].name
-		kind_text := "Corner" if j.kind == .Corner_Radius else ("Fillet" if j.is_fillet else "Bevel")
+		kind_text := design_corner_label(j) if j.kind == .Corner_Radius else ("Fillet" if j.is_fillet else "Bevel")
 		ui_draw_text(painter, painter.font, ui, kind_text, ui_control_rect(ui, .Junction_Toggle_Kind), ui_control_ink(ui, .Junction_Toggle_Kind), 0, .Center)
 		title := fmt.tprintf("%s · radius", lower_name) if j.kind == .Corner_Radius else fmt.tprintf("%s → %s", lower_name, upper_name)
 		ui_draw_text(painter, painter.font, ui, title, {card.x+78, card.y+8, card.w-110, 22}, theme.text, 0)

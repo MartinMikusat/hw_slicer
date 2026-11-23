@@ -102,7 +102,8 @@ from the bed centre.
 | `x`, `y` | optional, 0 | optional, 0 | length, centre |
 | `z` | optional, 0 | optional, 0 | length, base Z height |
 | `width`, `depth` | required | | length |
-| `radius` | optional, 0 | | length, corner fillet radius |
+| `radius` | optional, 0 | | length, default radius for all four corners |
+| `radius_south`, `radius_north` | optional, `radius` | | length, radius of both corners at the lower or higher Y end |
 | `diameter` | | required | length, base outer diameter |
 | `top_diameter` | | required on `cone`, optional otherwise | length, top outer diameter (defaults to `diameter`) |
 | `inner_diameter` | | required on `tube`, optional otherwise | length, central bore diameter (defaults to 0) |
@@ -113,6 +114,10 @@ from the bed centre.
 | `speed` | optional | optional | scalar, mm/s |
 | `acceleration` | optional | optional | scalar, mm/s² |
 | `fan` | optional | optional | scalar, percent |
+
+Each box corner radius must be between zero and half the smaller of `width`
+and `depth`. Zero produces square corners. When either end override is
+present, each rounded end has a separate radius slider in the viewport.
 
 Each layer prints concentric loops from the outside in. When `inner_diameter > 0`,
 floor layers fill the annular ring down to `inner_diameter`, and wall layers print

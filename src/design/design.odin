@@ -67,9 +67,15 @@ Junction_Kind :: enum u8 {
 	Corner_Radius, // rounded XY corner radius on a box (`radius = ...`)
 }
 
+Box_End :: enum u8 {
+	South,
+	North,
+}
+
 Junction :: struct {
 	is_fillet:   bool,
 	kind:        Junction_Kind,
+	corner_end:  Maybe(Box_End),
 	lower_index: int,
 	upper_index: int,
 	size:        f64,
@@ -86,7 +92,7 @@ Object :: struct {
 	size:                 [2]f64, // box width and depth; radial base diameter in both
 	top_diameter:         f64,    // radial top diameter (mm); equals size.x when untapered
 	inner_diameter:       f64,    // radial inner bore diameter (mm); 0 when solid
-	radius:               f64,    // box corner fillet radius (mm)
+	corner_radii:         [Box_End]f64,
 	sides:                int,    // polygon side count (>= 3); 0 for smooth circular curves
 	height:               f64,
 	walls:                int,
@@ -103,7 +109,7 @@ Object :: struct {
 	base_junction:            i16, // index into Design.junctions, or -1
 	top_fillet_junction:      i16, // index into Design.junctions, or -1
 	top_morph_junction:       i16, // index into Design.junctions, or -1
-	corner_junction:          i16, // index into Design.junctions for box corner radius, or -1
+	corner_junctions:         [Box_End]i16,
 	settings:                 Feature_Settings,
 	given:                bit_set[Feature_Setting], // settings the feature sets itself
 }
@@ -173,7 +179,12 @@ set_junction_size :: proc(d: ^Design, idx: int, new_size: f64) -> bool {
 		lower.top_morph_transition = tr
 		lower.top_morph_height = s if active else 0
 	case .Corner_Radius:
-		lower.radius = s if active else 0
+		radius := s if active else 0
+		if end, split := j.corner_end.?; split {
+			lower.corner_radii[end] = radius
+		} else {
+			lower.corner_radii = {.South = radius, .North = radius}
+		}
 	}
 	return true
 }
@@ -604,6 +615,8 @@ Object_Key :: enum u8 {
 	Width,
 	Depth,
 	Radius,
+	Radius_South,
+	Radius_North,
 	Diameter,
 	Top_Diameter,
 	Inner_Diameter,
@@ -624,6 +637,8 @@ OBJECT_KEY_NAMES := [Object_Key]string {
 	.Width          = "width",
 	.Depth          = "depth",
 	.Radius         = "radius",
+	.Radius_South   = "radius_south",
+	.Radius_North   = "radius_north",
 	.Diameter       = "diameter",
 	.Top_Diameter   = "top_diameter",
 	.Inner_Diameter = "inner_diameter",
@@ -649,7 +664,7 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	allowed := bit_set[Object_Key]{.X, .Y, .Z, .Height, .Walls, .Floor, .Speed, .Acceleration, .Fan}
 	required := bit_set[Object_Key]{.Height, .Walls}
 	if shape == .Box {
-		allowed += {.Width, .Depth, .Radius}
+		allowed += {.Width, .Depth, .Radius, .Radius_South, .Radius_North}
 		required += {.Width, .Depth}
 	} else {
 		allowed += {.Diameter, .Top_Diameter, .Inner_Diameter, .Sides}
@@ -687,7 +702,6 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	}
 	object := Object{
 		shape    = shape,
-		name     = strings.clone(object_name, p.allocator) if len(object_name) > 0 else "",
 		line     = head.line,
 		center   = {values[.X].amount, values[.Y].amount},
 		z        = values[.Z].amount,
@@ -697,7 +711,7 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 		base_junction       = -1,
 		top_fillet_junction = -1,
 		top_morph_junction  = -1,
-		corner_junction     = -1,
+		corner_junctions    = {.South = -1, .North = -1},
 		settings            = {values[.Speed].amount, values[.Acceleration].amount, values[.Fan].amount},
 	}
 	if .Speed in seen {object.given += {.Speed}}
@@ -708,11 +722,6 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	if shape == .Box {
 		object.size = {values[.Width].amount, values[.Depth].amount}
 		object.top_diameter = object.size.x
-		object.radius = values[.Radius].amount
-		if object.radius < -EPSILON {return fail(p, head.line, "radius must not be negative, got %.3f mm", object.radius)}
-		if object.radius > min(object.size.x, object.size.y)*0.5+EPSILON {
-			return fail(p, head.line, "radius %.3f mm exceeds half the box size", object.radius)
-		}
 	} else {
 		dia := values[.Diameter].amount
 		top_dia := values[.Top_Diameter].amount if .Top_Diameter in seen else dia
@@ -735,21 +744,58 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	if object.floor < 0 {return fail(p, head.line, "floor must not be negative, got %d", object.floor)}
 	if object.size.x <= 0 || object.size.y <= 0 || object.height <= 0 {return fail(p, head.line, "%s sizes must be positive", head.text)}
 	if len(p.design.objects) >= MAX_OBJECTS {return fail(p, head.line, "more than %d objects", MAX_OBJECTS)}
-	obj_idx := len(p.design.objects)
 	if object.shape == .Box {
-		j_idx := i16(len(p.design.junctions))
-		object.corner_junction = j_idx
-		append(&p.design.junctions, Junction{
-			is_fillet   = true,
-			kind        = .Corner_Radius,
-			lower_index = obj_idx,
-			upper_index = obj_idx,
-			size        = object.radius,
-			max_size    = min(object.size.x, object.size.y)*0.5,
-			line        = head.line,
-		})
+		resolve_box_corners(p, &object, values, seen) or_return
 	}
+	if len(object_name) > 0 {object.name = strings.clone(object_name, p.allocator)}
 	append(&p.design.objects, object)
+	return true
+}
+
+@(private)
+resolve_box_corners :: proc(
+	p: ^Parser,
+	object: ^Object,
+	values: [Object_Key]Value,
+	seen: bit_set[Object_Key],
+) -> bool {
+	max_radius := min(object.size.x, object.size.y)*0.5
+	for key in ([?]Object_Key{.Radius, .Radius_South, .Radius_North}) {
+		if key not_in seen {continue}
+		radius := values[key].amount
+		if math.is_nan(radius) || math.is_inf(radius) || radius < -EPSILON || radius > max_radius+EPSILON {
+			return fail(p, object.line, "%s %.3f mm must be between 0 and %.3f mm",
+				OBJECT_KEY_NAMES[key], radius, max_radius)
+		}
+	}
+	shared_radius := clamp(values[.Radius].amount, 0, max_radius)
+	object.corner_radii = {.South = shared_radius, .North = shared_radius}
+	object_index := len(p.design.objects)
+	junction := Junction{
+		is_fillet = true,
+		kind = .Corner_Radius,
+		lower_index = object_index,
+		upper_index = object_index,
+		size = shared_radius,
+		max_size = max_radius,
+		line = object.line,
+	}
+	if .Radius_South not_in seen && .Radius_North not_in seen {
+		junction_index := i16(len(p.design.junctions))
+		object.corner_junctions = {.South = junction_index, .North = junction_index}
+		append(&p.design.junctions, junction)
+		return true
+	}
+	for end in Box_End {
+		key := .Radius_South if end == .South else Object_Key.Radius_North
+		if key in seen {
+			object.corner_radii[end] = clamp(values[key].amount, 0, max_radius)
+		}
+		junction.corner_end = end
+		junction.size = object.corner_radii[end]
+		object.corner_junctions[end] = i16(len(p.design.junctions))
+		append(&p.design.junctions, junction)
+	}
 	return true
 }
 

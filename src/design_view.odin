@@ -106,6 +106,16 @@ design_rate :: proc(s: ^Design_State) -> f64 {
 	return rates[s.rate_index]
 }
 
+design_corner_label :: proc(junction: design.Junction) -> string {
+	if end, split := junction.corner_end.?; split {
+		switch end {
+		case .South: return "South"
+		case .North: return "North"
+		}
+	}
+	return "Corner"
+}
+
 design_duration :: proc(s: ^Design_State) -> f64 {
 	return s.toolpath.duration
 }

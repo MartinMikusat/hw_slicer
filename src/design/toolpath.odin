@@ -259,22 +259,13 @@ emit_loop :: proc(g: ^Generator, object: Object, inset: f64) -> bool {
 	switch object.shape {
 	case .Box:
 		flare := object_base_flare(object, g.z, g.thickness)
-		r_base := clamp(object.radius, 0, min(object.size.x, object.size.y)*0.5)
-		r_outer := (r_base+flare) if r_base > EPSILON else 0
-		r_corner := clamp(r_outer-inset, 0, min(half.x, half.y))
-		if r_corner <= CHORD_TOLERANCE {
-			corners := [5][2]f64{
-				{c.x-half.x, c.y-half.y},
-				{c.x+half.x, c.y-half.y},
-				{c.x+half.x, c.y+half.y},
-				{c.x-half.x, c.y+half.y},
-				{c.x-half.x, c.y-half.y},
-			}
-			travel(g, corners[0])
-			for corner in corners[1:] {extrude(g, corner)}
-		} else {
-			emit_rounded_box_loop(g, c, half, r_corner, object.corner_junction)
+		radii: [Box_End]f64
+		for end in Box_End {
+			base := object.corner_radii[end]
+			radius := min(base+flare-inset, half.x, half.y)
+			if base > EPSILON && radius > CHORD_TOLERANCE {radii[end] = radius}
 		}
+		emit_box_loop(g, c, half, radii, object.corner_junctions)
 	case .Cylinder, .Tube, .Cone, .Polygon:
 		emit_radial_loop(g, object, half.x)
 	}
@@ -282,29 +273,26 @@ emit_loop :: proc(g: ^Generator, object: Object, inset: f64) -> bool {
 }
 
 @(private)
-emit_rounded_box_loop :: proc(g: ^Generator, c, half: [2]f64, r: f64, corner_junction: i16) {
-	hx := max(0, half.x-r)
-	hy := max(0, half.y-r)
-	prev_j := g.junction
-	arc_j := corner_junction if (prev_j < 0 && corner_junction >= 0) else prev_j
-
-	travel(g, {c.x-hx, c.y-half.y})
-	if hx > EPSILON {extrude(g, {c.x+hx, c.y-half.y})}
-	g.junction = arc_j
-	extrude_arc(g, {c.x+half.x, c.y-hy}, {c.x+hx, c.y-hy}, .CCW)
-	g.junction = prev_j
-	if hy > EPSILON {extrude(g, {c.x+half.x, c.y+hy})}
-	g.junction = arc_j
-	extrude_arc(g, {c.x+hx, c.y+half.y}, {c.x+hx, c.y+hy}, .CCW)
-	g.junction = prev_j
-	if hx > EPSILON {extrude(g, {c.x-hx, c.y+half.y})}
-	g.junction = arc_j
-	extrude_arc(g, {c.x-half.x, c.y+hy}, {c.x-hx, c.y+hy}, .CCW)
-	g.junction = prev_j
-	if hy > EPSILON {extrude(g, {c.x-half.x, c.y-hy})}
-	g.junction = arc_j
-	extrude_arc(g, {c.x-hx, c.y-half.y}, {c.x-hx, c.y-hy}, .CCW)
-	g.junction = prev_j
+emit_box_loop :: proc(g: ^Generator, c, half: [2]f64, radii: [Box_End]f64, junctions: [Box_End]i16) {
+	flare_junction := g.junction
+	travel(g, c+{radii[.South]-half.x, -half.y})
+	for sign in ([?][2]f64{{1, -1}, {1, 1}, {-1, 1}, {-1, -1}}) {
+		end := .South if sign.y < 0 else Box_End.North
+		radius := radii[end]
+		corner := c+sign*half
+		if radius == 0 {
+			extrude(g, corner)
+			continue
+		}
+		center := c+sign*(half-radius)
+		entry := [2]f64{center.x, corner.y}
+		exit := [2]f64{corner.x, center.y}
+		if sign.x == sign.y {entry, exit = exit, entry}
+		extrude(g, entry)
+		if flare_junction < 0 {g.junction = junctions[end]}
+		extrude_arc(g, exit, center, .CCW)
+		g.junction = flare_junction
+	}
 }
 
 @(private)

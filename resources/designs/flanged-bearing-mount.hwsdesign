@@ -34,8 +34,16 @@ let standoff_ne = tube(x =  bolt_offset, y =  bolt_offset, z = base_height, diam
 let standoff_nw = tube(x = -bolt_offset, y =  bolt_offset, z = base_height, diameter = 16mm, inner_diameter = 6.4mm, height = boss_height, walls = wall_lines, floor = floor_layers, speed = 45, acceleration = 1000, fan = 90)
 
 # Stage 2 (z = 2.4mm): two side alignment lugs with filleted corners
-let lug_west = box(x = -38mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
-let lug_east = box(x =  38mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm, radius = 3mm, height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85)
+let lug_west = box(
+    x = -38mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm,
+    radius_south = 2mm, radius_north = 5mm,
+    height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85
+)
+let lug_east = box(
+    x = 38mm, y = 0mm, z = base_height, width = 10mm, depth = 22mm,
+    radius_south = 2mm, radius_north = 5mm,
+    height = 4.0mm, walls = wall_lines, floor = floor_layers, speed = 50, acceleration = 1200, fan = 85
+)
 
 # Stage 2 (z = 2.4..10.4mm): central tapered conical pedestal with bearing bore
 let pedestal = cone(
