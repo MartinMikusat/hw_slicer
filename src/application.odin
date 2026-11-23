@@ -755,6 +755,15 @@ application_shutdown :: proc "c" () {
 application_frame :: proc "c" (width, height, scale: f64) {
 	context = app_context()
 	if width <= 0 || height <= 0 {return}
+	profile_timing: Profile_Drag_Timing
+	profile_timing_ptr: ^Profile_Drag_Timing
+	profile_frame_start: time.Tick
+	if app.design.editor.dragging {
+		if journal := devlog.global(); journal != nil && journal.config.profile == .Dev {
+			profile_timing_ptr = &profile_timing
+			profile_frame_start = time.tick_now()
+		}
+	}
 	if width != app.last_width || height != app.last_height ||
 	   scale != app.last_scale {
 		app.last_width = width
@@ -770,7 +779,7 @@ application_frame :: proc "c" (width, height, scale: f64) {
 	}
 	app_animate_camera()
 	app_poll_design()
-	profile_editor_update_drag()
+	profile_update := profile_editor_update_drag(profile_timing_ptr)
 	if app.design.dirty {
 		app.design.dirty = false
 		_ = app_rebuild_design_mesh()
@@ -793,7 +802,13 @@ application_frame :: proc "c" (width, height, scale: f64) {
 		}
 		app.last_render_tick = t0
 		result := renderer_draw_application()
-		draw_ms := time.duration_seconds(time.tick_since(t0))*1000.0
+		draw_end := time.tick_now()
+		draw_duration := time.tick_diff(t0, draw_end)
+		draw_ms := time.duration_seconds(draw_duration)*1000.0
+		if profile_timing_ptr != nil && profile_update != .None {
+			profile_timing[.Frame] = time.tick_diff(profile_frame_start, draw_end)
+			profile_timing[.Draw] = draw_duration
+		}
 		app.ui.frame_ms = draw_ms if app.ui.frame_ms <= 0 else (app.ui.frame_ms*0.8+draw_ms*0.2)
 		app.ui.render_tris = app.renderer.last_triangles
 		app.ui.render_draws = app.renderer.last_draw_calls
@@ -851,6 +866,10 @@ application_frame :: proc "c" (width, height, scale: f64) {
 				)
 			}
 		}
+	}
+	if profile_timing_ptr != nil {
+		profile_drag_trace_frame(&app.design.editor.trace, profile_update, profile_timing_ptr,
+		                         !app.design.editor.dragging)
 	}
 	free_all(context.temp_allocator)
 }

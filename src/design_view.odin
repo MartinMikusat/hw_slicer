@@ -198,7 +198,8 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	return true
 }
 
-app_install_design_preview :: proc(candidate: ^design.Design, keep_time: bool, previous: ^design.Design = nil) -> bool {
+app_install_design_preview :: proc(candidate: ^design.Design, keep_time: bool,
+								   previous: ^design.Design = nil, timing: ^Profile_Drag_Timing = nil) -> bool {
 	t_gen0 := time.tick_now()
 	toolpath := design.generate(candidate)
 	t_gen1 := time.tick_now()
@@ -207,7 +208,14 @@ app_install_design_preview :: proc(candidate: ^design.Design, keep_time: bool, p
 	layers := make([dynamic]Design_Layer, 0, toolpath.layers)
 	arc_count, bounds := design_beads(&toolpath, &beads, &gpu_beads, &layers)
 	t_beads1 := time.tick_now()
-	if !renderer_set_beads(&app.renderer, gpu_beads[:]) {
+	uploaded := renderer_set_beads(&app.renderer, gpu_beads[:])
+	t_up1 := time.tick_now()
+	if timing != nil {
+		timing[.Generate] = time.tick_diff(t_gen0, t_gen1)
+		timing[.Beads] = time.tick_diff(t_gen1, t_beads1)
+		timing[.Upload] = time.tick_diff(t_beads1, t_up1)
+	}
+	if !uploaded {
 		delete(beads)
 		delete(gpu_beads)
 		delete(layers)
@@ -216,7 +224,6 @@ app_install_design_preview :: proc(candidate: ^design.Design, keep_time: bool, p
 		app_set_status("DESIGN FAILED: METAL BUFFER", true)
 		return false
 	}
-	t_up1 := time.tick_now()
 	if bench_frames_target > 0 {
 		fmt.printf("TRACE: generate=%.2f ms  beads=%.2f ms  upload=%.2f ms  total=%.2f ms\n",
 			time.duration_seconds(time.tick_diff(t_gen0, t_gen1))*1000.0,

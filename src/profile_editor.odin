@@ -32,6 +32,7 @@ Profile_Editor :: struct {
 	scale: f64,
 	press: [2]f64,
 	drag: Profile_Drag,
+	trace: Profile_Drag_Trace,
 }
 
 profile_first_object :: proc(s: ^Design_State) -> int {
@@ -172,7 +173,7 @@ profile_editor_cancel_drag :: proc() {
 	app.needs_redraw = true
 }
 
-profile_editor_update_drag :: proc() {
+profile_editor_update_drag :: proc(timing: ^Profile_Drag_Timing) -> (update: Profile_Drag_Update) {
 	s := &app.design
 	e := &s.editor
 	if e.drag.end == .Cancelled {
@@ -187,10 +188,11 @@ profile_editor_update_drag :: proc() {
 		if delta != {} {design.move_anchor_control(&moved, e.selected.control, delta)}
 		if moved.shift != anchor.shift {
 			anchor.shift = moved.shift
-			_ = app_profile_apply_draft()
+			update = .Updated if app_profile_apply_draft(timing) else .Rejected
 		}
 	}
 	if e.drag.end != .None {profile_editor_finish_drag(e)}
+	return
 }
 
 profile_editor_mouse :: proc(phase, button: i32, mouse: [2]f64) -> bool {

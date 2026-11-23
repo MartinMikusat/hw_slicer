@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:time"
 import devlog "devlog:."
 
 import design "./design"
@@ -16,13 +17,14 @@ app_profile_failure :: proc(message: string) -> bool {
 	return false
 }
 
-app_profile_apply_draft :: proc() -> bool {
+app_profile_apply_draft :: proc(timing: ^Profile_Drag_Timing = nil) -> bool {
 	s := &app.design
 	e := &s.editor
 	drag := &e.drag
 	s.profile_dirty = true
 	s.profile_valid = false
 	s.profile_issue_xy = nil
+	serialize_start := time.tick_now() if timing != nil else time.Tick{}
 	source: string
 	if drag.source != "" {
 		anchor := profile_anchor(&drag.evaluated, e.selected)
@@ -34,8 +36,11 @@ app_profile_apply_draft :: proc() -> bool {
 	}
 	installed := false
 	defer {if !installed {delete(source)}}
+	if timing != nil {timing[.Source] = time.tick_since(serialize_start)}
 	if len(source) > DESIGN_SOURCE_LIMIT {return app_profile_failure("Design exceeds the file size limit")}
+	evaluate_start := time.tick_now() if timing != nil else time.Tick{}
 	evaluated, problem, valid := design.evaluate(source, design_printer(design_nozzle(s)))
+	if timing != nil {timing[.Evaluate] = time.tick_since(evaluate_start)}
 	if !valid {
 		defer design.error_destroy(&problem)
 		s.profile_issue_xy = problem.position
@@ -48,7 +53,8 @@ app_profile_apply_draft :: proc() -> bool {
 	}
 	defer design.design_destroy(&evaluated)
 	first_drag_preview := e.dragging && drag.source == ""
-	if !app_install_design_preview(&evaluated, true, &drag.evaluated if first_drag_preview else nil) {
+	previous := &drag.evaluated if first_drag_preview else nil
+	if !app_install_design_preview(&evaluated, true, previous, timing) {
 		return app_profile_failure("Could not display the edited toolpath")
 	}
 	if first_drag_preview {
