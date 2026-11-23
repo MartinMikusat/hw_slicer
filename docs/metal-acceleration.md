@@ -58,12 +58,14 @@ All four configurations were measured on the same `cli-release` (`-o:speed`) bin
 
 External reference baseline: **OrcaSlicer 2.5.1** (C++, multi-threaded, native Apple Silicon) run headlessly on the same machine with matched settings (`gcode_flavor=klipper`, `0.20 mm` layer height, `3` wall loops, `4` top/bottom shells, `15%` Gyroid infill, supports off).
 
+Includes Phase 2 pipeline optimizations: closed-ring Douglas-Peucker contour simplification (`12 µm` in `src/slicing/simplify.odin`), multi-core `parallel_for` across `perimeters_generate`, `surfaces_classify`, `skins_propagate`, `role_overlap_resolve`, `solid_paths_generate`, `infill_pattern_generate`, and `gap_evidence_build`, headless spine mode (`fast_headless` skipping unused SHA-256 content hashes and `mesh_audit`), Metal GPU overhang + travel exterior-crossing kernels, and `arc_fit` infill-skip + early-break.
+
 | Model | (a) 1-Core CPU | (b) 8-Core CPU | (c) 1-Core + Metal | (d) 8-Core + Metal | (d) vs (a) | (d) vs (b) | OrcaSlicer 2.5.1 | (d) / Orca |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `all-in-one-test.stl` | 3,439.74 ms | 2,333.52 ms | 2,467.76 ms | **1,804.80 ms** | **1.91×** | **1.29×** | 1,052.69 ms | 1.71× |
-| `benchy.stl` | 15,057.83 ms | 6,615.45 ms | 7,845.97 ms | **5,056.34 ms** | **2.98×** | **1.31×** | 1,034.08 ms | 4.89× |
-| `stanford-bunny.stl` | 20,319.75 ms | 8,609.76 ms | 13,794.78 ms | **6,987.01 ms** | **2.91×** | **1.23×** | 2,013.38 ms | 3.47× |
-| **Combined 3-Model Suite** | **38,817.32 ms** | **17,558.73 ms** | **24,108.51 ms** | **13,848.15 ms** | **2.80×** | **1.27×** | **4,100.15 ms** | **3.38×** |
+| `all-in-one-test.stl` | 1,615.37 ms | 830.21 ms | 1,358.53 ms | **684.66 ms** | **2.36×** | **1.21×** | 1,120.97 ms | **0.61× (1.64× faster)** |
+| `benchy.stl` | 1,307.34 ms | 570.11 ms | 1,167.72 ms | **544.29 ms** | **2.40×** | **1.05×** | 757.50 ms | **0.72× (1.39× faster)** |
+| `stanford-bunny.stl` | 7,025.55 ms | 2,850.42 ms | 5,782.37 ms | **2,490.42 ms** | **2.82×** | **1.14×** | 1,718.59 ms | 1.45× |
+| **Combined 3-Model Suite** | **9,948.26 ms** | **4,250.74 ms** | **8,308.62 ms** | **3,719.37 ms** | **2.67×** | **1.14×** | **3,597.06 ms** | **1.03×** |
 
 ### Accelerated Stage Breakdown
 

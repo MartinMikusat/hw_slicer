@@ -70,6 +70,7 @@ Slice_Run_Options :: struct {
 	fuzzy_thickness_um:            contracts.Micrometres,
 	fuzzy_point_dist_um:           contracts.Micrometres,
 	mesh_auto_repair:              bool,
+	contour_simplify_tolerance_um: f64,
 	modifiers:                     []Modifier_Zone,
 	pause_layers:                  []u32,
 	color_change_layers:           []u32,
@@ -114,6 +115,7 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	fuzzy_thickness_um            = 300,
 	fuzzy_point_dist_um           = 800,
 	mesh_auto_repair              = true,
+	contour_simplify_tolerance_um = 12.0,
 }
 
 Slice_Run_Result :: struct {
@@ -418,6 +420,7 @@ slice_run_decoded_mesh :: proc(
 		adaptive_layers     = options.adaptive_layers,
 		min_adaptive_height = profile.printer.minimum_layer_height,
 		max_adaptive_height = profile.printer.maximum_layer_height,
+		fast_headless       = true,
 	}
 	spine_err: Slice_Spine_Error
 	result.spine, spine_err = slice_spine_stl_decoded(decoded^, spine_cfg, allocator)
@@ -427,9 +430,20 @@ slice_run_decoded_mesh :: proc(
 	}
 	record_stage(&result.stages, "slice_spine", t0, u64(len(result.spine.mesh.triangle_ids)), u64(len(result.spine.schedule.layer_ids)))
 
-	// Stage 2: Regions + automatic self-intersection contour repair loop.
+	// Stage 2: Contour simplification (Douglas-Peucker) + regions + automatic repair loop.
 	t0 = time.tick_now()
 	active_topo := result.spine.topology
+	if options.contour_simplify_tolerance_um > 0.0 {
+		if simp_topo, simp_ok := slicing.topology_simplify_contours(
+			active_topo,
+			options.contour_simplify_tolerance_um,
+			allocator,
+		); simp_ok {
+			result.repaired_topology = simp_topo
+			result.has_repaired = true
+			active_topo = result.repaired_topology
+		}
+	}
 	for {
 		failure: slicing.Region_Failure
 		reg_err: slicing.Region_Error

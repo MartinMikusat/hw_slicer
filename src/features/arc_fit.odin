@@ -54,7 +54,8 @@ motion_plan_fit_arcs :: proc(
 		i := op_start
 		for i < op_end {
 			op0 := motion.operations[i]
-			if op0.kind != .Extrude || op0.arc != .None {
+			if op0.kind != .Extrude || op0.arc != .None ||
+			   op0.role == .Sparse_Infill || op0.role == .Support || op0.role == .Support_Interface {
 				append(&new_ops, op0)
 				i += 1
 				continue
@@ -108,7 +109,7 @@ motion_plan_fit_arcs :: proc(
 							best_end = cand_end
 							best_center = center
 							best_kind = arc_kind
-						} else if best_end > 0 {
+						} else {
 							break
 						}
 					}

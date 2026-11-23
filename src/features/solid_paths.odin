@@ -1,5 +1,7 @@
 package features
 
+import "core:mem"
+
 import contracts "../contracts"
 import geometry "../geometry"
 import polygon "../polygon"
@@ -110,38 +112,61 @@ solid_paths_generate :: proc(
 		}
 		delete(boundaries, allocator)
 	}
+	mask_errors := make([]Solid_Path_Error, len(overlap.masks), allocator)
+	defer delete(mask_errors, allocator)
+
+	Solid_Par_Ctx :: struct {
+		overlap:        Role_Overlap_Result,
+		boundaries:     []polygon.Polygon_Set,
+		mask_errors:    []Solid_Path_Error,
+		boundary_inset: contracts.Micrometres,
+		provider:       polygon.Polygon_Provider,
+		limits:         Solid_Path_Limits,
+		allocator:      mem.Allocator,
+	}
+	spctx := Solid_Par_Ctx{
+		overlap        = overlap,
+		boundaries     = boundaries,
+		mask_errors    = mask_errors,
+		boundary_inset = boundary_inset,
+		provider       = provider,
+		limits         = limits,
+		allocator      = allocator,
+	}
+	parallel_for(len(overlap.masks), &spctx, proc(c: ^Solid_Par_Ctx, mask_index: int) {
+		mask := c.overlap.masks[mask_index]
+		if !solid_path_role_is_skin(mask.role) || mask.path_count == 0 {return}
+		input, input_error := role_overlap_mask_input(c.overlap, u32(mask_index), c.allocator)
+		if input_error != .None {
+			c.mask_errors[mask_index] = solid_path_overlap_error(input_error)
+			return
+		}
+		provider_error: polygon.Polygon_Error
+		c.boundaries[mask_index], provider_error = c.provider.offset(
+			input,
+			-contracts.Micrometres(i64(c.boundary_inset)),
+			.Miter,
+			2,
+			0,
+			c.limits.polygon,
+			c.allocator,
+		)
+		polygon.polygon_set_destroy(&input, c.allocator)
+		if provider_error != .None {
+			c.mask_errors[mask_index] = .Provider
+		}
+	})
+
 	maximum_boundary_points := 0
 	skin_mask_count: u64
 	collapsed_count: u64
 	for mask, mask_index in overlap.masks {
+		if mask_errors[mask_index] != .None {return {}, mask_errors[mask_index]}
 		if !solid_path_role_is_skin(mask.role) {continue}
 		skin_mask_count += 1
-		if mask.path_count == 0 {
+		if mask.path_count == 0 || len(boundaries[mask_index].paths) == 0 {
 			collapsed_count += 1
 			continue
-		}
-		input, input_error := role_overlap_mask_input(
-			overlap,
-			u32(mask_index),
-			allocator,
-		)
-		if input_error != .None {
-			return {}, solid_path_overlap_error(input_error)
-		}
-		provider_error: polygon.Polygon_Error
-		boundaries[mask_index], provider_error = provider.offset(
-			input,
-			-contracts.Micrometres(i64(boundary_inset)),
-			.Miter,
-			2,
-			0,
-			limits.polygon,
-			allocator,
-		)
-		polygon.polygon_set_destroy(&input, allocator)
-		if provider_error != .None {return {}, .Provider}
-		if len(boundaries[mask_index].paths) == 0 {
-			collapsed_count += 1
 		}
 		maximum_boundary_points = max(
 			maximum_boundary_points,

@@ -224,6 +224,22 @@ skins_propagate :: proc(
 		region_inputs[region_index] = input
 	}
 
+	Skin_Layer_Item :: struct {
+		surface_mask_index: u32,
+		accumulator_kind:   int,
+	}
+	surface_inputs := make([]polygon.Polygon_Set, len(surfaces.masks), allocator)
+	defer {
+		for &si in surface_inputs {
+			polygon.polygon_set_destroy(&si, allocator)
+		}
+		delete(surface_inputs, allocator)
+	}
+	layer_items := make([][dynamic]Skin_Layer_Item, len(regions.layers), allocator)
+	defer {
+		for &li in layer_items {delete(li)}
+		delete(layer_items, allocator)
+	}
 	for surface_mask, surface_mask_index in surfaces.masks {
 		target := config.bottom
 		accumulator_kind := 0
@@ -252,159 +268,207 @@ skins_propagate :: proc(
 			}
 			return {}, .Invalid_Input
 		}
+		surface_inputs[surface_mask_index] = source_input
 		for target_layer in int(first_layer)..=int(last_layer) {
-			layer := regions.layers[target_layer]
-			region_start := int(layer.region_offset)
-			region_end := region_start+int(layer.region_count)
-			for region_index in region_start..<region_end {
-				contribution, provider_error := provider.boolean(
-					source_input,
-					region_inputs[region_index],
-					.Intersection,
-					config.fill_rule,
-					limits.polygon,
-					allocator,
-				)
-				if provider_error != .None {
-					polygon.polygon_set_destroy(
-						&source_input,
-						allocator,
-					)
-					return {}, .Provider
-				}
-				if len(contribution.paths) == 0 {
-					polygon.polygon_set_destroy(
-						&contribution,
-						allocator,
-					)
-					continue
-				}
-				accumulator_index := region_index*2+
-					accumulator_kind
-				accumulate_error := skin_polygon_accumulate(
-					&accumulators[accumulator_index],
-					&contribution,
-					provider,
-					config.fill_rule,
-					limits.polygon,
-					allocator,
-				)
-				if accumulate_error != .None {
-					polygon.polygon_set_destroy(
-						&source_input,
-						allocator,
-					)
-					if accumulate_error == .Allocation_Failed {
-						return {}, .Allocation_Failed
-					}
-					return {}, .Provider
-				}
-				append(
-					&contribution_sources[accumulator_index],
-					u32(surface_mask_index),
-				)
-			}
+			append(&layer_items[target_layer], Skin_Layer_Item{
+				surface_mask_index = u32(surface_mask_index),
+				accumulator_kind   = accumulator_kind,
+			})
 		}
-		polygon.polygon_set_destroy(&source_input, allocator)
 	}
 
-	for _, region_index in regions.regions {
-		bottom := accumulators[region_index*2]
-		top := accumulators[region_index*2+1]
-		output_offset := region_index*3
-		combined: polygon.Polygon_Set
-		if len(bottom.paths) > 0 && len(top.paths) > 0 {
-			provider_error: polygon.Polygon_Error
-			combined, provider_error = provider.boolean(
-				bottom,
-				top,
-				.Intersection,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			if provider_error != .None {return {}, .Provider}
-		}
-		if len(bottom.paths) > 0 {
-			if len(combined.paths) > 0 {
-				output, provider_error := provider.boolean(
-					bottom,
-					combined,
-					.Difference,
-					config.fill_rule,
-					limits.polygon,
-					allocator,
-				)
-				if provider_error != .None {
-					polygon.polygon_set_destroy(
-						&combined,
-						allocator,
-					)
-					return {}, .Provider
-				}
-				outputs[output_offset] = output
-			} else {
-				output, clone_ok := skin_polygon_clone(
-					bottom,
-					allocator,
-				)
-				if !clone_ok {return {}, .Allocation_Failed}
-				outputs[output_offset] = output
-			}
-		}
-		if len(top.paths) > 0 {
-			if len(combined.paths) > 0 {
-				output, provider_error := provider.boolean(
-					top,
-					combined,
-					.Difference,
-					config.fill_rule,
-					limits.polygon,
-					allocator,
-				)
-				if provider_error != .None {
-					polygon.polygon_set_destroy(
-						&combined,
-						allocator,
-					)
-					return {}, .Provider
-				}
-				outputs[output_offset+1] = output
-			} else {
-				output, clone_ok := skin_polygon_clone(top, allocator)
-				if !clone_ok {return {}, .Allocation_Failed}
-				outputs[output_offset+1] = output
-			}
-		}
-		outputs[output_offset+2] = combined
+	layer_errors := make([]Skin_Error, len(regions.layers), allocator)
+	defer delete(layer_errors, allocator)
+	layer_filtered := make([]u64, len(regions.layers), allocator)
+	defer delete(layer_filtered, allocator)
 
-		for kind_index in 0..<3 {
-			output := outputs[output_offset+kind_index]
-			if len(output.paths) == 0 {continue}
-			bottom_sources: []u32
-			top_sources: []u32
-			if kind_index != 1 {
-				bottom_sources =
-					contribution_sources[region_index*2][:]
+	Skin_Par_Ctx :: struct {
+		regions:              slicing.Region_Result,
+		surfaces:             Surface_Result,
+		surface_inputs:       []polygon.Polygon_Set,
+		layer_items:          [][dynamic]Skin_Layer_Item,
+		region_inputs:        []polygon.Polygon_Set,
+		accumulators:         []polygon.Polygon_Set,
+		outputs:              []polygon.Polygon_Set,
+		contribution_sources: [][dynamic]u32,
+		output_sources:       [][dynamic]u32,
+		provider:             polygon.Polygon_Provider,
+		config:               Skin_Config,
+		limits:               Skin_Limits,
+		allocator:            mem.Allocator,
+		layer_errors:         []Skin_Error,
+		layer_filtered:       []u64,
+	}
+	sctx := Skin_Par_Ctx{
+		regions              = regions,
+		surfaces             = surfaces,
+		surface_inputs       = surface_inputs,
+		layer_items          = layer_items,
+		region_inputs        = region_inputs,
+		accumulators         = accumulators,
+		outputs              = outputs,
+		contribution_sources = contribution_sources,
+		output_sources       = output_sources,
+		provider             = provider,
+		config               = config,
+		limits               = limits,
+		allocator            = allocator,
+		layer_errors         = layer_errors,
+		layer_filtered       = layer_filtered,
+	}
+
+	parallel_for(len(regions.layers), &sctx, proc(c: ^Skin_Par_Ctx, target_layer: int) {
+		layer := c.regions.layers[target_layer]
+		region_start := int(layer.region_offset)
+		region_end := region_start + int(layer.region_count)
+		if region_start == region_end {return}
+
+		for item in c.layer_items[target_layer] {
+			src_in := c.surface_inputs[item.surface_mask_index]
+			for region_index in region_start ..< region_end {
+				contribution, provider_error := c.provider.boolean(
+					src_in,
+					c.region_inputs[region_index],
+					.Intersection,
+					c.config.fill_rule,
+					c.limits.polygon,
+					c.allocator,
+				)
+				if provider_error != .None {
+					c.layer_errors[target_layer] = .Provider
+					return
+				}
+				if len(contribution.paths) == 0 {
+					polygon.polygon_set_destroy(&contribution, c.allocator)
+					continue
+				}
+				accumulator_index := region_index*2 + item.accumulator_kind
+				accumulate_error := skin_polygon_accumulate(
+					&c.accumulators[accumulator_index],
+					&contribution,
+					c.provider,
+					c.config.fill_rule,
+					c.limits.polygon,
+					c.allocator,
+				)
+				if accumulate_error != .None {
+					c.layer_errors[target_layer] = .Allocation_Failed if accumulate_error == .Allocation_Failed else .Provider
+					return
+				}
+				append(&c.contribution_sources[accumulator_index], item.surface_mask_index)
 			}
-			if kind_index != 0 {
-				top_sources =
-					contribution_sources[region_index*2+1][:]
-			}
-			source_error := skin_filter_output_sources(
-				&output_sources[output_offset+kind_index],
-				output,
-				bottom_sources,
-				top_sources,
-				surfaces,
-				provider,
-				config.fill_rule,
-				limits,
-				&filtered_source_count,
-				allocator,
-			)
-			if source_error != .None {return {}, source_error}
 		}
+
+		local_filtered: u64
+		for region_index in region_start ..< region_end {
+			bottom := c.accumulators[region_index*2]
+			top := c.accumulators[region_index*2+1]
+			output_offset := region_index*3
+			combined: polygon.Polygon_Set
+			if len(bottom.paths) > 0 && len(top.paths) > 0 {
+				provider_error: polygon.Polygon_Error
+				combined, provider_error = c.provider.boolean(
+					bottom,
+					top,
+					.Intersection,
+					c.config.fill_rule,
+					c.limits.polygon,
+					c.allocator,
+				)
+				if provider_error != .None {
+					c.layer_errors[target_layer] = .Provider
+					return
+				}
+			}
+			if len(bottom.paths) > 0 {
+				if len(combined.paths) > 0 {
+					output, provider_error := c.provider.boolean(
+						bottom,
+						combined,
+						.Difference,
+						c.config.fill_rule,
+						c.limits.polygon,
+						c.allocator,
+					)
+					if provider_error != .None {
+						polygon.polygon_set_destroy(&combined, c.allocator)
+						c.layer_errors[target_layer] = .Provider
+						return
+					}
+					c.outputs[output_offset] = output
+				} else {
+					output, clone_ok := skin_polygon_clone(bottom, c.allocator)
+					if !clone_ok {
+						c.layer_errors[target_layer] = .Allocation_Failed
+						return
+					}
+					c.outputs[output_offset] = output
+				}
+			}
+			if len(top.paths) > 0 {
+				if len(combined.paths) > 0 {
+					output, provider_error := c.provider.boolean(
+						top,
+						combined,
+						.Difference,
+						c.config.fill_rule,
+						c.limits.polygon,
+						c.allocator,
+					)
+					if provider_error != .None {
+						polygon.polygon_set_destroy(&combined, c.allocator)
+						c.layer_errors[target_layer] = .Provider
+						return
+					}
+					c.outputs[output_offset+1] = output
+				} else {
+					output, clone_ok := skin_polygon_clone(top, c.allocator)
+					if !clone_ok {
+						c.layer_errors[target_layer] = .Allocation_Failed
+						return
+					}
+					c.outputs[output_offset+1] = output
+				}
+			}
+			c.outputs[output_offset+2] = combined
+
+			for kind_index in 0 ..< 3 {
+				output := c.outputs[output_offset+kind_index]
+				if len(output.paths) == 0 {continue}
+				bottom_sources: []u32
+				top_sources: []u32
+				if kind_index != 1 {
+					bottom_sources = c.contribution_sources[region_index*2][:]
+				}
+				if kind_index != 0 {
+					top_sources = c.contribution_sources[region_index*2+1][:]
+				}
+				source_error := skin_filter_output_sources(
+					&c.output_sources[output_offset+kind_index],
+					output,
+					bottom_sources,
+					top_sources,
+					c.surfaces,
+					c.provider,
+					c.config.fill_rule,
+					c.limits,
+					&local_filtered,
+					c.allocator,
+				)
+				if source_error != .None {
+					c.layer_errors[target_layer] = source_error
+					return
+				}
+			}
+		}
+		c.layer_filtered[target_layer] = local_filtered
+	})
+
+	for err in layer_errors {
+		if err != .None {return {}, err}
+	}
+	for lf in layer_filtered {
+		filtered_source_count += lf
 	}
 
 	total_masks: u64
