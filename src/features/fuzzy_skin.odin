@@ -21,6 +21,7 @@ Fuzzy_Skin_Stats :: struct {
 // (skipping layer 0 so bed adhesion remains flat and predictable).
 fuzzy_skin_apply :: proc(
 	sources: []Unified_Path_Source,
+	perimeters: Perimeter_Result,
 	config: Fuzzy_Skin_Config,
 	printer: profiles.Printer_Profile,
 	owned_points: ^[dynamic][]polygon.Polygon_Point,
@@ -34,6 +35,10 @@ fuzzy_skin_apply :: proc(
 
 	for &src in sources {
 		if src.source_kind != .Perimeter || !src.closed || src.layer_index == 0 || len(src.points) < 3 {
+			continue
+		}
+		if int(src.source_index) >= len(perimeters.paths) ||
+		   perimeters.paths[src.source_index].perimeter_index != 0 {
 			continue
 		}
 		n := len(src.points)

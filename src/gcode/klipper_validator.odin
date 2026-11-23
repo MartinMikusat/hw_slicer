@@ -112,6 +112,7 @@ Klipper_Validation_State :: struct {
 	x:                    i64,
 	y:                    i64,
 	z:                    i64,
+	physical_z:           i64,
 	acceleration:         i64,
 	fan_pwm:              i32,
 	z_hop_stage:          u8, // 0 = none, 1 = hopped up awaiting XY, 2 = XY done awaiting un-hop
@@ -327,6 +328,7 @@ klipper_validate_print_move :: proc(
 			return .Motion_Mismatch
 		}
 		state.z = command.z
+		state.physical_z = command.z
 		state.layer_z_emitted = true
 		return .None
 	}
@@ -380,6 +382,7 @@ klipper_validate_print_move :: proc(
 					return .Motion_Mismatch
 				}
 				state.z = command.z
+				state.physical_z = command.z
 				state.z_hop_stage = 1
 				return klipper_position_in_bounds(state^, profile)
 			case 1:
@@ -408,14 +411,18 @@ klipper_validate_print_move :: proc(
 					return .Motion_Mismatch
 				}
 				state.z = command.z
+				state.physical_z = command.z
 				state.z_hop_stage = 0
 			case:
 				return .Motion_Mismatch
 			}
 		} else {
+			need_z_restore := state.physical_z != state.z
 			if command.kind != .G0 ||
 			   !command.has_x || !command.has_y ||
-			   command.has_z || command.has_e ||
+			   command.has_z != need_z_restore ||
+			   (need_z_restore && command.z != state.z) ||
+			   command.has_e ||
 			   !command.has_f ||
 			   command.x != i64(operation.point_b.x) ||
 			   command.y != i64(operation.point_b.y) ||
@@ -425,18 +432,21 @@ klipper_validate_print_move :: proc(
 			}
 			state.x = command.x
 			state.y = command.y
+			if need_z_restore {
+				state.physical_z = command.z
+			}
 		}
 	case .Extrude:
 		expected_kind := Klipper_Parsed_Kind.G1
 		if operation.arc == .CW {expected_kind = .G2}
 		if operation.arc == .CCW {expected_kind = .G3}
 		expected_arc := operation.arc != .None
-		expected_z_ramp := !expected_arc && operation.z_offset_um != 0
-		expected_ramp_z := max(i64(0), i64(layer.z) + i64(operation.z_offset_um))
+		expected_target_z := max(i64(0), i64(layer.z) + i64(operation.z_offset_um))
+		expected_z_change := expected_target_z != state.physical_z
 		if command.kind != expected_kind ||
 		   !command.has_x || !command.has_y ||
-		   command.has_z != expected_z_ramp ||
-		   (expected_z_ramp && command.z != expected_ramp_z) ||
+		   command.has_z != expected_z_change ||
+		   (expected_z_change && command.z != expected_target_z) ||
 		   !command.has_e ||
 		   !command.has_f ||
 		   command.has_i != expected_arc ||
@@ -453,6 +463,9 @@ klipper_validate_print_move :: proc(
 		}
 		state.x = command.x
 		state.y = command.y
+		if expected_z_change {
+			state.physical_z = command.z
+		}
 	case .Dwell, .Invalid:
 		return .Motion_Mismatch
 	}
@@ -747,7 +760,6 @@ klipper_command_parameters_valid :: proc(
 		return command.has_x && command.has_y &&
 			command.has_i && command.has_j &&
 			command.has_e && command.has_f &&
-			!command.has_z &&
 			!command.has_s && !command.has_p &&
 			!command.has_r && !command.has_t
 	case .G4:

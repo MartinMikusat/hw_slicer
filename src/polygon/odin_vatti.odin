@@ -468,24 +468,48 @@ vatti_collect_segs :: proc(set: Polygon_Set, is_clip: bool, out: ^[dynamic]Vatti
 }
 
 @(private = "file")
+VATTI_I64_SAFE_DELTA :: i64(2_000_000_000)
+
+@(private = "file")
 vatti_seg_intersect :: proc(a, b: Vatti_Seg) -> (px, py: i64, ta, tb: f64, hit: bool) {
 	dax := a.bx - a.ax
 	day := a.by - a.ay
 	dbx := b.bx - b.ax
 	dby := b.by - b.ay
-	denom := dax*dby - day*dbx
-	if denom == 0 {return 0, 0, 0, 0, false}
 	rx := b.ax - a.ax
 	ry := b.ay - a.ay
-	num_a := rx*dby - ry*dbx
-	num_b := rx*day - ry*dax
-	if denom > 0 {
-		if num_a < 0 || num_a > denom || num_b < 0 || num_b > denom {return 0, 0, 0, 0, false}
-	} else {
-		if num_a > 0 || num_a < denom || num_b > 0 || num_b < denom {return 0, 0, 0, 0, false}
+	if abs(dax) < VATTI_I64_SAFE_DELTA && abs(day) < VATTI_I64_SAFE_DELTA &&
+	   abs(dbx) < VATTI_I64_SAFE_DELTA && abs(dby) < VATTI_I64_SAFE_DELTA &&
+	   abs(rx) < VATTI_I64_SAFE_DELTA && abs(ry) < VATTI_I64_SAFE_DELTA {
+		denom := dax*dby - day*dbx
+		if denom == 0 {return 0, 0, 0, 0, false}
+		num_a := rx*dby - ry*dbx
+		num_b := rx*day - ry*dax
+		if denom > 0 {
+			if num_a < 0 || num_a > denom || num_b < 0 || num_b > denom {return 0, 0, 0, 0, false}
+		} else {
+			if num_a > 0 || num_a < denom || num_b > 0 || num_b < denom {return 0, 0, 0, 0, false}
+		}
+		ta = f64(num_a) / f64(denom)
+		tb = f64(num_b) / f64(denom)
+		px = a.ax + i64(math.round(ta * f64(dax)))
+		py = a.ay + i64(math.round(ta * f64(day)))
+		return px, py, ta, tb, true
 	}
-	ta = f64(num_a) / f64(denom)
-	tb = f64(num_b) / f64(denom)
+	dax128, day128 := i128(dax), i128(day)
+	dbx128, dby128 := i128(dbx), i128(dby)
+	denom128 := dax128*dby128 - day128*dbx128
+	if denom128 == 0 {return 0, 0, 0, 0, false}
+	rx128, ry128 := i128(rx), i128(ry)
+	num_a128 := rx128*dby128 - ry128*dbx128
+	num_b128 := rx128*day128 - ry128*dax128
+	if denom128 > 0 {
+		if num_a128 < 0 || num_a128 > denom128 || num_b128 < 0 || num_b128 > denom128 {return 0, 0, 0, 0, false}
+	} else {
+		if num_a128 > 0 || num_a128 < denom128 || num_b128 > 0 || num_b128 < denom128 {return 0, 0, 0, 0, false}
+	}
+	ta = f64(num_a128) / f64(denom128)
+	tb = f64(num_b128) / f64(denom128)
 	px = a.ax + i64(math.round(ta * f64(dax)))
 	py = a.ay + i64(math.round(ta * f64(day)))
 	return px, py, ta, tb, true
@@ -495,8 +519,17 @@ vatti_seg_intersect :: proc(a, b: Vatti_Seg) -> (px, py: i64, ta, tb: f64, hit: 
 vatti_segs_collinear :: proc(a, b: Vatti_Seg) -> bool {
 	dax := a.bx - a.ax
 	day := a.by - a.ay
-	return dax*(b.ax - a.ax) - day*(b.ay - a.ay) == 0 &&
-	       dax*(b.bx - a.ax) - day*(b.by - a.ay) == 0
+	rx0 := b.ax - a.ax
+	ry0 := b.ay - a.ay
+	rx1 := b.bx - a.ax
+	ry1 := b.by - a.ay
+	if abs(dax) < VATTI_I64_SAFE_DELTA && abs(day) < VATTI_I64_SAFE_DELTA &&
+	   abs(rx0) < VATTI_I64_SAFE_DELTA && abs(ry0) < VATTI_I64_SAFE_DELTA &&
+	   abs(rx1) < VATTI_I64_SAFE_DELTA && abs(ry1) < VATTI_I64_SAFE_DELTA {
+		return dax*ry0 - day*rx0 == 0 && dax*ry1 - day*rx1 == 0
+	}
+	return i128(dax)*i128(ry0) - i128(day)*i128(rx0) == 0 &&
+	       i128(dax)*i128(ry1) - i128(day)*i128(rx1) == 0
 }
 
 @(private = "file")

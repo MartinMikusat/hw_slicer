@@ -84,6 +84,7 @@ Klipper_State :: struct {
 	x:                    contracts.Micrometres,
 	y:                    contracts.Micrometres,
 	z:                    contracts.Micrometres,
+	physical_z:           contracts.Micrometres,
 }
 
 klipper_emit :: proc(
@@ -286,6 +287,7 @@ klipper_emit :: proc(
 			return {}, .Command_Limit
 		}
 		state.z = layer.z
+		state.physical_z = layer.z
 
 		for pl in pause_layers {
 			if pl == layer.layer_index {
@@ -470,6 +472,11 @@ klipper_emit_operation :: proc(
 		klipper_append_coordinate(builder, operation.point_b.x)
 		strings.write_string(builder, " Y")
 		klipper_append_coordinate(builder, operation.point_b.y)
+		if i64(operation.z_hop_um) <= 0 && state.physical_z != state.z {
+			strings.write_string(builder, " Z")
+			klipper_append_coordinate(builder, state.z)
+			state.physical_z = state.z
+		}
 		klipper_append_feed(builder, klipper_feed_rate(operation.speed))
 		if i64(operation.z_hop_um) > 0 {
 			if !klipper_command_end(
@@ -487,13 +494,20 @@ klipper_emit_operation :: proc(
 			strings.write_string(builder, "G0 Z")
 			klipper_append_coordinate(builder, state.z)
 			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
+			state.physical_z = state.z
 		}
 	case .Extrude:
+		target_z := contracts.Micrometres(max(i64(0), i64(state.z) + i64(operation.z_offset_um)))
 		if operation.arc != .None {
 			strings.write_string(builder, "G2 X" if operation.arc == .CW else "G3 X")
 			klipper_append_coordinate(builder, operation.point_b.x)
 			strings.write_string(builder, " Y")
 			klipper_append_coordinate(builder, operation.point_b.y)
+			if target_z != state.physical_z {
+				strings.write_string(builder, " Z")
+				klipper_append_coordinate(builder, target_z)
+				state.physical_z = target_z
+			}
 			strings.write_string(builder, " I")
 			klipper_append_coordinate(builder, contracts.Micrometres(i64(operation.arc_center.x)-i64(operation.point_a.x)))
 			strings.write_string(builder, " J")
@@ -506,10 +520,10 @@ klipper_emit_operation :: proc(
 			klipper_append_coordinate(builder, operation.point_b.x)
 			strings.write_string(builder, " Y")
 			klipper_append_coordinate(builder, operation.point_b.y)
-			if operation.z_offset_um != 0 {
-				target_z := contracts.Micrometres(max(i64(0), i64(state.z) + i64(operation.z_offset_um)))
+			if target_z != state.physical_z {
 				strings.write_string(builder, " Z")
 				klipper_append_coordinate(builder, target_z)
+				state.physical_z = target_z
 			}
 			strings.write_string(builder, " E")
 			klipper_append_extrusion(builder, operation.filament_delta_nm)

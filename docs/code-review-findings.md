@@ -6,21 +6,22 @@ Comprehensive static & architectural code review of `/Users/martin/projects/hw_s
 
 ## High Severity
 
-### [CR-01] `i64` Overflow Risk for Valid Coordinates Near `MAX_PLANAR_COORDINATE_UM`
+### [CR-01] `i64` Overflow Risk for Valid Coordinates Near `MAX_PLANAR_COORDINATE_UM` — **RESOLVED**
 - **Locations:**
   - `src/polygon/odin_vatti.odin`: `vatti_seg_intersect`, `vatti_segs_collinear`
   - `src/features/bridge_directions.odin`: `bridge_polygon_contains_twice`
   - `src/features/infill_patterns.odin`: `band_edges_contains_twice`
   - `shaders/slicer_compute.metal`: `int64_t` cross products
 - **Issue:** `geometry.MAX_PLANAR_COORDINATE_UM` is `1_000_000_000_000` (`1e12 µm`). While physical printer beds (`<= 500 mm = 5e5 µm`) stay well within `i64` (`(2 * 5e5)^2 = 1e12 << 9.22e18`), any API caller or test passing coordinates `> 3e9 µm` passes `polygon_set_validate` and silently overflows `i64` in `dx * dy` cross products.
-- **Fix:** Either enforce a smaller `i64`-safe coordinate ceiling on polygon inputs (`<= 1_000_000_000 µm` = 1 km, still 2,000× larger than any printer) or guard the `i64` fast path with a bounds check falling back to `i128`.
+- **Resolution:** Guarded the `i64` fast path with a `< 2_000_000_000` delta ceiling and exact `i128` fallback in `vatti_seg_intersect`, `vatti_segs_collinear`, `bridge_polygon_contains_twice`, and `band_edges_contains_twice`.
 
-### [CR-02] Nozzle Z State Not Restored After `z_offset_um` Moves (Scarf Seam / Vase Mode)
+### [CR-02] Nozzle Z State Not Restored After `z_offset_um` Moves (Scarf Seam / Vase Mode) — **RESOLVED**
 - **Locations:**
   - `src/features/scarf_seam.odin:60-61, 96-97`
-  - `src/gcode/klipper.odin:515-531`
+  - `src/gcode/klipper.odin`
+  - `src/gcode/klipper_validator.odin`
 - **Issue:** When `op.z_offset_um != 0`, `klipper_emit_operation` emits `G1 X... Y... Z<state.z + z_offset_um> E...` without updating `state.z` or tracking that physical Z diverged from `state.z`. If the next move has `op.z_offset_um == 0` (e.g., after a scarf ramp ends before `z_off == 0`, or on a travel/infill move), no `Z<state.z>` is emitted to restore the nozzle to the nominal layer height.
-- **Fix:** Track `state.physical_z` separately from `state.layer_z` in `Klipper_State`; whenever an operation's target Z (`state.layer_z + op.z_offset_um`) differs from `state.physical_z`, emit `Z<target>` and update `state.physical_z`.
+- **Resolution:** Added `physical_z` tracking to `Klipper_State` and `Klipper_Validation_State`. Whenever a `.Travel` or `.Extrude` (including `G2`/`G3` arcs) has target Z differing from `physical_z`, `Z<target>` is emitted and validated, and `physical_z` is updated.
 
 ---
 
@@ -41,18 +42,18 @@ Comprehensive static & architectural code review of `/Users/martin/projects/hw_s
 - **Issue:** `hw_metal_compute_init` uses an unsynchronized `static bool g_initialized` (race if called concurrently), discards `NSError *err` on shader/pipeline compilation failure without logging, and returns `true` even if `g_trv_pso` or `g_tri_pso` failed to compile.
 - **Fix:** Guard initialization with `dispatch_once`, log `err.localizedDescription` on failure, and verify all required PSOs.
 
-### [CR-05] `odin_offset` Single-Pass `.Positive` Union Can Create Ghost Islands on Collapsed Holes (and Contributes to `-3.1%` Filament Delta)
-- **Location:** `src/polygon/odin_offset.odin:90-108, 191-193`
+### [CR-05] `odin_offset` Single-Pass `.Positive` Union Can Create Ghost Islands on Collapsed Holes (and Contributes to `-3.1%` Filament Delta) — **RESOLVED**
+- **Location:** `src/polygon/odin_offset.odin`
 - **Issue:**
   1. All offset outer rings (CCW, `+1`) and hole rings (CW, `-1`) are fed into one `odin_vatti_boolean(raw_set, {}, .Union, .Positive)` pass. When a positive offset (`d > 0`) shrinks a small CW hole past its medial axis, the hole inverts to CCW (`+1`) and `.Positive` retains it as a spurious solid island.
   2. At sharp concave corners (`denom <= 0.05`), emitting `p0 -> v -> p1` places the un-offset vertex `v` onto the offset path.
   3. This divergence from Clipper2's separate outer/hole offset + miter handling is the primary cause of the ~`-3.1%` filament difference on `benchy.stl` and `stanford-bunny.stl`.
-- **Fix:** Offset outer rings and hole rings into separate sets (discarding inverted loops whose area flipped sign) and combine via `outer_union - hole_union` (for `d < 0`) or `outer_union - surviving_holes` (for `d > 0`).
+- **Resolution:** Separated outer (`area > 0`) and hole (`area < 0`) rings in `odin_offset`, beveled sharp concave corners (`denom <= 0.05` -> `p0 -> p1`), discarded collapsed/inverted rings whose area flipped sign, cleaned outers and holes independently via `.Union .Positive`, and combined them via `.Difference .Non_Zero`.
 
-### [CR-06] `fuzzy_skin_apply` Perturbs All Perimeters Instead of Only the Outer Perimeter
-- **Location:** `src/features/fuzzy_skin.odin:35-38`
+### [CR-06] `fuzzy_skin_apply` Perturbs All Perimeters Instead of Only the Outer Perimeter — **RESOLVED**
+- **Location:** `src/features/fuzzy_skin.odin`, `src/pipeline/orchestrator.odin`
 - **Issue:** Filters only on `src.source_kind != .Perimeter`, perturbing inner and middle perimeter loops in addition to the outermost perimeter. This causes inner walls to overlap infill/adjacent walls.
-- **Fix:** Carry `is_outer_perimeter: bool` (or `perimeter_index: u32`) on `Unified_Path_Source` and apply fuzzy skin only when `perimeter_index == 0`.
+- **Resolution:** Passed `perimeters` into `fuzzy_skin_apply` and skipped any perimeter source where `perimeters.paths[src.source_index].perimeter_index != 0`.
 
 ### [CR-07] `--sequential` Validates Clearance but Still Slices Objects Layer-by-Layer
 - **Locations:** `src/pipeline/sequential.odin:17-43`, `src/cli/main.odin:435-445`

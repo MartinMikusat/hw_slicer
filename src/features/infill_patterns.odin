@@ -419,7 +419,15 @@ band_edges_contains_twice :: proc(edges: []Band_Edge_2, qx, qy: i64) -> bool {
 		if qy < lo_y || qy > hi_y {continue}
 		dx := e.bx2 - e.ax2
 		dy := e.by2 - e.ay2
-		cross := dx*(qy - e.ay2) - dy*(qx - e.ax2)
+		qdx := qx - e.ax2
+		qdy := qy - e.ay2
+		cross: i128
+		if abs(dx) < 2_000_000_000 && abs(dy) < 2_000_000_000 &&
+		   abs(qdx) < 2_000_000_000 && abs(qdy) < 2_000_000_000 {
+			cross = i128(dx*qdy - dy*qdx)
+		} else {
+			cross = i128(dx)*i128(qdy) - i128(dy)*i128(qdx)
+		}
 		if cross == 0 && qx >= min(e.ax2, e.bx2) && qx <= max(e.ax2, e.bx2) {
 			return true
 		}

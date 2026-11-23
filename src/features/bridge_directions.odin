@@ -517,7 +517,15 @@ bridge_polygon_contains_twice :: proc(
 			if qy >= lo_y && qy <= hi_y {
 				dx := bx_twice - ax_twice
 				dy := by_twice - ay_twice
-				cross := dx*(qy - ay_twice) - dy*(qx - ax_twice)
+				qdx := qx - ax_twice
+				qdy := qy - ay_twice
+				cross: i128
+				if abs(dx) < 2_000_000_000 && abs(dy) < 2_000_000_000 &&
+				   abs(qdx) < 2_000_000_000 && abs(qdy) < 2_000_000_000 {
+					cross = i128(dx*qdy - dy*qdx)
+				} else {
+					cross = i128(dx)*i128(qdy) - i128(dy)*i128(qdx)
+				}
 				if cross == 0 && qx >= min(ax_twice, bx_twice) && qx <= max(ax_twice, bx_twice) {
 					return true
 				}

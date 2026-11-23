@@ -38,14 +38,21 @@ odin_offset :: proc(
 	abs_d := math.abs(d)
 	arc_tol := arc_tolerance if arc_tolerance > 1.0 else max(2.0, abs_d * 0.01)
 
-	raw_pts := make([dynamic]Polygon_Point, 0, len(input.points) * 2, context.temp_allocator)
-	raw_paths := make([dynamic]Polygon_Path, 0, len(input.paths), context.temp_allocator)
+	outer_pts := make([dynamic]Polygon_Point, 0, len(input.points) * 2, context.temp_allocator)
+	outer_paths := make([dynamic]Polygon_Path, 0, len(input.paths), context.temp_allocator)
+	hole_pts := make([dynamic]Polygon_Point, 0, len(input.points), context.temp_allocator)
+	hole_paths := make([dynamic]Polygon_Path, 0, len(input.paths), context.temp_allocator)
 
 	for path in input.paths {
 		start := int(path.offset)
 		n := int(path.count)
 		if n < 3 {continue}
 		ring := input.points[start:start+n]
+		orig_area := polygon_path_area_2(ring)
+		if orig_area == 0 {continue}
+		is_hole := orig_area < 0
+		dst_pts := &hole_pts if is_hole else &outer_pts
+		dst_paths := &hole_paths if is_hole else &outer_paths
 
 		// Precompute unit right-hand normals for each edge: for CCW outer ring, right-hand normal points outward.
 		normals := make([][2]f64, n, context.temp_allocator)
@@ -62,7 +69,7 @@ odin_offset :: proc(
 			}
 		}
 
-		p_off := u64(len(raw_pts))
+		p_off := u64(len(dst_pts^))
 		added := 0
 		for i in 0..<n {
 			v := ring[i]
@@ -88,21 +95,20 @@ odin_offset :: proc(
 			}
 
 			if !is_convex {
-				// Concave corner wrt offset direction: compute exact inward miter when well-conditioned,
-				// otherwise fall back to p0 -> v -> p1 so self-union trims cleanly.
+				// Concave corner wrt offset direction: compute inward miter when well-conditioned,
+				// otherwise bevel p0 -> p1 (never emit un-offset vertex v).
 				denom := 1.0 + dot
 				if denom > 0.05 {
 					scale := 1.0 / denom
 					mx := vx + d*(n0[0] + n1[0])*scale
 					my := vy + d*(n0[1] + n1[1])*scale
-					odin_offset_push(&raw_pts, &added, {
+					odin_offset_push(dst_pts, &added, {
 						x = contracts.Micrometres(i64(math.round(mx))),
 						y = contracts.Micrometres(i64(math.round(my))),
 					})
 				} else {
-					odin_offset_push(&raw_pts, &added, p0)
-					odin_offset_push(&raw_pts, &added, v)
-					odin_offset_push(&raw_pts, &added, p1)
+					odin_offset_push(dst_pts, &added, p0)
+					odin_offset_push(dst_pts, &added, p1)
 				}
 				continue
 			}
@@ -112,29 +118,27 @@ odin_offset :: proc(
 				denom := 1.0 + dot
 				if denom > 1e-9 {
 					scale := 1.0 / denom
-					// Miter length ratio = sqrt(2 / (1 + dot))
 					if 2.0 * scale <= miter_limit * miter_limit {
 						mx := vx + d*(n0[0] + n1[0])*scale
 						my := vy + d*(n0[1] + n1[1])*scale
-						odin_offset_push(&raw_pts, &added, {
+						odin_offset_push(dst_pts, &added, {
 							x = contracts.Micrometres(i64(math.round(mx))),
 							y = contracts.Micrometres(i64(math.round(my))),
 						})
 					} else {
-						odin_offset_push(&raw_pts, &added, p0)
-						odin_offset_push(&raw_pts, &added, p1)
+						odin_offset_push(dst_pts, &added, p0)
+						odin_offset_push(dst_pts, &added, p1)
 					}
 				} else {
-					odin_offset_push(&raw_pts, &added, p0)
-					odin_offset_push(&raw_pts, &added, p1)
+					odin_offset_push(dst_pts, &added, p0)
+					odin_offset_push(dst_pts, &added, p1)
 				}
 
 			case .Bevel:
-				odin_offset_push(&raw_pts, &added, p0)
-				odin_offset_push(&raw_pts, &added, p1)
+				odin_offset_push(dst_pts, &added, p0)
+				odin_offset_push(dst_pts, &added, p1)
 
 			case .Square:
-				// Extend p0 along edge0 forward by |d| and p1 along edge1 backward by |d|.
 				t0x, t0y := -n0[1], n0[0]
 				t1x, t1y := -n1[1], n1[0]
 				q0 := Polygon_Point{
@@ -145,10 +149,10 @@ odin_offset :: proc(
 					x = contracts.Micrometres(i64(math.round(vx + d*n1[0] - abs_d*t1x))),
 					y = contracts.Micrometres(i64(math.round(vy + d*n1[1] - abs_d*t1y))),
 				}
-				odin_offset_push(&raw_pts, &added, p0)
-				odin_offset_push(&raw_pts, &added, q0)
-				odin_offset_push(&raw_pts, &added, q1)
-				odin_offset_push(&raw_pts, &added, p1)
+				odin_offset_push(dst_pts, &added, p0)
+				odin_offset_push(dst_pts, &added, q0)
+				odin_offset_push(dst_pts, &added, q1)
+				odin_offset_push(dst_pts, &added, p1)
 
 			case .Round:
 				a0 := math.atan2(d*n0[1], d*n0[0])
@@ -168,7 +172,7 @@ odin_offset :: proc(
 				}
 				for s in 0..=steps {
 					ang := a0 + sweep * (f64(s) / f64(steps))
-					odin_offset_push(&raw_pts, &added, {
+					odin_offset_push(dst_pts, &added, {
 						x = contracts.Micrometres(i64(math.round(vx + abs_d*math.cos(ang)))),
 						y = contracts.Micrometres(i64(math.round(vy + abs_d*math.sin(ang)))),
 					})
@@ -176,21 +180,61 @@ odin_offset :: proc(
 			}
 		}
 
-		for added > 1 && raw_pts[len(raw_pts)-1] == raw_pts[int(p_off)] {
-			pop(&raw_pts)
+		for added > 1 && dst_pts^[len(dst_pts^)-1] == dst_pts^[int(p_off)] {
+			pop(dst_pts)
 			added -= 1
 		}
 		if added < 3 {
-			resize(&raw_pts, int(p_off))
+			resize(dst_pts, int(p_off))
 			continue
 		}
-		append(&raw_paths, Polygon_Path{offset = p_off, count = u64(added)})
+		// For holes, reverse to CCW so we can clean holes independently with .Positive union
+		// and discard collapsed/inverted rings before subtracting from outer_clean.
+		ring_slice := dst_pts^[int(p_off):len(dst_pts^)]
+		new_area := polygon_path_area_2(ring_slice)
+		if !is_hole {
+			if new_area <= 0 {
+				resize(dst_pts, int(p_off))
+				continue
+			}
+		} else {
+			if new_area >= 0 {
+				// Hole collapsed/inverted under positive offset — discard so it never becomes a ghost island.
+				resize(dst_pts, int(p_off))
+				continue
+			}
+			for li := 0; li < len(ring_slice)/2; li += 1 {
+				ri := len(ring_slice) - 1 - li
+				ring_slice[li], ring_slice[ri] = ring_slice[ri], ring_slice[li]
+			}
+		}
+		append(dst_paths, Polygon_Path{offset = p_off, count = u64(added)})
 	}
 
-	if len(raw_paths) == 0 {return {}, .None}
-	raw_set := Polygon_Set{points = raw_pts[:], paths = raw_paths[:]}
-	// Positive fill rule keeps valid surviving interior regions and discards inverted negative-offset loops.
-	return odin_vatti_boolean(raw_set, {}, .Union, .Positive, limits, allocator)
+	if len(outer_paths) == 0 {return {}, .None}
+	outer_set := Polygon_Set{points = outer_pts[:], paths = outer_paths[:]}
+	if len(hole_paths) == 0 {
+		return odin_vatti_boolean(outer_set, {}, .Union, .Positive, limits, allocator)
+	}
+	outer_clean, outer_err := odin_vatti_boolean(outer_set, {}, .Union, .Positive, limits, allocator)
+	if outer_err != .None || len(outer_clean.paths) == 0 {
+		polygon_set_destroy(&outer_clean, allocator)
+		return {}, outer_err
+	}
+	hole_set := Polygon_Set{points = hole_pts[:], paths = hole_paths[:]}
+	hole_clean, hole_err := odin_vatti_boolean(hole_set, {}, .Union, .Positive, limits, allocator)
+	if hole_err != .None {
+		polygon_set_destroy(&outer_clean, allocator)
+		polygon_set_destroy(&hole_clean, allocator)
+		return {}, hole_err
+	}
+	if len(hole_clean.paths) == 0 {
+		polygon_set_destroy(&hole_clean, allocator)
+		return outer_clean, .None
+	}
+	defer polygon_set_destroy(&outer_clean, allocator)
+	defer polygon_set_destroy(&hole_clean, allocator)
+	return odin_vatti_boolean(outer_clean, hole_clean, .Difference, .Non_Zero, limits, allocator)
 }
 
 @(private = "file")

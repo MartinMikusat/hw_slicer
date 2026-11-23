@@ -941,6 +941,7 @@ slice_run_decoded_mesh :: proc(
 	if options.fuzzy_skin_enabled {
 		_ = features.fuzzy_skin_apply(
 			all_sources[:],
+			perimeters,
 			{
 				enabled       = true,
 				thickness_um  = options.fuzzy_thickness_um,
