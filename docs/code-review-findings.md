@@ -92,3 +92,53 @@ Comprehensive static & architectural code review of `/Users/martin/projects/hw_s
   1. `bounded_zip.odin:378` called deprecated `zlib.inflate`, emitting a compiler warning on every build.
   2. `build.sh` links `libhw_clipper2.a` for A/B reference parity testing (`--polygon-provider=clipper2`).
 - **Resolution:** Migrated `bounded_zip.odin` to `core:compress/deflate` (`deflate.inflate_raw`), eliminating all deprecation warnings and removing an intermediate buffer copy. `libhw_clipper2.a` is intentionally retained only for optional `--polygon-provider=clipper2` parity verification in `scripts/accept.sh`.
+
+---
+
+## Pass 2 Findings (as of `bdf4f09`)
+
+### High Severity (Pass 2)
+
+### [CR-13] `arc_fit.odin` Does Not Guard Against Merging `z_offset_um != 0` Operations
+- **Location:** `src/features/arc_fit.odin:57-79`
+- **Issue:** `motion_plan_fit_arcs` checks `kind`, `arc`, `path_id`, `role`, `speed`, `acceleration`, `fan_ratio`, and `point_a == prev.point_b`, but never checks `op.z_offset_um == 0`. If invoked after `motion_plan_apply_z_ramps` (or on helical/vase-mode operations), it would collapse Z-ramped segments into a single planar arc and drop intermediate Z offsets.
+- **Fix:** Reject any operation with `op.z_offset_um != 0` in both the initial filter (`op0.z_offset_um != 0`) and the contiguous-run loop (`cur.z_offset_um != 0`).
+
+### [CR-14] `variable_walls_adapt` Missing `len(src.line_widths)` Bounds Check
+- **Location:** `src/features/variable_walls.odin:39, 69-70`
+- **Issue:** Checks `len(src.points) < 4` and iterates `vi in 0..<n`, then indexes `src.line_widths[vi]` without checking `len(src.line_widths) == n`. Any source with a shorter `line_widths` slice panics.
+- **Fix:** Add `|| len(src.line_widths) != len(src.points)` to the loop guard on line 39.
+
+### [CR-15] `plate_object_lay_flat` Missing Triangle Vertex Index Bounds Checks
+- **Location:** `src/pipeline/build_plate.odin:162-168`
+- **Issue:** Indexes `obj.mesh.vertex_x[ia/ib/ic]` without checking `ia, ib, ic < u32(len(obj.mesh.vertex_x))`, risking an out-of-bounds panic on malformed meshes (same class as `CR-08`).
+- **Fix:** Validate `ia, ib, ic < nverts` before indexing in `plate_object_lay_flat`.
+
+### [CR-16] `tree_supports_generate` Heap Memory Leak in `tips_per_layer`
+- **Location:** `src/features/tree_supports.odin:89, 121`
+- **Issue:** `tips_per_layer := make([][dynamic][2]f64, layer_count, context.temp_allocator)` allocates the outer slice on `temp_allocator`, leaving each inner `[dynamic][2]f64` zero-initialized with `context.allocator` (heap). Every `append(&tips_per_layer[li], ...)` allocates on the heap and is never freed before returning, leaking up to `layer_count` heap allocations per tree-support slice. Also lacks `DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()`.
+- **Fix:** Add `runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()` and initialize each `tips_per_layer[li]` with `context.temp_allocator` (or `defer` delete each non-empty inner dynamic array).
+
+### Medium Severity (Pass 2)
+
+### [CR-17] `scarf_seam.odin` Ramps Inner Perimeters Instead of Outer Perimeters Only
+- **Location:** `src/features/scarf_seam.odin:76-84`
+- **Issue:** Comment states scarf ramps apply to outer perimeter loops, but line 76 filters only on `op.role != .Perimeter`, applying scarf Z/E ramps to inner perimeter walls as well.
+- **Fix:** Restrict scarf ramping to outer perimeter paths (e.g. via an `is_outer_perimeter` flag on `Motion_Operation` or `Unified_Path` / `Extrusion_Path`, matching `CR-06`).
+
+### [CR-18] `modifiers.odin` Prevents `fan=0` From Turning Fan Off & Quantizes Speed Before Clamping
+- **Location:** `src/pipeline/modifiers.odin:109-117`
+- **Issue:**
+  1. `clamp(ppm, profile.material.minimum_fan_ratio, profile.material.maximum_fan_ratio)` forces `fan=0` up to `minimum_fan_ratio` (e.g. 35% for PLA), making it impossible to disable the fan in a modifier zone.
+  2. Speed quantization `(raw_v / 50) * 50` runs before `clamp(qv, minimum_print_speed, maximum_speed)`, which can break the `% 50` Klipper invariant if either bound is not divisible by 50.
+- **Fix:** Allow `ppm == 0` to bypass `minimum_fan_ratio` (or clamp to `[0, maximum_fan_ratio]`), and quantize `qv` after clamping.
+
+### [CR-19] `ironing_paths_generate` Unbounded `temp_allocator` Growth Across Top-Skin Masks
+- **Location:** `src/features/surface_finish.odin:78-121`
+- **Issue:** Allocates `pts`, `paths`, and `tmp_infill` from `context.temp_allocator` inside the per-mask loop without a per-iteration temp guard, accumulating temp memory linearly with top-skin mask count.
+- **Fix:** Wrap the per-mask loop body in `runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()`.
+
+### [CR-20] `motion_plan_estimate_klipper_time` Uses Straight Chord Length for `G2`/`G3` Arcs
+- **Location:** `src/features/time_estimate.odin:41-44`
+- **Issue:** Computes `dist := math.hypot(dx, dy)` for all `.Extrude` operations, ignoring `op.arc != .None`. For curved `G2`/`G3` arcs, chord length underestimates true arc length `r * |sweep|` (severely for large-sweep arcs).
+- **Fix:** When `op.arc != .None`, compute radius `r` and signed angular sweep from `op.point_a` to `op.point_b` around `op.arc_center` (using CW/CCW direction) and use `dist = r * sweep` and entry/exit tangent vectors.
