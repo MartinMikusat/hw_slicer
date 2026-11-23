@@ -439,6 +439,39 @@ main :: proc() {
 				fmt.eprintf("error: sequential printing collision between object %d and %d\n", ca, cb)
 				os.exit(1)
 			}
+			if len(plate_objs) > 1 {
+				seq_res, seq_err := pipeline.plate_slice_sequential(plate_objs[:], resolved, run_opts)
+				if len(seq_err.stage) > 0 {
+					devlog.failed(devlog.global(), site, {reason = seq_err.detail, detail = seq_err.stage, severity = .Error}, {scope = "cli", stage = seq_err.stage})
+					fmt.eprintf("SLICE FAILED at [%s]: %s\n", seq_err.stage, seq_err.detail)
+					os.exit(1)
+				}
+				defer pipeline.sequential_slice_result_destroy(&seq_res)
+				fmt.printf("SLICE OK (sequential %d objects): %s  printer=%s material=%s process=%s\n",
+					seq_res.object_count, filepath.base(opts.input_path), opts.printer, opts.material, opts.process)
+				est_s := int(math.round(seq_res.total_seconds))
+				fmt.printf("  tris=%d  layers=%d  repairs=%d  extrude=%d  travel=%d  filament=%.2f mm  est_time=%02d:%02d:%02d  gcode=%d bytes  total=%.2f ms\n",
+					seq_res.total_triangles,
+					seq_res.total_layers,
+					seq_res.total_repairs,
+					seq_res.extrude_move_count,
+					seq_res.travel_move_count,
+					f64(seq_res.positive_filament_nm)/1_000_000.0,
+					est_s/3600, (est_s%3600)/60, est_s%60,
+					len(seq_res.gcode_bytes),
+					seq_res.total_duration_ms)
+				if len(opts.output_path) > 0 {
+					parent := filepath.dir(opts.output_path)
+					if len(parent) > 0 && parent != "." {_ = os.make_directory_all(parent)}
+					if os.write_entire_file(opts.output_path, seq_res.gcode_bytes) != nil {
+						fmt.eprintf("error: failed to write G-code '%s'\n", opts.output_path)
+						os.exit(1)
+					}
+					fmt.printf("  wrote G-code: %s\n", opts.output_path)
+				}
+				devlog.succeeded(devlog.global(), site, {scope = "cli", stage = "done"}, {rows = i64(seq_res.extrude_move_count)})
+				return
+			}
 		}
 		merged := pipeline.plate_merge_to_mesh(plate_objs[:])
 		defer formats.decoded_mesh_destroy(&merged)
@@ -457,13 +490,17 @@ main :: proc() {
 	fmt.printf("SLICE OK: %s  printer=%s material=%s process=%s\n",
 		filepath.base(opts.input_path), opts.printer, opts.material, opts.process)
 	est_s := int(math.round(res.time_estimate.total_seconds))
+	reported_filament_nm := u128(res.extrusion.total_filament_nm)
+	if res.klipper.positive_filament_nm > res.klipper.negative_filament_nm {
+		reported_filament_nm = res.klipper.positive_filament_nm - res.klipper.negative_filament_nm
+	}
 	fmt.printf("  tris=%d  layers=%d  repairs=%d  extrude=%d  travel=%d  filament=%.2f mm  est_time=%02d:%02d:%02d  gcode=%d bytes  total=%.2f ms\n",
 		len(res.spine.mesh.triangle_ids),
 		len(res.spine.schedule.layer_ids),
 		res.contour_repairs,
 		res.unified_plan.extrude_move_count,
 		res.unified_plan.travel_move_count,
-		f64(res.extrusion.total_filament_nm)/1_000_000.0,
+		f64(reported_filament_nm)/1_000_000.0,
 		est_s/3600, (est_s%3600)/60, est_s%60,
 		len(res.klipper.bytes),
 		res.total_duration_ms)

@@ -27,20 +27,19 @@ Comprehensive static & architectural code review of `/Users/martin/projects/hw_s
 
 ## Medium Severity
 
-### [CR-03] Worker Thread `temp_allocator` Leaks & Allocator Thread-Safety Assumptions
+### [CR-03] Worker Thread `temp_allocator` Leaks & Allocator Thread-Safety Assumptions — **RESOLVED**
 - **Locations:**
-  - `src/features/parallel.odin:36-42` (`parallel_for`)
-  - `src/slicing/cpu_intersections.odin:35-42` (`slicing_parallel_for`)
-  - Callers passing arbitrary `allocator` into parallel workers (`skin.odin`, `role_overlap.odin`, `gap_samples.odin`, `solid_paths.odin`, `bridge_evidence.odin`, `bridge_directions.odin`)
+  - `src/features/parallel.odin` (`parallel_for`)
+  - `src/slicing/cpu_intersections.odin` (`slicing_parallel_for`)
 - **Issue:**
-  1. Spawned worker threads in `parallel_for` and `slicing_parallel_for` never call `free_all(context.temp_allocator)` before exiting, leaking any temp allocations made by worker bodies that lack a `DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()`.
-  2. Callers passing a non-thread-safe custom `mem.Allocator` (e.g. a tracking or arena allocator) into these functions will hit data races on concurrent `make`/`delete`.
-- **Fix:** Add `defer free_all(context.temp_allocator)` inside `worker_fn` in both helpers (and document that parallel entry points require a thread-safe allocator or fall back to 1 thread when a non-heap allocator is supplied).
+  1. Spawned worker threads in `parallel_for` and `slicing_parallel_for` never called `free_all(context.temp_allocator)` before exiting, leaking any temp allocations made by worker bodies that lacked a `DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()`.
+  2. Callers passing a non-thread-safe custom `mem.Allocator` into these functions would hit data races on concurrent `make`/`delete`.
+- **Resolution:** Added a `spawned_worker_fn` wrapper with `defer free_all(context.temp_allocator)` for all spawned worker threads in both `parallel_for` and `slicing_parallel_for` (leaving the calling thread's temp allocator untouched).
 
-### [CR-04] Non-Thread-Safe Lazy Initialization & Silent Shader Failure in `HWSlicerMetalCompute.m`
-- **Location:** `host/HWSlicerMetalCompute.m:54-83`
-- **Issue:** `hw_metal_compute_init` uses an unsynchronized `static bool g_initialized` (race if called concurrently), discards `NSError *err` on shader/pipeline compilation failure without logging, and returns `true` even if `g_trv_pso` or `g_tri_pso` failed to compile.
-- **Fix:** Guard initialization with `dispatch_once`, log `err.localizedDescription` on failure, and verify all required PSOs.
+### [CR-04] Non-Thread-Safe Lazy Initialization & Silent Shader Failure in `HWSlicerMetalCompute.m` — **RESOLVED**
+- **Location:** `host/HWSlicerMetalCompute.m`
+- **Issue:** `hw_metal_compute_init` used an unsynchronized `static bool g_initialized`, discarded `NSError *err` on shader/pipeline compilation failure without logging, and returned `true` even if `g_trv_pso` or `g_tri_pso` failed to compile.
+- **Resolution:** Replaced `g_initialized` with `dispatch_once(&g_init_once, ...)`, logged `err.localizedDescription` to `stderr` on library or PSO failure, and required all three PSOs (`g_pip_pso`, `g_tri_pso`, `g_trv_pso`) to succeed.
 
 ### [CR-05] `odin_offset` Single-Pass `.Positive` Union Can Create Ghost Islands on Collapsed Holes (and Contributes to `-3.1%` Filament Delta) — **RESOLVED**
 - **Location:** `src/polygon/odin_offset.odin`
@@ -55,41 +54,41 @@ Comprehensive static & architectural code review of `/Users/martin/projects/hw_s
 - **Issue:** Filters only on `src.source_kind != .Perimeter`, perturbing inner and middle perimeter loops in addition to the outermost perimeter. This causes inner walls to overlap infill/adjacent walls.
 - **Resolution:** Passed `perimeters` into `fuzzy_skin_apply` and skipped any perimeter source where `perimeters.paths[src.source_index].perimeter_index != 0`.
 
-### [CR-07] `--sequential` Validates Clearance but Still Slices Objects Layer-by-Layer
-- **Locations:** `src/pipeline/sequential.odin:17-43`, `src/cli/main.odin:435-445`
-- **Issue:** `plate_validate_sequential` validates extruder/gantry clearance and sorts objects front-to-back, but `main.odin` then merges all objects via `plate_merge_to_mesh` and runs a single layer-by-layer slice. The emitted G-code prints all objects simultaneously rather than object-by-object.
-- **Fix:** When `--sequential` is enabled, slice each `Plate_Object` independently in sorted front-to-back order and concatenate their per-object motion/G-code blocks (with safe Z-clearance travel between objects).
+### [CR-07] `--sequential` Validates Clearance but Still Slices Objects Layer-by-Layer — **RESOLVED**
+- **Locations:** `src/pipeline/sequential.odin`, `src/cli/main.odin`
+- **Issue:** `plate_validate_sequential` validated extruder/gantry clearance and sorted objects front-to-back, but `main.odin` then merged all objects via `plate_merge_to_mesh` and ran a single layer-by-layer slice.
+- **Resolution:** Implemented `plate_slice_sequential` in `src/pipeline/sequential.odin` and wired it into `src/cli/main.odin` when `--sequential` is set on multi-object plates: each sorted `Plate_Object` is sliced independently and concatenated with safe `G0 Z<max_z + 2mm>` clearance transitions between objects.
 
-### [CR-08] `mesh_auto_repair` Missing Vertex Bounds Checks & Open-Mesh Signed Volume Risk
-- **Location:** `src/repair/mesh_repair.odin:14-17, 30-48, 76-89`
+### [CR-08] `mesh_auto_repair` Missing Vertex Bounds Checks & Open-Mesh Signed Volume Risk — **RESOLVED**
+- **Location:** `src/repair/mesh_repair.odin`
 - **Issue:**
-  1. `mesh.vertex_x[ib]` is indexed without checking `ia, ib, ic < u32(len(mesh.vertex_x))`, risking an out-of-bounds panic on malformed OBJ/3MF meshes.
-  2. Global signed-volume flipping (`vol6 < -1e-6`) can invert an open (non-watertight) mesh whose unclosed boundary happens to produce a negative signed tetrahedron sum.
-  3. Doc comment claims BFS manifold winding propagation and boundary hole filling (`holes_filled`), neither of which is implemented.
-- **Fix:** Add vertex index bounds validation, gate signed-volume inversion on watertight/closed-manifold check (or implement per-component BFS winding), and align comments with actual behavior.
+  1. `mesh.vertex_x[ib]` was indexed without checking `ia, ib, ic < u32(len(mesh.vertex_x))`.
+  2. Global signed-volume flipping (`vol6 < -1e-6`) could invert an open (non-watertight) mesh.
+  3. Doc comment claimed BFS manifold winding propagation and boundary hole filling, neither of which was implemented.
+- **Resolution:** Added vertex index bounds validation before indexing, gated signed-volume face inversion on an undirected-edge watertightness check (every edge shared by exactly 2 faces), and aligned the doc comment with actual behavior.
 
 ---
 
 ## Low Severity
 
-### [CR-09] Missing `allocator` Parameter in `fuzzy_skin_apply` Cleanup Path
-- **Location:** `src/features/fuzzy_skin.odin:85-86`
-- **Issue:** `delete(new_pts)` and `delete(new_ws)` omit `allocator` (allocated on lines 40–41 with `allocator`); safe only with the default heap allocator.
-- **Fix:** Dynamic arrays in Odin store their allocator internally, so `delete(new_pts)` is valid, **however** `owned_points` stores slices `new_pts[:]` which callers free with `delete(slice, allocator)` — verify caller uses the identical `allocator` and never shrinks/reallocates with a different one.
+### [CR-09] Missing `allocator` Parameter in `fuzzy_skin_apply` Cleanup Path — **RESOLVED (VERIFIED SAFE)**
+- **Location:** `src/features/fuzzy_skin.odin`, `src/pipeline/orchestrator.odin`
+- **Issue:** `delete(new_pts)` and `delete(new_ws)` omitted `allocator`, while `owned_points` / `owned_widths` stored slices freed by the caller.
+- **Resolution:** Verified Odin dynamic arrays carry their own allocator on `delete(dyn_arr)`, and verified `orchestrator.odin` frees `fuzzy_owned_pts` / `fuzzy_owned_ws` with the exact same `allocator` passed to `fuzzy_skin_apply`.
 
-### [CR-10] CLI `filament=` Summary Ignores Post-Extrusion Filament Changes (`--scarf-seam`, `--modifier=...:flow=...`)
-- **Locations:** `src/features/scarf_seam.odin:99-102`, `src/pipeline/modifiers.odin`, `src/cli/main.odin:465`
-- **Issue:** `scarf_seam` and flow-scaling modifiers mutate `motion.operations[k].filament_delta_nm` after `extrusion_calculate` has already run, so `klipper.positive_filament_nm` reflects the true emitted filament while the CLI summary (`filament=... mm`) prints the stale pre-modifier `extrusion.total_filament_nm`.
-- **Fix:** Report `res.klipper.positive_filament_nm` (or recompute `res.extrusion.total_filament_nm` after post-motion passes).
+### [CR-10] CLI `filament=` Summary Ignores Post-Extrusion Filament Changes (`--scarf-seam`, `--modifier=...:flow=...`) — **RESOLVED**
+- **Locations:** `src/cli/main.odin`, `src/pipeline/sequential.odin`
+- **Issue:** `scarf_seam` and flow-scaling modifiers mutate `motion.operations[k].filament_delta_nm` after `extrusion_calculate`, so the CLI summary printed the stale pre-modifier `extrusion.total_filament_nm`.
+- **Resolution:** Updated CLI and sequential summaries to report net emitted filament (`klipper.positive_filament_nm - klipper.negative_filament_nm`, excluding retraction/recovery pairs).
 
-### [CR-11] `gap_evidence` Single-Loop Fast Path Can Omit Acute-Corner Inter-Perimeter Gaps
-- **Location:** `src/features/gap_evidence.odin:523-548`
-- **Issue:** On a single-contour region where all `N` concentric perimeters survive with `path_count == 1`, approximating uncovered area as `offset(innermost, -half_w)` assumes zero inter-perimeter gaps. At very acute corners (`< 30°`), miter beveling can leave small triangular gaps between perimeter bands that are skipped by the fast path.
-- **Fix:** Either accept the tradeoff for default slicing (verified `< 0.21%` filament delta across the benchmark suite) or add an acute-corner check before taking the fast path.
+### [CR-11] `gap_evidence` Single-Loop Fast Path Can Omit Acute-Corner Inter-Perimeter Gaps — **RESOLVED**
+- **Location:** `src/features/gap_evidence.odin`
+- **Issue:** On a single-contour region where all `N` concentric perimeters survive with `path_count == 1`, approximating uncovered area as `offset(innermost, -half_w)` could skip small inter-perimeter triangular gaps at very acute corners.
+- **Resolution:** Added `gap_contour_has_acute_corner` (zero-`sqrt` dot-product test for interior angles `< 60°`) to gate the single-loop fast path and fall back to exact coverage subtraction whenever acute corners are present.
 
-### [CR-12] Build Hygiene: Deprecated `zlib.inflate` & Always-Linked C++ Clipper2
-- **Locations:** `src/formats/bounded_zip.odin:378`, `build.sh:57, 103, 120`
+### [CR-12] Build Hygiene: Deprecated `zlib.inflate` & Always-Linked C++ Clipper2 — **RESOLVED**
+- **Locations:** `src/formats/bounded_zip.odin`, `build.sh`
 - **Issue:**
-  1. `bounded_zip.odin:378` calls deprecated `zlib.inflate`, emitting a compiler warning on every build.
-  2. `build.sh` unconditionally builds and links C++ `libhw_clipper2.a` (`6,769` LOC) even though `OdinVatti 2.0` is now the default provider.
-- **Fix:** Migrate `bounded_zip.odin:378` to `core:compress/deflate` (`deflate.inflate_zlib`), and optionally gate `libhw_clipper2.a` behind a build flag once A/B reference parity checks are no longer needed.
+  1. `bounded_zip.odin:378` called deprecated `zlib.inflate`, emitting a compiler warning on every build.
+  2. `build.sh` links `libhw_clipper2.a` for A/B reference parity testing (`--polygon-provider=clipper2`).
+- **Resolution:** Migrated `bounded_zip.odin` to `core:compress/deflate` (`deflate.inflate_raw`), eliminating all deprecation warnings and removing an intermediate buffer copy. `libhw_clipper2.a` is intentionally retained only for optional `--polygon-provider=clipper2` parity verification in `scripts/accept.sh`.

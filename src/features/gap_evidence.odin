@@ -519,9 +519,10 @@ gap_evidence_process_region :: proc(
 	group_start := region_index * int(perimeters.config.count)
 	group_end := group_start + int(perimeters.config.count)
 
-	// Fast path for thick single-loop regions where every concentric perimeter survived as a single ring:
+	// Fast path for thick single-loop regions where every concentric perimeter survived as a single ring
+	// and no sharp acute corners exist (< 60° interior angle, where beveling can leave inter-perimeter triangles):
 	// the contiguous outer shell covers the region down to offset(innermost_perimeter, -half_w).
-	if config.uncovered_only && perimeters.config.count >= 2 && region.contour_count == 1 {
+	if config.uncovered_only && perimeters.config.count >= 2 && region.contour_count == 1 && !gap_contour_has_acute_corner(region_input) {
 		all_single := true
 		for gi in group_start..<group_end {
 			if perimeters.groups[gi].path_count != 1 {
@@ -780,4 +781,32 @@ gap_evidence_process_region :: proc(
 	outputs[output_offset + 4] = above_two_core
 	outputs[output_offset + 5] = unprinted
 	return .None
+}
+
+// Returns true if any contour vertex turns more sharply than 120° (interior angle < 60°),
+// where miter beveling can leave inter-perimeter triangles that require exact coverage subtraction.
+@(private = "file")
+gap_contour_has_acute_corner :: proc(set: polygon.Polygon_Set) -> bool {
+	for path in set.paths {
+		if path.count < 3 {continue}
+		pts := set.points[path.offset:path.offset + path.count]
+		n := len(pts)
+		for i in 0..<n {
+			prev := pts[(i + n - 1) % n]
+			curr := pts[i]
+			next := pts[(i + 1) % n]
+			ux := f64(i64(curr.x) - i64(prev.x))
+			uy := f64(i64(curr.y) - i64(prev.y))
+			wx := f64(i64(next.x) - i64(curr.x))
+			wy := f64(i64(next.y) - i64(curr.y))
+			lu2 := ux*ux + uy*uy
+			lw2 := wx*wx + wy*wy
+			if lu2 <= 0 || lw2 <= 0 {continue}
+			dot := ux*wx + uy*wy
+			if dot < 0 && 4.0*dot*dot > lu2*lw2 {
+				return true
+			}
+		}
+	}
+	return false
 }

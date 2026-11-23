@@ -36,10 +36,14 @@ slicing_parallel_for :: proc(count: int, ctx: ^$T, body: proc(ctx: ^T, index: in
 			st.body(st.ctx, idx)
 		}
 	}
+	spawned_worker_fn :: proc(st: ^State) {
+		defer free_all(context.temp_allocator)
+		worker_fn(st)
+	}
 	threads: [15]^thread.Thread
 	spawned := workers - 1
 	for i in 0..<spawned {
-		threads[i] = thread.create_and_start_with_poly_data(&state, worker_fn)
+		threads[i] = thread.create_and_start_with_poly_data(&state, spawned_worker_fn)
 	}
 	worker_fn(&state)
 	for i in 0..<spawned {

@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {
@@ -49,37 +50,52 @@ static id<MTLCommandQueue> g_queue = nil;
 static id<MTLComputePipelineState> g_pip_pso = nil;
 static id<MTLComputePipelineState> g_tri_pso = nil;
 static id<MTLComputePipelineState> g_trv_pso = nil;
-static bool g_initialized = false;
+static dispatch_once_t g_init_once = 0;
 
 bool hw_metal_compute_init(const char *shader_source) {
-    if (g_initialized) return (g_device != nil && g_pip_pso != nil);
-    g_initialized = true;
-    @autoreleasepool {
-        g_device = MTLCreateSystemDefaultDevice();
-        if (!g_device) return false;
-        g_queue = [g_device newCommandQueue];
-        if (!g_queue) return false;
+    dispatch_once(&g_init_once, ^{
+        @autoreleasepool {
+            g_device = MTLCreateSystemDefaultDevice();
+            if (!g_device) return;
+            g_queue = [g_device newCommandQueue];
+            if (!g_queue) return;
 
-        NSString *src = [NSString stringWithUTF8String:shader_source];
-        NSError *err = nil;
-        id<MTLLibrary> lib = [g_device newLibraryWithSource:src options:nil error:&err];
-        if (!lib) {
-            return false;
+            NSString *src = [NSString stringWithUTF8String:shader_source];
+            NSError *err = nil;
+            id<MTLLibrary> lib = [g_device newLibraryWithSource:src options:nil error:&err];
+            if (!lib) {
+                fprintf(stderr, "[metal] shader compile failed: %s\n",
+                        err ? err.localizedDescription.UTF8String : "unknown error");
+                return;
+            }
+            id<MTLFunction> fn_pip = [lib newFunctionWithName:@"batch_point_in_polygon"];
+            id<MTLFunction> fn_tri = [lib newFunctionWithName:@"batch_triangle_plane_intersect"];
+            id<MTLFunction> fn_trv = [lib newFunctionWithName:@"batch_travel_crosses_exterior"];
+            if (fn_pip) {
+                g_pip_pso = [g_device newComputePipelineStateWithFunction:fn_pip error:&err];
+                if (!g_pip_pso) {
+                    fprintf(stderr, "[metal] pip PSO failed: %s\n",
+                            err ? err.localizedDescription.UTF8String : "unknown error");
+                }
+            }
+            if (fn_tri) {
+                g_tri_pso = [g_device newComputePipelineStateWithFunction:fn_tri error:&err];
+                if (!g_tri_pso) {
+                    fprintf(stderr, "[metal] tri PSO failed: %s\n",
+                            err ? err.localizedDescription.UTF8String : "unknown error");
+                }
+            }
+            if (fn_trv) {
+                g_trv_pso = [g_device newComputePipelineStateWithFunction:fn_trv error:&err];
+                if (!g_trv_pso) {
+                    fprintf(stderr, "[metal] trv PSO failed: %s\n",
+                            err ? err.localizedDescription.UTF8String : "unknown error");
+                }
+            }
         }
-        id<MTLFunction> fn_pip = [lib newFunctionWithName:@"batch_point_in_polygon"];
-        id<MTLFunction> fn_tri = [lib newFunctionWithName:@"batch_triangle_plane_intersect"];
-        id<MTLFunction> fn_trv = [lib newFunctionWithName:@"batch_travel_crosses_exterior"];
-        if (fn_pip) {
-            g_pip_pso = [g_device newComputePipelineStateWithFunction:fn_pip error:&err];
-        }
-        if (fn_tri) {
-            g_tri_pso = [g_device newComputePipelineStateWithFunction:fn_tri error:&err];
-        }
-        if (fn_trv) {
-            g_trv_pso = [g_device newComputePipelineStateWithFunction:fn_trv error:&err];
-        }
-        return (g_pip_pso != nil);
-    }
+    });
+    return (g_device != nil && g_queue != nil &&
+            g_pip_pso != nil && g_tri_pso != nil && g_trv_pso != nil);
 }
 
 bool hw_metal_batch_point_in_polygon(

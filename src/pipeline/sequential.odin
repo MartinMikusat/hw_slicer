@@ -1,6 +1,10 @@
 package pipeline
 
+import "core:fmt"
 import "core:slice"
+import "core:strings"
+
+import profiles "../profiles"
 
 Sequential_Clearance :: struct {
 	extruder_radius_mm: f64, // default 35.0 mm around nozzle
@@ -40,4 +44,99 @@ plate_validate_sequential :: proc(
 		}
 	}
 	return true, -1, -1
+}
+
+Sequential_Slice_Result :: struct {
+	gcode_bytes:          []u8,
+	object_count:         int,
+	total_triangles:      int,
+	total_layers:         int,
+	total_repairs:        int,
+	extrude_move_count:   u64,
+	travel_move_count:    u64,
+	positive_filament_nm: u128,
+	total_seconds:        f64,
+	total_duration_ms:    f64,
+}
+
+sequential_slice_result_destroy :: proc(res: ^Sequential_Slice_Result, allocator := context.allocator) {
+	if res == nil {return}
+	delete(res.gcode_bytes, allocator)
+	res^ = {}
+}
+
+// Slices each validated, front-to-back-sorted plate object independently and concatenates
+// their G-code streams with safe Z-clearance lifts between objects.
+plate_slice_sequential :: proc(
+	objects: []Plate_Object,
+	profile: profiles.Resolved_Profiles,
+	options: Slice_Run_Options,
+	allocator := context.allocator,
+) -> (Sequential_Slice_Result, Slice_Run_Error) {
+	out := Sequential_Slice_Result{object_count = len(objects)}
+	if len(objects) == 0 {
+		return {}, {stage = "sequential", detail = "no objects on plate"}
+	}
+	b := strings.builder_make(0, 64*1024, allocator)
+	defer strings.builder_destroy(&b)
+
+	travel_feed := (i64(profile.process.source.travel.speed) * 60) / 1_000
+	max_z_mm := 0.0
+	bed_max_z_mm := f64(i64(profile.printer.axis_maximum_z)) / 1_000.0
+
+	for &obj, oi in objects {
+		plate_object_compute_bounds(&obj)
+		obj_opts := options
+		obj_opts.center_on_bed = false
+		obj_opts.object_name = obj.name
+		obj_res, err := slice_run_decoded_mesh(&obj.mesh, profile, obj_opts, allocator)
+		if len(err.stage) > 0 {
+			return {}, err
+		}
+		defer slice_run_result_destroy(&obj_res, allocator)
+
+		out.total_triangles += len(obj_res.spine.mesh.triangle_ids)
+		out.total_layers += len(obj_res.spine.schedule.layer_ids)
+		out.total_repairs += int(obj_res.contour_repairs)
+		out.extrude_move_count += obj_res.unified_plan.extrude_move_count
+		out.travel_move_count += obj_res.unified_plan.travel_move_count
+		if obj_res.klipper.positive_filament_nm > obj_res.klipper.negative_filament_nm {
+			out.positive_filament_nm += obj_res.klipper.positive_filament_nm - obj_res.klipper.negative_filament_nm
+		} else {
+			out.positive_filament_nm += u128(obj_res.extrusion.total_filament_nm)
+		}
+		out.total_seconds += obj_res.time_estimate.total_seconds
+		out.total_duration_ms += obj_res.total_duration_ms
+
+		g := string(obj_res.klipper.bytes)
+		body_end := len(g)
+		if end_idx := strings.last_index(g, "END_PRINT"); end_idx >= 0 {
+			body_end = end_idx
+		}
+		if oi == 0 {
+			strings.write_string(&b, g[:body_end])
+		} else {
+			clear_z := min(bed_max_z_mm, max_z_mm + 2.0)
+			fmt.sbprintf(&b, ";SEQUENTIAL_OBJECT_TRANSITION index=%d name=%s\n", oi, obj.name)
+			fmt.sbprintf(&b, "G0 Z%.3f F%d\n", clear_z, travel_feed)
+			body_start := 0
+			if idx := strings.index(g, "EXCLUDE_OBJECT_START"); idx >= 0 {
+				body_start = idx
+			} else if idx2 := strings.index(g, "SET_PRINT_STATS_INFO CURRENT_LAYER=0"); idx2 >= 0 {
+				body_start = idx2
+			}
+			if body_start < body_end {
+				strings.write_string(&b, g[body_start:body_end])
+			}
+		}
+		if obj.max_z > max_z_mm {
+			max_z_mm = obj.max_z
+		}
+	}
+	strings.write_string(&b, "END_PRINT\n")
+
+	text := strings.to_string(b)
+	out.gcode_bytes = make([]u8, len(text), allocator)
+	copy(out.gcode_bytes, transmute([]u8)text)
+	return out, {}
 }

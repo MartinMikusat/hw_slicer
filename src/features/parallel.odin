@@ -39,11 +39,15 @@ parallel_for :: proc(count: int, ctx: ^$T, body: proc(ctx: ^T, index: int)) {
 			rp.body(rp.ctx, idx)
 		}
 	}
+	spawned_worker_fn :: proc(rp: ^Runner) {
+		defer free_all(context.temp_allocator)
+		worker_fn(rp)
+	}
 
 	spawn_count := min(workers - 1, count - 1)
 	threads: [15]^thread.Thread
 	for wi in 0..<spawn_count {
-		threads[wi] = thread.create_and_start_with_poly_data(&r, worker_fn)
+		threads[wi] = thread.create_and_start_with_poly_data(&r, spawned_worker_fn)
 	}
 	worker_fn(&r)
 	for wi in 0..<spawn_count {

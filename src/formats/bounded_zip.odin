@@ -1,7 +1,6 @@
 package formats
 
-import "core:bytes"
-import "core:compress/zlib"
+import "core:compress/deflate"
 import "core:strings"
 import "core:unicode/utf8"
 
@@ -367,30 +366,23 @@ bounded_zip_extract :: proc(
 		}
 		copy(output, compressed)
 	} else {
-		buffer: bytes.Buffer
-		bytes.buffer_init_allocator(
-			&buffer,
-			0,
-			int(entry.uncompressed_bytes),
-			allocator,
+		inflated := make([dynamic]u8, 0, int(entry.uncompressed_bytes), allocator)
+		inflate_error := deflate.inflate_raw(
+			&inflated,
+			compressed,
+			expected_output_size = int(entry.uncompressed_bytes),
+			max_output_size = int(entry.uncompressed_bytes),
+			allocator = allocator,
 		)
-		defer bytes.buffer_destroy(&buffer)
-		inflate_error := zlib.inflate(
-			data = compressed,
-			output = &buffer,
-			raw = true,
-			size_unpacked = int(entry.uncompressed_bytes),
-		)
-		if inflate_error != nil {return nil, .Inflate_Failed}
-		inflated := bytes.buffer_to_bytes(&buffer)
+		if inflate_error != nil {
+			delete(inflated)
+			return nil, .Inflate_Failed
+		}
 		if len(inflated) != int(entry.uncompressed_bytes) {
+			delete(inflated)
 			return nil, .Size_Mismatch
 		}
-		output = make([]u8, len(inflated), allocator)
-		if len(inflated) > 0 && output == nil {
-			return nil, .Allocation_Failed
-		}
-		copy(output, inflated)
+		output = inflated[:]
 	}
 	if bounded_zip_crc32(output) != entry.crc32 {
 		delete(output, allocator)

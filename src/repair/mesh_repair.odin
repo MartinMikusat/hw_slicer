@@ -1,6 +1,6 @@
 package repair
 
-import "core:math"
+import "base:runtime"
 
 import contracts "../contracts"
 import formats "../formats"
@@ -12,13 +12,13 @@ Mesh_Repair_Stats :: struct {
 }
 
 // Performs pre-slicing 3D mesh cleanup on a Decoded_Mesh:
-// 1. Removes degenerate/zero-area triangles.
-// 2. Enforces consistent winding across manifold shared edges (BFS propagation).
-// 3. Fills small open boundary loops (<= 16 edges) via fan triangulation.
+// 1. Removes out-of-bounds and degenerate/zero-area triangles.
+// 2. For closed (watertight manifold) meshes with negative signed volume, flips all faces outward.
 mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.allocator) -> Mesh_Repair_Stats {
 	if mesh == nil || len(mesh.triangle_a) == 0 {return {}}
 	stats := Mesh_Repair_Stats{}
 
+	nverts := u32(min(len(mesh.vertex_x), min(len(mesh.vertex_y), len(mesh.vertex_z))))
 	nt := len(mesh.triangle_a)
 	keep_a := make([dynamic]u32, 0, nt, allocator)
 	keep_b := make([dynamic]u32, 0, nt, allocator)
@@ -26,10 +26,10 @@ mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.alloc
 	keep_ids := make([dynamic]contracts.Stable_ID, 0, nt, allocator)
 	keep_off := make([dynamic]u64, 0, nt, allocator)
 
-	// Step 1: Drop degenerate / zero-area triangles.
+	// Step 1: Drop out-of-bounds and degenerate / zero-area triangles.
 	for i in 0..<nt {
 		ia, ib, ic := mesh.triangle_a[i], mesh.triangle_b[i], mesh.triangle_c[i]
-		if ia == ib || ib == ic || ic == ia {
+		if ia >= nverts || ib >= nverts || ic >= nverts || ia == ib || ib == ic || ic == ia {
 			stats.degenerate_removed += 1
 			continue
 		}
@@ -72,7 +72,9 @@ mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.alloc
 		mesh.source_record_offsets = keep_off[:]
 	}
 
-	// Step 2: Check signed volume; if inverted (negative total volume), flip all faces outward.
+	// Step 2: Check watertightness and signed volume; flip all faces outward only on closed inverted meshes.
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+	edge_counts := make(map[u64]u32, len(mesh.triangle_a)*2, context.temp_allocator)
 	vol6 := 0.0
 	for i in 0..<len(mesh.triangle_a) {
 		ia, ib, ic := mesh.triangle_a[i], mesh.triangle_b[i], mesh.triangle_c[i]
@@ -80,14 +82,26 @@ mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.alloc
 		bx, by, bz := mesh.vertex_x[ib], mesh.vertex_y[ib], mesh.vertex_z[ib]
 		cx, cy, cz := mesh.vertex_x[ic], mesh.vertex_y[ic], mesh.vertex_z[ic]
 		vol6 += ax*(by*cz - bz*cy) - ay*(bx*cz - bz*cx) + az*(bx*cy - by*cx)
+		e0 := (u64(min(ia, ib)) << 32) | u64(max(ia, ib))
+		e1 := (u64(min(ib, ic)) << 32) | u64(max(ib, ic))
+		e2 := (u64(min(ic, ia)) << 32) | u64(max(ic, ia))
+		edge_counts[e0] = edge_counts[e0] + 1
+		edge_counts[e1] = edge_counts[e1] + 1
+		edge_counts[e2] = edge_counts[e2] + 1
 	}
-	if vol6 < -1e-6 {
+	is_closed := len(edge_counts) > 0
+	for _, count in edge_counts {
+		if count != 2 {
+			is_closed = false
+			break
+		}
+	}
+	if is_closed && vol6 < -1e-6 {
 		for i in 0..<len(mesh.triangle_a) {
 			mesh.triangle_b[i], mesh.triangle_c[i] = mesh.triangle_c[i], mesh.triangle_b[i]
 		}
 		stats.normals_flipped = u32(len(mesh.triangle_a))
 	}
 
-	_ = math.abs(vol6)
 	return stats
 }
