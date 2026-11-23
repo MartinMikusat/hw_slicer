@@ -98,9 +98,9 @@ CLIPPER2_PROVIDER :: Polygon_Provider{
 }
 
 NATIVE_PROVIDER :: Polygon_Provider{
-	name = "OdinPolygon",
-	version = {1, 0, 0},
-	boolean = odin_boolean,
+	name = "OdinVatti",
+	version = {2, 0, 0},
+	boolean = odin_vatti_boolean,
 	offset = odin_offset,
 }
 

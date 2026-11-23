@@ -28,7 +28,7 @@ odin_offset :: proc(
 	}
 	if len(input.paths) == 0 {return {}, .None}
 	if i64(delta) == 0 {
-		return odin_boolean(input, {}, .Union, .Non_Zero, limits, allocator)
+		return odin_vatti_boolean(input, {}, .Union, .Non_Zero, limits, allocator)
 	}
 
 	d := f64(i64(delta))
@@ -70,8 +70,10 @@ odin_offset :: proc(
 
 			cross := n0[0]*n1[1] - n0[1]*n1[0]
 			dot := clamp(n0[0]*n1[0] + n0[1]*n1[1], -1.0, 1.0)
-			// Convex wrt offset direction when cross * d < 0 (turning outward for d > 0).
-			is_convex := (cross * d) < -1e-9
+			// For CCW outer rings, right-hand normals rotate CCW at convex corners (cross > 0),
+			// so outward expansion (d > 0) has cross * d > 0. For CW holes, cross < 0 so
+			// inward-solid / outward-hole offset (d < 0) also has cross * d > 0.
+			is_convex := (cross * d) > 1e-9
 
 			p0 := Polygon_Point{
 				x = contracts.Micrometres(i64(math.round(vx + d*n0[0]))),
@@ -83,10 +85,22 @@ odin_offset :: proc(
 			}
 
 			if !is_convex {
-				// Concave corner: connect p0 -> v -> p1 so self-union trims cleanly.
-				odin_offset_push(&raw_pts, &added, p0)
-				odin_offset_push(&raw_pts, &added, v)
-				odin_offset_push(&raw_pts, &added, p1)
+				// Concave corner wrt offset direction: compute exact inward miter when well-conditioned,
+				// otherwise fall back to p0 -> v -> p1 so self-union trims cleanly.
+				denom := 1.0 + dot
+				if denom > 0.05 {
+					scale := 1.0 / denom
+					mx := vx + d*(n0[0] + n1[0])*scale
+					my := vy + d*(n0[1] + n1[1])*scale
+					odin_offset_push(&raw_pts, &added, {
+						x = contracts.Micrometres(i64(math.round(mx))),
+						y = contracts.Micrometres(i64(math.round(my))),
+					})
+				} else {
+					odin_offset_push(&raw_pts, &added, p0)
+					odin_offset_push(&raw_pts, &added, v)
+					odin_offset_push(&raw_pts, &added, p1)
+				}
 				continue
 			}
 
@@ -137,10 +151,10 @@ odin_offset :: proc(
 				a0 := math.atan2(d*n0[1], d*n0[0])
 				a1 := math.atan2(d*n1[1], d*n1[0])
 				sweep := a1 - a0
-				if d > 0 {
-					for sweep > 0 {sweep -= 2.0 * math.PI}
-				} else {
+				if cross > 0 {
 					for sweep < 0 {sweep += 2.0 * math.PI}
+				} else {
+					for sweep > 0 {sweep -= 2.0 * math.PI}
 				}
 				steps := 1
 				if abs_d > arc_tol {
@@ -173,7 +187,7 @@ odin_offset :: proc(
 	if len(raw_paths) == 0 {return {}, .None}
 	raw_set := Polygon_Set{points = raw_pts[:], paths = raw_paths[:]}
 	// Positive fill rule keeps valid surviving interior regions and discards inverted negative-offset loops.
-	return odin_boolean(raw_set, {}, .Union, .Positive, limits, allocator)
+	return odin_vatti_boolean(raw_set, {}, .Union, .Positive, limits, allocator)
 }
 
 @(private = "file")
