@@ -116,8 +116,10 @@ plate_slice_sequential :: proc(
 		{min(contracts.Micrometres), min(contracts.Micrometres)},
 	}
 	total_layers := 0
-	for &obj_res in results {
+	object_areas := make([][2]polygon.Polygon_Point, len(results), context.temp_allocator)
+	for &obj_res, oi in results {
 		a := gcode.klipper_extrusion_area(obj_res.motion)
+		object_areas[oi] = a
 		area[0] = {min(area[0].x, a[0].x), min(area[0].y, a[0].y)}
 		area[1] = {max(area[1].x, a[1].x), max(area[1].y, a[1].y)}
 		total_layers += len(obj_res.motion.layers)
@@ -227,6 +229,9 @@ plate_slice_sequential :: proc(
 	strings.write_string(&b, "END_PRINT\n")
 
 	text := strings.to_string(b)
+	if detail, ok := sequential_validate(text, object_areas, total_layers); !ok {
+		return {}, {stage = "sequential", detail = detail}
+	}
 	out.gcode_bytes = make([]u8, len(text), allocator)
 	copy(out.gcode_bytes, transmute([]u8)text)
 	return out, {}
@@ -257,4 +262,152 @@ sequential_append_um :: proc(b: ^strings.Builder, value: contracts.Micrometres) 
 		v = -v
 	}
 	fmt.sbprintf(b, "%d.%03d", v/1_000, v%1_000)
+}
+
+// Clearance that every move over a finished object keeps above that object's highest extrusion.
+SEQUENTIAL_VALIDATION_CLEARANCE_UM :: 1_000
+
+// Checks the assembled plate stream independently of how it was assembled. Each object's body
+// has already passed klipper_validate; this checks what joining adds. No move may pass over a
+// finished object's extrusion area below its highest extrusion plus the clearance, except a
+// vertical lift. CURRENT_LAYER must count 1..TOTAL_LAYER, TOTAL_LAYER must be the plate total,
+// and the START_PRINT area must contain every object's extrusion area.
+sequential_validate :: proc(
+	text: string,
+	areas: [][2]polygon.Polygon_Point,
+	total_layers: int,
+) -> (detail: string, ok: bool) {
+	tops := make([]i64, len(areas), context.temp_allocator)
+	current := 0
+	x, y, z: i64
+	has_position := false
+	last_layer := 0
+	start_prints := 0
+	lines := text
+	line_number := 0
+	last_line := ""
+	for line in strings.split_lines_iterator(&lines) {
+		line_number += 1
+		if len(line) > 0 {last_line = line}
+		switch {
+		case strings.has_prefix(line, ";SEQUENTIAL_OBJECT_TRANSITION"):
+			current += 1
+			if current >= len(areas) {
+				return fmt.tprintf("line %d: more transitions than objects", line_number), false
+			}
+		case strings.has_prefix(line, "SET_PRINT_STATS_INFO TOTAL_LAYER="):
+			n, n_ok := strconv.parse_int(line[len("SET_PRINT_STATS_INFO TOTAL_LAYER="):])
+			if !n_ok || n != total_layers {
+				return fmt.tprintf("line %d: TOTAL_LAYER is not %d", line_number, total_layers), false
+			}
+		case strings.has_prefix(line, "SET_PRINT_STATS_INFO CURRENT_LAYER="):
+			n, n_ok := strconv.parse_int(line[len("SET_PRINT_STATS_INFO CURRENT_LAYER="):])
+			if !n_ok || n != last_layer+1 {
+				return fmt.tprintf("line %d: CURRENT_LAYER %d does not follow %d", line_number, n, last_layer), false
+			}
+			last_layer = n
+		case strings.has_prefix(line, "START_PRINT "):
+			start_prints += 1
+			print_area, area_ok := sequential_start_print_area(line)
+			if !area_ok {
+				return fmt.tprintf("line %d: START_PRINT has no extrusion area", line_number), false
+			}
+			for a, ai in areas {
+				if i64(a[0].x) < print_area[0] || i64(a[0].y) < print_area[1] ||
+				   i64(a[1].x) > print_area[2] || i64(a[1].y) > print_area[3] {
+					return fmt.tprintf("START_PRINT area does not contain object %d", ai), false
+				}
+			}
+		case strings.has_prefix(line, "G0 "), strings.has_prefix(line, "G1 "),
+		     strings.has_prefix(line, "G2 "), strings.has_prefix(line, "G3 "):
+			nx, ny, nz := x, y, z
+			has_xy := false
+			extrudes := false
+			fields := line
+			for field in strings.split_iterator(&fields, " ") {
+				if len(field) < 2 {continue}
+				value, value_ok := strconv.parse_f64(field[1:])
+				if !value_ok {continue}
+				um := i64(math.round(value*1_000))
+				switch field[0] {
+				case 'X': nx = um; has_xy = true
+				case 'Y': ny = um; has_xy = true
+				case 'Z': nz = um
+				case 'E': extrudes = value > 0
+				}
+			}
+			if has_xy && !has_position {
+				has_position = true
+			} else if has_position {
+				vertical_lift := nx == x && ny == y && nz >= z
+				if !vertical_lift {
+					for f in 0..<current {
+						if min(z, nz) < tops[f]+SEQUENTIAL_VALIDATION_CLEARANCE_UM &&
+						   sequential_segment_hits_area(x, y, nx, ny, areas[f]) {
+							return fmt.tprintf("line %d: move at Z %.3f crosses finished object %d (top %.3f)",
+								line_number, f64(min(z, nz))/1_000, f, f64(tops[f])/1_000), false
+						}
+					}
+				}
+			}
+			if extrudes && nz > tops[current] {tops[current] = nz}
+			x, y, z = nx, ny, nz
+		}
+	}
+	if start_prints != 1 {return "the plate stream needs exactly one START_PRINT", false}
+	if current != len(areas)-1 {return "the plate stream does not contain every object", false}
+	if last_layer != total_layers {
+		return fmt.tprintf("CURRENT_LAYER ends at %d, not %d", last_layer, total_layers), false
+	}
+	if last_line != "END_PRINT" {return "the plate stream does not end with END_PRINT", false}
+	return "", true
+}
+
+// The START_PRINT X0 Y0 X1 Y1 parameters in micrometres.
+@(private = "file")
+sequential_start_print_area :: proc(line: string) -> (area: [4]i64, ok: bool) {
+	keys := [4]string{"X0=", "Y0=", "X1=", "Y1="}
+	found: [4]bool
+	fields := line
+	for field in strings.split_iterator(&fields, " ") {
+		for key, ki in keys {
+			if strings.has_prefix(field, key) {
+				value, value_ok := strconv.parse_f64(field[len(key):])
+				if !value_ok {return {}, false}
+				area[ki] = i64(math.round(value*1_000))
+				found[ki] = true
+			}
+		}
+	}
+	return area, found == {true, true, true, true}
+}
+
+// Whether the segment from (x0, y0) to (x1, y1) touches the closed rectangle `area`
+// (Liang-Barsky clipping).
+@(private = "file")
+sequential_segment_hits_area :: proc(x0, y0, x1, y1: i64, area: [2]polygon.Polygon_Point) -> bool {
+	dx := f64(x1-x0)
+	dy := f64(y1-y0)
+	t0, t1 := 0.0, 1.0
+	p := [4]f64{-dx, dx, -dy, dy}
+	q := [4]f64{
+		f64(x0-i64(area[0].x)),
+		f64(i64(area[1].x)-x0),
+		f64(y0-i64(area[0].y)),
+		f64(i64(area[1].y)-y0),
+	}
+	for i in 0..<4 {
+		if p[i] == 0 {
+			if q[i] < 0 {return false}
+		} else {
+			t := q[i]/p[i]
+			if p[i] < 0 {
+				t0 = max(t0, t)
+			} else {
+				t1 = min(t1, t)
+			}
+			if t0 > t1 {return false}
+		}
+	}
+	return true
 }
