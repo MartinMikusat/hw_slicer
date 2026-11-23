@@ -245,9 +245,10 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
 - **Cause:** `mesh_auto_repair` paired edges by vertex index, but the STL decoder gives every triangle its own three vertices, so no STL mesh was ever "closed" and even the CR-08 global flip never ran for STL input.
 - **Resolution:** `mesh_auto_repair` matches vertices by exact coordinates, propagates orientation across edges shared by exactly two faces, and turns each component outward: by signed volume when at most 10% of its edge uses are unpaired, otherwise by requiring the steepest face at the component's highest vertex to face up. A tee with every other face flipped and a fully inverted tee now slice to G-code identical to the valid tee (545 grid support paths each, previously 0). Benchy, the Stanford Bunny, the all-in-one model, and the other test meshes are unchanged (0 flips).
 
-### [CR-36] Skin Extruded Outside the Layer Outline on Benchy — Root Cause CR-43
+### [CR-36] Skin Extruded Outside the Layer Outline on Benchy — **RESOLVED** (by CR-43)
 - **Issue:** A harness that runs the production pipeline and tests every extrusion midpoint against the layer's own model outline (`build_model_polygon_sets`) finds, on Benchy, 598 top/bottom-skin, 356 top-skin, 345 bottom-skin, and 8 sparse-infill segments outside the outline by more than 0.05 mm (worst 1.47 mm), spread over most layers.
 - **Cause:** The native polygon provider (CR-43). With `use_native_polygon = false` (Clipper2), the same harness finds no skin or infill outside the outline, and the top/bottom-skin classification changes from 1,614 to 70 segments.
+- **Resolution:** After the CR-43 fix, the native provider gives the same result as Clipper2: no skin, infill, gap, or bridge extrusion lies outside the outline (the only perimeter-role cases are the skirt, 5.2 mm out).
 
 ### Low Severity (Pass 4)
 
@@ -260,10 +261,10 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
 - **Location:** `src/slicing/simplify.odin`
 - **Issue:** Each loop is simplified alone (12 µm default tolerance) with only an area-sign guard, so neighbouring loops closer than the tolerance can cross. Kept segment indices no longer describe the simplified edges, so segment lineage becomes approximate.
 
-### [CR-39] Tree Support Trunks Cross the Skirt on the First Layer — **RESOLVED** (with CR-43 open)
+### [CR-39] Tree Support Trunks Cross the Skirt on the First Layer — **RESOLVED**
 - **Location:** `src/features/tree_supports.odin`
 - **Issue:** The skirt surrounded the model's first layer only and was built before supports, so first-layer supports crossed it (0.001 mm on Benchy).
-- **Resolution:** Adhesion is built after supports. The skirt offsets the union of the model's first layer and the first-layer support area (tree rings or grid support masks), keeps only outer boundaries, and drops hole loops from the offset. The brim stays on the model. With Clipper2, every first-layer support point on Benchy, the Stanford Bunny, the all-in-one model, and the T-shape lies inside the skirt, at least 2.0 mm from it. With the native provider, the Bunny (1 point) and the all-in-one model (11 points) still end up within 0.2 mm of the skirt because of CR-43.
+- **Resolution:** Adhesion is built after supports. The skirt offsets the union of the model's first layer and the first-layer support area (tree rings or grid support masks), keeps only outer boundaries, and drops hole loops from the offset. The brim stays on the model. With Clipper2, every first-layer support point on Benchy, the Stanford Bunny, the all-in-one model, and the T-shape lies inside the skirt, at least 2.0 mm from it. After the CR-43 fix the native provider gives the same result (closest approach 5.18 mm on all four models).
 
 ### [CR-40] `sim-verify.sh` Used a Stale Release Binary — **RESOLVED**
 - **Location:** `scripts/sim-verify.sh`
@@ -281,11 +282,16 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
 - **Issue:** The vase-mode simulator run fails at the same position on every run. The slicer G-code is valid: with its `G4` dwells removed the whole print completes, and adding two `G4 P3000` dwells to the box G-code (which otherwise passes) reproduces the shutdown. `motion_dwell` sets `print_time = last_move_time + seconds` and blocks until the MCU reaches it, but leaves the motion system non-idle. `motion_begin_sequence` restores the `BUFFER_TIME_START` lead only when the system is idle, so moves after a dwell are scheduled from a start time that has already passed.
 - **Resolution (`hw_printer` `a27d5a4`):** `motion_dwell` calls `motion_get_last_move_time` after its wait, which flushes kinematics and restores the `BUFFER_TIME_START` lead. The two-dwell box and the full vase print (15 dwells, 244.21 mm filament matching the G-code) complete in `hw-printer-sim`, and `homing-check.sh` and `motion-check.sh` still match klippy.
 
-### [CR-43] The Native Polygon Provider Returns Wrong Boolean and Offset Results
+### [CR-43] The Native Polygon Provider Returns Wrong Boolean and Offset Results — **RESOLVED**
 - **Severity:** High
-- **Location:** `src/polygon/odin_vatti.odin`, `src/polygon/odin_offset.odin` (default provider since `9a814cc`, `use_native_polygon = true`)
-- **Issue:** For some inputs with several overlapping polygons, the native engine returns geometry that Clipper2 does not:
-  1. Offsetting a 40 mm square plus 1 mm rings at 0.5–12 mm from it by +3 mm or +5 mm returns a spurious hole loop (0.34 mm² at x 43.00–43.45, y 16.45–18.50) inside an area covered by both offsets. Clipper2 returns none. Unioning the square's offset with one ring's offset alone is correct, so the error needs more than two overlapping inputs.
-  2. On Benchy, about 1,300 skin and infill segments are extruded outside the layer outline (CR-36); with Clipper2 there are none.
-  3. A +5 mm skirt offset of the all-in-one model's first layer and its support rings passes within 0.08 mm of two rings; with Clipper2 the closest approach is 5.18 mm.
-- **Fix:** Find the defect in the native union (its handling of three or more overlapping inputs) using the square-and-rings reproduction, or make Clipper2 the default again until the native engine matches it. Both providers remain linked (`--polygon-provider=clipper2`).
+- **Locations:** `src/polygon/odin_vatti.odin`, `src/polygon/odin_offset.odin` (default provider since `9a814cc`)
+- **Issue:** A temporary dual-provider wrapper that ran every boolean and offset of a full Benchy slice through both engines found hundreds of area mismatches above 0.05 mm². This caused CR-36 and the remaining CR-39 failures. Three defects:
+  1. **Boolean, rounding:** split points are rounded to integer micrometres, and the rounding created new crossings between the pieces (also between pieces of the same input). Edges then crossed inside scanbeam slabs, run emission produced endpoints 1 µm apart, loop tracing failed, and results came back empty or wrong (a 5-point ring unioned to nothing; a Difference returned 0 instead of 69 mm²). Repeating the split pass does not converge.
+  2. **Offset, concave joins:** the inward miter (or bevel) at concave corners lets an inset past a convex shape's size produce a 180°-rotated copy, which keeps its orientation and survived as a ghost (4.38 mm² from a 0.1 × 0.56 mm sliver inset by 1.05 mm).
+  3. **Offset, miter limit:** corners past the miter limit were bevelled instead of squared, so offsets were 0.1–0.5 % too small near sharp corners.
+- **Resolution:**
+  1. `odin_vatti_boolean` snap-rounds (Hobby): every endpoint and rounded intersection is a hot pixel, each segment is routed through the hot pixels it passes through, and collinear overlaps are split at existing endpoints, so no edges cross inside a slab.
+  2. `odin_offset` follows Clipper2's `OffsetPoint`: concave joins insert the original vertex between the two offset points, and all raw paths (outer and holes) go through one union (`Positive`, or `Negative` for a clockwise largest path).
+  3. Past the miter limit, and for the Square join, corners use Clipper2's `DoSquare`.
+- **Verification:** The dual-provider wrapper over full slices of Benchy (plain, tree supports, grid supports, brim + scarf + fuzzy skin), the Stanford Bunny and the all-in-one model with supports, and the T-shape and framed box finds no boolean mismatch and no offset mismatch above 0.05 mm² except the +5.21 mm round-join skirt offsets (0.03 %, from a different arc approximation). Release timings against the engine before this fix: Benchy 0.63 → 0.87 s, Stanford Bunny 1.42 → 1.83 s, Benchy with grid supports 17.7 → 20.9 s (Clipper2: 0.43 s, 0.94 s, 3.9 s). The extra time comes from the three-point concave joins and snap rounding; sorting (Odin's smoothsort) remains the largest cost in both engines.
+- **Also fixed:** grid supports failed on Benchy with `Coordinate_Range` (on both engines, before this session too) when a downward face's XY projection quantized to zero area; such faces are now classified as needing no support.
