@@ -73,6 +73,9 @@ Slice_Run_Options :: struct {
 	fuzzy_thickness_um:            contracts.Micrometres,
 	fuzzy_point_dist_um:           contracts.Micrometres,
 	mesh_auto_repair:              bool,
+	// Solid bands under sloped surfaces so shells keep their thickness (Orca "ensure vertical
+	// shell thickness", all surfaces).
+	ensure_vertical_shells:        bool,
 	contour_simplify_tolerance_um: f64,
 	modifiers:                     []Modifier_Zone,
 	pause_layers:                  []u32,
@@ -119,6 +122,7 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	fuzzy_thickness_um            = 300,
 	fuzzy_point_dist_um           = 800,
 	mesh_auto_repair              = true,
+	ensure_vertical_shells        = true,
 	contour_simplify_tolerance_um = 12.0,
 }
 
@@ -268,6 +272,8 @@ build_model_polygon_sets :: proc(
 					resize(&all_pts, start)
 					continue
 				}
+				// Outer contours counter-clockwise and holes clockwise, as offsets expect.
+				if contour.reverse_path {slice.reverse(ring)}
 				rot := polygon.polygon_minimum_rotation(ring)
 				if rot > 0 {slice.rotate_left(ring, rot)}
 				append(&path_ranges, [2]int{start, len(all_pts)})
@@ -630,6 +636,41 @@ slice_run_decoded_mesh :: proc(
 		for &oset in owned_overlap_sets {polygon.polygon_set_destroy(&oset, allocator)}
 		delete(owned_overlap_sets)
 		delete(overlap_sources, allocator)
+	}
+	// Vertical shell thickness: solid bands under sloped surfaces join the skin sources; overlap
+	// resolution removes what the skins already cover.
+	vertical_shells: features.Vertical_Shell_Result
+	defer features.vertical_shell_result_destroy(&vertical_shells, allocator)
+	if options.ensure_vertical_shells {
+		shell_model_sets := build_model_polygon_sets(active_topo, result.regions, allocator)
+		defer destroy_model_polygon_sets(shell_model_sets, allocator)
+		vertical_shells = features.vertical_shells_build(
+			shell_model_sets,
+			contracts.Micrometres(i64(proc_src.perimeter_count)*i64(proc_src.nominal_line_width)),
+			proc_src.nominal_line_width,
+			proc_src.top_skin.minimum_layers,
+			proc_src.bottom_skin.minimum_layers,
+			provider,
+			allocator,
+		)
+		extended := make([dynamic]features.Role_Overlap_Source, 0, len(overlap_sources) + 2*layer_count, allocator)
+		append(&extended, ..overlap_sources)
+		for li in 0..<layer_count {
+			layer_id := result.spine.schedule.layer_ids[li]
+			for band, side in ([2]polygon.Polygon_Set{vertical_shells.top[li], vertical_shells.bottom[li]}) {
+				if len(band.paths) == 0 || polygon_set_total_area_2(band) <= 0 {continue}
+				if _, ok := polygon.polygon_set_hash(band); !ok {continue}
+				append(&extended, features.Role_Overlap_Source{
+					stable_id   = contracts.stable_id_child(layer_id, .Feature, u64(1)<<58 | u64(side)),
+					layer_id    = layer_id,
+					layer_index = u32(li),
+					role        = .Top_Skin if side == 0 else .Bottom_Skin,
+					geometry    = band,
+				})
+			}
+		}
+		delete(overlap_sources, allocator)
+		overlap_sources = extended[:]
 	}
 	overlap, ov_err := features.role_overlap_resolve(
 		result.spine.schedule.layer_ids,
