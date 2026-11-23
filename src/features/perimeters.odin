@@ -1,6 +1,7 @@
 package features
 
 import "core:math"
+import "core:mem"
 
 import contracts "../contracts"
 import geometry "../geometry"
@@ -153,80 +154,110 @@ perimeters_generate :: proc(
 		delete(temporary_outputs, allocator)
 	}
 
+	Perim_Par_Ctx :: struct {
+		topology:          slicing.Topology_Result,
+		regions:           slicing.Region_Result,
+		provider:          polygon.Polygon_Provider,
+		config:            Perimeter_Config,
+		limits:            Perimeter_Limits,
+		temporary_outputs: []polygon.Polygon_Set,
+		region_errors:     []Perimeter_Error,
+		allocator:         mem.Allocator,
+	}
+	region_errors := make([]Perimeter_Error, len(regions.regions), allocator)
+	defer delete(region_errors, allocator)
+	pctx := Perim_Par_Ctx{
+		topology          = topology,
+		regions           = regions,
+		provider          = provider,
+		config            = config,
+		limits            = limits,
+		temporary_outputs = temporary_outputs,
+		region_errors     = region_errors,
+		allocator         = allocator,
+	}
+	parallel_for(len(regions.regions), &pctx, proc(c: ^Perim_Par_Ctx, region_index: int) {
+		region := c.regions.regions[region_index]
+		input, input_error := perimeter_region_input(
+			c.topology,
+			c.regions,
+			u32(region_index),
+			c.allocator,
+		)
+		if input_error != .None {
+			c.region_errors[region_index] = input_error
+			return
+		}
+		defer polygon.polygon_set_destroy(&input, c.allocator)
+		base_slot := region_index * int(c.config.count)
+		for perimeter_index in 0..<c.config.count {
+			base_delta, delta_ok := perimeter_delta(c.config, perimeter_index)
+			if !delta_ok {
+				c.region_errors[region_index] = .Arithmetic
+				return
+			}
+			delta := base_delta
+			if region.layer_index == 0 && i64(c.config.first_layer_inset_um) > 0 {
+				delta = contracts.Micrometres(i64(base_delta) - i64(c.config.first_layer_inset_um))
+			}
+			slot := base_slot + int(perimeter_index)
+			output_error: polygon.Polygon_Error
+			c.temporary_outputs[slot], output_error =
+				c.provider.offset(
+					input,
+					delta,
+					c.config.join_type,
+					c.config.miter_limit,
+					c.config.arc_tolerance,
+					c.limits.polygon,
+					c.allocator,
+				)
+			if output_error == .None && len(c.temporary_outputs[slot].paths) == 0 &&
+			   perimeter_index == 0 && delta != base_delta {
+				polygon.polygon_set_destroy(&c.temporary_outputs[slot], c.allocator)
+				delta = base_delta
+				c.temporary_outputs[slot], output_error =
+					c.provider.offset(
+						input,
+						delta,
+						c.config.join_type,
+						c.config.miter_limit,
+						c.config.arc_tolerance,
+						c.limits.polygon,
+						c.allocator,
+					)
+			}
+			if output_error != .None {
+				c.region_errors[region_index] = .Provider
+				return
+			}
+		}
+	})
+
 	total_paths: u64
 	total_points: u64
 	group_write := 0
 	for region, region_index in regions.regions {
-		input, input_error := perimeter_region_input(
-			topology,
-			regions,
-			u32(region_index),
-			allocator,
-		)
-		if input_error != .None {
+		if region_errors[region_index] != .None {
 			perimeter_result_destroy(&result, allocator)
-			return {}, input_error
+			return {}, region_errors[region_index]
 		}
 		for perimeter_index in 0..<config.count {
-			base_delta, delta_ok := perimeter_delta(config, perimeter_index)
-			if !delta_ok {
-				polygon.polygon_set_destroy(&input, allocator)
-				perimeter_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			delta := base_delta
-			if region.layer_index == 0 && i64(config.first_layer_inset_um) > 0 {
-				delta = contracts.Micrometres(i64(base_delta) - i64(config.first_layer_inset_um))
-			}
-			output_error: polygon.Polygon_Error
-			temporary_outputs[group_write], output_error =
-				provider.offset(
-					input,
-					delta,
-					config.join_type,
-					config.miter_limit,
-					config.arc_tolerance,
-					limits.polygon,
-					allocator,
-				)
-			if output_error == .None && len(temporary_outputs[group_write].paths) == 0 &&
-			   perimeter_index == 0 && delta != base_delta {
-				// Preserve very thin layer-0 islands if elephant-foot inset would erase them.
-				polygon.polygon_set_destroy(&temporary_outputs[group_write], allocator)
-				delta = base_delta
-				temporary_outputs[group_write], output_error =
-					provider.offset(
-						input,
-						delta,
-						config.join_type,
-						config.miter_limit,
-						config.arc_tolerance,
-						limits.polygon,
-						allocator,
-					)
-			}
-			if output_error != .None {
-				polygon.polygon_set_destroy(&input, allocator)
-				perimeter_result_destroy(&result, allocator)
-				return {}, .Provider
-			}
+			base_delta, _ := perimeter_delta(config, perimeter_index)
 			output := temporary_outputs[group_write]
 			if total_paths > limits.max_paths ||
 			   u64(len(output.paths)) >
 			   	limits.max_paths-total_paths {
-				polygon.polygon_set_destroy(&input, allocator)
 				perimeter_result_destroy(&result, allocator)
 				return {}, .Path_Limit
 			}
 			if total_points > limits.max_points ||
 			   u64(len(output.points)) >
 			   	limits.max_points-total_points {
-				polygon.polygon_set_destroy(&input, allocator)
 				perimeter_result_destroy(&result, allocator)
 				return {}, .Point_Limit
 			}
 			if u64(len(output.paths)) > u64(max(u32)) {
-				polygon.polygon_set_destroy(&input, allocator)
 				perimeter_result_destroy(&result, allocator)
 				return {}, .Arithmetic
 			}
@@ -243,7 +274,6 @@ perimeters_generate :: proc(
 			total_points += u64(len(output.points))
 			group_write += 1
 		}
-		polygon.polygon_set_destroy(&input, allocator)
 	}
 	if group_write != group_count ||
 	   total_paths > u64(max(int)) ||

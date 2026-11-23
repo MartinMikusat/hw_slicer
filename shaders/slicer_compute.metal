@@ -145,3 +145,89 @@ kernel void batch_triangle_plane_intersect(
         out_segs[tid] = {0.0f, 0.0f, 0.0f, 0.0f, 0u, 0u};
     }
 }
+
+struct TravelQuery {
+    int64_t  ax, ay;
+    int64_t  bx, by;
+    uint32_t layer_idx;
+    uint32_t _pad;
+};
+
+static inline bool pip_twice(
+    device const PolyEdge* edges,
+    uint32_t start,
+    uint32_t end,
+    int64_t px,
+    int64_t py
+) {
+    int winding = 0;
+    for (uint32_t i = start; i < end; i++) {
+        PolyEdge e = edges[i];
+        int64_t ax = e.ax * 2;
+        int64_t ay = e.ay * 2;
+        int64_t bx = e.bx * 2;
+        int64_t by = e.by * 2;
+        if (py < min(ay, by) || py > max(ay, by)) continue;
+        int64_t cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+        if (cross == 0 && px >= min(ax, bx) && px <= max(ax, bx)) return true;
+        if (ay <= py) {
+            if (by > py && cross > 0) winding += 1;
+        } else {
+            if (by <= py && cross < 0) winding -= 1;
+        }
+    }
+    return winding != 0;
+}
+
+static inline int orient_sign(int64_t ax, int64_t ay, int64_t bx, int64_t by, int64_t cx, int64_t cy) {
+    int64_t c = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    return (c > 0) ? 1 : ((c < 0) ? -1 : 0);
+}
+
+// Parallel travel exterior-crossing kernel matching motion_travel_crosses_exterior.
+kernel void batch_travel_crosses_exterior(
+    device const PolyEdge*       edges        [[buffer(0)]],
+    device const LayerEdgeRange* layer_ranges [[buffer(1)]],
+    device const TravelQuery*    queries      [[buffer(2)]],
+    device uint8_t*              results      [[buffer(3)]],
+    constant uint32_t&           query_count  [[buffer(4)]],
+    uint tid [[thread_position_in_grid]]
+) {
+    if (tid >= query_count) return;
+    TravelQuery q = queries[tid];
+    LayerEdgeRange rng = layer_ranges[q.layer_idx];
+    if (rng.count == 0 || (q.ax == q.bx && q.ay == q.by)) {
+        results[tid] = (rng.count == 0) ? 1 : 0;
+        return;
+    }
+    uint32_t start = rng.offset;
+    uint32_t end = start + rng.count;
+    if (!pip_twice(edges, start, end, q.ax * 2, q.ay * 2) ||
+        !pip_twice(edges, start, end, q.bx * 2, q.by * 2) ||
+        !pip_twice(edges, start, end, q.ax + q.bx, q.ay + q.by)) {
+        results[tid] = 1;
+        return;
+    }
+    int64_t qmin_x = min(q.ax, q.bx), qmax_x = max(q.ax, q.bx);
+    int64_t qmin_y = min(q.ay, q.by), qmax_y = max(q.ay, q.by);
+    for (uint32_t i = start; i < end; i++) {
+        PolyEdge e = edges[i];
+        if (max(e.ax, e.bx) < qmin_x || min(e.ax, e.bx) > qmax_x ||
+            max(e.ay, e.by) < qmin_y || min(e.ay, e.by) > qmax_y) continue;
+        int ea = orient_sign(q.ax, q.ay, q.bx, q.by, e.ax, e.ay);
+        int eb = orient_sign(q.ax, q.ay, q.bx, q.by, e.bx, e.by);
+        int qa = orient_sign(e.ax, e.ay, e.bx, e.by, q.ax, q.ay);
+        int qb = orient_sign(e.ax, e.ay, e.bx, e.by, q.bx, q.by);
+        if (ea == 0 && eb == 0) continue;
+        if (ea * eb < 0 && qa * qb < 0) { results[tid] = 1; return; }
+        if (ea == 0 && !(e.ax == q.ax && e.ay == q.ay) && !(e.ax == q.bx && e.ay == q.by) &&
+            e.ax >= qmin_x && e.ax <= qmax_x && e.ay >= qmin_y && e.ay <= qmax_y) {
+            results[tid] = 1; return;
+        }
+        if (eb == 0 && !(e.bx == q.ax && e.by == q.ay) && !(e.bx == q.bx && e.by == q.by) &&
+            e.bx >= qmin_x && e.bx <= qmax_x && e.by >= qmin_y && e.by <= qmax_y) {
+            results[tid] = 1; return;
+        }
+    }
+    results[tid] = 0;
+}

@@ -1,5 +1,7 @@
 package features
 
+import "core:mem"
+
 import contracts "../contracts"
 import geometry "../geometry"
 import polygon "../polygon"
@@ -246,58 +248,89 @@ surfaces_classify :: proc(
 		}
 	}
 
+	Surf_Par_Ctx :: struct {
+		regions:           slicing.Region_Result,
+		region_inputs:     []polygon.Polygon_Set,
+		layer_inputs:      []polygon.Polygon_Set,
+		provider:          polygon.Polygon_Provider,
+		config:            Surface_Config,
+		limits:            Surface_Limits,
+		temporary_outputs: []polygon.Polygon_Set,
+		region_errors:     []Surface_Error,
+		allocator:         mem.Allocator,
+	}
+	region_errors := make([]Surface_Error, len(regions.regions), allocator)
+	defer delete(region_errors, allocator)
+	sctx := Surf_Par_Ctx{
+		regions           = regions,
+		region_inputs     = region_inputs,
+		layer_inputs      = layer_inputs,
+		provider          = provider,
+		config            = config,
+		limits            = limits,
+		temporary_outputs = temporary_outputs,
+		region_errors     = region_errors,
+		allocator         = allocator,
+	}
+	parallel_for(len(regions.regions), &sctx, proc(c: ^Surf_Par_Ctx, region_index: int) {
+		region := c.regions.regions[region_index]
+		layer_index := int(region.layer_index)
+		empty: polygon.Polygon_Set
+		bottom_clip := c.layer_inputs[layer_index-1] if layer_index > 0 else empty
+		top_clip := c.layer_inputs[layer_index+1] if layer_index+1 < len(c.layer_inputs) else empty
+		bottom_index := region_index * 2
+		top_index := bottom_index + 1
+		bottom_matches := layer_index > 0 &&
+			surface_region_matches_layer(
+				c.region_inputs[region_index],
+				c.regions.layers[layer_index-1],
+				c.region_inputs,
+			)
+		if !bottom_matches {
+			bottom_output, bottom_error := c.provider.boolean(
+				c.region_inputs[region_index],
+				bottom_clip,
+				.Difference,
+				c.config.fill_rule,
+				c.limits.polygon,
+				c.allocator,
+			)
+			c.temporary_outputs[bottom_index] = bottom_output
+			if bottom_error != .None {
+				c.region_errors[region_index] = .Provider
+				return
+			}
+		}
+		top_matches := layer_index+1 < len(c.layer_inputs) &&
+			surface_region_matches_layer(
+				c.region_inputs[region_index],
+				c.regions.layers[layer_index+1],
+				c.region_inputs,
+			)
+		if !top_matches {
+			top_output, top_error := c.provider.boolean(
+				c.region_inputs[region_index],
+				top_clip,
+				.Difference,
+				c.config.fill_rule,
+				c.limits.polygon,
+				c.allocator,
+			)
+			c.temporary_outputs[top_index] = top_output
+			if top_error != .None {
+				c.region_errors[region_index] = .Provider
+				return
+			}
+		}
+	})
+
 	total_masks: u64
 	total_paths: u64
 	total_points: u64
-	for region, region_index in regions.regions {
-		layer_index := int(region.layer_index)
-		empty: polygon.Polygon_Set
-		bottom_clip := empty
-		if layer_index > 0 {
-			bottom_clip = layer_inputs[layer_index-1]
-		}
-		top_clip := empty
-		if layer_index+1 < len(layer_inputs) {
-			top_clip = layer_inputs[layer_index+1]
-		}
+	for _, region_index in regions.regions {
+		if region_errors[region_index] != .None {return {}, region_errors[region_index]}
 		bottom_index := region_index*2
 		top_index := bottom_index+1
-		bottom_matches := layer_index > 0 &&
-			surface_region_matches_layer(
-				region_inputs[region_index],
-				regions.layers[layer_index-1],
-				region_inputs,
-			)
-		if !bottom_matches {
-			bottom_output, bottom_error := provider.boolean(
-				region_inputs[region_index],
-				bottom_clip,
-				.Difference,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			temporary_outputs[bottom_index] = bottom_output
-			if bottom_error != .None {return {}, .Provider}
-		}
-		top_matches := layer_index+1 < len(layer_inputs) &&
-			surface_region_matches_layer(
-				region_inputs[region_index],
-				regions.layers[layer_index+1],
-				region_inputs,
-			)
-		if !top_matches {
-			top_output, top_error := provider.boolean(
-				region_inputs[region_index],
-				top_clip,
-				.Difference,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			temporary_outputs[top_index] = top_output
-			if top_error != .None {return {}, .Provider}
-		}
 		for output in temporary_outputs[bottom_index:top_index+1] {
 			if len(output.paths) == 0 {continue}
 			total_masks += 1

@@ -37,45 +37,52 @@ This document records the measured release-mode (`-o:speed`) CPU profiling basel
 
 ### Headless Metal Compute (`shaders/slicer_compute.metal`, `host/HWSlicerMetalCompute.m`, `src/gpu/metal_compute.odin`)
 - Initializes `MTLCreateSystemDefaultDevice()` without AppKit or any window server dependency (`-framework Foundation -framework Metal` only).
-- **`batch_point_in_polygon` kernel:** Flattens all `model_layers` into shared-memory `PolyEdge` and `LayerEdgeRange` buffers once per print, gathers all 3-sample overhang queries across all layers into one `PointQuery` buffer, and dispatches a single Metal compute grid (`256` threads/threadgroup). Uses exact 64-bit integer cross products (`int64_t`) matching CPU `bridge_polygon_contains_twice` with zero floating-point drift. Controlled via `--gpu` (default) / `--no-gpu`.
-- **`batch_triangle_plane_intersect` kernel:** Compiled alongside `batch_point_in_polygon` in `shaders/slicer_compute.metal` and exposed via `gpu.metal_batch_triangle_plane_intersect` for ultra-dense (>1M triangle) meshes where `slice_spine` becomes dominant.
+- **`batch_point_in_polygon` kernel:** Flattens all `model_layers` into shared-memory `PolyEdge` and `LayerEdgeRange` buffers once per print, gathers all 3-sample overhang queries across all layers into one `PointQuery` buffer, and dispatches a single Metal compute grid (`256` threads/threadgroup). Uses exact 64-bit integer cross products (`int64_t`) matching CPU `bridge_polygon_contains_twice`.
+- **`batch_travel_crosses_exterior` kernel:** Reuses the exact same flattened `PolyEdge`/`LayerEdgeRange` buffers to test all travel move endpoints, midpoints, and polygon-edge intersections on the GPU in one batch (`256` threads/threadgroup).
+- **`batch_triangle_plane_intersect` kernel:** Compiled alongside the polygon kernels in `shaders/slicer_compute.metal` and exposed via `gpu.metal_batch_triangle_plane_intersect`.
 
-### Multi-Core CPU Parallelism (`src/features/infill_patterns.odin`)
-- Dispatches 8 worker threads (`core:thread` + `sync.atomic_add` dynamic layer stealing) for per-layer sparse infill generation (`Grid`, `Triangles`, `Gyroid`, `Cubic`, `Honeycomb`, `Lightning`).
-- Each layer writes into its own independent slice slot and merges in strict layer order, guaranteeing 100% deterministic output.
+### Multi-Core CPU Parallelism (`src/features/parallel.odin`)
+- Dispatches up to `--threads=N` (default `8`) worker threads (`core:thread` + `sync.atomic_add` dynamic work-stealing) across `perimeters_generate`, `surfaces_classify`, `gap_evidence_build`, `infill_pattern_generate`, and CPU-mode `motion_cpu_mt_compute_overhangs`.
+- Every stage writes into disjoint per-region/per-layer slots and merges in strict index order for 100% deterministic output.
 
 ## 4. Measured 4-Way Comparison (`(a)` vs `(b)` vs `(c)` vs `(d)`)
 
 All four configurations were measured on the same `cli-release` (`-o:speed`) binary using `--threads=1|8` and `--no-gpu|--gpu`:
 
 - **(a) Single-core CPU:** `--threads=1 --no-gpu`
-- **(b) Multicore CPU (8 threads):** `--threads=8 --no-gpu` (8-core CPU overhang detection + 8-core CPU infill)
-- **(c) Single-core CPU + Metal:** `--threads=1 --gpu` (Metal GPU overhang kernel + single-core infill)
-- **(d) Multicore CPU (8 threads) + Metal:** `--threads=8 --gpu` (Metal GPU overhang kernel + 8-core CPU infill)
+- **(b) Multicore CPU (8 threads):** `--threads=8 --no-gpu`
+- **(c) Single-core CPU + Metal:** `--threads=1 --gpu`
+- **(d) Multicore CPU (8 threads) + Metal:** `--threads=8 --gpu`
 
 ### Total Slice Time
 
 | Model | (a) 1-Core CPU | (b) 8-Core CPU | (c) 1-Core + Metal | (d) 8-Core + Metal | (d) vs (a) | (d) vs (b) |
 |---|---:|---:|---:|---:|---:|---:|
-| `all-in-one-test.stl` | 3,449.87 ms | 2,846.50 ms | 2,837.51 ms | **2,748.20 ms** | 1.26× | 1.04× |
-| `benchy.stl` | 15,250.28 ms | 9,066.70 ms | 8,344.15 ms | **7,983.02 ms** | 1.91× | 1.14× |
-| `stanford-bunny.stl` | 20,792.29 ms | 12,692.16 ms | 15,796.08 ms | **11,802.46 ms** | 1.76× | 1.08× |
-| **Combined 3-Model Suite** | **39,492.44 ms** | **24,605.36 ms** | **26,977.74 ms** | **22,533.68 ms** | **1.75×** | **1.09×** |
+| `all-in-one-test.stl` | 3,439.74 ms | 2,333.52 ms | 2,467.76 ms | **1,804.80 ms** | **1.91×** | **1.29×** |
+| `benchy.stl` | 15,057.83 ms | 6,615.45 ms | 7,845.97 ms | **5,056.34 ms** | **2.98×** | **1.31×** |
+| `stanford-bunny.stl` | 20,319.75 ms | 8,609.76 ms | 13,794.78 ms | **6,987.01 ms** | **2.91×** | **1.23×** |
+| **Combined 3-Model Suite** | **38,817.32 ms** | **17,558.73 ms** | **24,108.51 ms** | **13,848.15 ms** | **2.80×** | **1.27×** |
 
-### Accelerated Stage Breakdown (`extrusion_and_motion` & `infill`)
+### Accelerated Stage Breakdown
 
-| Model | Stage | (a) 1-Core CPU | (b) 8-Core CPU | (c) 1-Core + Metal | (d) 8-Core + Metal | Metal vs 8-Core CPU |
+| Model | Stage | (a) 1-Core CPU | (b) 8-Core CPU | (c) 1-Core + Metal | (d) 8-Core + Metal | Best Speedup |
 |---|---|---:|---:|---:|---:|---:|
-| `all-in-one-test.stl` | `extrusion_and_motion` | 1,153.30 ms | 653.83 ms | 571.08 ms | **570.76 ms** | **1.15×** |
-| | `infill` (Gyroid) | 96.64 ms | 24.18 ms | 96.45 ms | **22.74 ms** | — (CPU MT: 4.25×) |
-| `benchy.stl` | `extrusion_and_motion` | 7,683.97 ms | 1,734.32 ms | 668.30 ms | **584.67 ms** | **2.97×** |
-| | `infill` (Gyroid) | 385.80 ms | 78.30 ms | 388.98 ms | **78.30 ms** | — (CPU MT: 4.93×) |
-| `stanford-bunny.stl` | `extrusion_and_motion` | 7,326.81 ms | 2,201.09 ms | 1,228.28 ms | **1,264.37 ms** | **1.74×** |
-| | `infill` (Gyroid) | 3,340.58 ms | 601.56 ms | 3,408.30 ms | **621.62 ms** | — (CPU MT: 5.55×) |
+| `all-in-one-test.stl` | `perimeters` | 80.95 ms | 20.61 ms | 80.26 ms | **22.20 ms** | 3.93× (CPU MT) |
+| | `gap_fill` | 540.74 ms | 168.24 ms | 537.86 ms | **163.32 ms** | 3.31× (CPU MT) |
+| | `infill` (Gyroid) | 96.23 ms | 20.42 ms | 95.30 ms | **21.07 ms** | 4.71× (CPU MT) |
+| | `extrusion_and_motion` | 1,179.57 ms | 650.31 ms | 204.59 ms | **125.60 ms** | **9.39× (5.18× vs 8-Core)** |
+| `benchy.stl` | `perimeters` | 504.27 ms | 89.08 ms | 489.09 ms | **92.96 ms** | 5.66× (CPU MT) |
+| | `gap_fill` | 2,527.58 ms | 533.99 ms | 2,522.21 ms | **545.17 ms** | 4.73× (CPU MT) |
+| | `infill` (Gyroid) | 387.77 ms | 70.15 ms | 386.32 ms | **77.93 ms** | 5.53× (CPU MT) |
+| | `extrusion_and_motion` | 7,488.05 ms | 1,855.88 ms | 297.69 ms | **253.68 ms** | **29.52× (7.32× vs 8-Core)** |
+| `stanford-bunny.stl` | `perimeters` | 297.14 ms | 60.64 ms | 292.59 ms | **57.55 ms** | 5.16× (CPU MT) |
+| | `gap_fill` | 5,326.67 ms | 1,513.23 ms | 5,329.97 ms | **1,568.77 ms** | 3.52× (CPU MT) |
+| | `infill` (Gyroid) | 3,368.04 ms | 593.09 ms | 3,438.25 ms | **627.46 ms** | 5.68× (CPU MT) |
+| | `extrusion_and_motion` | 7,119.78 ms | 2,233.72 ms | 533.52 ms | **601.17 ms** | **13.34× (4.19× vs 8-Core)** |
 
 ### Key Takeaway
-- Even against **8-core CPU** `(b)`, offloading overhang point-in-polygon queries to the Metal GPU cuts `extrusion_and_motion` by **2.97×** on `benchy.stl` (`1,734 ms → 585 ms`) and **1.74×** on `stanford-bunny.stl` (`2,201 ms → 1,264 ms`), leaving the remaining time in sequential extrusion accumulation and travel exterior-crossing checks.
-- Combining both **(d) 8-Core CPU + Metal** is strictly the fastest configuration across every model, reducing combined 3-model wall time from `39.49 s` `(a)` to `24.61 s` `(b)` and `22.53 s` `(d)`.
+- Offloading both overhang detection and travel exterior-crossing checks to Metal GPU cuts `extrusion_and_motion` by **7.32× vs. 8-core CPU** (`29.52×` vs. 1-core) on `benchy.stl`, **5.18× vs. 8-core CPU** on `all-in-one-test.stl`, and **4.19× vs. 8-core CPU** on `stanford-bunny.stl`.
+- Combining **(d) 8-Core CPU + Metal** is **1.23×–1.31× faster end-to-end than 8-core CPU alone** and **2.80× faster overall than single-core CPU** (`38.82 s → 13.85 s`).
 
 ## 5. Parity & Validation Verification
 

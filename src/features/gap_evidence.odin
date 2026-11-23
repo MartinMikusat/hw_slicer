@@ -141,290 +141,48 @@ gap_evidence_build :: proc(
 		delete(outputs, allocator)
 	}
 
-	for region, region_index in regions.regions {
-		region_input, input_error := perimeter_region_input(
-			topology,
-			regions,
-			u32(region_index),
-			allocator,
+	Gap_Par_Ctx :: struct {
+		topology:      slicing.Topology_Result,
+		regions:       slicing.Region_Result,
+		perimeters:    Perimeter_Result,
+		provider:      polygon.Polygon_Provider,
+		config:        Gap_Evidence_Config,
+		derived:       Gap_Evidence_Derived_Config,
+		limits:        Gap_Evidence_Limits,
+		outputs:       []polygon.Polygon_Set,
+		region_errors: []Gap_Evidence_Error,
+		allocator:     mem.Allocator,
+	}
+	region_errors := make([]Gap_Evidence_Error, len(regions.regions), allocator)
+	defer delete(region_errors, allocator)
+	gctx := Gap_Par_Ctx{
+		topology      = topology,
+		regions       = regions,
+		perimeters    = perimeters,
+		provider      = provider,
+		config        = config,
+		derived       = derived,
+		limits        = limits,
+		outputs       = outputs,
+		region_errors = region_errors,
+		allocator     = allocator,
+	}
+	parallel_for(len(regions.regions), &gctx, proc(c: ^Gap_Par_Ctx, region_index: int) {
+		c.region_errors[region_index] = gap_evidence_process_region(
+			c.topology,
+			c.regions,
+			c.perimeters,
+			c.provider,
+			c.config,
+			c.derived,
+			c.limits,
+			region_index,
+			c.outputs,
+			c.allocator,
 		)
-		if input_error != .None {
-			return {}, gap_evidence_perimeter_error(input_error)
-		}
-		coverage: polygon.Polygon_Set
-		group_start := int(region_index)*int(perimeters.config.count)
-		group_end := group_start+int(perimeters.config.count)
-		for group_index in group_start..<group_end {
-			group := perimeters.groups[group_index]
-			if group.region_index != u32(region_index) ||
-			   group.region_id != region.stable_id {
-				polygon.polygon_set_destroy(&region_input, allocator)
-				polygon.polygon_set_destroy(&coverage, allocator)
-				return {}, .Invalid_Input
-			}
-			if group.path_count == 0 {continue}
-			centerlines, centerline_error := gap_perimeter_group_input(
-				perimeters,
-				u32(group_index),
-				allocator,
-			)
-			if centerline_error != .None {
-				polygon.polygon_set_destroy(&region_input, allocator)
-				polygon.polygon_set_destroy(&coverage, allocator)
-				return {}, centerline_error
-			}
-			outer, outer_error := provider.offset(
-				centerlines,
-				derived.shell_half_width,
-				config.join_type,
-				config.miter_limit,
-				config.arc_tolerance,
-				limits.polygon,
-				allocator,
-			)
-			inner, inner_error := provider.offset(
-				centerlines,
-				contracts.Micrometres(
-					-i64(derived.shell_half_width),
-				),
-				config.join_type,
-				config.miter_limit,
-				config.arc_tolerance,
-				limits.polygon,
-				allocator,
-			)
-			polygon.polygon_set_destroy(&centerlines, allocator)
-			if outer_error != .None || inner_error != .None {
-				polygon.polygon_set_destroy(&outer, allocator)
-				polygon.polygon_set_destroy(&inner, allocator)
-				polygon.polygon_set_destroy(&region_input, allocator)
-				polygon.polygon_set_destroy(&coverage, allocator)
-				return {}, .Provider
-			}
-			band, band_error := provider.boolean(
-				outer,
-				inner,
-				.Difference,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			polygon.polygon_set_destroy(&outer, allocator)
-			polygon.polygon_set_destroy(&inner, allocator)
-			if band_error != .None {
-				polygon.polygon_set_destroy(&band, allocator)
-				polygon.polygon_set_destroy(&region_input, allocator)
-				polygon.polygon_set_destroy(&coverage, allocator)
-				return {}, .Provider
-			}
-			clipped, clip_error := provider.boolean(
-				band,
-				region_input,
-				.Intersection,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			polygon.polygon_set_destroy(&band, allocator)
-			if clip_error != .None {
-				polygon.polygon_set_destroy(&clipped, allocator)
-				polygon.polygon_set_destroy(&region_input, allocator)
-				polygon.polygon_set_destroy(&coverage, allocator)
-				return {}, .Provider
-			}
-			accumulate_error := skin_polygon_accumulate(
-				&coverage,
-				&clipped,
-				provider,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			if accumulate_error != .None {
-				polygon.polygon_set_destroy(&region_input, allocator)
-				polygon.polygon_set_destroy(&coverage, allocator)
-				if accumulate_error == .Allocation_Failed {
-					return {}, .Allocation_Failed
-				}
-				return {}, .Provider
-			}
-		}
-
-		residual: polygon.Polygon_Set
-		if len(coverage.paths) > 0 {
-			residual_error: polygon.Polygon_Error
-			residual, residual_error = provider.boolean(
-				region_input,
-				coverage,
-				.Difference,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			if residual_error != .None {
-				polygon.polygon_set_destroy(&region_input, allocator)
-				polygon.polygon_set_destroy(&coverage, allocator)
-				return {}, .Provider
-			}
-		} else {
-			clone_ok: bool
-			residual, clone_ok = skin_polygon_clone(
-				region_input,
-				allocator,
-			)
-			if !clone_ok {
-				polygon.polygon_set_destroy(&region_input, allocator)
-				return {}, .Allocation_Failed
-			}
-		}
-		polygon.polygon_set_destroy(&region_input, allocator)
-
-		minimum_centers, minimum_error := gap_evidence_inset(
-			residual,
-			derived.minimum_center_radius,
-			provider,
-			config,
-			limits,
-			allocator,
-		)
-		maximum_one_centers, maximum_one_error := gap_evidence_inset(
-			residual,
-			derived.maximum_one_radius,
-			provider,
-			config,
-			limits,
-			allocator,
-		)
-		above_two_core, maximum_two_error := gap_evidence_inset(
-			residual,
-			derived.maximum_two_radius,
-			provider,
-			config,
-			limits,
-			allocator,
-		)
-		if minimum_error != .None ||
-		   maximum_one_error != .None ||
-		   maximum_two_error != .None {
-			polygon.polygon_set_destroy(&coverage, allocator)
-			polygon.polygon_set_destroy(&residual, allocator)
-			polygon.polygon_set_destroy(&minimum_centers, allocator)
-			polygon.polygon_set_destroy(&maximum_one_centers, allocator)
-			polygon.polygon_set_destroy(&above_two_core, allocator)
-			return {}, .Provider
-		}
-
-		printable_opening: polygon.Polygon_Set
-		if len(minimum_centers.paths) > 0 {
-			expanded, expand_error := provider.offset(
-				minimum_centers,
-				derived.minimum_center_radius,
-				config.join_type,
-				config.miter_limit,
-				config.arc_tolerance,
-				limits.polygon,
-				allocator,
-			)
-			if expand_error == .None {
-				intersection_error: polygon.Polygon_Error
-				printable_opening, intersection_error =
-					provider.boolean(
-						expanded,
-						residual,
-						.Intersection,
-						config.fill_rule,
-						limits.polygon,
-						allocator,
-					)
-				if intersection_error != .None {
-					expand_error = intersection_error
-				}
-			}
-			polygon.polygon_set_destroy(&expanded, allocator)
-			if expand_error != .None {
-				polygon.polygon_set_destroy(&coverage, allocator)
-				polygon.polygon_set_destroy(&residual, allocator)
-				polygon.polygon_set_destroy(
-					&minimum_centers,
-					allocator,
-				)
-				polygon.polygon_set_destroy(
-					&maximum_one_centers,
-					allocator,
-				)
-				polygon.polygon_set_destroy(
-					&above_two_core,
-					allocator,
-				)
-				polygon.polygon_set_destroy(
-					&printable_opening,
-					allocator,
-				)
-				return {}, .Provider
-			}
-		}
-		unprinted: polygon.Polygon_Set
-		if len(printable_opening.paths) > 0 {
-			unprinted_error: polygon.Polygon_Error
-			unprinted, unprinted_error = provider.boolean(
-				residual,
-				printable_opening,
-				.Difference,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			if unprinted_error != .None {
-				polygon.polygon_set_destroy(&coverage, allocator)
-				polygon.polygon_set_destroy(&residual, allocator)
-				polygon.polygon_set_destroy(
-					&minimum_centers,
-					allocator,
-				)
-				polygon.polygon_set_destroy(
-					&maximum_one_centers,
-					allocator,
-				)
-				polygon.polygon_set_destroy(
-					&above_two_core,
-					allocator,
-				)
-				polygon.polygon_set_destroy(
-					&printable_opening,
-					allocator,
-				)
-				return {}, .Provider
-			}
-		} else {
-			clone_ok: bool
-			unprinted, clone_ok = skin_polygon_clone(residual, allocator)
-			if !clone_ok {
-				polygon.polygon_set_destroy(&coverage, allocator)
-				polygon.polygon_set_destroy(&residual, allocator)
-				polygon.polygon_set_destroy(
-					&minimum_centers,
-					allocator,
-				)
-				polygon.polygon_set_destroy(
-					&maximum_one_centers,
-					allocator,
-				)
-				polygon.polygon_set_destroy(
-					&above_two_core,
-					allocator,
-				)
-				return {}, .Allocation_Failed
-			}
-		}
-		polygon.polygon_set_destroy(&printable_opening, allocator)
-
-		output_offset := region_index*6
-		outputs[output_offset] = coverage
-		outputs[output_offset+1] = residual
-		outputs[output_offset+2] = minimum_centers
-		outputs[output_offset+3] = maximum_one_centers
-		outputs[output_offset+4] = above_two_core
-		outputs[output_offset+5] = unprinted
+	})
+	for err in region_errors {
+		if err != .None {return {}, err}
 	}
 
 	total_masks: u64
@@ -736,4 +494,234 @@ gap_evidence_result_destroy :: proc(
 	delete(result.paths, allocator)
 	delete(result.points, allocator)
 	result^ = {}
+}
+
+@(private = "file")
+gap_evidence_process_region :: proc(
+	topology: slicing.Topology_Result,
+	regions: slicing.Region_Result,
+	perimeters: Perimeter_Result,
+	provider: polygon.Polygon_Provider,
+	config: Gap_Evidence_Config,
+	derived: Gap_Evidence_Derived_Config,
+	limits: Gap_Evidence_Limits,
+	region_index: int,
+	outputs: []polygon.Polygon_Set,
+	allocator: mem.Allocator,
+) -> Gap_Evidence_Error {
+	region := regions.regions[region_index]
+	region_input, input_error := perimeter_region_input(
+		topology,
+		regions,
+		u32(region_index),
+		allocator,
+	)
+	if input_error != .None {
+		return gap_evidence_perimeter_error(input_error)
+	}
+	coverage: polygon.Polygon_Set
+	group_start := region_index * int(perimeters.config.count)
+	group_end := group_start + int(perimeters.config.count)
+	for group_index in group_start..<group_end {
+		group := perimeters.groups[group_index]
+		if group.region_index != u32(region_index) ||
+		   group.region_id != region.stable_id {
+			polygon.polygon_set_destroy(&region_input, allocator)
+			polygon.polygon_set_destroy(&coverage, allocator)
+			return .Invalid_Input
+		}
+		if group.path_count == 0 {continue}
+		centerlines, centerline_error := gap_perimeter_group_input(
+			perimeters,
+			u32(group_index),
+			allocator,
+		)
+		if centerline_error != .None {
+			polygon.polygon_set_destroy(&region_input, allocator)
+			polygon.polygon_set_destroy(&coverage, allocator)
+			return centerline_error
+		}
+		outer, outer_error := provider.offset(
+			centerlines,
+			derived.shell_half_width,
+			config.join_type,
+			config.miter_limit,
+			config.arc_tolerance,
+			limits.polygon,
+			allocator,
+		)
+		inner, inner_error := provider.offset(
+			centerlines,
+			contracts.Micrometres(-i64(derived.shell_half_width)),
+			config.join_type,
+			config.miter_limit,
+			config.arc_tolerance,
+			limits.polygon,
+			allocator,
+		)
+		polygon.polygon_set_destroy(&centerlines, allocator)
+		if outer_error != .None || inner_error != .None {
+			polygon.polygon_set_destroy(&outer, allocator)
+			polygon.polygon_set_destroy(&inner, allocator)
+			polygon.polygon_set_destroy(&region_input, allocator)
+			polygon.polygon_set_destroy(&coverage, allocator)
+			return .Provider
+		}
+		band, band_error := provider.boolean(
+			outer,
+			inner,
+			.Difference,
+			config.fill_rule,
+			limits.polygon,
+			allocator,
+		)
+		polygon.polygon_set_destroy(&outer, allocator)
+		polygon.polygon_set_destroy(&inner, allocator)
+		if band_error != .None {
+			polygon.polygon_set_destroy(&band, allocator)
+			polygon.polygon_set_destroy(&region_input, allocator)
+			polygon.polygon_set_destroy(&coverage, allocator)
+			return .Provider
+		}
+		clipped, clip_error := provider.boolean(
+			band,
+			region_input,
+			.Intersection,
+			config.fill_rule,
+			limits.polygon,
+			allocator,
+		)
+		polygon.polygon_set_destroy(&band, allocator)
+		if clip_error != .None {
+			polygon.polygon_set_destroy(&clipped, allocator)
+			polygon.polygon_set_destroy(&region_input, allocator)
+			polygon.polygon_set_destroy(&coverage, allocator)
+			return .Provider
+		}
+		accumulate_error := skin_polygon_accumulate(
+			&coverage,
+			&clipped,
+			provider,
+			config.fill_rule,
+			limits.polygon,
+			allocator,
+		)
+		if accumulate_error != .None {
+			polygon.polygon_set_destroy(&region_input, allocator)
+			polygon.polygon_set_destroy(&coverage, allocator)
+			if accumulate_error == .Allocation_Failed {return .Allocation_Failed}
+			return .Provider
+		}
+	}
+
+	residual: polygon.Polygon_Set
+	if len(coverage.paths) > 0 {
+		residual_error: polygon.Polygon_Error
+		residual, residual_error = provider.boolean(
+			region_input,
+			coverage,
+			.Difference,
+			config.fill_rule,
+			limits.polygon,
+			allocator,
+		)
+		if residual_error != .None {
+			polygon.polygon_set_destroy(&region_input, allocator)
+			polygon.polygon_set_destroy(&coverage, allocator)
+			return .Provider
+		}
+	} else {
+		clone_ok: bool
+		residual, clone_ok = skin_polygon_clone(region_input, allocator)
+		if !clone_ok {
+			polygon.polygon_set_destroy(&region_input, allocator)
+			return .Allocation_Failed
+		}
+	}
+	polygon.polygon_set_destroy(&region_input, allocator)
+
+	minimum_centers, minimum_error := gap_evidence_inset(
+		residual, derived.minimum_center_radius, provider, config, limits, allocator,
+	)
+	maximum_one_centers, maximum_one_error := gap_evidence_inset(
+		residual, derived.maximum_one_radius, provider, config, limits, allocator,
+	)
+	above_two_core, maximum_two_error := gap_evidence_inset(
+		residual, derived.maximum_two_radius, provider, config, limits, allocator,
+	)
+	if minimum_error != .None || maximum_one_error != .None || maximum_two_error != .None {
+		polygon.polygon_set_destroy(&coverage, allocator)
+		polygon.polygon_set_destroy(&residual, allocator)
+		polygon.polygon_set_destroy(&minimum_centers, allocator)
+		polygon.polygon_set_destroy(&maximum_one_centers, allocator)
+		polygon.polygon_set_destroy(&above_two_core, allocator)
+		return .Provider
+	}
+
+	printable_opening: polygon.Polygon_Set
+	if len(minimum_centers.paths) > 0 {
+		expanded, expand_error := provider.offset(
+			minimum_centers,
+			derived.minimum_center_radius,
+			config.join_type,
+			config.miter_limit,
+			config.arc_tolerance,
+			limits.polygon,
+			allocator,
+		)
+		if expand_error == .None {
+			intersection_error: polygon.Polygon_Error
+			printable_opening, intersection_error = provider.boolean(
+				expanded, residual, .Intersection, config.fill_rule, limits.polygon, allocator,
+			)
+			if intersection_error != .None {expand_error = intersection_error}
+		}
+		polygon.polygon_set_destroy(&expanded, allocator)
+		if expand_error != .None {
+			polygon.polygon_set_destroy(&coverage, allocator)
+			polygon.polygon_set_destroy(&residual, allocator)
+			polygon.polygon_set_destroy(&minimum_centers, allocator)
+			polygon.polygon_set_destroy(&maximum_one_centers, allocator)
+			polygon.polygon_set_destroy(&above_two_core, allocator)
+			polygon.polygon_set_destroy(&printable_opening, allocator)
+			return .Provider
+		}
+	}
+	unprinted: polygon.Polygon_Set
+	if len(printable_opening.paths) > 0 {
+		unprinted_error: polygon.Polygon_Error
+		unprinted, unprinted_error = provider.boolean(
+			residual, printable_opening, .Difference, config.fill_rule, limits.polygon, allocator,
+		)
+		if unprinted_error != .None {
+			polygon.polygon_set_destroy(&coverage, allocator)
+			polygon.polygon_set_destroy(&residual, allocator)
+			polygon.polygon_set_destroy(&minimum_centers, allocator)
+			polygon.polygon_set_destroy(&maximum_one_centers, allocator)
+			polygon.polygon_set_destroy(&above_two_core, allocator)
+			polygon.polygon_set_destroy(&printable_opening, allocator)
+			return .Provider
+		}
+	} else {
+		clone_ok: bool
+		unprinted, clone_ok = skin_polygon_clone(residual, allocator)
+		if !clone_ok {
+			polygon.polygon_set_destroy(&coverage, allocator)
+			polygon.polygon_set_destroy(&residual, allocator)
+			polygon.polygon_set_destroy(&minimum_centers, allocator)
+			polygon.polygon_set_destroy(&maximum_one_centers, allocator)
+			polygon.polygon_set_destroy(&above_two_core, allocator)
+			return .Allocation_Failed
+		}
+	}
+	polygon.polygon_set_destroy(&printable_opening, allocator)
+
+	output_offset := region_index * 6
+	outputs[output_offset] = coverage
+	outputs[output_offset + 1] = residual
+	outputs[output_offset + 2] = minimum_centers
+	outputs[output_offset + 3] = maximum_one_centers
+	outputs[output_offset + 4] = above_two_core
+	outputs[output_offset + 5] = unprinted
+	return .None
 }

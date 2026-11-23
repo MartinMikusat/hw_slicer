@@ -37,10 +37,18 @@ typedef struct {
     uint32_t _pad;
 } HWMetalSliceSegOut;
 
+typedef struct {
+    int64_t  ax, ay;
+    int64_t  bx, by;
+    uint32_t layer_idx;
+    uint32_t _pad;
+} HWMetalTravelQuery;
+
 static id<MTLDevice> g_device = nil;
 static id<MTLCommandQueue> g_queue = nil;
 static id<MTLComputePipelineState> g_pip_pso = nil;
 static id<MTLComputePipelineState> g_tri_pso = nil;
+static id<MTLComputePipelineState> g_trv_pso = nil;
 static bool g_initialized = false;
 
 bool hw_metal_compute_init(const char *shader_source) {
@@ -60,11 +68,15 @@ bool hw_metal_compute_init(const char *shader_source) {
         }
         id<MTLFunction> fn_pip = [lib newFunctionWithName:@"batch_point_in_polygon"];
         id<MTLFunction> fn_tri = [lib newFunctionWithName:@"batch_triangle_plane_intersect"];
+        id<MTLFunction> fn_trv = [lib newFunctionWithName:@"batch_travel_crosses_exterior"];
         if (fn_pip) {
             g_pip_pso = [g_device newComputePipelineStateWithFunction:fn_pip error:&err];
         }
         if (fn_tri) {
             g_tri_pso = [g_device newComputePipelineStateWithFunction:fn_tri error:&err];
+        }
+        if (fn_trv) {
+            g_trv_pso = [g_device newComputePipelineStateWithFunction:fn_trv error:&err];
         }
         return (g_pip_pso != nil);
     }
@@ -161,6 +173,51 @@ bool hw_metal_batch_triangle_plane_intersect(
         if (cmd.status != MTLCommandBufferStatusCompleted) return false;
 
         memcpy(out_segs, [b_out contents], (size_t)pair_count * sizeof(HWMetalSliceSegOut));
+        return true;
+    }
+}
+
+bool hw_metal_batch_travel_crosses_exterior(
+    const HWMetalPolyEdge *edges,
+    uint32_t edge_count,
+    const HWMetalLayerEdgeRange *layer_ranges,
+    uint32_t layer_count,
+    const HWMetalTravelQuery *queries,
+    uint32_t query_count,
+    uint8_t *out_results
+) {
+    if (!g_device || !g_queue || !g_trv_pso || query_count == 0 || layer_count == 0) {
+        return false;
+    }
+    @autoreleasepool {
+        size_t edge_bytes = (size_t)(edge_count > 0 ? edge_count : 1) * sizeof(HWMetalPolyEdge);
+        id<MTLBuffer> b_edges = edge_count > 0
+            ? [g_device newBufferWithBytes:edges length:edge_bytes options:MTLResourceStorageModeShared]
+            : [g_device newBufferWithLength:edge_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> b_ranges = [g_device newBufferWithBytes:layer_ranges length:(size_t)layer_count * sizeof(HWMetalLayerEdgeRange) options:MTLResourceStorageModeShared];
+        id<MTLBuffer> b_queries = [g_device newBufferWithBytes:queries length:(size_t)query_count * sizeof(HWMetalTravelQuery) options:MTLResourceStorageModeShared];
+        id<MTLBuffer> b_out = [g_device newBufferWithLength:(size_t)query_count options:MTLResourceStorageModeShared];
+        if (!b_edges || !b_ranges || !b_queries || !b_out) return false;
+
+        id<MTLCommandBuffer> cmd = [g_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+        [enc setComputePipelineState:g_trv_pso];
+        [enc setBuffer:b_edges offset:0 atIndex:0];
+        [enc setBuffer:b_ranges offset:0 atIndex:1];
+        [enc setBuffer:b_queries offset:0 atIndex:2];
+        [enc setBuffer:b_out offset:0 atIndex:3];
+        [enc setBytes:&query_count length:sizeof(uint32_t) atIndex:4];
+
+        NSUInteger tg_w = g_trv_pso.maxTotalThreadsPerThreadgroup;
+        if (tg_w > 256) tg_w = 256;
+        [enc dispatchThreads:MTLSizeMake(query_count, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg_w, 1, 1)];
+        [enc endEncoding];
+
+        [cmd commit];
+        [cmd waitUntilCompleted];
+        if (cmd.status != MTLCommandBufferStatusCompleted) return false;
+
+        memcpy(out_results, [b_out contents], (size_t)query_count);
         return true;
     }
 }
