@@ -208,6 +208,7 @@ infill_pattern_generate :: proc(
 					continue
 				}
 
+				region_start := len(local_out)
 				switch c.config.pattern {
 				case .Rectilinear:
 					ang := 0.0 if (li % 2 == 0) else math.PI * 0.5
@@ -241,6 +242,7 @@ infill_pattern_generate :: proc(
 						infill_pat_hatch(&local_out, boundary, u32(li), c_min_x, c_min_y, c_max_x, c_max_y, ang, c.S * 1.5, 0.0, c.lw, c.out_allocator)
 					}
 				}
+				infill_pat_connect(&local_out, region_start, boundary, min(3.0 * c.S, INFILL_CONNECT_MAX_UM), c.lw, c.out_allocator)
 				polygon.polygon_set_destroy(&boundary, c.out_allocator)
 			}
 			c.per_layer_out[li] = local_out
@@ -273,6 +275,211 @@ infill_pattern_generate :: proc(
 	}
 
 	return Infill_Pattern_Result{paths = out[:]}
+}
+
+INFILL_CONNECT_MAX_UM :: 20_000.0
+
+// Joins the infill lines `out[start:]` of one region along `boundary`, like Orca's connect_infill:
+// line ends lying on the boundary that are neighbours along the same boundary loop (no other end
+// between them) and at most `max_arc` apart are joined through the boundary, shortest first, each
+// end at most once and never closing a line onto itself.
+@(private)
+infill_pat_connect :: proc(
+	out: ^[dynamic]Infill_Pattern_Path,
+	start: int,
+	boundary: polygon.Polygon_Set,
+	max_arc: f64,
+	line_width: contracts.Micrometres,
+	allocator: mem.Allocator,
+) {
+	n := len(out) - start
+	if n < 2 || max_arc <= 0 {return}
+	pieces := out[start:]
+	// Cumulative arc length per boundary loop.
+	Loop :: struct {offset, count: int, length: f64}
+	loops := make([]Loop, len(boundary.paths), context.temp_allocator)
+	cum := make([]f64, len(boundary.points) + len(boundary.paths), context.temp_allocator)
+	cum_base := 0
+	for path, li in boundary.paths {
+		cnt := int(path.count)
+		off := int(path.offset)
+		total := 0.0
+		for k in 0..<cnt {
+			cum[cum_base + k] = total
+			a := boundary.points[off + k]
+			b := boundary.points[off + (k + 1) % cnt]
+			total += math.hypot(f64(i64(b.x) - i64(a.x)), f64(i64(b.y) - i64(a.y)))
+		}
+		loops[li] = {cum_base, cnt, total}
+		cum_base += cnt + 1
+	}
+	End :: struct {piece, side, loop: int, s: f64}
+	ends := make([dynamic]End, 0, 2 * n, context.temp_allocator)
+	for piece, pi in pieces {
+		for side in 0..<2 {
+			p := piece.points[0] if side == 0 else piece.points[len(piece.points) - 1]
+			px, py := f64(i64(p.x)), f64(i64(p.y))
+			best_d := 25.0 // within 5 um of the boundary
+			best_loop := -1
+			best_s := 0.0
+			for path, li in boundary.paths {
+				cnt := int(path.count)
+				off := int(path.offset)
+				for k in 0..<cnt {
+					a := boundary.points[off + k]
+					b := boundary.points[off + (k + 1) % cnt]
+					ax, ay := f64(i64(a.x)), f64(i64(a.y))
+					dx, dy := f64(i64(b.x)) - ax, f64(i64(b.y)) - ay
+					l2 := dx*dx + dy*dy
+					if l2 == 0 {continue}
+					t := clamp(((px - ax)*dx + (py - ay)*dy) / l2, 0, 1)
+					ex, ey := px - ax - t*dx, py - ay - t*dy
+					d := ex*ex + ey*ey
+					if d < best_d {
+						best_d = d
+						best_loop = li
+						best_s = cum[loops[li].offset + k] + t*math.sqrt(l2)
+					}
+				}
+			}
+			if best_loop >= 0 {append(&ends, End{pi, side, best_loop, best_s})}
+		}
+	}
+	if len(ends) < 2 {return}
+	slice.sort_by(ends[:], proc(a, b: End) -> bool {
+		if a.loop != b.loop {return a.loop < b.loop}
+		if a.s != b.s {return a.s < b.s}
+		if a.piece != b.piece {return a.piece < b.piece}
+		return a.side < b.side
+	})
+	// Candidate joins between neighbours along a loop (forward from a to b).
+	Join :: struct {a, b: int, arc: f64}
+	joins := make([dynamic]Join, 0, len(ends), context.temp_allocator)
+	for i in 0..<len(ends) {
+		j := i + 1
+		wrap := false
+		if j >= len(ends) || ends[j].loop != ends[i].loop {
+			// Wrap to the first end of this loop.
+			j = i
+			for j > 0 && ends[j - 1].loop == ends[i].loop {j -= 1}
+			wrap = true
+		}
+		if j == i || ends[j].piece == ends[i].piece {continue}
+		arc := ends[j].s - ends[i].s
+		if wrap {arc += loops[ends[i].loop].length}
+		if arc > max_arc {continue}
+		append(&joins, Join{i, j, arc})
+	}
+	slice.sort_by(joins[:], proc(a, b: Join) -> bool {
+		if a.arc != b.arc {return a.arc < b.arc}
+		return a.a < b.a
+	})
+	// Accept joins: each end once, no cycles (union-find over pieces).
+	parent := make([]int, n, context.temp_allocator)
+	for i in 0..<n {parent[i] = i}
+	find :: proc(parent: []int, x: int) -> int {
+		r := x
+		for parent[r] != r {r = parent[r]}
+		y := x
+		for parent[y] != r {
+			next := parent[y]
+			parent[y] = r
+			y = next
+		}
+		return r
+	}
+	end_used := make([]bool, len(ends), context.temp_allocator)
+	link := make([][2]int, n, context.temp_allocator) // per piece side: index into ends of the partner, or -1
+	link_join := make([][2]int, n, context.temp_allocator)
+	for i in 0..<n {link[i] = {-1, -1}; link_join[i] = {-1, -1}}
+	accepted := 0
+	for jn, ji in joins {
+		ea, eb := ends[jn.a], ends[jn.b]
+		if end_used[jn.a] || end_used[jn.b] {continue}
+		ra, rb := find(parent, ea.piece), find(parent, eb.piece)
+		if ra == rb {continue}
+		parent[ra] = rb
+		end_used[jn.a] = true
+		end_used[jn.b] = true
+		link[ea.piece][ea.side] = jn.b
+		link[eb.piece][eb.side] = jn.a
+		link_join[ea.piece][ea.side] = ji
+		link_join[eb.piece][eb.side] = ji
+		accepted += 1
+	}
+	if accepted == 0 {return}
+
+	// Boundary points strictly between arc positions s0 and s1 walking forward (or backward).
+	arc_points :: proc(dst: ^[dynamic]polygon.Polygon_Point, boundary: polygon.Polygon_Set, loop: Loop, cum: []f64, path_offset: int, s0, s1: f64, forward: bool) {
+		cnt := loop.count
+		if forward {
+			s_end := s1 if s1 >= s0 else s1 + loop.length
+			for k in 0..<2 * cnt {
+				idx := k % cnt
+				s := cum[loop.offset + idx] + (loop.length if k >= cnt else 0)
+				if s > s0 && s < s_end {append(dst, boundary.points[path_offset + idx])}
+			}
+		} else {
+			s_end := s1 if s1 <= s0 else s1 - loop.length
+			for k := 2 * cnt - 1; k >= 0; k -= 1 {
+				idx := k % cnt
+				s := cum[loop.offset + idx] - (loop.length if k < cnt else 0)
+				if s < s0 && s > s_end {append(dst, boundary.points[path_offset + idx])}
+			}
+		}
+	}
+	// Walk chains from pieces with a free end; then any remaining (none: no cycles).
+	visited := make([]bool, n, context.temp_allocator)
+	chains := make([dynamic]Infill_Pattern_Path, 0, n - accepted, allocator)
+	pts := make([dynamic]polygon.Polygon_Point, 0, 256, context.temp_allocator)
+	layer_index := pieces[0].layer_index
+	for startp in 0..<n {
+		if visited[startp] {continue}
+		free_side := -1
+		if link[startp][0] < 0 {free_side = 0} else if link[startp][1] < 0 {free_side = 1}
+		if free_side < 0 {continue}
+		clear(&pts)
+		cur := startp
+		entry_side := free_side
+		for {
+			visited[cur] = true
+			piece := pieces[cur]
+			if entry_side == 0 {
+				for p in piece.points {if len(pts) == 0 || pts[len(pts) - 1] != p {append(&pts, p)}}
+			} else {
+				for k := len(piece.points) - 1; k >= 0; k -= 1 {
+					p := piece.points[k]
+					if len(pts) == 0 || pts[len(pts) - 1] != p {append(&pts, p)}
+				}
+			}
+			exit_side := 1 - entry_side
+			partner := link[cur][exit_side]
+			if partner < 0 {break}
+			from := ends[link[ends[partner].piece][ends[partner].side]]
+			to := ends[partner]
+			jn := joins[link_join[cur][exit_side]]
+			forward := ends[jn.a].piece == cur && ends[jn.a].side == exit_side
+			loop := loops[from.loop]
+			arc_points(&pts, boundary, loop, cum, int(boundary.paths[from.loop].offset), from.s, to.s, forward)
+			cur = to.piece
+			entry_side = to.side
+			if visited[cur] {break}
+		}
+		if len(pts) >= 2 {
+			cp := make([]polygon.Polygon_Point, len(pts), allocator)
+			copy(cp, pts[:])
+			ws := make([]contracts.Micrometres, len(pts), allocator)
+			for k in 0..<len(ws) {ws[k] = line_width}
+			append(&chains, Infill_Pattern_Path{layer_index = layer_index, points = cp, line_widths = ws})
+		}
+	}
+	for piece in pieces {
+		delete(piece.points, allocator)
+		delete(piece.line_widths, allocator)
+	}
+	resize(out, start)
+	append(out, ..chains[:])
+	delete(chains)
 }
 
 @(private)
@@ -463,10 +670,11 @@ band_edges_contains_twice :: proc(edges: []Band_Edge_2, qx, qy: i64) -> bool {
 // layer is a slice of the gyroid surface sin x cos y + sin y cos z + sin z cos x = 0, drawn as
 // waves along x (or y, by layer Z) that are offset by pi in pattern units. One pattern unit is
 // `spacing / GYROID_DENSITY_ADJUST` micrometres, where `spacing` is the straight-row spacing for
-// the requested density. Waves are clipped exactly to the boundary. Orca uses 2.44 and also
-// connects the lines along the boundary; without connections, 2.575 makes the deposited volume
-// fraction equal the requested density (measured on a 40 mm cube at 15 %).
-GYROID_DENSITY_ADJUST :: 2.575
+// the requested density. Waves are clipped exactly to the boundary, and infill_pat_connect then
+// joins them along it. 2.44 is Orca's constant: with the connections, a 40 mm cube at 15 %
+// deposits about 4 % more than the requested volume fraction and larger regions come closer,
+// as in Orca.
+GYROID_DENSITY_ADJUST :: 2.44
 GYROID_PATTERN_TOLERANCE_UM :: 200.0
 
 @(private = "file")
