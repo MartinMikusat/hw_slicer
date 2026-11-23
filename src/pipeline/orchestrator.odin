@@ -559,7 +559,7 @@ slice_run_decoded_mesh :: proc(
 		surfaces,
 		layer_heights,
 		provider,
-		{fill_rule = .Non_Zero, top = proc_src.top_skin, bottom = proc_src.bottom_skin},
+		{fill_rule = .Non_Zero, top = proc_src.top_skin, bottom = proc_src.bottom_skin, skip_source_filtering = true},
 		allocator = allocator,
 	)
 	if skin_err != .None {

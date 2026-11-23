@@ -18,10 +18,11 @@ With closed-ring Douglas-Peucker contour simplification (`12 µm`), `DEFAULT_TEM
 
 | Model | Pure Odin + Metal (`OdinVatti 2.0`) | OrcaSlicer 2.5.1 | `Odin / Orca` | Filament vs. Clipper2 | `klipper_validate` |
 |---|---:|---:|---:|---:|---|
-| `cube.obj` | ~40 ms | — | — | `1376.06 mm` (`0.00%`) | PASS |
-| `all-in-one-test.stl` | **779.10 ms** | 1,029.68 ms | **0.76× (1.32× faster)** | `16594.54 mm` (`+0.80%`) | PASS |
-| `benchy.stl` | **764.97 ms** | 876.66 ms | **0.87× (1.15× faster)** | `3754.93 mm` (`-3.14%`) | PASS |
-| `stanford-bunny.stl` | **2,482.25 ms** | 1,659.16 ms | 1.50× | `30160.61 mm` (`-3.12%`) | PASS |
+| `cube.obj` | ~38 ms | — | — | `1376.06 mm` (`0.00%`) | PASS |
+| `all-in-one-test.stl` | **760.15 ms** | 1,032.32 ms | **0.74× (1.36× faster)** | `16594.48 mm` (`+0.80%`) | PASS |
+| `benchy.stl` | **708.21 ms** | 810.64 ms | **0.87× (1.14× faster)** | `3754.38 mm` (`-3.15%`) | PASS |
+| `stanford-bunny.stl` | **2,305.22 ms** | 2,134.05 ms | 1.08× | `30163.92 mm` (`-3.11%`) | PASS |
+| **Combined 3-Model Suite** | **3,773.58 ms** | **3,977.01 ms** | **0.95× (1.05× faster)** | — | **PASS** |
 
 ## Status
 - `NATIVE_PROVIDER` (`OdinVatti 2.0`) is the default polygon engine (`use_native_polygon = true`).

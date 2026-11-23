@@ -16,9 +16,10 @@ Skin_Kind :: enum u8 {
 }
 
 Skin_Config :: struct {
-	fill_rule: polygon.Polygon_Fill_Rule,
-	top:       profiles.Skin_Target,
-	bottom:    profiles.Skin_Target,
+	fill_rule:             polygon.Polygon_Fill_Rule,
+	top:                   profiles.Skin_Target,
+	bottom:                profiles.Skin_Target,
+	skip_source_filtering: bool,
 }
 
 Skin_Limits :: struct {
@@ -432,32 +433,34 @@ skins_propagate :: proc(
 			}
 			c.outputs[output_offset+2] = combined
 
-			for kind_index in 0 ..< 3 {
-				output := c.outputs[output_offset+kind_index]
-				if len(output.paths) == 0 {continue}
-				bottom_sources: []u32
-				top_sources: []u32
-				if kind_index != 1 {
-					bottom_sources = c.contribution_sources[region_index*2][:]
-				}
-				if kind_index != 0 {
-					top_sources = c.contribution_sources[region_index*2+1][:]
-				}
-				source_error := skin_filter_output_sources(
-					&c.output_sources[output_offset+kind_index],
-					output,
-					bottom_sources,
-					top_sources,
-					c.surfaces,
-					c.provider,
-					c.config.fill_rule,
-					c.limits,
-					&local_filtered,
-					c.allocator,
-				)
-				if source_error != .None {
-					c.layer_errors[target_layer] = source_error
-					return
+			if !c.config.skip_source_filtering {
+				for kind_index in 0 ..< 3 {
+					output := c.outputs[output_offset+kind_index]
+					if len(output.paths) == 0 {continue}
+					bottom_sources: []u32
+					top_sources: []u32
+					if kind_index != 1 {
+						bottom_sources = c.contribution_sources[region_index*2][:]
+					}
+					if kind_index != 0 {
+						top_sources = c.contribution_sources[region_index*2+1][:]
+					}
+					source_error := skin_filter_output_sources(
+						&c.output_sources[output_offset+kind_index],
+						output,
+						bottom_sources,
+						top_sources,
+						c.surfaces,
+						c.provider,
+						c.config.fill_rule,
+						c.limits,
+						&local_filtered,
+						c.allocator,
+					)
+					if source_error != .None {
+						c.layer_errors[target_layer] = source_error
+						return
+					}
 				}
 			}
 		}
@@ -477,7 +480,7 @@ skins_propagate :: proc(
 	total_source_references: u64
 	for &output, output_index in outputs {
 		if len(output.paths) == 0 {continue}
-		if len(output_sources[output_index]) == 0 {
+		if !config.skip_source_filtering && len(output_sources[output_index]) == 0 {
 			// Drop sub-micrometre rounding slivers that do not intersect any source surface.
 			polygon.polygon_set_destroy(&output, allocator)
 			continue

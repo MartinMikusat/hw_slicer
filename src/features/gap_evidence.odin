@@ -584,6 +584,25 @@ gap_evidence_process_region :: proc(
 			polygon.polygon_set_destroy(&coverage, allocator)
 			return .Provider
 		}
+		if config.uncovered_only {
+			// By De Morgan's Law, region - ((b0 ∩ region) ∪ ... ) == region - (b0 ∪ ...),
+			// so skip the redundant per-perimeter band ∩ region intersection.
+			accumulate_error := skin_polygon_accumulate(
+				&coverage,
+				&band,
+				provider,
+				config.fill_rule,
+				limits.polygon,
+				allocator,
+			)
+			if accumulate_error != .None {
+				polygon.polygon_set_destroy(&region_input, allocator)
+				polygon.polygon_set_destroy(&coverage, allocator)
+				if accumulate_error == .Allocation_Failed {return .Allocation_Failed}
+				return .Provider
+			}
+			continue
+		}
 		clipped, clip_error := provider.boolean(
 			band,
 			region_input,

@@ -145,6 +145,17 @@ odin_vatti_boolean :: proc(
 		}
 	}
 
+	// Fast path for non-self-intersecting single-ring Union (covers ~80% of odin_offset calls!).
+	if len(flat_splits) == 0 && operation == .Union && len(clips.paths) == 0 && len(subjects.paths) == 1 {
+		area := polygon_path_area_2(subjects.points)
+		if area == 0 {return {}, .None}
+		if fill_rule == .Positive && area < 0 {return {}, .None}
+		if fill_rule == .Negative && area > 0 {return {}, .None}
+		if area > 0 {
+			return vatti_canonicalize_set(subjects, limits, allocator)
+		}
+	}
+
 	// Build CSR lookup for split segments only when any splits occurred.
 	split_offsets: []int
 	split_items: []Vatti_Split
@@ -162,30 +173,21 @@ odin_vatti_boolean :: proc(
 		}
 	}
 
-	// Build deduplicated atomic vertical/slanted edges (accumulating dw_subj, dw_clip) and horizontal edges.
-	Edge_Key :: struct {x0, y0, x1, y1: i64}
-	vert_map := make(map[Edge_Key]int, n_segs * 2, context.temp_allocator)
+	// Build flat atomic vertical/slanted edges and horizontal edges (no hash maps).
 	verts := make([dynamic]Vatti_Atomic_Vert, 0, n_segs, context.temp_allocator)
-	horiz_seen := make(map[Edge_Key]bool, n_segs / 4 + 8, context.temp_allocator)
 	horizs := make([dynamic]Vatti_Atomic_Horiz, 0, n_segs / 4 + 8, context.temp_allocator)
 	pts_scratch := make([dynamic]Vatti_Split, 0, 16, context.temp_allocator)
 
 	add_atomic := proc(
 		ax, ay, bx, by: i64,
 		is_clip: bool,
-		vert_map: ^map[Edge_Key]int,
 		verts: ^[dynamic]Vatti_Atomic_Vert,
-		horiz_seen: ^map[Edge_Key]bool,
 		horizs: ^[dynamic]Vatti_Atomic_Horiz,
 	) {
 		if ax == bx && ay == by {return}
 		if ay == by {
 			x0, x1 := min(ax, bx), max(ax, bx)
-			hk := Edge_Key{x0, ay, x1, ay}
-			if hk not_in horiz_seen^ {
-				horiz_seen^[hk] = true
-				append(horizs, Vatti_Atomic_Horiz{x0 = x0, x1 = x1, y = ay})
-			}
+			append(horizs, Vatti_Atomic_Horiz{x0 = x0, x1 = x1, y = ay})
 			return
 		}
 		x0, y0, x1, y1: i64
@@ -197,28 +199,21 @@ odin_vatti_boolean :: proc(
 			x0, y0, x1, y1 = bx, by, ax, ay
 			dw = +1
 		}
-		vk := Edge_Key{x0, y0, x1, y1}
-		if idx, exists := vert_map^[vk]; exists {
-			if is_clip {verts^[idx].dw_clip += dw} else {verts^[idx].dw_subj += dw}
-		} else {
-			idx = len(verts^)
-			vert_map^[vk] = idx
-			append(verts, Vatti_Atomic_Vert{
-				x0      = x0,
-				y0      = y0,
-				x1      = x1,
-				y1      = y1,
-				slope   = f64(x1 - x0) / f64(y1 - y0),
-				dw_subj = 0 if is_clip else dw,
-				dw_clip = dw if is_clip else 0,
-			})
-		}
+		append(verts, Vatti_Atomic_Vert{
+			x0      = x0,
+			y0      = y0,
+			x1      = x1,
+			y1      = y1,
+			slope   = f64(x1 - x0) / f64(y1 - y0),
+			dw_subj = 0 if is_clip else dw,
+			dw_clip = dw if is_clip else 0,
+		})
 	}
 
 	for i in 0..<n_segs {
 		s := all_segs[i]
 		if !has_split[i] {
-			add_atomic(s.ax, s.ay, s.bx, s.by, s.is_clip, &vert_map, &verts, &horiz_seen, &horizs)
+			add_atomic(s.ax, s.ay, s.bx, s.by, s.is_clip, &verts, &horizs)
 			continue
 		}
 		clear(&pts_scratch)
@@ -230,11 +225,50 @@ odin_vatti_boolean :: proc(
 		slice.sort_by(pts_scratch[:], proc(a, b: Vatti_Split) -> bool {return a.t < b.t})
 
 		for k in 0..<len(pts_scratch)-1 {
-			add_atomic(pts_scratch[k].px, pts_scratch[k].py, pts_scratch[k + 1].px, pts_scratch[k + 1].py, s.is_clip, &vert_map, &verts, &horiz_seen, &horizs)
+			add_atomic(pts_scratch[k].px, pts_scratch[k].py, pts_scratch[k + 1].px, pts_scratch[k + 1].py, s.is_clip, &verts, &horizs)
 		}
 	}
 
 	if len(verts) == 0 {return {}, .None}
+
+	// Sort vertical edges by (y0, x0, y1, x1) and merge coincident edges in-place (already sorted by y0!).
+	slice.sort_by(verts[:], proc(a, b: Vatti_Atomic_Vert) -> bool {
+		if a.y0 != b.y0 {return a.y0 < b.y0}
+		if a.x0 != b.x0 {return a.x0 < b.x0}
+		if a.y1 != b.y1 {return a.y1 < b.y1}
+		return a.x1 < b.x1
+	})
+	vw := 0
+	for vi in 0..<len(verts) {
+		v := verts[vi]
+		if vw > 0 &&
+		   verts[vw - 1].y0 == v.y0 && verts[vw - 1].x0 == v.x0 &&
+		   verts[vw - 1].y1 == v.y1 && verts[vw - 1].x1 == v.x1 {
+			verts[vw - 1].dw_subj += v.dw_subj
+			verts[vw - 1].dw_clip += v.dw_clip
+		} else {
+			verts[vw] = v
+			vw += 1
+		}
+	}
+	resize(&verts, vw)
+
+	// Sort and deduplicate horizontal edges by (y, x0, x1) in-place.
+	if len(horizs) > 1 {
+		slice.sort_by(horizs[:], proc(a, b: Vatti_Atomic_Horiz) -> bool {
+			if a.y != b.y {return a.y < b.y}
+			if a.x0 != b.x0 {return a.x0 < b.x0}
+			return a.x1 < b.x1
+		})
+		hw := 1
+		for hi in 1..<len(horizs) {
+			if horizs[hi] != horizs[hw - 1] {
+				horizs[hw] = horizs[hi]
+				hw += 1
+			}
+		}
+		resize(&horizs, hw)
+	}
 
 	// Step 3: Build sorted unique scanbeam Y coordinates.
 	raw_ys := make([dynamic]i64, 0, len(verts)*2 + len(horizs), context.temp_allocator)
@@ -255,99 +289,66 @@ odin_vatti_boolean :: proc(
 	num_y := len(ys)
 	if num_y < 2 {return {}, .None}
 
-	// Bucket vertical edges by starting scanbeam s0, and horizontal edges by y index using flat CSR arrays.
-	start_counts := make([]int, num_y, context.temp_allocator)
-	for &v in verts {
-		v.s0 = vatti_find_y(ys[:], v.y0)
-		v.s1 = vatti_find_y(ys[:], v.y1)
-		start_counts[v.s0] += 1
-	}
-	start_offsets := make([]int, num_y + 1, context.temp_allocator)
-	for i in 0..<num_y {start_offsets[i + 1] = start_offsets[i] + start_counts[i]}
-	start_items := make([]int, len(verts), context.temp_allocator)
-	start_cursor := make([]int, num_y, context.temp_allocator)
-	copy(start_cursor, start_offsets[:num_y])
-	for v, vi in verts {
-		start_items[start_cursor[v.s0]] = vi
-		start_cursor[v.s0] += 1
-	}
-
-	horiz_counts := make([]int, num_y, context.temp_allocator)
-	horiz_sy := make([]int, len(horizs), context.temp_allocator)
-	for h, hi in horizs {
-		sy := vatti_find_y(ys[:], h.y)
-		horiz_sy[hi] = sy
-		horiz_counts[sy] += 1
-	}
-	horiz_offsets := make([]int, num_y + 1, context.temp_allocator)
-	for i in 0..<num_y {horiz_offsets[i + 1] = horiz_offsets[i] + horiz_counts[i]}
-	horiz_items := make([]int, len(horizs), context.temp_allocator)
-	horiz_cursor := make([]int, num_y, context.temp_allocator)
-	copy(horiz_cursor, horiz_offsets[:num_y])
-	for hi in 0..<len(horizs) {
-		sy := horiz_sy[hi]
-		horiz_items[horiz_cursor[sy]] = hi
-		horiz_cursor[sy] += 1
-	}
-
-	// Sweep slabs s = 0 ..< num_y - 1 maintaining Active Edge Table (AET).
-	active := make([dynamic]int, 0, 64, context.temp_allocator)
+	// Sweep slabs s = 0 ..< num_y maintaining a single in-place Active Edge Table (AET).
+	Active_Entry :: struct {idx: int, x_mid: f64, slope: f64}
+	aet := make([dynamic]Active_Entry, 0, 64, context.temp_allocator)
 	prev_slab := make([dynamic]Slab_Interval, 0, 64, context.temp_allocator)
 	cur_slab := make([dynamic]Slab_Interval, 0, 64, context.temp_allocator)
 	kept_edges := make([dynamic]Vatti_Dir_Edge, 0, len(verts) + len(horizs), context.temp_allocator)
 
-	Active_Sort :: struct {idx: int, x_mid: f64, slope: f64}
-	aet_sort := make([dynamic]Active_Sort, 0, 64, context.temp_allocator)
-
 	need_slab_intervals := len(horizs) > 0
+	next_vert := 0
+	next_horiz := 0
 	for s in 0..<num_y {
-		// Flush any expiring edges (s1 == s) before removing them from active.
+		y_cur := ys[s]
+		// Flush expiring edges (y1 <= y_cur) in-place.
 		w := 0
-		for ei in active {
-			v := &verts[ei]
-			if v.s1 <= s {
+		for entry in aet {
+			v := &verts[entry.idx]
+			if v.y1 <= y_cur {
 				if v.run_verdict != 0 {
 					vatti_emit_vert_run(&kept_edges, v^, ys[:], v.run_s_start, s, v.run_verdict)
 					v.run_verdict = 0
 				}
 			} else {
-				active[w] = ei
+				aet[w] = entry
 				w += 1
 			}
 		}
-		resize(&active, w)
+		resize(&aet, w)
 
-		// Build cur_slab for [ys[s], ys[s+1]] if s + 1 < num_y.
-		has_horiz_here := horiz_offsets[s] < horiz_offsets[s + 1]
-		has_horiz_next := s + 1 < num_y && horiz_offsets[s + 1] < horiz_offsets[s + 2]
+		h_start := next_horiz
+		for next_horiz < len(horizs) && horizs[next_horiz].y == y_cur {
+			next_horiz += 1
+		}
+		has_horiz_here := h_start < next_horiz
+		has_horiz_next := next_horiz < len(horizs) && s + 1 < num_y && horizs[next_horiz].y == ys[s + 1]
 		record_slab := need_slab_intervals && (has_horiz_here || has_horiz_next)
 		clear(&cur_slab)
+
 		if s + 1 < num_y {
-			for ei in start_items[start_offsets[s]:start_offsets[s + 1]] {
-				append(&active, ei)
+			for next_vert < len(verts) && verts[next_vert].y0 == y_cur {
+				append(&aet, Active_Entry{idx = next_vert, slope = verts[next_vert].slope})
+				next_vert += 1
 			}
 
-			if len(active) > 0 {
-				y_mid := 0.5 * f64(ys[s] + ys[s + 1])
-				clear(&aet_sort)
-				for ei in active {
-					v := verts[ei]
-					xm := f64(v.x0) + v.slope * (y_mid - f64(v.y0))
-					append(&aet_sort, Active_Sort{idx = ei, x_mid = xm, slope = v.slope})
+			if len(aet) > 0 {
+				y_mid := 0.5 * f64(y_cur + ys[s + 1])
+				for &entry in aet {
+					v := verts[entry.idx]
+					entry.x_mid = f64(v.x0) + entry.slope * (y_mid - f64(v.y0))
 				}
 				// Insertion sort on nearly-sorted AET (O(k) in the common non-crossing case).
-				for ai := 1; ai < len(aet_sort); ai += 1 {
-					key := aet_sort[ai]
+				for ai := 1; ai < len(aet); ai += 1 {
+					key := aet[ai]
 					aj := ai - 1
-					for aj >= 0 && (aet_sort[aj].x_mid > key.x_mid ||
-					    (aet_sort[aj].x_mid == key.x_mid && aet_sort[aj].slope > key.slope)) {
-						aet_sort[aj + 1] = aet_sort[aj]
+					for aj >= 0 && (aet[aj].x_mid > key.x_mid ||
+					    (aet[aj].x_mid == key.x_mid && aet[aj].slope > key.slope)) {
+						aet[aj + 1] = aet[aj]
 						aj -= 1
 					}
-					aet_sort[aj + 1] = key
+					aet[aj + 1] = key
 				}
-				// Persist sorted order back into `active` so the next slab starts sorted.
-				for item, ai in aet_sort {active[ai] = item.idx}
 
 				w_subj: i32 = 0
 				w_clip: i32 = 0
@@ -356,8 +357,8 @@ odin_vatti_boolean :: proc(
 					vatti_fill_inside(w_clip, fill_rule),
 					operation,
 				)
-				for item in aet_sort {
-					v := &verts[item.idx]
+				for entry in aet {
+					v := &verts[entry.idx]
 					w_subj += v.dw_subj
 					w_clip += v.dw_clip
 					in_next := vatti_bool_eval(
@@ -366,8 +367,8 @@ odin_vatti_boolean :: proc(
 						operation,
 					)
 					if record_slab {
-						x_bot := f64(v.x0) + item.slope * f64(ys[s] - v.y0)
-						x_top := f64(v.x0) + item.slope * f64(ys[s + 1] - v.y0)
+						x_bot := f64(v.x0) + entry.slope * f64(y_cur - v.y0)
+						x_top := f64(v.x0) + entry.slope * f64(ys[s + 1] - v.y0)
 						append(&cur_slab, Slab_Interval{x_bot = x_bot, x_top = x_top, in_res = in_next})
 					}
 
@@ -389,10 +390,9 @@ odin_vatti_boolean :: proc(
 			}
 		}
 
-		// Classify horizontal edges lying on scanbeam ys[s] using prev_slab (at top of slab s-1)
-		// vs cur_slab (at bottom of slab s).
+		// Classify horizontal edges lying on scanbeam y_cur using prev_slab vs cur_slab.
 		if has_horiz_here {
-			for hi in horiz_items[horiz_offsets[s]:horiz_offsets[s + 1]] {
+			for hi in h_start..<next_horiz {
 				h := horizs[hi]
 				xm := 0.5 * f64(h.x0 + h.x1)
 				in_below := vatti_slab_lookup_top(prev_slab[:], xm)
@@ -405,7 +405,6 @@ odin_vatti_boolean :: proc(
 			}
 		}
 
-		// Swap prev_slab <-> cur_slab in O(1) without copying.
 		if need_slab_intervals {
 			prev_slab, cur_slab = cur_slab, prev_slab
 		}
