@@ -195,6 +195,41 @@ record_stage :: proc(stages: ^[dynamic]Stage_Trace, name: string, start: time.Ti
 }
 
 @(private = "file")
+// One polygon set per layer holding every role-overlap mask (the solid skin and bridge areas).
+role_overlap_layer_sets :: proc(
+	overlap: features.Role_Overlap_Result,
+	layer_count: int,
+	allocator: mem.Allocator,
+) -> []polygon.Polygon_Set {
+	sets := make([]polygon.Polygon_Set, layer_count, allocator)
+	for layer, layer_index in overlap.layers {
+		if layer_index >= layer_count || layer.mask_count == 0 {continue}
+		point_total := 0
+		path_total := 0
+		for mask in overlap.masks[layer.mask_offset:layer.mask_offset+u64(layer.mask_count)] {
+			for path in overlap.paths[mask.path_offset:mask.path_offset+u64(mask.path_count)] {
+				point_total += int(path.point_count)
+				path_total += 1
+			}
+		}
+		points := make([]polygon.Polygon_Point, point_total, allocator)
+		paths := make([]polygon.Polygon_Path, path_total, allocator)
+		point_write := 0
+		path_write := 0
+		for mask in overlap.masks[layer.mask_offset:layer.mask_offset+u64(layer.mask_count)] {
+			for path in overlap.paths[mask.path_offset:mask.path_offset+u64(mask.path_count)] {
+				count := int(path.point_count)
+				copy(points[point_write:point_write+count], overlap.points[path.point_offset:path.point_offset+u64(count)])
+				paths[path_write] = {offset = u64(point_write), count = u64(count)}
+				point_write += count
+				path_write += 1
+			}
+		}
+		sets[layer_index] = {points = points, paths = paths}
+	}
+	return sets
+}
+
 build_model_polygon_sets :: proc(
 	topology: slicing.Topology_Result,
 	regions: slicing.Region_Result,
@@ -661,36 +696,17 @@ slice_run_decoded_mesh :: proc(
 	infill_inset := contracts.Micrometres(i64(proc_src.perimeter_count)*i64(proc_src.nominal_line_width))
 	infill: features.Infill_Result
 	pattern_infill: features.Infill_Pattern_Result
+	// Sparse infill fills the region minus the solid (skin and bridge) areas of its layer.
+	solid_areas := role_overlap_layer_sets(overlap, layer_count, allocator)
+	defer {
+		for &set in solid_areas {polygon.polygon_set_destroy(&set, allocator)}
+		delete(solid_areas, allocator)
+	}
+	infill.layers = make([]features.Infill_Layer, layer_count, allocator)
 	if options.infill_density_percent <= 0 {
 		// Zero density (spiral vase or an explicit 0%) prints no sparse infill.
-		infill.layers = make([]features.Infill_Layer, layer_count, allocator)
 		record_stage(&result.stages, "infill", t0, 0, 0)
-	} else if options.infill_pattern == .Rectilinear {
-		inf_err: features.Infill_Error
-		infill, inf_err = features.infill_generate(
-			active_topo,
-			result.regions,
-			provider,
-			{
-				spacing              = infill_spacing,
-				boundary_inset       = infill_inset,
-				phase                = 0,
-				base_axis            = .Vertical,
-				alternate_each_layer = true,
-				topology_policy      = .Diagnostic_Closed_Regions,
-				join_type            = .Miter,
-				miter_limit          = 2.0,
-				arc_tolerance        = 0.0,
-			},
-			allocator = allocator,
-		)
-		if inf_err != .None {
-			slice_run_result_destroy(&result, allocator)
-			return {}, {stage = "infill", detail = fmt.tprintf("infill error: %v", inf_err)}
-		}
-		record_stage(&result.stages, "infill", t0, u64(len(infill.segments)), u64(infill_spacing))
 	} else {
-		infill.layers = make([]features.Infill_Layer, layer_count, allocator)
 		pattern_infill = features.infill_pattern_generate(
 			active_topo,
 			result.regions,
@@ -705,6 +721,7 @@ slice_run_decoded_mesh :: proc(
 				worker_threads = options.worker_threads,
 			},
 			allocator,
+			solid_areas,
 		)
 		record_stage(&result.stages, "infill", t0, u64(len(pattern_infill.paths)), u64(infill_spacing))
 	}

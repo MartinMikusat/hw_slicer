@@ -58,6 +58,7 @@ infill_pattern_generate :: proc(
 	provider: polygon.Polygon_Provider,
 	config: Infill_Pattern_Config,
 	allocator := context.allocator,
+	exclude: []polygon.Polygon_Set = nil, // per layer: solid areas that sparse infill must not fill
 ) -> Infill_Pattern_Result {
 	if provider.offset == nil || i64(config.spacing_um) <= 0 || i64(config.line_width_um) <= 0 {
 		return {}
@@ -127,6 +128,7 @@ infill_pattern_generate :: proc(
 		layer_z:         []contracts.Micrometres,
 		provider:        polygon.Polygon_Provider,
 		config:          Infill_Pattern_Config,
+		exclude:         []polygon.Polygon_Set,
 		lightning_boxes: [][4]i64,
 		has_lightning:   []bool,
 		S:               f64,
@@ -143,6 +145,7 @@ infill_pattern_generate :: proc(
 		layer_z         = layer_z,
 		provider        = provider,
 		config          = config,
+		exclude         = exclude,
 		lightning_boxes = lightning_boxes,
 		has_lightning   = has_lightning,
 		S               = S,
@@ -181,6 +184,22 @@ infill_pattern_generate :: proc(
 				if off_err != .None || len(boundary.paths) == 0 {
 					polygon.polygon_set_destroy(&boundary, c.out_allocator)
 					continue
+				}
+				if li < len(c.exclude) && len(c.exclude[li].paths) > 0 {
+					sparse, diff_err := c.provider.boolean(
+						boundary,
+						c.exclude[li],
+						.Difference,
+						.Non_Zero,
+						polygon.DEFAULT_POLYGON_LIMITS,
+						c.out_allocator,
+					)
+					polygon.polygon_set_destroy(&boundary, c.out_allocator)
+					if diff_err != .None || len(sparse.paths) == 0 {
+						polygon.polygon_set_destroy(&sparse, c.out_allocator)
+						continue
+					}
+					boundary = sparse
 				}
 
 				min_x, min_y, max_x, max_y := infill_pat_bounds(boundary)

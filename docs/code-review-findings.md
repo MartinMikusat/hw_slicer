@@ -266,3 +266,9 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
 - **Location:** `scripts/sim-verify.sh`
 - **Issue:** The script preferred `build/release/hw-slicer-cli` whenever it existed, so simulator runs after a debug build tested old code.
 - **Resolution:** The script uses whichever of the debug and release CLIs was built most recently and prints which one it uses.
+
+### [CR-41] Sparse Infill Printed Under Solid Skin — **RESOLVED**
+- **Severity:** High
+- **Locations:** `src/pipeline/orchestrator.odin` (stage 7), `src/features/infill_patterns.odin`
+- **Issue:** Role-overlap resolution reconciled skin against bridges only, and sparse infill was generated over the whole region. Every top, bottom, and solid layer printed sparse infill on top of its solid skin: on Benchy's first layer, all 86 sparse segments lay on the bottom skin. Every infill pattern was affected (gyroid, the default, most visibly).
+- **Resolution:** The orchestrator builds one polygon set per layer from the role-overlap masks (skin and bridge areas), and `infill_pattern_generate` subtracts it from each region's infill boundary. Rectilinear infill now runs through the pattern generator as well, so every pattern gets the exclusion; the exact `infill_generate` path remains for the evidence probes. Full-skin layers now carry no sparse infill for all seven patterns, and interior layers keep theirs.
