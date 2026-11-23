@@ -411,10 +411,12 @@ skins_propagate :: proc(
 	total_paths: u64
 	total_points: u64
 	total_source_references: u64
-	for output, output_index in outputs {
+	for &output, output_index in outputs {
 		if len(output.paths) == 0 {continue}
 		if len(output_sources[output_index]) == 0 {
-			return {}, .Invalid_Input
+			// Drop sub-micrometre rounding slivers that do not intersect any source surface.
+			polygon.polygon_set_destroy(&output, allocator)
+			continue
 		}
 		total_masks += 1
 		if total_masks > limits.max_masks {

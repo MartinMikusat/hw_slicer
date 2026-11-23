@@ -1,0 +1,12 @@
+{
+  "name": "pla",
+  "filament_diameter_mm": 1.75,
+  "density_g_cm3": 1.24,
+  "min_nozzle_temp_c": 190,
+  "max_nozzle_temp_c": 230,
+  "min_bed_temp_c": 45,
+  "max_bed_temp_c": 70,
+  "min_fan_percent": 0,
+  "max_fan_percent": 100,
+  "max_volumetric_flow_mm3_s": 20.0
+}

@@ -253,62 +253,77 @@ polygon_set_canonicalize :: proc(
 
 	expected_offset: u64
 	point_write := 0
-	for raw_path, path_index in raw_paths {
-		if raw_path.offset != expected_offset || raw_path.count < 3 ||
+	record_count := 0
+	for raw_path in raw_paths {
+		if raw_path.offset != expected_offset ||
 		   expected_offset > raw.point_count ||
 		   raw_path.count > raw.point_count-expected_offset {
 			return {}, .Provider_Failed
 		}
+		expected_offset += raw_path.count
+		if raw_path.count < 3 {continue}
 		raw_path_points :=
 			raw_points[int(raw_path.offset):int(raw_path.offset+raw_path.count)]
-		start_index := polygon_ffi_minimum_rotation(raw_path_points)
-		record_points :=
-			temporary_points[point_write:point_write+len(raw_path_points)]
-		previous := Polygon_Point{}
-		for local_index in 0..<len(raw_path_points) {
-			source := raw_path_points[
-				(start_index+local_index)%len(raw_path_points)
-			]
+		// Deduplicate consecutive identical vertices and drop zero-area slivers
+		// that Clipper2 can emit on touching/collinear real-world STL edges.
+		dedup_start := point_write
+		for source in raw_path_points {
 			point := Polygon_Point{
 				x = contracts.Micrometres(source.x),
 				y = contracts.Micrometres(source.y),
 			}
-			if geometry.point_2_validate({x = point.x, y = point.y}) !=
-			   .None {
+			if geometry.point_2_validate({x = point.x, y = point.y}) != .None {
 				return {}, .Coordinate_Range
 			}
-			if local_index > 0 && point == previous {
-				return {}, .Provider_Failed
+			if point_write > dedup_start && point == temporary_points[point_write-1] {
+				continue
 			}
-			record_points[local_index] = point
-			previous = point
+			temporary_points[point_write] = point
+			point_write += 1
 		}
-		if record_points[0] == record_points[len(record_points)-1] {
-			return {}, .Provider_Failed
+		for point_write-dedup_start >= 2 &&
+		    temporary_points[dedup_start] == temporary_points[point_write-1] {
+			point_write -= 1
 		}
-		area := polygon_path_area_2(record_points)
-		if area == 0 {return {}, .Provider_Failed}
-		records[path_index] = {
-			points = record_points,
+		clean_count := point_write-dedup_start
+		if clean_count < 3 {
+			point_write = dedup_start
+			continue
+		}
+		clean := temporary_points[dedup_start:point_write]
+		area := polygon_path_area_2(clean)
+		if area == 0 {
+			point_write = dedup_start
+			continue
+		}
+		min_idx := polygon_ffi_minimum_rotation(transmute([]HW_Clipper2_Point)clean)
+		if min_idx > 0 {
+			slice.rotate_left(clean, min_idx)
+		}
+		records[record_count] = {
+			points = clean,
 			signed_area_2 = area,
 		}
-		point_write += len(raw_path_points)
-		expected_offset += raw_path.count
+		record_count += 1
 	}
-	if expected_offset != raw.point_count || point_write != len(temporary_points) {
+	if expected_offset != raw.point_count {
 		return {}, .Provider_Failed
 	}
-	slice.sort_by(records, polygon_canonical_path_less)
+	if record_count == 0 {
+		return {}, .None
+	}
+	valid_records := records[:record_count]
+	slice.sort_by(valid_records, polygon_canonical_path_less)
 
 	result: Polygon_Set
-	result.points = make([]Polygon_Point, len(temporary_points), allocator)
-	result.paths = make([]Polygon_Path, len(records), allocator)
+	result.points = make([]Polygon_Point, point_write, allocator)
+	result.paths = make([]Polygon_Path, len(valid_records), allocator)
 	if result.points == nil || result.paths == nil {
 		polygon_set_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
 	point_write = 0
-	for record, path_index in records {
+	for record, path_index in valid_records {
 		result.paths[path_index] = {
 			offset = u64(point_write),
 			count = u64(len(record.points)),

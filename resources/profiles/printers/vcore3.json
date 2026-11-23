@@ -1,0 +1,19 @@
+{
+  "name": "vcore3",
+  "bed_min_x_mm": 0,
+  "bed_max_x_mm": 300,
+  "bed_min_y_mm": 0,
+  "bed_max_y_mm": 300,
+  "bed_min_z_mm": 0,
+  "bed_max_z_mm": 300,
+  "extruder_count": 1,
+  "nozzle_diameter_mm": 0.4,
+  "min_layer_height_mm": 0.08,
+  "max_layer_height_mm": 0.32,
+  "min_line_width_mm": 0.24,
+  "max_line_width_mm": 0.65,
+  "max_speed_mm_s": 300,
+  "max_acceleration_mm_s2": 10000,
+  "max_extruder_speed_mm_s": 120,
+  "max_extruder_acceleration_mm_s2": 5000
+}

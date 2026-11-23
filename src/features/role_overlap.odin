@@ -228,9 +228,7 @@ role_overlap_resolve :: proc(
 					output_area_ok: bool
 					output_area, output_area_ok =
 						role_overlap_area_2(output)
-					if !output_area_ok ||
-					   output_area >
-						source_areas[order.source_index] {
+					if !output_area_ok {
 						polygon.polygon_set_destroy(
 							&output,
 							allocator,
@@ -240,6 +238,9 @@ role_overlap_resolve :: proc(
 							allocator,
 						)
 						return {}, .Arithmetic
+					}
+					if output_area > source_areas[order.source_index] {
+						output_area = source_areas[order.source_index]
 					}
 				}
 				if len(priority_coverage.paths) > 0 &&
@@ -269,16 +270,37 @@ role_overlap_resolve :: proc(
 						allocator,
 					)
 					if has_overlap {
-						polygon.polygon_set_destroy(
-							&output,
+						trimmed, trim_error := provider.boolean(
+							output,
+							priority_coverage,
+							.Difference,
+							fill_rule,
+							limits.polygon,
 							allocator,
 						)
-						polygon.polygon_set_destroy(
-							&priority_coverage,
-							allocator,
-						)
-						return {}, .Same_Priority_Overlap
+						polygon.polygon_set_destroy(&output, allocator)
+						if trim_error != .None {
+							polygon.polygon_set_destroy(&priority_coverage, allocator)
+							return {}, .Provider
+						}
+						output = trimmed
+						if len(output.paths) > 0 {
+							area_ok: bool
+							output_area, area_ok = role_overlap_area_2(output)
+							if !area_ok {
+								polygon.polygon_set_destroy(&output, allocator)
+								polygon.polygon_set_destroy(&priority_coverage, allocator)
+								return {}, .Arithmetic
+							}
+						} else {
+							output_area = 0
+						}
 					}
+				}
+				if len(output.paths) == 0 {
+					outputs[order.source_index] = output
+					output_areas[order.source_index] = 0
+					continue
 				}
 				outputs[order.source_index] = output
 				output_areas[order.source_index] = output_area
@@ -451,7 +473,7 @@ role_overlap_resolve :: proc(
 				return {}, .Arithmetic
 			}
 			source_area := source_areas[order.source_index]
-			output_area := output_areas[order.source_index]
+			output_area := min(output_areas[order.source_index], source_area)
 			removed_area := source_area-output_area
 			result.masks[mask_write] = {
 				stable_id = mask_id,

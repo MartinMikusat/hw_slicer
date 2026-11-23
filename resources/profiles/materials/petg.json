@@ -1,0 +1,12 @@
+{
+  "name": "petg",
+  "filament_diameter_mm": 1.75,
+  "density_g_cm3": 1.27,
+  "min_nozzle_temp_c": 225,
+  "max_nozzle_temp_c": 260,
+  "min_bed_temp_c": 70,
+  "max_bed_temp_c": 95,
+  "min_fan_percent": 0,
+  "max_fan_percent": 60,
+  "max_volumetric_flow_mm3_s": 14.0
+}

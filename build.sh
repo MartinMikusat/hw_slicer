@@ -86,6 +86,22 @@ fi
     -extra-linker-flags:"$HOST_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
 )
 
+CLI_EXECUTABLE="$ROOT/build/hw-slicer-cli"
+if [ "$MODE" != "debug" ]; then
+  CLI_EXECUTABLE="$ROOT/build/$MODE/hw-slicer-cli"
+  mkdir -p "$ROOT/build/$MODE"
+fi
+(
+  cd "$BUILD_DIR"
+  # shellcheck disable=SC2086
+  "$ODIN" build "$ROOT/src/cli" \
+    -out:"$CLI_EXECUTABLE" \
+    $ODIN_FLAGS \
+    -collection:devlog="$DEVLOG_ROOT" \
+    -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$MODE/libhw_clipper2.a" \
+    -extra-linker-flags:"$ASAN_COMPAT_OBJECT -lc++"
+)
+
 rm -rf "$APP/Contents/Resources/Fonts"
 mkdir -p \
   "$APP/Contents/Resources/Icons/Iconoir" \
