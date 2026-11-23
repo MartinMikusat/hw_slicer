@@ -459,7 +459,59 @@ band_edges_contains_twice :: proc(edges: []Band_Edge_2, qx, qy: i64) -> bool {
 	return inside
 }
 
-// Gyroid sinusoidal wave infill alternating X/Y across layers with smooth Z phase progression.
+// Gyroid infill, ported from OrcaSlicer/PrusaSlicer `FillGyroid` (standard parametric path): the
+// layer is a slice of the gyroid surface sin x cos y + sin y cos z + sin z cos x = 0, drawn as
+// waves along x (or y, by layer Z) that are offset by pi in pattern units. One pattern unit is
+// `spacing / GYROID_DENSITY_ADJUST` micrometres, where `spacing` is the straight-row spacing for
+// the requested density. Waves are clipped exactly to the boundary. Orca uses 2.44 and also
+// connects the lines along the boundary; without connections, 2.575 makes the deposited volume
+// fraction equal the requested density (measured on a 40 mm cube at 15 %).
+GYROID_DENSITY_ADJUST :: 2.575
+GYROID_PATTERN_TOLERANCE_UM :: 200.0
+
+@(private = "file")
+gyroid_f :: proc(x, z_sin, z_cos: f64, vertical, flip: bool) -> f64 {
+	if vertical {
+		phase_offset := (math.PI if z_cos < 0 else 0.0) + math.PI
+		a := math.sin(x + phase_offset)
+		b := -z_cos
+		res := z_sin * math.cos(x + phase_offset + (math.PI if flip else 0.0))
+		r := math.sqrt(a*a + b*b)
+		return math.asin(a/r) + math.asin(res/r) + math.PI
+	}
+	phase_offset := math.PI if z_sin < 0 else 0.0
+	a := math.cos(x + phase_offset)
+	b := -z_sin
+	res := z_cos * math.sin(x + phase_offset + (0.0 if flip else math.PI))
+	r := math.sqrt(a*a + b*b)
+	return math.asin(a/r) + math.asin(res/r) + 0.5*math.PI
+}
+
+// One period [0, 2 pi] of the wave, refined until every midpoint is within `tolerance` (pattern
+// units) of its chord.
+@(private = "file")
+gyroid_one_period :: proc(z_sin, z_cos: f64, vertical, flip: bool, tolerance: f64) -> [dynamic][2]f64 {
+	pts := make([dynamic][2]f64, 0, 64, context.temp_allocator)
+	for x := 0.0; x < 2.0*math.PI - 1e-9; x += 0.5*math.PI {
+		append(&pts, [2]f64{x, gyroid_f(x, z_sin, z_cos, vertical, flip)})
+	}
+	append(&pts, [2]f64{2.0*math.PI, gyroid_f(2.0*math.PI, z_sin, z_cos, vertical, flip)})
+	for pass in 0..<16 {
+		size := len(pts)
+		for i in 1..<size {
+			lp, rp := pts[i - 1], pts[i]
+			x := lp[0] + (rp[0] - lp[0]) / 2
+			ip := [2]f64{x, gyroid_f(x, z_sin, z_cos, vertical, flip)}
+			cross := (ip[0]-lp[0])*(ip[1]-rp[1]) - (ip[1]-lp[1])*(ip[0]-rp[0])
+			if math.abs(cross) > tolerance*tolerance {append(&pts, ip)}
+		}
+		if len(pts) == size {break}
+		slice.sort_by(pts[:], proc(a, b: [2]f64) -> bool {return a[0] < b[0]})
+		_ = pass
+	}
+	return pts
+}
+
 @(private)
 infill_pat_gyroid :: proc(
 	out: ^[dynamic]Infill_Pattern_Path,
@@ -471,23 +523,31 @@ infill_pat_gyroid :: proc(
 	line_width: contracts.Micrometres,
 	allocator := context.allocator,
 ) {
-	// Each row is sampled as a polyline of a sine wave with amplitude 0.42 and period 2 (in row
-	// spacings), 8 samples per period, which is longer than a straight row by the factor below.
-	// Widen the rows by that factor so the deposited density matches the requested one.
-	length_factor := 0.0
-	for j in 0..<8 {
-		dy := 0.21 * (math.sin(2.0*math.PI*f64(j + 1)/8.0) - math.sin(2.0*math.PI*f64(j)/8.0))
-		length_factor += math.hypot(1.0/8.0, dy)
+	scale := spacing / GYROID_DENSITY_ADJUST // micrometres per pattern unit
+	if scale <= 1.0 {return}
+	flow_spacing := f64(i64(line_width))
+	tolerance := min(flow_spacing / 2.0, GYROID_PATTERN_TOLERANCE_UM) / scale
+	z := z_um / scale
+	z_sin, z_cos := math.sin(z), math.cos(z)
+	vertical := math.abs(z_sin) <= math.abs(z_cos)
+	// Pattern-space range, waves running along the first coordinate.
+	lo := [2]f64{f64(min_x) / scale, f64(min_y) / scale}
+	hi := [2]f64{f64(max_x) / scale, f64(max_y) / scale}
+	lower_bound := 0.0
+	flip := true
+	if vertical {
+		flip = false
+		lower_bound = -math.PI
+		lo = {lo[1], lo[0]}
+		hi = {hi[1], hi[0]}
 	}
-	spacing := spacing * length_factor
-	period := max(spacing * 2.0, 2000.0)
-	amp := spacing * 0.42
-	z_phase := (2.0 * math.PI * z_um) / period
-	step := max(period / 8.0, 500.0)
-	horizontal := (layer_index % 2) == 0
-	amp_margin2 := i64(math.ceil((amp + 20.0) * 2.0))
+	odd := gyroid_one_period(z_sin, z_cos, vertical, flip, tolerance)
+	even := gyroid_one_period(z_sin, z_cos, vertical, !flip, tolerance)
+	f_min, f_max := max(f64), min(f64)
+	for p in odd {f_min = min(f_min, p[1]); f_max = max(f_max, p[1])}
+	for p in even {f_min = min(f_min, p[1]); f_max = max(f_max, p[1])}
 
-	// Flatten boundary edges once per layer (transposed for vertical waves so ray-cast is always in band-axis).
+	// Boundary edges in band coordinates (x along the wave, y across it), doubled.
 	all_edges := make([dynamic]Band_Edge_2, 0, len(boundary.points), context.temp_allocator)
 	for path in boundary.paths {
 		n := int(path.count)
@@ -496,105 +556,100 @@ infill_pat_gyroid :: proc(
 		prev := boundary.points[s + n - 1]
 		for ei in 0..<n {
 			cur := boundary.points[s + ei]
-			if horizontal {
-				append(&all_edges, Band_Edge_2{i64(prev.x)*2, i64(prev.y)*2, i64(cur.x)*2, i64(cur.y)*2})
-			} else {
+			if vertical {
 				append(&all_edges, Band_Edge_2{i64(prev.y)*2, i64(prev.x)*2, i64(cur.y)*2, i64(cur.x)*2})
+			} else {
+				append(&all_edges, Band_Edge_2{i64(prev.x)*2, i64(prev.y)*2, i64(cur.x)*2, i64(cur.y)*2})
 			}
 			prev = cur
 		}
 	}
-
 	band := make([dynamic]Band_Edge_2, 0, 32, context.temp_allocator)
-	raw := make([dynamic]polygon.Polygon_Point, 0, 128, context.temp_allocator)
+	wave := make([dynamic][2]f64, 0, 256, context.temp_allocator)
 	run := make([dynamic]polygon.Polygon_Point, 0, 128, context.temp_allocator)
+	cuts := make([dynamic]f64, 0, 8, context.temp_allocator)
+	min_piece := 0.8 * flow_spacing
 
-	emit_band_clipped :: proc(
-		out: ^[dynamic]Infill_Pattern_Path,
-		band_edges: []Band_Edge_2,
-		horizontal: bool,
-		layer_index: u32,
-		raw_pts: []polygon.Polygon_Point,
-		run: ^[dynamic]polygon.Polygon_Point,
-		line_width: contracts.Micrometres,
-		allocator: mem.Allocator,
-	) {
-		if len(raw_pts) < 2 || len(band_edges) == 0 {return}
-		clear(run)
-		for i in 0..<len(raw_pts)-1 {
-			a := raw_pts[i]
-			b := raw_pts[i + 1]
-			if a == b {continue}
-			qx := i64(a.x) + i64(b.x)
-			qy := i64(a.y) + i64(b.y)
-			inside := band_edges_contains_twice(band_edges, qx, qy) if horizontal else band_edges_contains_twice(band_edges, qy, qx)
-			if inside {
-				if len(run^) == 0 {append(run, a)}
-				if run^[len(run^)-1] != b {append(run, b)}
-			} else if len(run^) >= 2 {
-				infill_pat_flush_run(out, layer_index, run^[:], line_width, allocator)
-				clear(run)
-			} else {
-				clear(run)
+	first_i := i64(math.ceil((lo[1] - f_max - lower_bound) / math.PI))
+	for i := first_i; lower_bound + f64(i)*math.PI + f_min <= hi[1]; i += 1 {
+		one_period := odd if i % 2 == 0 else even
+		offset := lower_bound + f64(i)*math.PI
+		// Band of this wave, in doubled micrometres across the wave.
+		band_lo := i64(math.floor((offset + f_min) * scale * 2.0)) - 4
+		band_hi := i64(math.ceil((offset + f_max) * scale * 2.0)) + 4
+		clear(&band)
+		for e in all_edges {
+			if max(e.ay2, e.by2) >= band_lo && min(e.ay2, e.by2) <= band_hi {append(&band, e)}
+		}
+		if len(band) == 0 {continue}
+		// The wave in band coordinates (micrometres), covering [lo.x, hi.x].
+		clear(&wave)
+		period := 2.0 * math.PI
+		n := len(one_period) - 1
+		x0 := math.floor(lo[0] / period) * period
+		k := 0
+		for k + 1 < n && x0 + one_period[k + 1][0] <= lo[0] {k += 1}
+		for {
+			p := [2]f64{(x0 + one_period[k][0]) * scale, (one_period[k][1] + offset) * scale}
+			append(&wave, p)
+			if x0 + one_period[k][0] >= hi[0] {break}
+			k += 1
+			if k == n {
+				k = 0
+				x0 += period
 			}
 		}
-		if len(run^) >= 2 {
-			infill_pat_flush_run(out, layer_index, run^[:], line_width, allocator)
+		// Exact clip: split each segment where it crosses a band edge, keep inside pieces.
+		clear(&run)
+		piece_length := 0.0
+		flush :: proc(out: ^[dynamic]Infill_Pattern_Path, layer_index: u32, run: ^[dynamic]polygon.Polygon_Point, length: ^f64, min_piece: f64, line_width: contracts.Micrometres, allocator: mem.Allocator) {
+			if len(run) >= 2 && length^ >= min_piece {infill_pat_flush_run(out, layer_index, run[:], line_width, allocator)}
+			clear(run)
+			length^ = 0
 		}
-	}
-
-	if horizontal {
-		y0 := math.floor(f64(min_y)/spacing) * spacing
-		for y := y0; y <= f64(max_y) + spacing; y += spacing {
-			y2 := i64(math.round(y * 2.0))
-			lo_band := y2 - amp_margin2
-			hi_band := y2 + amp_margin2
-			clear(&band)
-			for e in all_edges {
-				if max(e.ay2, e.by2) >= lo_band && min(e.ay2, e.by2) <= hi_band {
-					append(&band, e)
+		to_point :: proc(p: [2]f64, vertical: bool) -> polygon.Polygon_Point {
+			x, y := p[0], p[1]
+			if vertical {x, y = y, x}
+			return {x = contracts.Micrometres(i64(math.round(x))), y = contracts.Micrometres(i64(math.round(y)))}
+		}
+		for si in 0..<len(wave) - 1 {
+			a, b := wave[si], wave[si + 1]
+			clear(&cuts)
+			append(&cuts, 0.0)
+			dx, dy := b[0] - a[0], b[1] - a[1]
+			for e in band {
+				ex0, ey0 := f64(e.ax2) / 2, f64(e.ay2) / 2
+				ex1, ey1 := f64(e.bx2) / 2, f64(e.by2) / 2
+				fx, fy := ex1 - ex0, ey1 - ey0
+				denom := dx*fy - dy*fx
+				if denom == 0 {continue}
+				t := ((ex0 - a[0])*fy - (ey0 - a[1])*fx) / denom
+				u := ((ex0 - a[0])*dy - (ey0 - a[1])*dx) / denom
+				if t > 0 && t < 1 && u >= 0 && u <= 1 {append(&cuts, t)}
+			}
+			append(&cuts, 1.0)
+			if len(cuts) > 3 {slice.sort(cuts[1:len(cuts) - 1])}
+			for ci in 0..<len(cuts) - 1 {
+				t0, t1 := cuts[ci], cuts[ci + 1]
+				if t1 - t0 <= 1e-9 {continue}
+				p0 := [2]f64{a[0] + dx*t0, a[1] + dy*t0}
+				p1 := [2]f64{a[0] + dx*t1, a[1] + dy*t1}
+				mid_x2 := i64(math.round(p0[0] + p1[0]))
+				mid_y2 := i64(math.round(p0[1] + p1[1]))
+				if band_edges_contains_twice(band[:], mid_x2, mid_y2) {
+					q0, q1 := to_point(p0, vertical), to_point(p1, vertical)
+					if len(run) == 0 || run[len(run) - 1] != q0 {
+						if len(run) > 0 {flush(out, layer_index, &run, &piece_length, min_piece, line_width, allocator)}
+						append(&run, q0)
+					}
+					if run[len(run) - 1] != q1 {append(&run, q1)}
+					piece_length += math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+				} else if len(run) > 0 {
+					flush(out, layer_index, &run, &piece_length, min_piece, line_width, allocator)
 				}
 			}
-			if len(band) == 0 {continue}
-			clear(&raw)
-			row_phase := z_phase + (math.PI if (i64(math.round(y/spacing)) % 2 != 0) else 0.0)
-			for x := f64(min_x); x <= f64(max_x) + step; x += step {
-				cx := min(x, f64(max_x))
-				cy := y + amp * math.sin((2.0 * math.PI * cx)/period + row_phase)
-				append(&raw, polygon.Polygon_Point{
-					x = contracts.Micrometres(i64(math.round(cx))),
-					y = contracts.Micrometres(i64(math.round(cy))),
-				})
-				if cx >= f64(max_x) {break}
-			}
-			emit_band_clipped(out, band[:], true, layer_index, raw[:], &run, line_width, allocator)
 		}
-	} else {
-		x0 := math.floor(f64(min_x)/spacing) * spacing
-		for x := x0; x <= f64(max_x) + spacing; x += spacing {
-			x2 := i64(math.round(x * 2.0))
-			lo_band := x2 - amp_margin2
-			hi_band := x2 + amp_margin2
-			clear(&band)
-			for e in all_edges {
-				if max(e.ay2, e.by2) >= lo_band && min(e.ay2, e.by2) <= hi_band {
-					append(&band, e)
-				}
-			}
-			if len(band) == 0 {continue}
-			clear(&raw)
-			col_phase := z_phase + (math.PI if (i64(math.round(x/spacing)) % 2 != 0) else 0.0)
-			for y := f64(min_y); y <= f64(max_y) + step; y += step {
-				cy := min(y, f64(max_y))
-				cx := x + amp * math.sin((2.0 * math.PI * cy)/period + col_phase)
-				append(&raw, polygon.Polygon_Point{
-					x = contracts.Micrometres(i64(math.round(cx))),
-					y = contracts.Micrometres(i64(math.round(cy))),
-				})
-				if cy >= f64(max_y) {break}
-			}
-			emit_band_clipped(out, band[:], false, layer_index, raw[:], &run, line_width, allocator)
-		}
+		flush(out, layer_index, &run, &piece_length, min_piece, line_width, allocator)
 	}
 }
 
