@@ -15,7 +15,7 @@ An Apple Silicon macOS slicer that converts 3D models into deterministic FFF too
 1. **Odin Toolchain:** Always invoke the compiler via `scripts/odin.sh` (or `hw-odin`). Do not invoke raw Homebrew/system Odin compilers directly.
 2. **Dependencies:** `dependencies.lock` locks sibling dependencies (`hw_odin_ui_flash`, `hw_odin_devlog`, `hw_odin_rune`). Verify dependencies with `./scripts/dependencies.sh check`.
 3. **Clipper2 Library:** Rebuild the native Clipper2 static library with `./scripts/clipper2-build.sh [debug|asan|release]`.
-4. **Validation:** Run `./test.sh` to execute unit tests, feature probes, artifact codecs, and verification gates.
+4. **Validation & Autonomous Acceptance:** Run `./scripts/accept.sh` to execute full autonomous acceptance verification (debug + release builds, `dependencies.lock`, CLI feature matrix, pure-Odin Vatti parity, 4-way CPU/Metal determinism and speedup, and closed-loop `hw-printer-sim` execution). Pass `--skip-sim` for fast iteration without the ~65 s simulator print. Run `./scripts/sim-verify.sh [model]` for standalone closed-loop simulator verification. `./test.sh` runs unit tests, feature probes, artifact codecs, and verification gates.
 5. **Development Watcher:** Use `./dev.sh [debug|asan|release]` as the default development loop. The watcher maintains a single-instance lock and handles hot builds.
 6. **Surgical Changes:** Modify only files directly required for the task. Match existing code formatting, naming conventions, and lifetime management (explicit allocators, defer cleanups).
 7. **Commit Style:** Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `perf:`, `test:`, `chore:`). Commit complete units of work autonomously.
