@@ -54,6 +54,7 @@ Klipper_Parsed_Kind :: enum u8 {
 	Print_Stats_Total,
 	Print_Stats_Current,
 	Exclude_Object,
+	Pause_Or_Filament,
 }
 
 Klipper_Parsed_Command :: struct {
@@ -278,7 +279,7 @@ klipper_validate_print_command :: proc(
 		return klipper_apply_acceleration(command, profile, state)
 	case .M106, .M107:
 		return klipper_apply_fan(command, state, report)
-	case .Exclude_Object:
+	case .Exclude_Object, .Pause_Or_Filament:
 		return .None
 	case .G0, .G1, .G2, .G3:
 		return klipper_validate_print_move(
@@ -430,9 +431,13 @@ klipper_validate_print_move :: proc(
 		if operation.arc == .CW {expected_kind = .G2}
 		if operation.arc == .CCW {expected_kind = .G3}
 		expected_arc := operation.arc != .None
+		expected_z_ramp := !expected_arc && operation.z_offset_um != 0
+		expected_ramp_z := max(i64(0), i64(layer.z) + i64(operation.z_offset_um))
 		if command.kind != expected_kind ||
 		   !command.has_x || !command.has_y ||
-		   command.has_z || !command.has_e ||
+		   command.has_z != expected_z_ramp ||
+		   (expected_z_ramp && command.z != expected_ramp_z) ||
+		   !command.has_e ||
 		   !command.has_f ||
 		   command.has_i != expected_arc ||
 		   command.has_j != expected_arc ||
@@ -646,6 +651,8 @@ klipper_parse_command :: proc(
 		return klipper_parse_extended(tokens[:token_count])
 	case "EXCLUDE_OBJECT_DEFINE", "EXCLUDE_OBJECT_START", "EXCLUDE_OBJECT_END":
 		return {kind = .Exclude_Object}, .None
+	case "PAUSE", "M600":
+		return {kind = .Pause_Or_Filament}, .None
 	case:
 		return {}, .Unsupported_Command
 	}
@@ -749,7 +756,7 @@ klipper_command_parameters_valid :: proc(
 		return command.has_s && parameter_count == 1
 	case .Header, .Layer, .Invalid, .Start_Print, .End_Print,
 	     .Set_Velocity_Limit, .Print_Stats_Total, .Print_Stats_Current,
-	     .Exclude_Object:
+	     .Exclude_Object, .Pause_Or_Filament:
 		return false
 	}
 	return false

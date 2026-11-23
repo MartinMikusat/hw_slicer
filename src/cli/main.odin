@@ -37,10 +37,17 @@ CLI_Options :: struct {
 	rot_y:              f64,
 	rot_z:              f64,
 	lay_flat:           bool,
-	use_native_polygon: bool,
-	use_gpu:            bool,
-	worker_threads:     int,
-	overrides:          [dynamic]CLI_Override,
+	use_native_polygon:  bool,
+	use_gpu:             bool,
+	worker_threads:      int,
+	scarf_seam:          bool,
+	vase_mode:           bool,
+	fuzzy_skin:          bool,
+	sequential:          bool,
+	modifiers:           [dynamic]pipeline.Modifier_Zone,
+	pause_layers:        [dynamic]u32,
+	color_change_layers: [dynamic]u32,
+	overrides:           [dynamic]CLI_Override,
 }
 
 resolve_profile_path :: proc(dir, kind, name: string) -> string {
@@ -153,11 +160,17 @@ main :: proc() {
 		clone_count  = 1,
 		scale          = 1.0,
 		use_gpu        = true,
-		worker_threads = 8,
-		input_paths    = make([dynamic]string),
-		overrides    = make([dynamic]CLI_Override),
+		worker_threads      = 8,
+		input_paths         = make([dynamic]string),
+		modifiers           = make([dynamic]pipeline.Modifier_Zone),
+		pause_layers        = make([dynamic]u32),
+		color_change_layers = make([dynamic]u32),
+		overrides           = make([dynamic]CLI_Override),
 	}
 	defer delete(opts.input_paths)
+	defer delete(opts.modifiers)
+	defer delete(opts.pause_layers)
+	defer delete(opts.color_change_layers)
 	defer delete(opts.overrides)
 
 	args := os.args[1:]
@@ -200,6 +213,30 @@ main :: proc() {
 		} else if strings.has_prefix(arg, "--threads=") {
 			if n, ok := strconv.parse_int(arg[len("--threads="):]); ok && n >= 1 {
 				opts.worker_threads = n
+			}
+		} else if arg == "--scarf-seam" {
+			opts.scarf_seam = true
+		} else if arg == "--vase-mode" {
+			opts.vase_mode = true
+		} else if arg == "--fuzzy-skin" {
+			opts.fuzzy_skin = true
+		} else if arg == "--sequential" {
+			opts.sequential = true
+		} else if strings.has_prefix(arg, "--modifier=") {
+			spec := arg[len("--modifier="):]
+			if mod, ok := pipeline.modifier_parse(spec); ok {
+				append(&opts.modifiers, mod)
+			} else {
+				fmt.eprintf("error: invalid --modifier '%s'\n", spec)
+				os.exit(2)
+			}
+		} else if strings.has_prefix(arg, "--pause-at-layer=") {
+			if n, ok := strconv.parse_int(arg[len("--pause-at-layer="):]); ok && n >= 0 {
+				append(&opts.pause_layers, u32(n))
+			}
+		} else if strings.has_prefix(arg, "--color-change=") {
+			if n, ok := strconv.parse_int(arg[len("--color-change="):]); ok && n >= 0 {
+				append(&opts.color_change_layers, u32(n))
 			}
 		} else if strings.has_prefix(arg, "--clone=") {
 			if n, ok := strconv.parse_int(arg[len("--clone="):]); ok && n >= 1 {
@@ -279,6 +316,10 @@ main :: proc() {
 			os.exit(1)
 		}
 	}
+	if opts.vase_mode {
+		process_prof.perimeter_count = 1
+		extras.infill_density_percent = 0.0
+	}
 	dialect_prof := profiles.profiles_default_klipper_dialect()
 	resolved, res_err := profiles.profiles_resolve(printer_prof, material_prof, process_prof, dialect_prof)
 	if res_err != .None {
@@ -333,6 +374,12 @@ main :: proc() {
 	run_opts.use_native_polygon = opts.use_native_polygon
 	run_opts.use_gpu = opts.use_gpu
 	run_opts.worker_threads = opts.worker_threads
+	run_opts.scarf_seam_enabled = opts.scarf_seam
+	run_opts.vase_mode = opts.vase_mode
+	run_opts.fuzzy_skin_enabled = opts.fuzzy_skin
+	run_opts.modifiers = opts.modifiers[:]
+	run_opts.pause_layers = opts.pause_layers[:]
+	run_opts.color_change_layers = opts.color_change_layers[:]
 	raw_stem := strings.trim_suffix(filepath.base(opts.input_path), filepath.ext(opts.input_path))
 	run_opts.object_name = strings.clone(raw_stem, context.temp_allocator)
 
@@ -385,6 +432,13 @@ main :: proc() {
 			fmt.eprintln("error: plate objects do not fit on build plate")
 			os.exit(1)
 		}
+		if opts.sequential {
+			seq_ok, ca, cb := pipeline.plate_validate_sequential(plate_objs[:])
+			if !seq_ok {
+				fmt.eprintf("error: sequential printing collision between object %d and %d\n", ca, cb)
+				os.exit(1)
+			}
+		}
 		merged := pipeline.plate_merge_to_mesh(plate_objs[:])
 		defer formats.decoded_mesh_destroy(&merged)
 		run_opts.center_on_bed = false
@@ -401,13 +455,15 @@ main :: proc() {
 
 	fmt.printf("SLICE OK: %s  printer=%s material=%s process=%s\n",
 		filepath.base(opts.input_path), opts.printer, opts.material, opts.process)
-	fmt.printf("  tris=%d  layers=%d  repairs=%d  extrude=%d  travel=%d  filament=%.2f mm  gcode=%d bytes  total=%.2f ms\n",
+	est_s := int(math.round(res.time_estimate.total_seconds))
+	fmt.printf("  tris=%d  layers=%d  repairs=%d  extrude=%d  travel=%d  filament=%.2f mm  est_time=%02d:%02d:%02d  gcode=%d bytes  total=%.2f ms\n",
 		len(res.spine.mesh.triangle_ids),
 		len(res.spine.schedule.layer_ids),
 		res.contour_repairs,
 		res.unified_plan.extrude_move_count,
 		res.unified_plan.travel_move_count,
 		f64(res.extrusion.total_filament_nm)/1_000_000.0,
+		est_s/3600, (est_s%3600)/60, est_s%60,
 		len(res.klipper.bytes),
 		res.total_duration_ms)
 	for st in res.stages {

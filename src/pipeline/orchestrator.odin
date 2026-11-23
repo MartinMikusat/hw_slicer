@@ -62,6 +62,17 @@ Slice_Run_Options :: struct {
 	// Milestone 6: Metal GPU compute & CPU thread count
 	use_gpu:                       bool,
 	worker_threads:                int,
+	// Phase 2 Workstream 3: Pro-tier slicer features
+	scarf_seam_enabled:            bool,
+	scarf_length_um:               contracts.Micrometres,
+	vase_mode:                     bool,
+	fuzzy_skin_enabled:            bool,
+	fuzzy_thickness_um:            contracts.Micrometres,
+	fuzzy_point_dist_um:           contracts.Micrometres,
+	mesh_auto_repair:              bool,
+	modifiers:                     []Modifier_Zone,
+	pause_layers:                  []u32,
+	color_change_layers:           []u32,
 }
 
 DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
@@ -96,6 +107,13 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	adaptive_layers               = false,
 	use_gpu                       = true,
 	worker_threads                = 8,
+	scarf_seam_enabled            = false,
+	scarf_length_um               = 15_000,
+	vase_mode                     = false,
+	fuzzy_skin_enabled            = false,
+	fuzzy_thickness_um            = 300,
+	fuzzy_point_dist_um           = 800,
+	mesh_auto_repair              = true,
 }
 
 Slice_Run_Result :: struct {
@@ -109,6 +127,8 @@ Slice_Run_Result :: struct {
 	motion:            features.Motion_Plan_Result,
 	klipper:           gcode.Klipper_Result,
 	validation:        gcode.Klipper_Validation_Report,
+	time_estimate:     features.Print_Time_Estimate,
+	mesh_repair_stats: repair.Mesh_Repair_Stats,
 	stages:            [dynamic]Stage_Trace,
 	total_duration_ms: f64,
 }
@@ -384,8 +404,11 @@ slice_run_decoded_mesh :: proc(
 	process := profile.process
 	proc_src := process.source
 
-	// Stage 1: Center on bed (if requested) and run Slice Spine.
+	// Stage 1: Optional 3D mesh auto-repair, center on bed, and run Slice Spine.
 	t0 := time.tick_now()
+	if options.mesh_auto_repair {
+		result.mesh_repair_stats = repair.mesh_auto_repair(decoded, allocator)
+	}
 	if options.center_on_bed {center_decoded_on_bed(decoded, profile.printer)}
 	spine_cfg := Slice_Spine_Config{
 		source_units        = options.source_units,
@@ -890,6 +913,28 @@ slice_run_decoded_mesh :: proc(
 			min_width_um     = max(max_lh, contracts.Micrometres((i64(proc_src.nominal_line_width)*65)/100)),
 		})
 	}
+	fuzzy_owned_pts := make([dynamic][]polygon.Polygon_Point, 0, 16, allocator)
+	fuzzy_owned_ws := make([dynamic][]contracts.Micrometres, 0, 16, allocator)
+	defer {
+		for p in fuzzy_owned_pts {delete(p, allocator)}
+		for w in fuzzy_owned_ws {delete(w, allocator)}
+		delete(fuzzy_owned_pts)
+		delete(fuzzy_owned_ws)
+	}
+	if options.fuzzy_skin_enabled {
+		_ = features.fuzzy_skin_apply(
+			all_sources[:],
+			{
+				enabled       = true,
+				thickness_um  = options.fuzzy_thickness_um,
+				point_dist_um = options.fuzzy_point_dist_um,
+			},
+			profile.printer,
+			&fuzzy_owned_pts,
+			&fuzzy_owned_ws,
+			allocator,
+		)
+	}
 	// Guarantee every extrusion vertex meets rounded-bead invariant (line_width >= layer_height).
 	for &src in all_sources {
 		if int(src.layer_index) >= len(layer_heights) {continue}
@@ -957,8 +1002,8 @@ slice_run_decoded_mesh :: proc(
 	}
 	record_stage(&result.stages, "extrusion_and_motion", t0, u64(len(result.motion.operations)), u64(result.extrusion.total_filament_nm/1_000_000))
 
-	// Stage 11b: G2/G3 Circular Arc Fitting.
-	if options.arc_fitting_enabled {
+	// Stage 11b: G2/G3 Circular Arc Fitting (skip when scarf/vase Z ramps need linear segments).
+	if options.arc_fitting_enabled && !options.vase_mode {
 		t0 = time.tick_now()
 		arc_cfg := features.DEFAULT_ARC_FIT_CONFIG
 		if options.arc_tolerance_um > 0 {arc_cfg.max_chord_error_um = options.arc_tolerance_um}
@@ -966,10 +1011,33 @@ slice_run_decoded_mesh :: proc(
 		record_stage(&result.stages, "arc_fitting", t0, arc_stats.arcs_fitted, arc_stats.segments_replaced)
 	}
 
+	// Stage 11c: Scarf Seam / Spiral Vase Z Ramps, Modifiers, and Klipper Lookahead Time Estimate.
+	if options.scarf_seam_enabled || options.vase_mode {
+		_ = features.motion_plan_apply_z_ramps(
+			&result.motion,
+			layer_heights,
+			{enabled = options.scarf_seam_enabled, length_um = options.scarf_length_um, start_height_pct = 10},
+			options.vase_mode,
+			proc_src.bottom_skin.minimum_layers,
+			proc_src,
+		)
+	}
+	if len(options.modifiers) > 0 {
+		_ = modifiers_apply_motion(&result.motion, options.modifiers, profile)
+	}
+	result.time_estimate = features.motion_plan_estimate_klipper_time(result.motion)
+
 	// Stage 12: Klipper G-code emission & validation.
 	t0 = time.tick_now()
 	klip_err: gcode.Klipper_Error
-	result.klipper, klip_err = gcode.klipper_emit(result.motion, profile, allocator = allocator, object_name = options.object_name)
+	result.klipper, klip_err = gcode.klipper_emit(
+		result.motion,
+		profile,
+		allocator = allocator,
+		object_name = options.object_name,
+		pause_layers = options.pause_layers,
+		color_change_layers = options.color_change_layers,
+	)
 	if klip_err != .None {
 		slice_run_result_destroy(&result, allocator)
 		return {}, {stage = "klipper_emit", detail = fmt.tprintf("klipper emit error: %v", klip_err)}

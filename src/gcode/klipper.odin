@@ -28,6 +28,7 @@ Klipper_Command_Kind :: enum u8 {
 	Move,
 	Dwell,
 	Exclude_Object,
+	Pause_Or_Filament,
 	End_Print,
 }
 
@@ -90,6 +91,8 @@ klipper_emit :: proc(
 	limits := DEFAULT_KLIPPER_LIMITS,
 	allocator := context.allocator,
 	object_name := "",
+	pause_layers: []u32 = nil,
+	color_change_layers: []u32 = nil,
 ) -> (Klipper_Result, Klipper_Error) {
 	resolved, resolve_error := profiles.profiles_resolve(
 		profile.printer,
@@ -282,6 +285,25 @@ klipper_emit :: proc(
 			return {}, .Command_Limit
 		}
 		state.z = layer.z
+
+		for pl in pause_layers {
+			if pl == layer.layer_index {
+				if !klipper_write_literal(&builder, commands, &command_write, .Pause_Or_Filament, "PAUSE\n", {}, layer.layer_index) {
+					delete(commands, allocator)
+					return {}, .Command_Limit
+				}
+				break
+			}
+		}
+		for cl in color_change_layers {
+			if cl == layer.layer_index {
+				if !klipper_write_literal(&builder, commands, &command_write, .Pause_Or_Filament, "M600\n", {}, layer.layer_index) {
+					delete(commands, allocator)
+					return {}, .Command_Limit
+				}
+				break
+			}
+		}
 
 		operation_start := int(layer.operation_offset)
 		operation_end :=
@@ -494,6 +516,11 @@ klipper_emit_operation :: proc(
 			klipper_append_coordinate(builder, operation.point_b.x)
 			strings.write_string(builder, " Y")
 			klipper_append_coordinate(builder, operation.point_b.y)
+			if operation.z_offset_um != 0 {
+				target_z := contracts.Micrometres(max(i64(0), i64(state.z) + i64(operation.z_offset_um)))
+				strings.write_string(builder, " Z")
+				klipper_append_coordinate(builder, target_z)
+			}
 			strings.write_string(builder, " E")
 			klipper_append_extrusion(builder, operation.filament_delta_nm)
 			fmt.sbprintf(

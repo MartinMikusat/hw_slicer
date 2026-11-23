@@ -50,6 +50,7 @@ Motion_Operation :: struct {
 	point_b:               polygon.Polygon_Point,
 	arc_center:            polygon.Polygon_Point,
 	z_hop_um:              contracts.Micrometres,
+	z_offset_um:           contracts.Micrometres, // non-zero for scarf seams / spiral vase Z interpolation
 	speed:                 profiles.Speed_Um_Per_Second,
 	acceleration:          profiles.Acceleration_Um_Per_Second_Squared,
 	fan_ratio:             profiles.Ratio_Ppm,
