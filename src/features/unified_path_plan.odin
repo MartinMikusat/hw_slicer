@@ -9,12 +9,20 @@ import profiles "../profiles"
 
 Unified_Path_Source_Kind :: enum u8 {
 	Invalid,
+	Adhesion,
 	Perimeter,
 	Bridge,
 	Gap_Centerline,
 	Solid,
 	Sparse_Infill,
 	Support,
+}
+
+Seam_Strategy :: enum u8 {
+	Rear,
+	Aligned,
+	Sharpest_Corner,
+	Nearest,
 }
 
 Unified_Path_Source :: struct {
@@ -34,6 +42,7 @@ Unified_Path_Plan_Config :: struct {
 	start:           polygon.Polygon_Point,
 	seam:            profiles.Seam_Policy,
 	seam_visibility: profiles.Seam_Visibility_Policy,
+	seam_strategy:   Seam_Strategy,
 }
 
 Unified_Planned_Layer :: struct {
@@ -215,6 +224,8 @@ unified_path_plan_build :: proc(
 	}
 
 	current := config.start
+	has_last_seam := false
+	last_seam: polygon.Polygon_Point
 	order_cursor := 0
 	path_write := 0
 	move_write := 0
@@ -228,6 +239,9 @@ unified_path_plan_build :: proc(
 			emit_ok := unified_path_plan_emit_source(
 				source,
 				order.priority,
+				config.seam_strategy,
+				&has_last_seam,
+				&last_seam,
 				&current,
 				result.paths,
 				result.moves,
@@ -268,6 +282,9 @@ unified_path_plan_build :: proc(
 unified_path_plan_emit_source :: proc(
 	source: Unified_Path_Source,
 	priority: u8,
+	seam_strategy: Seam_Strategy,
+	has_last_seam: ^bool,
+	last_seam: ^polygon.Polygon_Point,
 	current: ^polygon.Polygon_Point,
 	paths: []Unified_Planned_Path,
 	moves: []Unified_Planned_Move,
@@ -281,7 +298,14 @@ unified_path_plan_emit_source :: proc(
 		start_index = unified_path_plan_seam_index(
 			source.points,
 			current^,
+			seam_strategy,
+			has_last_seam^,
+			last_seam^,
 		)
+		if source.source_kind == .Perimeter {
+			has_last_seam^ = true
+			last_seam^ = source.points[start_index]
+		}
 	} else if path_plan_distance_2(
 		current^,
 		source.points[len(source.points)-1],
@@ -374,15 +398,54 @@ unified_path_plan_emit_source :: proc(
 unified_path_plan_seam_index :: proc(
 	points: []polygon.Polygon_Point,
 	current: polygon.Polygon_Point,
+	strategy: Seam_Strategy = .Rear,
+	has_last_seam := false,
+	last_seam := polygon.Polygon_Point{},
 ) -> int {
 	best_index := 0
 	best := unified_path_plan_seam_score(points, 0, current)
+	best_align := u128(0)
+	if has_last_seam {
+		best_align = path_plan_distance_2(last_seam, points[0])
+	}
 	for point_index in 1..<len(points) {
 		candidate :=
 			unified_path_plan_seam_score(points, point_index, current)
-		if unified_path_plan_seam_score_less(candidate, best) {
+		cand_align := u128(0)
+		if has_last_seam {
+			cand_align = path_plan_distance_2(last_seam, points[point_index])
+		}
+		better := false
+		switch strategy {
+		case .Rear:
+			if candidate.rear_coordinate != best.rear_coordinate {
+				better = candidate.rear_coordinate > best.rear_coordinate
+			} else {
+				better = unified_path_plan_seam_score_less(candidate, best)
+			}
+		case .Sharpest_Corner:
+			better = unified_path_plan_seam_score_less(candidate, best)
+		case .Nearest:
+			if candidate.travel_distance != best.travel_distance {
+				better = candidate.travel_distance < best.travel_distance
+			} else {
+				better = unified_path_plan_seam_score_less(candidate, best)
+			}
+		case .Aligned:
+			if has_last_seam {
+				if cand_align != best_align {
+					better = cand_align < best_align
+				} else {
+					better = unified_path_plan_seam_score_less(candidate, best)
+				}
+			} else {
+				better = unified_path_plan_seam_score_less(candidate, best)
+			}
+		}
+		if better {
 			best_index = point_index
 			best = candidate
+			best_align = cand_align
 		}
 	}
 	return best_index
@@ -519,6 +582,8 @@ unified_path_source_kind_valid :: proc(
 	role: profiles.Printable_Role,
 ) -> bool {
 	switch kind {
+	case .Adhesion:
+		return role == .Perimeter
 	case .Perimeter:
 		return role == .Perimeter
 	case .Bridge:
@@ -543,6 +608,10 @@ unified_path_source_validate :: proc(
 ) -> (u8, bool) {
 	priority, priority_ok :=
 		profiles.printable_role_priority(source.role)
+	if source.source_kind == .Adhesion {
+		priority = 0
+		priority_ok = true
+	}
 	if !priority_ok ||
 	   !unified_path_source_kind_valid(
 			source.source_kind,

@@ -20,7 +20,18 @@ Profile_JSON_Error :: enum u8 {
 }
 
 Process_JSON_Extras :: struct {
-	infill_density_percent: f64,
+	infill_density_percent:        f64,
+	skirt_loops:                   u32,
+	skirt_distance_mm:             f64,
+	skirt_height_layers:           u32,
+	brim_width_mm:                 f64,
+	brim_gap_mm:                   f64,
+	brim_inner:                    bool,
+	elephant_foot_compensation_mm: f64,
+	seam_position:                 string, // "aligned" | "rear" | "sharpest" | "nearest"
+	wipe_distance_mm:              f64,
+	overhang_slowdown_enabled:     bool,
+	overhang_speed_percent:        u32,
 }
 
 @(private = "file")
@@ -93,9 +104,21 @@ Process_JSON :: struct {
 	support_overhang_angle_deg:   f64,
 	support_clearance_xy_mm:      f64,
 	support_clearance_z_mm:       f64,
-	support_density_percent:      f64,
-	support_interface_layers:     u32,
-	support_interface_spacing_mm: f64,
+	support_density_percent:       f64,
+	support_interface_layers:      u32,
+	support_interface_spacing_mm:  f64,
+	skirt_loops:                   u32,
+	skirt_distance_mm:             f64,
+	skirt_height_layers:           u32,
+	brim_width_mm:                 f64,
+	brim_gap_mm:                   f64,
+	brim_inner:                    bool,
+	elephant_foot_compensation_mm: f64,
+	seam_position:                 string,
+	z_hop_mm:                      f64,
+	wipe_distance_mm:              f64,
+	overhang_slowdown_enabled:     bool,
+	overhang_speed_percent:        u32,
 }
 
 @(private = "file")
@@ -271,13 +294,26 @@ process_profile_load_json :: proc(
 		recovery_speed               = mm_s_to_um_s(raw.recovery_speed_mm_s),
 		retraction_acceleration      = mm_s2_to_um_s2(raw.retraction_accel_mm_s2),
 		travel_policy                = .Direct,
-		z_hop_enabled                = false,
-		z_hop_height                 = 0,
+		z_hop_enabled                = raw.z_hop_mm > 0,
+		z_hop_height                 = mm_to_um(raw.z_hop_mm) if raw.z_hop_mm > 0 else 0,
 		extrusion_accumulation       = .Volume_Then_Fixed_Point_Length,
 		extrusion_length_quantum_nm  = 10,
 	}
+	seam_pos := raw.seam_position
+	if len(seam_pos) == 0 {seam_pos = "aligned"}
 	extras := Process_JSON_Extras{
-		infill_density_percent = raw.infill_density_percent if raw.infill_density_percent > 0 else 15.0,
+		infill_density_percent        = raw.infill_density_percent if raw.infill_density_percent > 0 else 15.0,
+		skirt_loops                   = raw.skirt_loops,
+		skirt_distance_mm             = raw.skirt_distance_mm if raw.skirt_distance_mm > 0 else 5.0,
+		skirt_height_layers           = raw.skirt_height_layers if raw.skirt_height_layers > 0 else 1,
+		brim_width_mm                 = max(0.0, raw.brim_width_mm),
+		brim_gap_mm                   = max(0.0, raw.brim_gap_mm),
+		brim_inner                    = raw.brim_inner,
+		elephant_foot_compensation_mm = max(0.0, raw.elephant_foot_compensation_mm),
+		seam_position                 = seam_pos,
+		wipe_distance_mm              = max(0.0, raw.wipe_distance_mm),
+		overhang_slowdown_enabled     = raw.overhang_slowdown_enabled,
+		overhang_speed_percent        = raw.overhang_speed_percent if raw.overhang_speed_percent > 0 else 50,
 	}
 	return p, extras, .None
 }
@@ -298,6 +334,33 @@ profile_apply_override :: proc(
 			return .None
 		}
 		return .Invalid_Override_Value
+	}
+	if key == "seam_position" || key == "seam" {
+		if strings.equal_fold(val, "aligned") {
+			extras.seam_position = "aligned"
+			return .None
+		}
+		if strings.equal_fold(val, "rear") {
+			extras.seam_position = "rear"
+			return .None
+		}
+		if strings.equal_fold(val, "sharpest") || strings.equal_fold(val, "sharpest_corner") {
+			extras.seam_position = "sharpest"
+			return .None
+		}
+		if strings.equal_fold(val, "nearest") {
+			extras.seam_position = "nearest"
+			return .None
+		}
+		return .Invalid_Override_Value
+	}
+	if key == "brim_inner" {
+		extras.brim_inner = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "overhang_slowdown" || key == "overhang_slowdown_enabled" {
+		extras.overhang_slowdown_enabled = strings.equal_fold(val, "true") || val == "1"
+		return .None
 	}
 	num, ok := strconv.parse_f64(val)
 	if !ok || math.is_nan(num) || math.is_inf(num, 0) {
@@ -342,6 +405,30 @@ profile_apply_override :: proc(
 		process.support_overhang_angle = Angle_Millidegrees(i32(math.round(num*1000.0)))
 	case "support_density", "support_density_percent":
 		process.support_density = pct_to_ppm(num)
+	case "skirt_loops":
+		extras.skirt_loops = u32(math.round(max(0.0, num)))
+	case "skirt_distance", "skirt_distance_mm":
+		extras.skirt_distance_mm = max(0.0, num)
+	case "skirt_height", "skirt_height_layers":
+		extras.skirt_height_layers = u32(math.round(max(1.0, num)))
+	case "brim_width", "brim_width_mm":
+		extras.brim_width_mm = max(0.0, num)
+	case "brim_gap", "brim_gap_mm":
+		extras.brim_gap_mm = max(0.0, num)
+	case "elephant_foot", "elephant_foot_compensation_mm":
+		extras.elephant_foot_compensation_mm = max(0.0, num)
+	case "z_hop", "z_hop_mm":
+		if num > 0 {
+			process.z_hop_enabled = true
+			process.z_hop_height = mm_to_um(num)
+		} else {
+			process.z_hop_enabled = false
+			process.z_hop_height = 0
+		}
+	case "wipe_distance", "wipe_distance_mm":
+		extras.wipe_distance_mm = max(0.0, num)
+	case "overhang_speed", "overhang_speed_percent":
+		extras.overhang_speed_percent = u32(math.round(clamp(num, 10.0, 100.0)))
 	case:
 		return .Unknown_Override
 	}

@@ -45,12 +45,19 @@ Motion_Operation :: struct {
 	point_a:               polygon.Polygon_Point,
 	point_b:               polygon.Polygon_Point,
 	arc_center:            polygon.Polygon_Point,
+	z_hop_um:              contracts.Micrometres,
 	speed:                 profiles.Speed_Um_Per_Second,
 	acceleration:          profiles.Acceleration_Um_Per_Second_Squared,
 	fan_ratio:             profiles.Ratio_Ppm,
 	filament_delta_nm:     i128,
 	duration_us:           u64,
 	crosses_exterior:      bool,
+}
+
+Motion_Plan_Options :: struct {
+	wipe_distance_um:          contracts.Micrometres,
+	overhang_slowdown_enabled: bool,
+	overhang_speed_percent:    u32,
 }
 
 Motion_Plan_Result :: struct {
@@ -95,6 +102,11 @@ Motion_Source_Move :: struct {
 	is_extrusion:       bool,
 	retract_before:     bool,
 	crosses_exterior:   bool,
+	has_wipe:           bool,
+	wipe_point:         polygon.Polygon_Point,
+	wipe_length_nm:     u64,
+	travel_length_nm:   u64,
+	z_hop_um:           contracts.Micrometres,
 }
 
 motion_plan_build :: proc(
@@ -106,13 +118,13 @@ motion_plan_build :: proc(
 	profile: profiles.Resolved_Profiles,
 	limits := DEFAULT_MOTION_PLAN_LIMITS,
 	allocator := context.allocator,
+	options := Motion_Plan_Options{},
 ) -> (Motion_Plan_Result, Motion_Plan_Error) {
 	process := profile.process.source
 	selected_policies :=
 		process.minimum_layer_time_policy == .Slowdown_Then_Dwell &&
 		process.retraction == .Distance_And_Exterior_Crossing &&
-		process.travel_policy == .Direct &&
-		!process.z_hop_enabled
+		process.travel_policy == .Direct
 	if !selected_policies {
 		return {}, .Invalid_Config
 	}
@@ -156,6 +168,7 @@ motion_plan_build :: proc(
 	extrusion_cursor := 0
 	has_extruded := false
 	retraction_count: u64
+	wipe_count: u64
 	for layer, layer_index in plan.layers {
 		z := i64(layer_z[layer_index])
 		if layer_ids[layer_index] == contracts.INVALID_STABLE_ID ||
@@ -185,7 +198,10 @@ motion_plan_build :: proc(
 			if !length_ok || length_nm == 0 {
 				return {}, .Arithmetic
 			}
-			source := Motion_Source_Move{length_nm = length_nm}
+			source := Motion_Source_Move{
+				length_nm        = length_nm,
+				travel_length_nm = length_nm,
+			}
 			switch move.kind {
 			case .Travel:
 				source.base_speed = profile.process.source.travel.speed
@@ -206,6 +222,30 @@ motion_plan_build :: proc(
 					source.crosses_exterior
 				if source.retract_before {
 					retraction_count += 1
+					if process.z_hop_enabled && i64(process.z_hop_height) > 0 {
+						max_hop := i64(profile.printer.axis_maximum_z) - z
+						if max_hop > 0 {
+							source.z_hop_um = contracts.Micrometres(min(i64(process.z_hop_height), max_hop))
+						}
+					}
+					if i64(options.wipe_distance_um) > 0 && move_index > move_start {
+						prev_move := plan.moves[move_index - 1]
+						if prev_move.kind == .Extrude && prev_move.point_b == move.point_a {
+							if wp, w_len, t_len, w_ok := motion_compute_wipe(
+								prev_move.point_a,
+								move.point_a,
+								move.point_b,
+								options.wipe_distance_um,
+								profile.printer,
+							); w_ok {
+								source.has_wipe = true
+								source.wipe_point = wp
+								source.wipe_length_nm = w_len
+								source.travel_length_nm = t_len
+								wipe_count += 1
+							}
+						}
+					}
 				}
 			case .Extrude:
 				if extrusion_cursor >= len(extrusion.moves) {
@@ -228,6 +268,25 @@ motion_plan_build :: proc(
 				source.base_speed = target.speed
 				source.acceleration = target.acceleration
 				source.fan_ratio = target.fan_ratio
+				if options.overhang_slowdown_enabled &&
+				   layer_index > 0 &&
+				   (move.role == .Perimeter || move.role == .Thin_Wall) &&
+				   motion_segment_is_overhang(move.point_a, move.point_b, model_layers[layer_index - 1]) {
+					pct := options.overhang_speed_percent
+					if pct == 0 || pct > 100 {pct = 50}
+					ov_scale := u32((u64(pct) * u64(profiles.RATIO_SCALE)) / 100)
+					source.base_speed = motion_scaled_speed(
+						source.base_speed,
+						process.minimum_print_speed,
+						ov_scale,
+					)
+					boost_fan := max(source.fan_ratio, process.bridge.fan_ratio)
+					source.fan_ratio = clamp(
+						boost_fan,
+						profile.material.minimum_fan_ratio,
+						profile.material.maximum_fan_ratio,
+					)
+				}
 				source.extrusion_index = u32(extrusion_cursor)
 				source.is_extrusion = true
 				extrusion_cursor += 1
@@ -244,7 +303,7 @@ motion_plan_build :: proc(
 	}
 
 	operation_count :=
-		u64(len(plan.moves))+retraction_count*2
+		u64(len(plan.moves))+retraction_count*2+wipe_count
 	if operation_count < u64(len(plan.moves)) ||
 	   operation_count > limits.max_operations {
 		return {}, .Operation_Limit
@@ -330,9 +389,35 @@ motion_plan_build :: proc(
 				result.retraction_count += 1
 			}
 
+			if source.has_wipe {
+				wipe_dur, wipe_dur_ok := motion_duration_for_length(source.wipe_length_nm, source.base_speed)
+				if !wipe_dur_ok {
+					motion_plan_result_destroy(&result, allocator)
+					return {}, .Arithmetic
+				}
+				result.operations[operation_write] = {
+					stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 4),
+					source_move_id    = move.stable_id,
+					source_move_index = u32(move_index),
+					path_id           = move.path_id,
+					layer_index       = u32(layer_index),
+					kind              = .Travel,
+					point_a           = move.point_a,
+					point_b           = source.wipe_point,
+					speed             = source.base_speed,
+					acceleration      = source.acceleration,
+					duration_us       = wipe_dur,
+					crosses_exterior  = false,
+				}
+				operation_write += 1
+				result.travel_count += 1
+			}
+
 			operation_kind := Motion_Operation_Kind.Travel
 			speed := source.base_speed
 			filament_delta_nm: i128
+			move_point_a := move.point_a
+			move_len_nm := source.length_nm
 			if move.kind == .Extrude {
 				operation_kind = .Extrude
 				speed = motion_scaled_speed(
@@ -342,12 +427,30 @@ motion_plan_build :: proc(
 				)
 				filament_delta_nm =
 					i128(extrusion.moves[source.extrusion_index].incremental_filament_nm)
+			} else if source.has_wipe {
+				move_point_a = source.wipe_point
+				move_len_nm = source.travel_length_nm
 			}
 			duration, duration_ok :=
-				motion_duration_for_length(source.length_nm, speed)
+				motion_duration_for_length(move_len_nm, speed)
 			if !duration_ok {
 				motion_plan_result_destroy(&result, allocator)
 				return {}, .Arithmetic
+			}
+			if move.kind == .Travel && i64(source.z_hop_um) > 0 {
+				hop_dur, hop_ok := motion_duration_for_distance_um(source.z_hop_um, speed)
+				if !hop_ok {
+					motion_plan_result_destroy(&result, allocator)
+					return {}, .Arithmetic
+				}
+				duration, duration_ok = motion_checked_add_u64(duration, hop_dur)
+				if duration_ok {
+					duration, duration_ok = motion_checked_add_u64(duration, hop_dur)
+				}
+				if !duration_ok {
+					motion_plan_result_destroy(&result, allocator)
+					return {}, .Arithmetic
+				}
 			}
 			result.operations[operation_write] = {
 				stable_id = contracts.stable_id_child(
@@ -361,8 +464,9 @@ motion_plan_build :: proc(
 				layer_index = u32(layer_index),
 				kind = operation_kind,
 				role = move.role,
-				point_a = move.point_a,
+				point_a = move_point_a,
 				point_b = move.point_b,
+				z_hop_um = source.z_hop_um if move.kind == .Travel else 0,
 				speed = speed,
 				acceleration = source.acceleration,
 				fan_ratio = source.fan_ratio,
@@ -479,7 +583,7 @@ motion_plan_build :: proc(
 	}
 	if operation_write != len(result.operations) ||
 	   result.retraction_count != retraction_count ||
-	   result.travel_count != plan.travel_move_count ||
+	   result.travel_count != plan.travel_move_count + wipe_count ||
 	   result.extrusion_count != plan.extrude_move_count {
 		motion_plan_result_destroy(&result, allocator)
 		return {}, .Arithmetic
@@ -559,18 +663,36 @@ motion_layer_duration :: proc(
 	total: u64
 	for source in sources[move_start:move_end] {
 		speed := source.base_speed
+		move_len_nm := source.length_nm
 		if source.is_extrusion {
 			speed = motion_scaled_speed(
 				source.base_speed,
 				process.minimum_print_speed,
 				scale,
 			)
+		} else if source.has_wipe {
+			move_len_nm = source.travel_length_nm
 		}
 		duration, duration_ok :=
-			motion_duration_for_length(source.length_nm, speed)
+			motion_duration_for_length(move_len_nm, speed)
 		if !duration_ok {return 0, false}
 		total, duration_ok = motion_checked_add_u64(total, duration)
 		if !duration_ok {return 0, false}
+		if source.has_wipe {
+			wipe_dur, wipe_ok := motion_duration_for_length(source.wipe_length_nm, source.base_speed)
+			if !wipe_ok {return 0, false}
+			total, duration_ok = motion_checked_add_u64(total, wipe_dur)
+			if !duration_ok {return 0, false}
+		}
+		if !source.is_extrusion && i64(source.z_hop_um) > 0 {
+			hop_dur, hop_ok := motion_duration_for_distance_um(source.z_hop_um, speed)
+			if !hop_ok {return 0, false}
+			total, duration_ok = motion_checked_add_u64(total, hop_dur)
+			if duration_ok {
+				total, duration_ok = motion_checked_add_u64(total, hop_dur)
+			}
+			if !duration_ok {return 0, false}
+		}
 		if source.retract_before {
 			retract_duration, retract_ok :=
 				motion_duration_for_distance_um(
@@ -784,6 +906,55 @@ motion_role_target :: proc(
 motion_checked_add_u64 :: proc(a, b: u64) -> (u64, bool) {
 	if b > max(u64)-a {return 0, false}
 	return a+b, true
+}
+
+motion_compute_wipe :: proc(
+	prev_a, cur_a, target_b: polygon.Polygon_Point,
+	wipe_dist_um: contracts.Micrometres,
+	printer: profiles.Printer_Profile,
+) -> (wipe_pt: polygon.Polygon_Point, wipe_len_nm, travel_len_nm: u64, ok: bool) {
+	dx := i64(prev_a.x) - i64(cur_a.x)
+	dy := i64(prev_a.y) - i64(cur_a.y)
+	prev_len_nm, prev_ok := motion_move_length_nm(cur_a, prev_a)
+	if !prev_ok || prev_len_nm == 0 {return {}, 0, 0, false}
+	prev_len_um := i64(prev_len_nm / 1_000)
+	if prev_len_um <= 0 {return {}, 0, 0, false}
+	d := min(i64(wipe_dist_um), prev_len_um)
+	wx := i64(cur_a.x) + (dx * d) / prev_len_um
+	wy := i64(cur_a.y) + (dy * d) / prev_len_um
+	wipe_pt = {x = contracts.Micrometres(wx), y = contracts.Micrometres(wy)}
+	if wipe_pt == cur_a || wipe_pt == target_b || !motion_point_in_machine(wipe_pt, printer) {
+		return {}, 0, 0, false
+	}
+	w_len, w_ok := motion_move_length_nm(cur_a, wipe_pt)
+	t_len, t_ok := motion_move_length_nm(wipe_pt, target_b)
+	if !w_ok || !t_ok || w_len == 0 || t_len == 0 {
+		return {}, 0, 0, false
+	}
+	return wipe_pt, w_len, t_len, true
+}
+
+motion_segment_is_overhang :: proc(
+	a, b: polygon.Polygon_Point,
+	prev_layer: polygon.Polygon_Set,
+) -> bool {
+	if len(prev_layer.paths) == 0 {return false}
+	// Sample 3 interior points (25%, 50%, 75%) using exact doubled integer coordinates.
+	ax := i64(a.x)
+	ay := i64(a.y)
+	bx := i64(b.x)
+	by := i64(b.y)
+	unsupported := 0
+	if !bridge_polygon_contains_twice(prev_layer, ax + bx, ay + by) {
+		unsupported += 1
+	}
+	if !bridge_polygon_contains_twice(prev_layer, (3*ax + bx)/2, (3*ay + by)/2) {
+		unsupported += 1
+	}
+	if !bridge_polygon_contains_twice(prev_layer, (ax + 3*bx)/2, (ay + 3*by)/2) {
+		unsupported += 1
+	}
+	return unsupported >= 2
 }
 
 motion_plan_result_destroy :: proc(

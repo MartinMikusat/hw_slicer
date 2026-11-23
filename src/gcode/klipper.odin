@@ -27,6 +27,7 @@ Klipper_Command_Kind :: enum u8 {
 	Set_Fan,
 	Move,
 	Dwell,
+	Exclude_Object,
 	End_Print,
 }
 
@@ -88,6 +89,7 @@ klipper_emit :: proc(
 	profile: profiles.Resolved_Profiles,
 	limits := DEFAULT_KLIPPER_LIMITS,
 	allocator := context.allocator,
+	object_name := "",
 ) -> (Klipper_Result, Klipper_Error) {
 	resolved, resolve_error := profiles.profiles_resolve(
 		profile.printer,
@@ -102,8 +104,8 @@ klipper_emit :: proc(
 		return {}, .Invalid_Motion
 	}
 	maximum_commands :=
-		u64(32)+u64(len(motion.layers))*5+
-		u64(len(motion.operations))*3
+		u64(36)+u64(len(motion.layers))*5+
+		u64(len(motion.operations))*5
 	if maximum_commands < u64(len(motion.operations)) ||
 	   maximum_commands > limits.max_commands ||
 	   maximum_commands > u64(max(int)) {
@@ -180,6 +182,43 @@ klipper_emit :: proc(
 		return {}, .Command_Limit
 	}
 	state.fan_pwm = 0
+
+	if len(object_name) > 0 {
+		cx := contracts.Micrometres((i64(area[0].x) + i64(area[1].x)) / 2)
+		cy := contracts.Micrometres((i64(area[0].y) + i64(area[1].y)) / 2)
+		start = klipper_command_begin(builder)
+		fmt.sbprintf(&builder, "EXCLUDE_OBJECT_DEFINE NAME=%s CENTER=", object_name)
+		klipper_append_coordinate(&builder, cx)
+		strings.write_string(&builder, ",")
+		klipper_append_coordinate(&builder, cy)
+		strings.write_string(&builder, " POLYGON=[[")
+		klipper_append_coordinate(&builder, area[0].x)
+		strings.write_string(&builder, ",")
+		klipper_append_coordinate(&builder, area[0].y)
+		strings.write_string(&builder, "],[")
+		klipper_append_coordinate(&builder, area[1].x)
+		strings.write_string(&builder, ",")
+		klipper_append_coordinate(&builder, area[0].y)
+		strings.write_string(&builder, "],[")
+		klipper_append_coordinate(&builder, area[1].x)
+		strings.write_string(&builder, ",")
+		klipper_append_coordinate(&builder, area[1].y)
+		strings.write_string(&builder, "],[")
+		klipper_append_coordinate(&builder, area[0].x)
+		strings.write_string(&builder, ",")
+		klipper_append_coordinate(&builder, area[1].y)
+		strings.write_string(&builder, "]]\n")
+		if !klipper_command_end(builder, commands, &command_write, .Exclude_Object, start) {
+			delete(commands, allocator)
+			return {}, .Command_Limit
+		}
+		start = klipper_command_begin(builder)
+		fmt.sbprintf(&builder, "EXCLUDE_OBJECT_START NAME=%s\n", object_name)
+		if !klipper_command_end(builder, commands, &command_write, .Exclude_Object, start) {
+			delete(commands, allocator)
+			return {}, .Command_Limit
+		}
+	}
 
 	for layer in motion.layers {
 		start = klipper_command_begin(builder)
@@ -290,6 +329,15 @@ klipper_emit :: proc(
 		}
 	}
 
+	if len(object_name) > 0 {
+		start = klipper_command_begin(builder)
+		fmt.sbprintf(&builder, "EXCLUDE_OBJECT_END NAME=%s\n", object_name)
+		if !klipper_command_end(builder, commands, &command_write, .Exclude_Object, start) {
+			delete(commands, allocator)
+			return {}, .Command_Limit
+		}
+	}
+
 	if !klipper_write_literal(&builder, commands, &command_write, .End_Print, "END_PRINT\n") {
 		delete(commands, allocator)
 		return {}, .Command_Limit
@@ -380,6 +428,24 @@ klipper_emit_operation :: proc(
 			klipper_feed_rate(operation.speed),
 		)
 	case .Travel:
+		if i64(operation.z_hop_um) > 0 {
+			hop_z := contracts.Micrometres(i64(state.z) + i64(operation.z_hop_um))
+			strings.write_string(builder, "G0 Z")
+			klipper_append_coordinate(builder, hop_z)
+			fmt.sbprintf(builder, " F%d\n", klipper_feed_rate(operation.speed))
+			if !klipper_command_end(
+				builder^,
+				commands,
+				command_write,
+				.Move,
+				start,
+				operation.stable_id,
+				operation.layer_index,
+			) {
+				return false
+			}
+			start = klipper_command_begin(builder^)
+		}
 		strings.write_string(builder, "G0 X")
 		klipper_append_coordinate(builder, operation.point_b.x)
 		strings.write_string(builder, " Y")
@@ -389,6 +455,23 @@ klipper_emit_operation :: proc(
 			" F%d\n",
 			klipper_feed_rate(operation.speed),
 		)
+		if i64(operation.z_hop_um) > 0 {
+			if !klipper_command_end(
+				builder^,
+				commands,
+				command_write,
+				.Move,
+				start,
+				operation.stable_id,
+				operation.layer_index,
+			) {
+				return false
+			}
+			start = klipper_command_begin(builder^)
+			strings.write_string(builder, "G0 Z")
+			klipper_append_coordinate(builder, state.z)
+			fmt.sbprintf(builder, " F%d\n", klipper_feed_rate(operation.speed))
+		}
 	case .Extrude:
 		if operation.arc != .None {
 			strings.write_string(builder, "G2 X" if operation.arc == .CW else "G3 X")

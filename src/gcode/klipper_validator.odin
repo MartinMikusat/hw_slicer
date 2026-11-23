@@ -53,6 +53,7 @@ Klipper_Parsed_Kind :: enum u8 {
 	Set_Velocity_Limit,
 	Print_Stats_Total,
 	Print_Stats_Current,
+	Exclude_Object,
 }
 
 Klipper_Parsed_Command :: struct {
@@ -112,6 +113,7 @@ Klipper_Validation_State :: struct {
 	z:                    i64,
 	acceleration:         i64,
 	fan_pwm:              i32,
+	z_hop_stage:          u8, // 0 = none, 1 = hopped up awaiting XY, 2 = XY done awaiting un-hop
 }
 
 klipper_validate :: proc(
@@ -276,6 +278,8 @@ klipper_validate_print_command :: proc(
 		return klipper_apply_acceleration(command, profile, state)
 	case .M106, .M107:
 		return klipper_apply_fan(command, state, report)
+	case .Exclude_Object:
+		return .None
 	case .G0, .G1, .G2, .G3:
 		return klipper_validate_print_move(
 			command,
@@ -344,7 +348,7 @@ klipper_validate_print_move :: proc(
 		state.y = command.y
 		return .None
 	}
-	if state.positioned_xy &&
+	if state.positioned_xy && state.z_hop_stage != 2 &&
 	   (state.x != i64(operation.point_a.x) ||
 	    state.y != i64(operation.point_a.y)) {
 		return .Motion_Mismatch
@@ -361,18 +365,66 @@ klipper_validate_print_move :: proc(
 			return .Motion_Mismatch
 		}
 	case .Travel:
-		if command.kind != .G0 ||
-		   !command.has_x || !command.has_y ||
-		   command.has_z || command.has_e ||
-		   !command.has_f ||
-		   command.x != i64(operation.point_b.x) ||
-		   command.y != i64(operation.point_b.y) ||
-		   command.f != expected_feed ||
-		   state.acceleration != expected_acceleration {
-			return .Motion_Mismatch
+		if i64(operation.z_hop_um) > 0 {
+			hop_z := i64(layer.z) + i64(operation.z_hop_um)
+			switch state.z_hop_stage {
+			case 0:
+				if command.kind != .G0 ||
+				   command.has_x || command.has_y ||
+				   !command.has_z || command.has_e ||
+				   !command.has_f ||
+				   command.z != hop_z ||
+				   command.f != expected_feed ||
+				   state.acceleration != expected_acceleration {
+					return .Motion_Mismatch
+				}
+				state.z = command.z
+				state.z_hop_stage = 1
+				return klipper_position_in_bounds(state^, profile)
+			case 1:
+				if command.kind != .G0 ||
+				   !command.has_x || !command.has_y ||
+				   command.has_z || command.has_e ||
+				   !command.has_f ||
+				   command.x != i64(operation.point_b.x) ||
+				   command.y != i64(operation.point_b.y) ||
+				   command.f != expected_feed ||
+				   state.acceleration != expected_acceleration {
+					return .Motion_Mismatch
+				}
+				state.x = command.x
+				state.y = command.y
+				state.z_hop_stage = 2
+				return klipper_position_in_bounds(state^, profile)
+			case 2:
+				if command.kind != .G0 ||
+				   command.has_x || command.has_y ||
+				   !command.has_z || command.has_e ||
+				   !command.has_f ||
+				   command.z != i64(layer.z) ||
+				   command.f != expected_feed ||
+				   state.acceleration != expected_acceleration {
+					return .Motion_Mismatch
+				}
+				state.z = command.z
+				state.z_hop_stage = 0
+			case:
+				return .Motion_Mismatch
+			}
+		} else {
+			if command.kind != .G0 ||
+			   !command.has_x || !command.has_y ||
+			   command.has_z || command.has_e ||
+			   !command.has_f ||
+			   command.x != i64(operation.point_b.x) ||
+			   command.y != i64(operation.point_b.y) ||
+			   command.f != expected_feed ||
+			   state.acceleration != expected_acceleration {
+				return .Motion_Mismatch
+			}
+			state.x = command.x
+			state.y = command.y
 		}
-		state.x = command.x
-		state.y = command.y
 	case .Extrude:
 		expected_kind := Klipper_Parsed_Kind.G1
 		if operation.arc == .CW {expected_kind = .G2}
@@ -439,6 +491,9 @@ klipper_validate_shutdown :: proc(
 	command: Klipper_Parsed_Command,
 	report: ^Klipper_Validation_Report,
 ) -> Klipper_Validation_Error {
+	if command.kind == .Exclude_Object && !report.print_ended {
+		return .None
+	}
 	if command.kind != .End_Print || report.print_ended {return .Invalid_Sequence}
 	report.print_ended = true
 	return .None
@@ -589,6 +644,8 @@ klipper_parse_command :: proc(
 	case "M107": result.kind = .M107
 	case "START_PRINT", "END_PRINT", "SET_VELOCITY_LIMIT", "SET_PRINT_STATS_INFO":
 		return klipper_parse_extended(tokens[:token_count])
+	case "EXCLUDE_OBJECT_DEFINE", "EXCLUDE_OBJECT_START", "EXCLUDE_OBJECT_END":
+		return {kind = .Exclude_Object}, .None
 	case:
 		return {}, .Unsupported_Command
 	}
@@ -691,7 +748,8 @@ klipper_command_parameters_valid :: proc(
 	case .M106:
 		return command.has_s && parameter_count == 1
 	case .Header, .Layer, .Invalid, .Start_Print, .End_Print,
-	     .Set_Velocity_Limit, .Print_Stats_Total, .Print_Stats_Current:
+	     .Set_Velocity_Limit, .Print_Stats_Total, .Print_Stats_Current,
+	     .Exclude_Object:
 		return false
 	}
 	return false

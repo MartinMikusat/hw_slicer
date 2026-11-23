@@ -7,6 +7,7 @@ import "core:path/filepath"
 import "core:strings"
 import devlog "devlog:."
 
+import contracts "../contracts"
 import features "../features"
 import pipeline "../pipeline"
 import profiles "../profiles"
@@ -243,6 +244,24 @@ main :: proc() {
 	run_opts := pipeline.DEFAULT_SLICE_RUN_OPTIONS
 	run_opts.infill_density_percent = extras.infill_density_percent
 	run_opts.enable_supports = opts.enable_supports
+	run_opts.skirt_loops = extras.skirt_loops
+	run_opts.skirt_distance_um = contracts.Micrometres(i64(math.round(extras.skirt_distance_mm*1000.0)))
+	run_opts.skirt_height_layers = extras.skirt_height_layers
+	run_opts.brim_width_um = contracts.Micrometres(i64(math.round(extras.brim_width_mm*1000.0)))
+	run_opts.brim_gap_um = contracts.Micrometres(i64(math.round(extras.brim_gap_mm*1000.0)))
+	run_opts.brim_inner = extras.brim_inner
+	run_opts.elephant_foot_compensation_um = contracts.Micrometres(i64(math.round(extras.elephant_foot_compensation_mm*1000.0)))
+	run_opts.wipe_distance_um = contracts.Micrometres(i64(math.round(extras.wipe_distance_mm*1000.0)))
+	run_opts.overhang_slowdown_enabled = extras.overhang_slowdown_enabled
+	run_opts.overhang_speed_percent = extras.overhang_speed_percent
+	switch extras.seam_position {
+	case "rear":     run_opts.seam_strategy = .Rear
+	case "sharpest": run_opts.seam_strategy = .Sharpest_Corner
+	case "nearest":  run_opts.seam_strategy = .Nearest
+	case:            run_opts.seam_strategy = .Aligned
+	}
+	raw_stem := strings.trim_suffix(filepath.base(opts.input_path), filepath.ext(opts.input_path))
+	run_opts.object_name = strings.clone(raw_stem, context.temp_allocator)
 
 	res, slice_err := pipeline.slice_run_bytes(input_bytes, opts.input_path, resolved, run_opts)
 	if len(slice_err.stage) > 0 {

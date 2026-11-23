@@ -25,23 +25,48 @@ Stage_Trace :: struct {
 }
 
 Slice_Run_Options :: struct {
-	source_units:           contracts.Source_Units,
-	infill_density_percent: f64,
-	enable_supports:        bool,
-	inner_perimeters_first: bool,
-	max_layer_count:        u32,
-	max_contour_repairs:    u32,
-	center_on_bed:          bool,
+	source_units:                  contracts.Source_Units,
+	infill_density_percent:        f64,
+	enable_supports:               bool,
+	inner_perimeters_first:        bool,
+	max_layer_count:               u32,
+	max_contour_repairs:           u32,
+	center_on_bed:                 bool,
+	// Milestone 2: Adhesion, seams, wipe, overhang cooling, EXCLUDE_OBJECT
+	skirt_loops:                   u32,
+	skirt_distance_um:             contracts.Micrometres,
+	skirt_height_layers:           u32,
+	brim_width_um:                 contracts.Micrometres,
+	brim_gap_um:                   contracts.Micrometres,
+	brim_inner:                    bool,
+	elephant_foot_compensation_um: contracts.Micrometres,
+	seam_strategy:                 features.Seam_Strategy,
+	wipe_distance_um:              contracts.Micrometres,
+	overhang_slowdown_enabled:     bool,
+	overhang_speed_percent:        u32,
+	object_name:                   string,
 }
 
 DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
-	source_units           = .Millimetres,
-	infill_density_percent = 15.0,
-	enable_supports        = false,
-	inner_perimeters_first = true,
-	max_layer_count        = 10_000,
-	max_contour_repairs    = 256,
-	center_on_bed          = true,
+	source_units                  = .Millimetres,
+	infill_density_percent        = 15.0,
+	enable_supports               = false,
+	inner_perimeters_first        = true,
+	max_layer_count               = 10_000,
+	max_contour_repairs           = 256,
+	center_on_bed                 = true,
+	skirt_loops                   = 1,
+	skirt_distance_um             = 5_000,
+	skirt_height_layers           = 1,
+	brim_width_um                 = 0,
+	brim_gap_um                   = 100,
+	brim_inner                    = false,
+	elephant_foot_compensation_um = 150,
+	seam_strategy                 = .Aligned,
+	wipe_distance_um              = 1_500,
+	overhang_slowdown_enabled     = true,
+	overhang_speed_percent        = 50,
+	object_name                   = "",
 }
 
 Slice_Run_Result :: struct {
@@ -382,19 +407,20 @@ slice_run_bytes :: proc(
 		layer_heights[i] = proc_src.first_layer_height if i == 0 else proc_src.layer_height
 	}
 
-	// Stage 3: Perimeters.
+	// Stage 3: Perimeters (with optional layer-0 elephant-foot compensation) & Bed Adhesion.
 	t0 = time.tick_now()
 	perimeters, perim_err := features.perimeters_generate(
 		active_topo,
 		result.regions,
 		provider,
 		{
-			count           = proc_src.perimeter_count,
-			line_width      = proc_src.nominal_line_width,
-			topology_policy = .Diagnostic_Closed_Regions,
-			join_type       = .Miter,
-			miter_limit     = 2.0,
-			arc_tolerance   = 0.0,
+			count                = proc_src.perimeter_count,
+			line_width           = proc_src.nominal_line_width,
+			first_layer_inset_um = options.elephant_foot_compensation_um,
+			topology_policy      = .Diagnostic_Closed_Regions,
+			join_type            = .Miter,
+			miter_limit          = 2.0,
+			arc_tolerance        = 0.0,
 		},
 		allocator = allocator,
 	)
@@ -403,7 +429,28 @@ slice_run_bytes :: proc(
 		return {}, {stage = "perimeters", detail = fmt.tprintf("perimeters error: %v", perim_err)}
 	}
 	defer features.perimeter_result_destroy(&perimeters, allocator)
-	record_stage(&result.stages, "perimeters", t0, u64(len(perimeters.paths)), u64(len(perimeters.points)))
+	adhesion := features.adhesion_build(
+		provider,
+		active_topo,
+		result.regions,
+		{
+			skirt_loops                   = options.skirt_loops,
+			skirt_distance_um             = options.skirt_distance_um,
+			skirt_height_layers           = options.skirt_height_layers,
+			brim_width_um                 = options.brim_width_um,
+			brim_gap_um                   = options.brim_gap_um,
+			brim_inner                    = options.brim_inner,
+			elephant_foot_compensation_um = options.elephant_foot_compensation_um,
+			line_width_um                 = proc_src.nominal_line_width,
+			bed_min_x                     = profile.printer.axis_minimum_x,
+			bed_max_x                     = profile.printer.axis_maximum_x,
+			bed_min_y                     = profile.printer.axis_minimum_y,
+			bed_max_y                     = profile.printer.axis_maximum_y,
+		},
+		allocator = allocator,
+	)
+	defer features.adhesion_result_destroy(&adhesion, allocator)
+	record_stage(&result.stages, "perimeters", t0, u64(len(perimeters.paths)), u64(len(adhesion.loops)))
 
 	// Stage 4: Surfaces & Skin propagation.
 	t0 = time.tick_now()
@@ -642,14 +689,37 @@ slice_run_bytes :: proc(
 		return {}, {stage = "unified_sources", detail = fmt.tprintf("unified sources error: %v", us_err)}
 	}
 	defer features.unified_path_source_result_destroy(&u_sources, allocator)
+	// Inject adhesion loops (skirt & brim) ahead of perimeters with priority 0.
+	all_sources := make([dynamic]features.Unified_Path_Source, 0, len(u_sources.sources) + len(adhesion.loops), allocator)
+	defer delete(all_sources)
+	for loop, li in adhesion.loops {
+		if int(loop.layer_index) >= len(result.spine.schedule.layer_ids) {continue}
+		layer_id := result.spine.schedule.layer_ids[loop.layer_index]
+		append(&all_sources, features.Unified_Path_Source{
+			stable_id    = contracts.stable_id_child(layer_id, .Feature, u64(1)<<62 | u64(li)),
+			layer_id     = layer_id,
+			layer_index  = loop.layer_index,
+			role         = .Perimeter,
+			source_kind  = .Adhesion,
+			source_index = u32(li),
+			source_order = u64(li),
+			closed       = true,
+			points       = loop.points,
+			line_widths  = loop.line_widths,
+		})
+	}
+	for s in u_sources.sources {
+		append(&all_sources, s)
+	}
 	plan_err: features.Unified_Path_Plan_Error
 	result.unified_plan, plan_err = features.unified_path_plan_build(
 		result.spine.schedule.layer_ids,
-		u_sources.sources,
+		all_sources[:],
 		{
 			start           = {x = profile.printer.axis_minimum_x, y = profile.printer.axis_minimum_y},
 			seam            = proc_src.seam,
 			seam_visibility = proc_src.seam_visibility,
+			seam_strategy   = options.seam_strategy,
 		},
 		allocator = allocator,
 	)
@@ -684,6 +754,11 @@ slice_run_bytes :: proc(
 		result.extrusion,
 		profile,
 		allocator = allocator,
+		options = {
+			wipe_distance_um          = options.wipe_distance_um,
+			overhang_slowdown_enabled = options.overhang_slowdown_enabled,
+			overhang_speed_percent    = options.overhang_speed_percent,
+		},
 	)
 	if mot_err != .None {
 		slice_run_result_destroy(&result, allocator)
@@ -694,7 +769,7 @@ slice_run_bytes :: proc(
 	// Stage 12: Klipper G-code emission & validation.
 	t0 = time.tick_now()
 	klip_err: gcode.Klipper_Error
-	result.klipper, klip_err = gcode.klipper_emit(result.motion, profile, allocator = allocator)
+	result.klipper, klip_err = gcode.klipper_emit(result.motion, profile, allocator = allocator, object_name = options.object_name)
 	if klip_err != .None {
 		slice_run_result_destroy(&result, allocator)
 		return {}, {stage = "klipper_emit", detail = fmt.tprintf("klipper emit error: %v", klip_err)}

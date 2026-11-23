@@ -37,5 +37,17 @@
   "support_clearance_z_mm": 0.2,
   "support_density_percent": 15,
   "support_interface_layers": 2,
-  "support_interface_spacing_mm": 0.42
+  "support_interface_spacing_mm": 0.42,
+  "skirt_loops": 1,
+  "skirt_distance_mm": 5.0,
+  "skirt_height_layers": 1,
+  "brim_width_mm": 0.0,
+  "brim_gap_mm": 0.1,
+  "brim_inner": false,
+  "elephant_foot_compensation_mm": 0.15,
+  "seam_position": "aligned",
+  "z_hop_mm": 0.4,
+  "wipe_distance_mm": 1.5,
+  "overhang_slowdown_enabled": true,
+  "overhang_speed_percent": 50
 }

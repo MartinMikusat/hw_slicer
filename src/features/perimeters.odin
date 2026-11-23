@@ -14,12 +14,13 @@ Feature_Topology_Policy :: enum u32 {
 }
 
 Perimeter_Config :: struct {
-	count:         u32,
-	line_width:    contracts.Micrometres,
-	topology_policy: Feature_Topology_Policy,
-	join_type:     polygon.Polygon_Join_Type,
-	miter_limit:   f64,
-	arc_tolerance: f64,
+	count:                u32,
+	line_width:           contracts.Micrometres,
+	first_layer_inset_um: contracts.Micrometres,
+	topology_policy:      Feature_Topology_Policy,
+	join_type:            polygon.Polygon_Join_Type,
+	miter_limit:          f64,
+	arc_tolerance:        f64,
 }
 
 Perimeter_Limits :: struct {
@@ -167,11 +168,15 @@ perimeters_generate :: proc(
 			return {}, input_error
 		}
 		for perimeter_index in 0..<config.count {
-			delta, delta_ok := perimeter_delta(config, perimeter_index)
+			base_delta, delta_ok := perimeter_delta(config, perimeter_index)
 			if !delta_ok {
 				polygon.polygon_set_destroy(&input, allocator)
 				perimeter_result_destroy(&result, allocator)
 				return {}, .Arithmetic
+			}
+			delta := base_delta
+			if region.layer_index == 0 && i64(config.first_layer_inset_um) > 0 {
+				delta = contracts.Micrometres(i64(base_delta) - i64(config.first_layer_inset_um))
 			}
 			output_error: polygon.Polygon_Error
 			temporary_outputs[group_write], output_error =
@@ -184,6 +189,22 @@ perimeters_generate :: proc(
 					limits.polygon,
 					allocator,
 				)
+			if output_error == .None && len(temporary_outputs[group_write].paths) == 0 &&
+			   perimeter_index == 0 && delta != base_delta {
+				// Preserve very thin layer-0 islands if elephant-foot inset would erase them.
+				polygon.polygon_set_destroy(&temporary_outputs[group_write], allocator)
+				delta = base_delta
+				temporary_outputs[group_write], output_error =
+					provider.offset(
+						input,
+						delta,
+						config.join_type,
+						config.miter_limit,
+						config.arc_tolerance,
+						limits.polygon,
+						allocator,
+					)
+			}
 			if output_error != .None {
 				polygon.polygon_set_destroy(&input, allocator)
 				perimeter_result_destroy(&result, allocator)
@@ -214,7 +235,7 @@ perimeters_generate :: proc(
 				region_index = u32(region_index),
 				layer_index = region.layer_index,
 				perimeter_index = perimeter_index,
-				delta = delta,
+				delta = base_delta,
 				path_offset = total_paths,
 				path_count = u32(len(output.paths)),
 			}
