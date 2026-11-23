@@ -58,14 +58,14 @@ All four configurations were measured on the same `cli-release` (`-o:speed`) bin
 
 External reference baseline: **OrcaSlicer 2.5.1** (C++, multi-threaded, native Apple Silicon) run headlessly on the same machine with matched settings (`gcode_flavor=klipper`, `0.20 mm` layer height, `3` wall loops, `4` top/bottom shells, `15%` Gyroid infill, supports off).
 
-Includes Phase 2 pipeline optimizations: closed-ring Douglas-Peucker contour simplification (`12 µm` in `src/slicing/simplify.odin`), multi-core `parallel_for` across `perimeters_generate`, `surfaces_classify`, `skins_propagate`, `role_overlap_resolve`, `solid_paths_generate`, `infill_pattern_generate`, and `gap_evidence_build`, headless spine mode (`fast_headless` skipping unused SHA-256 content hashes and `mesh_audit`), Metal GPU overhang + travel exterior-crossing kernels, and `arc_fit` infill-skip + early-break.
+Includes Phase 2 pipeline optimizations: closed-ring Douglas-Peucker contour simplification (`12 µm` in `src/slicing/simplify.odin`), multi-core `parallel_for` across `perimeters_generate`, `surfaces_classify`, `skins_propagate`, `role_overlap_resolve`, `solid_paths_generate`, `infill_pattern_generate`, `gap_evidence_build` (`uncovered_only` fast path), and `gap_samples_build`, headless spine mode (`fast_headless`), `period / 8.0` Gyroid sampling, Metal GPU overhang + travel exterior-crossing kernels, `arc_fit` infill-skip + early-break, and zero-`sbprintf` fixed-point Klipper G-code formatting with single-pass strict validation.
 
 | Model | (a) 1-Core CPU | (b) 8-Core CPU | (c) 1-Core + Metal | (d) 8-Core + Metal | (d) vs (a) | (d) vs (b) | OrcaSlicer 2.5.1 | (d) / Orca |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `all-in-one-test.stl` | 1,615.37 ms | 830.21 ms | 1,358.53 ms | **684.66 ms** | **2.36×** | **1.21×** | 1,120.97 ms | **0.61× (1.64× faster)** |
-| `benchy.stl` | 1,307.34 ms | 570.11 ms | 1,167.72 ms | **544.29 ms** | **2.40×** | **1.05×** | 757.50 ms | **0.72× (1.39× faster)** |
-| `stanford-bunny.stl` | 7,025.55 ms | 2,850.42 ms | 5,782.37 ms | **2,490.42 ms** | **2.82×** | **1.14×** | 1,718.59 ms | 1.45× |
-| **Combined 3-Model Suite** | **9,948.26 ms** | **4,250.74 ms** | **8,308.62 ms** | **3,719.37 ms** | **2.67×** | **1.14×** | **3,597.06 ms** | **1.03×** |
+| `all-in-one-test.stl` | 1,384.07 ms | 671.38 ms | 1,126.36 ms | **577.05 ms** | **2.40×** | **1.16×** | 1,029.68 ms | **0.56× (1.78× faster)** |
+| `benchy.stl` | 1,096.18 ms | 483.08 ms | 974.71 ms | **462.71 ms** | **2.37×** | **1.04×** | 733.91 ms | **0.63× (1.59× faster)** |
+| `stanford-bunny.stl` | 4,935.77 ms | 1,820.31 ms | 3,819.06 ms | **1,456.87 ms** | **3.39×** | **1.25×** | 1,659.16 ms | **0.88× (1.14× faster)** |
+| **Combined 3-Model Suite** | **7,416.02 ms** | **2,974.77 ms** | **5,920.13 ms** | **2,496.63 ms** | **2.97×** | **1.19×** | **3,422.75 ms** | **0.73× (1.37× faster)** |
 
 ### Accelerated Stage Breakdown
 

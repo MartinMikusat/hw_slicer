@@ -25,6 +25,7 @@ Gap_Evidence_Config :: struct {
 	join_type:          polygon.Polygon_Join_Type,
 	miter_limit:        f64,
 	arc_tolerance:      f64,
+	uncovered_only:     bool,
 }
 
 Gap_Evidence_Limits :: struct {
@@ -639,6 +640,13 @@ gap_evidence_process_region :: proc(
 		}
 	}
 	polygon.polygon_set_destroy(&region_input, allocator)
+
+	if config.uncovered_only {
+		output_offset := region_index * 6
+		outputs[output_offset] = coverage
+		outputs[output_offset + 1] = residual
+		return .None
+	}
 
 	minimum_centers, minimum_error := gap_evidence_inset(
 		residual, derived.minimum_center_radius, provider, config, limits, allocator,

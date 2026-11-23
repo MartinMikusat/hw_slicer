@@ -419,7 +419,7 @@ infill_pat_gyroid :: proc(
 	period := max(spacing * 2.0, 2000.0)
 	amp := spacing * 0.42
 	z_phase := (2.0 * math.PI * z_um) / period
-	step := max(period / 12.0, 400.0)
+	step := max(period / 8.0, 500.0)
 	horizontal := (layer_index % 2) == 0
 
 	raw := make([dynamic]polygon.Polygon_Point, 0, 128, context.temp_allocator)

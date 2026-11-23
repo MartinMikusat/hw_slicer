@@ -1,5 +1,7 @@
 package features
 
+import "core:mem"
+
 import contracts "../contracts"
 import geometry "../geometry"
 import polygon "../polygon"
@@ -103,175 +105,203 @@ gap_samples_build :: proc(
 	if u64(len(evidence.masks)) > u64(max(u32)) {
 		return {}, .Arithmetic
 	}
-	maximum_points := 0
-	for mask in evidence.masks {
-		if mask.kind == .Uncovered_Region {
-			maximum_points = max(maximum_points, int(mask.point_count))
+	mask_count := len(evidence.masks)
+	mask_samples := make([]u64, mask_count, allocator)
+	mask_centers := make([]u64, mask_count, allocator)
+	mask_scanlines := make([]u64, mask_count, allocator)
+	mask_errors := make([]Gap_Sample_Error, mask_count, allocator)
+	defer {
+		delete(mask_samples, allocator)
+		delete(mask_centers, allocator)
+		delete(mask_scanlines, allocator)
+		delete(mask_errors, allocator)
+	}
+
+	Gap_Sample_Par_Ctx :: struct {
+		evidence:       Gap_Evidence_Result,
+		config:         Gap_Sample_Config,
+		process:        profiles.Resolved_Process_Profile,
+		limits:         Gap_Sample_Limits,
+		allocator:      mem.Allocator,
+		mask_samples:   []u64,
+		mask_centers:   []u64,
+		mask_scanlines: []u64,
+		mask_errors:    []Gap_Sample_Error,
+		sample_offsets: []u64,
+		center_offsets: []u64,
+		out_samples:    []Gap_Width_Sample,
+		out_centers:    []Gap_Center_Sample,
+		out_hits:       []Infill_Boundary_Hit,
+	}
+	gsctx := Gap_Sample_Par_Ctx{
+		evidence       = evidence,
+		config         = config,
+		process        = process,
+		limits         = limits,
+		allocator      = allocator,
+		mask_samples   = mask_samples,
+		mask_centers   = mask_centers,
+		mask_scanlines = mask_scanlines,
+		mask_errors    = mask_errors,
+	}
+
+	parallel_for(mask_count, &gsctx, proc(c: ^Gap_Sample_Par_Ctx, mask_index: int) {
+		mask := c.evidence.masks[mask_index]
+		if mask.kind != .Uncovered_Region {return}
+		boundary, boundary_error := gap_evidence_mask_input(c.evidence, u32(mask_index), c.allocator)
+		if boundary_error != .None {
+			c.mask_errors[mask_index] = boundary_error
+			return
 		}
-	}
-	hits := make([]Infill_Rational_Hit, maximum_points, allocator)
-	if maximum_points > 0 && hits == nil {
-		return {}, .Allocation_Failed
-	}
-	defer delete(hits, allocator)
+		defer polygon.polygon_set_destroy(&boundary, c.allocator)
+		local_hits := make([]Infill_Rational_Hit, int(mask.point_count), c.allocator)
+		defer delete(local_hits, c.allocator)
+		path_axis := gap_sample_path_axis(boundary)
+		ws, wc, sc, serr := gap_sample_scan_mask(
+			boundary,
+			path_axis,
+			c.config,
+			c.process,
+			local_hits,
+			nil,
+			nil,
+			nil,
+			mask,
+			u32(mask_index),
+			0,
+			0,
+			c.limits,
+		)
+		if serr != .None {
+			c.mask_errors[mask_index] = serr
+			return
+		}
+		c.mask_samples[mask_index] = ws
+		c.mask_centers[mask_index] = wc
+		c.mask_scanlines[mask_index] = sc
+	})
 
 	result := Gap_Sample_Result{
 		config = config,
 		minimum_width = process.thin_wall_minimum_width,
 		maximum_width = process.thin_wall_maximum_width,
 	}
-	result.layers = make(
-		[]Gap_Sample_Layer,
-		len(evidence.layers),
-		allocator,
-	)
+	result.layers = make([]Gap_Sample_Layer, len(evidence.layers), allocator)
 	if len(evidence.layers) > 0 && result.layers == nil {
 		gap_sample_result_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
 
-	sample_count: u64
-	center_count: u64
-	for mask, mask_index in evidence.masks {
-		if mask.kind != .Uncovered_Region {continue}
-		boundary, boundary_error := gap_evidence_mask_input(
-			evidence,
-			u32(mask_index),
-			allocator,
-		)
-		if boundary_error != .None {
-			gap_sample_result_destroy(&result, allocator)
-			return {}, boundary_error
-		}
-		path_axis := gap_sample_path_axis(boundary)
-		written_samples, written_centers, scanlines, scan_error :=
-			gap_sample_scan_mask(
-				boundary,
-				path_axis,
-				config,
-				process,
-				hits,
-				nil,
-				nil,
-				nil,
-				mask,
-				u32(mask_index),
-				0,
-				0,
-				limits,
-			)
-		polygon.polygon_set_destroy(&boundary, allocator)
-		if scan_error != .None {
-			gap_sample_result_destroy(&result, allocator)
-			return {}, scan_error
-		}
-		if sample_count > limits.max_samples ||
-		   written_samples > limits.max_samples-sample_count {
-			gap_sample_result_destroy(&result, allocator)
-			return {}, .Sample_Limit
-		}
-		if center_count > limits.max_centers ||
-		   written_centers > limits.max_centers-center_count {
-			gap_sample_result_destroy(&result, allocator)
-			return {}, .Center_Limit
-		}
-		if result.scanline_count > limits.max_scanlines ||
-		   scanlines > limits.max_scanlines-result.scanline_count {
-			gap_sample_result_destroy(&result, allocator)
-			return {}, .Scanline_Limit
-		}
-		sample_count += written_samples
-		center_count += written_centers
-		result.scanline_count += scanlines
-	}
-	if sample_count > u64(max(int)) ||
-	   center_count > u64(max(int)) ||
-	   sample_count > u64(max(int))/2 {
-		gap_sample_result_destroy(&result, allocator)
-		return {}, .Arithmetic
-	}
-	result.samples = make(
-		[]Gap_Width_Sample,
-		int(sample_count),
-		allocator,
-	)
-	result.centers = make(
-		[]Gap_Center_Sample,
-		int(center_count),
-		allocator,
-	)
-	result.boundary_hits = make(
-		[]Infill_Boundary_Hit,
-		int(sample_count*2),
-		allocator,
-	)
-	if sample_count > 0 &&
-	   (result.samples == nil || result.boundary_hits == nil) ||
-	   center_count > 0 && result.centers == nil {
-		gap_sample_result_destroy(&result, allocator)
-		return {}, .Allocation_Failed
+	sample_offsets := make([]u64, mask_count, allocator)
+	center_offsets := make([]u64, mask_count, allocator)
+	defer {
+		delete(sample_offsets, allocator)
+		delete(center_offsets, allocator)
 	}
 
-	sample_write: u64
-	center_write: u64
+	sample_count: u64
+	center_count: u64
 	for layer, layer_index in evidence.layers {
-		layer_sample_start := sample_write
-		layer_center_start := center_write
+		layer_sample_start := sample_count
+		layer_center_start := center_count
 		mask_start := int(layer.mask_offset)
-		mask_end := mask_start+int(layer.mask_count)
-		for mask_index in mask_start..<mask_end {
-			mask := evidence.masks[mask_index]
-			if mask.kind != .Uncovered_Region {continue}
-			boundary, boundary_error := gap_evidence_mask_input(
-				evidence,
-				u32(mask_index),
-				allocator,
-			)
-			if boundary_error != .None {
+		mask_end := mask_start + int(layer.mask_count)
+		for mask_index in mask_start ..< mask_end {
+			if mask_errors[mask_index] != .None {
 				gap_sample_result_destroy(&result, allocator)
-				return {}, boundary_error
+				return {}, mask_errors[mask_index]
 			}
-			written_samples, written_centers, _, scan_error :=
-				gap_sample_scan_mask(
-					boundary,
-					gap_sample_path_axis(boundary),
-					config,
-					process,
-					hits,
-					result.samples,
-					result.centers,
-					result.boundary_hits,
-					mask,
-					u32(mask_index),
-					sample_write,
-					center_write,
-					limits,
-				)
-			polygon.polygon_set_destroy(&boundary, allocator)
-			if scan_error != .None {
+			ws := mask_samples[mask_index]
+			wc := mask_centers[mask_index]
+			sc := mask_scanlines[mask_index]
+			if sample_count > limits.max_samples || ws > limits.max_samples - sample_count {
 				gap_sample_result_destroy(&result, allocator)
-				return {}, scan_error
+				return {}, .Sample_Limit
 			}
-			sample_write += written_samples
-			center_write += written_centers
+			if center_count > limits.max_centers || wc > limits.max_centers - center_count {
+				gap_sample_result_destroy(&result, allocator)
+				return {}, .Center_Limit
+			}
+			if result.scanline_count > limits.max_scanlines || sc > limits.max_scanlines - result.scanline_count {
+				gap_sample_result_destroy(&result, allocator)
+				return {}, .Scanline_Limit
+			}
+			sample_offsets[mask_index] = sample_count
+			center_offsets[mask_index] = center_count
+			sample_count += ws
+			center_count += wc
+			result.scanline_count += sc
 		}
-		layer_sample_count := sample_write-layer_sample_start
-		layer_center_count := center_write-layer_center_start
-		if layer_sample_count > u64(max(u32)) ||
-		   layer_center_count > u64(max(u32)) {
+		layer_sample_count := sample_count - layer_sample_start
+		layer_center_count := center_count - layer_center_start
+		if layer_sample_count > u64(max(u32)) || layer_center_count > u64(max(u32)) {
 			gap_sample_result_destroy(&result, allocator)
 			return {}, .Arithmetic
 		}
 		result.layers[layer_index] = {
 			sample_offset = layer_sample_start,
-			sample_count = u32(layer_sample_count),
+			sample_count  = u32(layer_sample_count),
 			center_offset = layer_center_start,
-			center_count = u32(layer_center_count),
+			center_count  = u32(layer_center_count),
 		}
 	}
-	if sample_write != sample_count || center_write != center_count {
+
+	if sample_count == 0 {
+		return result, .None
+	}
+	if sample_count > u64(max(int)) || center_count > u64(max(int)) || sample_count > u64(max(int))/2 {
 		gap_sample_result_destroy(&result, allocator)
 		return {}, .Arithmetic
+	}
+	result.samples = make([]Gap_Width_Sample, int(sample_count), allocator)
+	result.centers = make([]Gap_Center_Sample, int(center_count), allocator)
+	result.boundary_hits = make([]Infill_Boundary_Hit, int(sample_count*2), allocator)
+	if (result.samples == nil || result.boundary_hits == nil) || (center_count > 0 && result.centers == nil) {
+		gap_sample_result_destroy(&result, allocator)
+		return {}, .Allocation_Failed
+	}
+
+	gsctx.sample_offsets = sample_offsets
+	gsctx.center_offsets = center_offsets
+	gsctx.out_samples = result.samples
+	gsctx.out_centers = result.centers
+	gsctx.out_hits = result.boundary_hits
+
+	parallel_for(mask_count, &gsctx, proc(c: ^Gap_Sample_Par_Ctx, mask_index: int) {
+		if c.mask_samples[mask_index] == 0 {return}
+		mask := c.evidence.masks[mask_index]
+		boundary, boundary_error := gap_evidence_mask_input(c.evidence, u32(mask_index), c.allocator)
+		if boundary_error != .None {
+			c.mask_errors[mask_index] = boundary_error
+			return
+		}
+		defer polygon.polygon_set_destroy(&boundary, c.allocator)
+		local_hits := make([]Infill_Rational_Hit, int(mask.point_count), c.allocator)
+		defer delete(local_hits, c.allocator)
+		_, _, _, serr := gap_sample_scan_mask(
+			boundary,
+			gap_sample_path_axis(boundary),
+			c.config,
+			c.process,
+			local_hits,
+			c.out_samples,
+			c.out_centers,
+			c.out_hits,
+			mask,
+			u32(mask_index),
+			c.sample_offsets[mask_index],
+			c.center_offsets[mask_index],
+			c.limits,
+		)
+		if serr != .None {
+			c.mask_errors[mask_index] = serr
+		}
+	})
+	for err in mask_errors {
+		if err != .None {
+			gap_sample_result_destroy(&result, allocator)
+			return {}, err
+		}
 	}
 	return result, .None
 }

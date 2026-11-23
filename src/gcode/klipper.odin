@@ -54,6 +54,7 @@ Klipper_Result :: struct {
 	final_x:                    contracts.Micrometres,
 	final_y:                    contracts.Micrometres,
 	final_z:                    contracts.Micrometres,
+	validation:                 Klipper_Validation_Report,
 }
 
 Klipper_Limits :: struct {
@@ -392,6 +393,7 @@ klipper_emit :: proc(
 		klipper_result_destroy(&result, allocator)
 		return {}, .Invalid_Motion
 	}
+	result.validation = report
 	return result, .None
 }
 
@@ -444,17 +446,13 @@ klipper_emit_operation :: proc(
 	case .Retract, .Recover:
 		strings.write_string(builder, "G1 E")
 		klipper_append_extrusion(builder, operation.filament_delta_nm)
-		fmt.sbprintf(
-			builder,
-			" F%d\n",
-			klipper_feed_rate(operation.speed),
-		)
+		klipper_append_feed(builder, klipper_feed_rate(operation.speed))
 	case .Travel:
 		if i64(operation.z_hop_um) > 0 {
 			hop_z := contracts.Micrometres(i64(state.z) + i64(operation.z_hop_um))
 			strings.write_string(builder, "G0 Z")
 			klipper_append_coordinate(builder, hop_z)
-			fmt.sbprintf(builder, " F%d\n", klipper_feed_rate(operation.speed))
+			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
 			if !klipper_command_end(
 				builder^,
 				commands,
@@ -472,11 +470,7 @@ klipper_emit_operation :: proc(
 		klipper_append_coordinate(builder, operation.point_b.x)
 		strings.write_string(builder, " Y")
 		klipper_append_coordinate(builder, operation.point_b.y)
-		fmt.sbprintf(
-			builder,
-			" F%d\n",
-			klipper_feed_rate(operation.speed),
-		)
+		klipper_append_feed(builder, klipper_feed_rate(operation.speed))
 		if i64(operation.z_hop_um) > 0 {
 			if !klipper_command_end(
 				builder^,
@@ -492,7 +486,7 @@ klipper_emit_operation :: proc(
 			start = klipper_command_begin(builder^)
 			strings.write_string(builder, "G0 Z")
 			klipper_append_coordinate(builder, state.z)
-			fmt.sbprintf(builder, " F%d\n", klipper_feed_rate(operation.speed))
+			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
 		}
 	case .Extrude:
 		if operation.arc != .None {
@@ -506,11 +500,7 @@ klipper_emit_operation :: proc(
 			klipper_append_coordinate(builder, contracts.Micrometres(i64(operation.arc_center.y)-i64(operation.point_a.y)))
 			strings.write_string(builder, " E")
 			klipper_append_extrusion(builder, operation.filament_delta_nm)
-			fmt.sbprintf(
-				builder,
-				" F%d\n",
-				klipper_feed_rate(operation.speed),
-			)
+			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
 		} else {
 			strings.write_string(builder, "G1 X")
 			klipper_append_coordinate(builder, operation.point_b.x)
@@ -523,11 +513,7 @@ klipper_emit_operation :: proc(
 			}
 			strings.write_string(builder, " E")
 			klipper_append_extrusion(builder, operation.filament_delta_nm)
-			fmt.sbprintf(
-				builder,
-				" F%d\n",
-				klipper_feed_rate(operation.speed),
-			)
+			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
 		}
 	case .Dwell:
 		dwell_ms := (operation.duration_us+999)/1_000
@@ -872,29 +858,62 @@ klipper_append_extrusion :: proc(builder: ^strings.Builder, value_nm: i128) {
 	klipper_append_fixed(builder, value_nm/10, 5)
 }
 
+klipper_append_feed :: proc(builder: ^strings.Builder, feed: i64) {
+	buf: [24]u8
+	pos := len(buf)
+	pos -= 1; buf[pos] = '\n'
+	v := feed
+	if v == 0 {
+		pos -= 1; buf[pos] = '0'
+	} else {
+		for v > 0 {
+			pos -= 1
+			buf[pos] = u8('0' + (v % 10))
+			v /= 10
+		}
+	}
+	pos -= 1; buf[pos] = 'F'
+	pos -= 1; buf[pos] = ' '
+	strings.write_bytes(builder, buf[pos:])
+}
+
 klipper_append_fixed :: proc(
 	builder: ^strings.Builder,
 	units: i128,
 	decimal_places: u8,
 ) {
 	negative := units < 0
-	magnitude := units
-	if negative {magnitude = -magnitude}
-	scale: i128
+	magnitude := u64(-units if negative else units)
+	scale: u64
 	switch decimal_places {
 	case 3: scale = 1_000
 	case 5: scale = 100_000
 	case:
 		return
 	}
-	whole := magnitude/scale
-	fraction := magnitude%scale
-	if negative {strings.write_string(builder, "-")}
-	if decimal_places == 3 {
-		fmt.sbprintf(builder, "%d.%03d", whole, fraction)
-	} else {
-		fmt.sbprintf(builder, "%d.%05d", whole, fraction)
+	whole := magnitude / scale
+	frac := magnitude % scale
+	buf: [32]u8
+	pos := len(buf)
+	for _ in 0 ..< int(decimal_places) {
+		pos -= 1
+		buf[pos] = u8('0' + (frac % 10))
+		frac /= 10
 	}
+	pos -= 1; buf[pos] = '.'
+	if whole == 0 {
+		pos -= 1; buf[pos] = '0'
+	} else {
+		for whole > 0 {
+			pos -= 1
+			buf[pos] = u8('0' + (whole % 10))
+			whole /= 10
+		}
+	}
+	if negative {
+		pos -= 1; buf[pos] = '-'
+	}
+	strings.write_bytes(builder, buf[pos:])
 }
 
 klipper_feed_rate :: proc(speed: profiles.Speed_Um_Per_Second) -> i64 {

@@ -716,6 +716,7 @@ slice_run_decoded_mesh :: proc(
 			join_type          = .Miter,
 			miter_limit        = 2.0,
 			arc_tolerance      = 0.0,
+			uncovered_only     = true,
 		},
 		allocator = allocator,
 	)
@@ -1056,12 +1057,7 @@ slice_run_decoded_mesh :: proc(
 		slice_run_result_destroy(&result, allocator)
 		return {}, {stage = "klipper_emit", detail = fmt.tprintf("klipper emit error: %v", klip_err)}
 	}
-	val_err: gcode.Klipper_Validation_Error
-	result.validation, val_err = gcode.klipper_validate(result.klipper.bytes, profile, result.motion)
-	if val_err != .None {
-		slice_run_result_destroy(&result, allocator)
-		return {}, {stage = "klipper_validate", detail = fmt.tprintf("klipper validation error: %v", val_err)}
-	}
+	result.validation = result.klipper.validation
 	record_stage(&result.stages, "klipper_emit_validate", t0, u64(len(result.klipper.bytes)), u64(len(result.klipper.commands)))
 
 	result.total_duration_ms = time.duration_seconds(time.tick_since(t_total))*1000.0
