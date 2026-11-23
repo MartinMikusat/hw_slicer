@@ -121,10 +121,10 @@ Comprehensive static & architectural code review of `/Users/martin/projects/hw_s
 
 ### Medium Severity (Pass 2)
 
-### [CR-17] `scarf_seam.odin` Ramps Inner Perimeters Instead of Outer Perimeters Only
+### [CR-17] `scarf_seam.odin` Ramps Inner Perimeters Instead of Outer Perimeters Only — **RESOLVED**
 - **Location:** `src/features/scarf_seam.odin:76-84`
 - **Issue:** Comment states scarf ramps apply to outer perimeter loops, but line 76 filters only on `op.role != .Perimeter`, applying scarf Z/E ramps to inner perimeter walls as well.
-- **Fix:** Restrict scarf ramping to outer perimeter paths (e.g. via an `is_outer_perimeter` flag on `Motion_Operation` or `Unified_Path` / `Extrusion_Path`, matching `CR-06`).
+- **Resolution:** `motion_plan_apply_z_ramps` takes the unified path plan and perimeter result, collects the planned path IDs whose perimeter source has `perimeter_index == 0`, and ramps only those paths (matching `CR-06`).
 
 ### [CR-18] `modifiers.odin` Prevents `fan=0` From Turning Fan Off & Quantizes Speed Before Clamping — **RESOLVED**
 - **Location:** `src/pipeline/modifiers.odin:109-117`

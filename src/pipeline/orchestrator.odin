@@ -1038,6 +1038,8 @@ slice_run_decoded_mesh :: proc(
 			options.vase_mode,
 			proc_src.bottom_skin.minimum_layers,
 			proc_src,
+			result.unified_plan,
+			perimeters,
 		)
 	}
 	if len(options.modifiers) > 0 {

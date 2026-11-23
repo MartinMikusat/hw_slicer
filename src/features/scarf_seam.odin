@@ -1,5 +1,6 @@
 package features
 
+import "base:runtime"
 import "core:math"
 
 import contracts "../contracts"
@@ -25,9 +26,22 @@ motion_plan_apply_z_ramps :: proc(
 	vase_mode: bool,
 	vase_bottom_layers: u32,
 	process: profiles.Process_Profile,
+	plan: Unified_Path_Plan_Result,
+	perimeters: Perimeter_Result,
 ) -> Scarf_Seam_Stats {
 	if motion == nil || (!scarf.enabled && !vase_mode) || len(motion.layers) == 0 {
 		return {}
+	}
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+	outer_paths := make(map[contracts.Stable_ID]struct{}, allocator = context.temp_allocator)
+	if scarf.enabled {
+		for path in plan.paths {
+			if path.source_kind == .Perimeter &&
+			   int(path.source_index) < len(perimeters.paths) &&
+			   perimeters.paths[path.source_index].perimeter_index == 0 {
+				outer_paths[path.stable_id] = {}
+			}
+		}
 	}
 	quantum := i128(max(u32(10), process.extrusion_length_quantum_nm))
 	stats := Scarf_Seam_Stats{}
@@ -70,7 +84,7 @@ motion_plan_apply_z_ramps :: proc(
 		ramp_len := f64(i64(scarf.length_um)) if i64(scarf.length_um) > 0 else 15_000.0
 		start_frac := clamp(f64(scarf.start_height_pct) / 100.0, 0.05, 0.5) if scarf.start_height_pct > 0 else 0.1
 
-		// Ramp the start of each contiguous Perimeter path within this layer.
+		// Ramp the start of each contiguous outer Perimeter path within this layer.
 		oi := op_start
 		for oi < op_end {
 			if motion.operations[oi].kind != .Extrude || motion.operations[oi].role != .Perimeter {
@@ -82,6 +96,7 @@ motion_plan_apply_z_ramps :: proc(
 			for oi < op_end && motion.operations[oi].kind == .Extrude && motion.operations[oi].path_id == pid {
 				oi += 1
 			}
+			if pid not_in outer_paths {continue}
 			// Ramp along [path_start ..< oi] up to `ramp_len`.
 			dist := 0.0
 			ramped_any := false
