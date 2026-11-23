@@ -87,6 +87,7 @@ design_state_init :: proc(s: ^Design_State) {
 }
 
 design_state_clear :: proc(s: ^Design_State) {
+	profile_editor_finish_drag(&s.editor)
 	design.design_destroy(&s.evaluated)
 	design.toolpath_destroy(&s.toolpath)
 	design.toolpath_destroy(&s.scratch_toolpath)
@@ -167,12 +168,14 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 		if app.design.path == path {app.design.modified = info.modification_time}
 		return false
 	}
-	if !app_install_design_preview(evaluated, keep_time) {return false}
+	defer design.design_destroy(&evaluated)
+	if !app_install_design_preview(&evaluated, keep_time) {return false}
 	s := &app.design
 	path_copy := strings.clone(path)
 	delete(s.path)
 	s.path = path_copy
 	s.modified = info.modification_time
+	profile_editor_finish_drag(&s.editor)
 	s.editor = {}
 	delete(s.profile_disk)
 	delete(s.profile_text)
@@ -195,10 +198,9 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	return true
 }
 
-app_install_design_preview :: proc(candidate: design.Design, keep_time: bool) -> bool {
-	evaluated := candidate
+app_install_design_preview :: proc(candidate: ^design.Design, keep_time: bool, previous: ^design.Design = nil) -> bool {
 	t_gen0 := time.tick_now()
-	toolpath := design.generate(&evaluated)
+	toolpath := design.generate(candidate)
 	t_gen1 := time.tick_now()
 	beads := make([dynamic]Design_Bead, 0, len(toolpath.moves))
 	gpu_beads := make([dynamic]Gpu_Bead, 0, len(toolpath.moves))
@@ -210,7 +212,6 @@ app_install_design_preview :: proc(candidate: design.Design, keep_time: bool) ->
 		delete(gpu_beads)
 		delete(layers)
 		design.toolpath_destroy(&toolpath)
-		design.design_destroy(&evaluated)
 		devlog.failed(devlog.global(), devlog.Site{feature = "design", operation = "preview"}, {reason = "renderer bead upload failed", severity = .Critical}, {scope = "design", stage = "upload"})
 		app_set_status("DESIGN FAILED: METAL BUFFER", true)
 		return false
@@ -228,7 +229,11 @@ app_install_design_preview :: proc(candidate: design.Design, keep_time: bool) ->
 		fraction = app.design.clock/design_duration(&app.design)
 	}
 	playing := keep_time && app.design.playing
-	design.design_destroy(&app.design.evaluated)
+	if previous != nil {
+		previous^ = app.design.evaluated
+	} else {
+		design.design_destroy(&app.design.evaluated)
+	}
 	design.toolpath_destroy(&app.design.toolpath)
 	delete(app.design.beads)
 	delete(app.design.gpu_beads)
@@ -236,7 +241,8 @@ app_install_design_preview :: proc(candidate: design.Design, keep_time: bool) ->
 	app.design.selected_junction = -1
 	app.design.dirty = false
 	app.design.active = true
-	app.design.evaluated = evaluated
+	app.design.evaluated = candidate^
+	candidate^ = {}
 	app.design.toolpath = toolpath
 	app.design.beads = beads
 	app.design.gpu_beads = gpu_beads

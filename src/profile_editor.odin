@@ -2,12 +2,26 @@ package main
 
 import "core:fmt"
 import "core:math"
+import "core:strings"
 import gpu "rune:gpu"
 import flash "flash:."
 import design "./design"
 
 Profile_Selection :: struct {
 	object, loop, anchor, control: int,
+}
+
+Profile_Drag_End :: enum { None, Released, Cancelled }
+
+Profile_Drag :: struct {
+	start_shift: [6]f64,
+	pointer: Maybe([2]f64),
+	end: Profile_Drag_End,
+	dirty, valid: bool,
+	error: string,
+	issue_xy: Maybe([2]f64),
+	evaluated: design.Design,
+	source: string,
 }
 
 Profile_Editor :: struct {
@@ -17,7 +31,7 @@ Profile_Editor :: struct {
 	center: [2]f64,
 	scale: f64,
 	press: [2]f64,
-	before: design.Bezier_Anchor,
+	drag: Profile_Drag,
 }
 
 profile_first_object :: proc(s: ^Design_State) -> int {
@@ -27,9 +41,9 @@ profile_first_object :: proc(s: ^Design_State) -> int {
 	return -1
 }
 
-profile_anchor :: proc(s: ^Design_State, selection: Profile_Selection) -> ^design.Bezier_Anchor {
-	if selection.object < 0 || selection.object >= len(s.evaluated.objects) {return nil}
-	profile := s.evaluated.objects[selection.object].profile
+profile_anchor :: proc(d: ^design.Design, selection: Profile_Selection) -> ^design.Bezier_Anchor {
+	if selection.object < 0 || selection.object >= len(d.objects) {return nil}
+	profile := d.objects[selection.object].profile
 	if profile == nil || selection.loop < 0 || selection.loop >= len(profile.loops) {return nil}
 	anchors := profile.loops[selection.loop].anchors
 	if selection.anchor < 0 || selection.anchor >= len(anchors) {return nil}
@@ -87,7 +101,7 @@ profile_editor_toggle :: proc() {
 	if e.active {
 		s.playing = false
 		s.selected_junction = -1
-		if e.scale <= 0 || profile_anchor(s, e.selected) == nil {
+		if e.scale <= 0 || profile_anchor(&s.evaluated, e.selected) == nil {
 			e.selected = {object = first}
 			profile_editor_fit(s, ui_viewport_rect(&app.ui))
 		}
@@ -143,16 +157,40 @@ profile_pick_control :: proc(s: ^Design_State, canvas: UI_Rect, mouse: [2]f64) -
 	return selection, found
 }
 
+profile_editor_finish_drag :: proc(e: ^Profile_Editor) {
+	design.design_destroy(&e.drag.evaluated)
+	delete(e.drag.source)
+	delete(e.drag.error)
+	e.drag = {}
+	e.dragging = false
+}
+
 profile_editor_cancel_drag :: proc() {
-	s := &app.design
-	e := &s.editor
-	if e.dragging {
-		if anchor := profile_anchor(s, e.selected); anchor != nil {anchor^ = e.before}
-		e.before = {}
-		e.dragging = false
-	}
+	e := &app.design.editor
+	if e.dragging && e.drag.end == .None {e.drag.end = .Cancelled}
 	e.panning = false
 	app.needs_redraw = true
+}
+
+profile_editor_update_drag :: proc() {
+	s := &app.design
+	e := &s.editor
+	if e.drag.end == .Cancelled {
+		app_profile_restore_drag()
+	} else if mouse, pending := e.drag.pointer.?; pending {
+		e.drag.pointer = nil
+		anchor := profile_anchor(&s.evaluated, e.selected)
+		assert(anchor != nil)
+		moved := anchor^
+		moved.shift = e.drag.start_shift
+		delta := (mouse-e.press)/[2]f64{e.scale, -e.scale}
+		if delta != {} {design.move_anchor_control(&moved, e.selected.control, delta)}
+		if moved.shift != anchor.shift {
+			anchor.shift = moved.shift
+			_ = app_profile_apply_draft()
+		}
+	}
+	if e.drag.end != .None {profile_editor_finish_drag(e)}
 }
 
 profile_editor_mouse :: proc(phase, button: i32, mouse: [2]f64) -> bool {
@@ -162,16 +200,9 @@ profile_editor_mouse :: proc(phase, button: i32, mouse: [2]f64) -> bool {
 	canvas := profile_canvas(ui_viewport_rect(&app.ui))
 	if (e.dragging || e.panning) && phase < 3 && (phase == 0 || button != e.button) {return true}
 	if e.dragging && (phase == 1 || phase == 2) {
-		anchor := profile_anchor(s, e.selected)
-		if anchor == nil {profile_editor_cancel_drag(); return true}
-		delta := (mouse-e.press)/[2]f64{e.scale, -e.scale}
-		anchor^ = e.before
-		if delta != {} {design.move_anchor_control(anchor, e.selected.control, delta)}
-		if phase == 2 {
-			e.before = {}
-			e.dragging = false
-			if delta != {} {_ = app_profile_apply_draft()}
-		}
+		if e.drag.end != .None {return true}
+		e.drag.pointer = mouse
+		if phase == 2 {e.drag.end = .Released}
 		app.needs_redraw = true
 		return true
 	}
@@ -189,7 +220,13 @@ profile_editor_mouse :: proc(phase, button: i32, mouse: [2]f64) -> bool {
 	app.ui.focused_id = 0
 	if selected, found := profile_pick_control(s, canvas, mouse); button == 0 && found {
 		e.selected = selected
-		e.before = profile_anchor(s, selected)^
+		e.drag = {
+			start_shift = profile_anchor(&s.evaluated, selected).shift,
+			dirty = s.profile_dirty,
+			valid = s.profile_valid,
+			error = strings.clone(s.profile_error),
+			issue_xy = s.profile_issue_xy,
+		}
 		e.dragging = true
 	} else {
 		e.panning = true
@@ -223,7 +260,7 @@ profile_editor_key :: proc(code: u16, modifiers: u64) -> bool {
 	if code == 53 && (e.dragging || e.panning) {profile_editor_cancel_drag(); return true}
 	if e.dragging || e.panning {return true}
 	if code < 123 || code > 126 || (app.ui.focused_id != 0 && app.ui.focused_id != u64(UI_Action.Profile_Point)) {return false}
-	anchor := profile_anchor(s, e.selected)
+	anchor := profile_anchor(&s.evaluated, e.selected)
 	if anchor == nil {return false}
 	directions := [4][2]f64{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}
 	step := 1.0 if modifiers & (1<<17) != 0 else 0.1
@@ -266,7 +303,7 @@ ui_draw_profile :: proc(p: ^UI_Painter, ui: ^UI_State, s: ^Design_State) {
 	{
 		gpu.push_clip(p.list, ui_gpu_rect(canvas))
 		defer gpu.pop_clip(p.list)
-		if !e.dragging && (!s.profile_dirty || s.profile_valid) && ui.design_layer >= 0 && ui.design_layer < len(s.layers) {
+		if ui.design_layer >= 0 && ui.design_layer < len(s.layers) {
 			layer := s.layers[ui.design_layer]
 			for bead in s.beads[layer.first_bead:layer.end_bead] {
 				if bead.width <= 0 {continue}
@@ -306,7 +343,7 @@ ui_draw_profile :: proc(p: ^UI_Painter, ui: ^UI_State, s: ^Design_State) {
 				}
 			}
 		}
-		if issue, located := s.profile_issue_xy.?; located && s.profile_dirty && !s.profile_valid && !e.dragging {
+		if issue, located := s.profile_issue_xy.?; located && s.profile_dirty && !s.profile_valid {
 			xy := profile_screen(e, canvas, issue)
 			point := [2]f32{f32(xy.x), f32(xy.y)}
 			for diagonal in ([2][2]f32{{7, 7}, {7, -7}}) {
@@ -321,7 +358,7 @@ ui_draw_profile :: proc(p: ^UI_Painter, ui: ^UI_State, s: ^Design_State) {
 
 profile_selection_label :: proc(s: ^Design_State) -> string {
 	selection := s.editor.selected
-	anchor := profile_anchor(s, selection)
+	anchor := profile_anchor(&s.evaluated, selection)
 	if anchor == nil {return ""}
 	obj := &s.evaluated.objects[selection.object]
 	controls := [3]string{"anchor", "incoming handle", "outgoing handle"}

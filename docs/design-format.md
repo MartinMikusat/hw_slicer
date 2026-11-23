@@ -169,10 +169,12 @@ handles. Drag the anchor to move both handles with it. Drag a handle to change
 the curve. **Next point** cycles through the anchors and handles. The arrow
 keys move the selection by 0.1 mm. Shift increases the step to 1 mm.
 
-The outline follows the pointer. Release validates the draft and updates the
-bead preview. Escape cancels the current drag. **Save** or Command-S writes
-the design and its G-code. **Discard** reloads the file from disk. An external
-edit blocks Save until the file is reloaded.
+The editor validates the curve and updates the bead preview as it moves. If
+validation fails, the editor shows the error and keeps the last valid toolpaths
+visible. Escape restores the draft and preview from before the drag.
+
+**Save** or Command-S writes the design and its G-code. **Discard** reloads the
+file from disk. An external edit blocks Save until the file is reloaded.
 
 Save records local edits in an optional final `shift(...)` on each edited
 anchor. For a smooth anchor the fields are XY displacement, tangent rotation

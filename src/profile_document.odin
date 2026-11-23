@@ -18,10 +18,20 @@ app_profile_failure :: proc(message: string) -> bool {
 
 app_profile_apply_draft :: proc() -> bool {
 	s := &app.design
+	e := &s.editor
+	drag := &e.drag
 	s.profile_dirty = true
 	s.profile_valid = false
 	s.profile_issue_xy = nil
-	source := design.profile_source(&s.evaluated, s.profile_text, context.allocator)
+	source: string
+	if drag.source != "" {
+		anchor := profile_anchor(&drag.evaluated, e.selected)
+		anchor.shift = profile_anchor(&s.evaluated, e.selected).shift
+		source = design.profile_source(&drag.evaluated, drag.source, context.allocator)
+		anchor.shift = drag.start_shift
+	} else {
+		source = design.profile_source(&s.evaluated, s.profile_text, context.allocator)
+	}
 	installed := false
 	defer {if !installed {delete(source)}}
 	if len(source) > DESIGN_SOURCE_LIMIT {return app_profile_failure("Design exceeds the file size limit")}
@@ -29,14 +39,24 @@ app_profile_apply_draft :: proc() -> bool {
 	if !valid {
 		defer design.error_destroy(&problem)
 		s.profile_issue_xy = problem.position
-		devlog.failed(devlog.global(), {feature = "design", operation = "edit_profile"},
-			{reason = "invalid draft", code = i32(problem.line), severity = .Warning})
-		return app_profile_failure(fmt.tprintf("Line %d · %s", problem.line, problem.message))
+		message := fmt.tprintf("Line %d · %s", problem.line, problem.message)
+		if s.profile_error != message {
+			devlog.failed(devlog.global(), {feature = "design", operation = "edit_profile"},
+				{reason = "invalid draft", code = i32(problem.line), severity = .Warning})
+		}
+		return app_profile_failure(message)
 	}
-	if !app_install_design_preview(evaluated, true) {
+	defer design.design_destroy(&evaluated)
+	first_drag_preview := e.dragging && drag.source == ""
+	if !app_install_design_preview(&evaluated, true, &drag.evaluated if first_drag_preview else nil) {
 		return app_profile_failure("Could not display the edited toolpath")
 	}
-	delete(s.profile_text)
+	if first_drag_preview {
+		drag.source = s.profile_text
+		profile_anchor(&drag.evaluated, e.selected).shift = drag.start_shift
+	} else {
+		delete(s.profile_text)
+	}
 	s.profile_text = source
 	installed = true
 	delete(s.profile_error)
@@ -45,6 +65,31 @@ app_profile_apply_draft :: proc() -> bool {
 	s.profile_dirty = source != s.profile_disk || s.export_error != .None
 	app_set_status("Profile preview updated")
 	return true
+}
+
+app_profile_restore_drag :: proc() {
+	s := &app.design
+	e := &s.editor
+	drag := &e.drag
+	if drag.source != "" {
+		if !app_install_design_preview(&drag.evaluated, true) {return}
+		delete(s.profile_text)
+		s.profile_text = drag.source
+		drag.source = ""
+	} else if anchor := profile_anchor(&s.evaluated, e.selected); anchor != nil {
+		anchor.shift = drag.start_shift
+	}
+	s.profile_dirty = drag.dirty
+	s.profile_valid = drag.valid
+	s.profile_issue_xy = drag.issue_xy
+	delete(s.profile_error)
+	s.profile_error = drag.error
+	drag.error = ""
+	if s.profile_error != "" {
+		app_set_status(s.profile_error, true)
+	} else {
+		app_set_status("Profile drag cancelled")
+	}
 }
 
 app_profile_discard :: proc() -> bool {

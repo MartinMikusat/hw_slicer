@@ -770,6 +770,7 @@ application_frame :: proc "c" (width, height, scale: f64) {
 	}
 	app_animate_camera()
 	app_poll_design()
+	profile_editor_update_drag()
 	if app.design.dirty {
 		app.design.dirty = false
 		_ = app_rebuild_design_mesh()
