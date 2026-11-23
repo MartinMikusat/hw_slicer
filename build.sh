@@ -36,8 +36,8 @@ case "$MODE" in
     ;;
   release|cli-release)
     APP="$ROOT/build/release/HWSlicer.app"
-    ODIN_FLAGS="-o:aggressive"
-    CLANG_FLAGS="-O3"
+    ODIN_FLAGS="-o:speed"
+    CLANG_FLAGS="-O2"
     ;;
   *)
     echo "usage: ./build.sh [debug|asan|release|cli-release]" >&2
