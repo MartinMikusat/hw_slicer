@@ -39,6 +39,24 @@ Label unimplemented stages as placeholders. Do not imply that their results exis
 - When earlier inputs change, retain available later results and mark them stale. Identify the earlier change that invalidated them.
 - Preserve model viewing and evidence-bundle inspection. Map evidence to its stage where possible and retain access to unmapped records.
 
+## Slicer completion
+
+Done means: the app loads a model, slices it with printer, material, and process profiles, shows every stage with its evidence, and exports G-code that prints correctly on the V-Core 3 through `hw_printer`. The CLI and the app run the same pipeline and produce the same evidence.
+
+1. [ ] Correctness gaps. Diagnose the vase-mode `hw-printer-sim` failure ("Timer too close"). Validate the assembled sequential G-code, not only each object. Review `src/slicing/`, `src/formats/`, `src/evidence/`, and the feature stages that the review passes did not cover. Done when vase, scarf, and sequential `sim-verify.sh` runs pass and the review findings are fixed and tested.
+2. [ ] One pipeline with evidence. Add an evidence level to the production slice so that the orchestrator writes a `.hwsdebug` bundle for every stage. Add evidence for bridges, gap fill, supports, adhesion, ironing, Z ramps, arc fitting, and modifiers. Replace the separate probe pipeline. Done when a CLI Benchy slice produces a bundle that covers every stage and passes the bundle validator.
+3. [ ] The app slices. Connect the stage workspace (Work, first two items) to the production pipeline on a background thread. Done when the app slices Benchy and the Stanford Bunny, steps through every stage, and exports G-code identical to the CLI output.
+4. [ ] Geometric rendering and cross-stage selection for every stage (Work, third item).
+5. [ ] Physical validation. Run `sim-verify.sh` over the feature matrix on Benchy, the Stanford Bunny, and the all-in-one model, then calibration prints on the V-Core 3. Compare filament and time estimates with the result.
+6. [ ] Tuning tools: the settings sweep and settings from the sliced preview (Work, fourth and fifth items).
+
+Open decisions:
+
+- When the app interface switches from printer-parametric designs to the slicer workspace (step 3).
+- Whether vase mode omits top solid layers.
+- Whether the probe tools are removed or become thin wrappers over the production slice.
+- Whether step 5 requires physical prints or accepts simulator verification for now.
+
 ## Work
 
 - [ ] Establish the stage workspace with the existing viewer and evidence features. Represent unconnected stages as placeholders.
