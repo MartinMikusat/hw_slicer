@@ -1,6 +1,6 @@
 # Pure-Odin Vatti Polygon Engine (`NATIVE_PROVIDER`)
 
-`src/polygon/odin_vatti.odin` and `src/polygon/odin_offset.odin` implement a pure-Odin polygon boolean and offsetting engine behind `polygon.NATIVE_PROVIDER` (`--polygon-provider=odin`).
+`src/polygon/odin_vatti.odin` and `src/polygon/odin_offset.odin` implement a pure-Odin polygon boolean and offsetting engine behind `polygon.NATIVE_PROVIDER`, now the **default polygon provider** for `hw-slicer-cli` and `Slice_Run_Options` (`--polygon-provider=clipper2` remains available as an optional reference).
 
 ## Architecture
 - **Vatti Scanbeam Active-Edge-Table (`odin_vatti.odin`):**
@@ -12,15 +12,17 @@
 - **Offsetting (`odin_offset.odin`):**
   - Supports `Miter`, `Round`, `Square`, and `Bevel` joins for both CCW outer contours and CW holes, followed by a `.Positive` self-union pass to trim inverted negative-offset loops.
 
-## Verified Parity & Speed (`cli-release`, `-o:speed`, `--process=0.28-draft`)
+## Verified Parity & Speed (`cli-release`, `-o:speed`, `--process=0.20-standard`, `--threads=8 --gpu`)
 
-| Model | Provider | Total Time | Surfaces (`a` / `b`) | Infill Paths | Gap Fill (`a` / `b`) | Filament | `klipper_validate` |
-|---|---|---:|---:|---:|---:|---:|---|
-| `cube.obj` (`0.20`) | Clipper2 | ~55 ms | 2 / 8 | 451 | 0 / 0 | 800.88 mm | PASS |
-| | **Odin Vatti** | **63.26 ms** | **2 / 8** | **451** | **0 / 0** | **800.88 mm (0.00%)** | **PASS** |
-| `all-in-one-test.stl` | Clipper2 | 1,710.91 ms | 1,199 / 1,626 | 5,822 | 1,222 / 42,208 | 13,361.39 mm | PASS |
-| | **Odin Vatti** | **4,370.63 ms** | **1,199 / 1,647** | **5,855** | **1,204 / 42,089** | **13,452.74 mm (+0.68%)** | **PASS** |
-| `stanford-bunny.stl` | **Odin Vatti** | **14,726.51 ms** | **911 / 1,315** | **5,452** | **0 / 0** | **16,748.83 mm** | **PASS** |
+With closed-ring Douglas-Peucker contour simplification (`12 µm`), `DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()`, identical/disjoint AABB fast paths, flat split arrays, subject-vs-clip pair filtering, precomputed slopes, and flat degree-1 loop tracing, **100% pure Odin + Metal (zero C++ executed)** passes the full 3-model suite and all 12 checks in `scripts/accept.sh`:
 
-## Known Remaining Item Before Retiring C++ Clipper2
-- `benchy.stl` layer 38 contour-repair currently fails `Lineage_Incomplete` (a 1-µm snap-rounding gap on a self-intersecting mesh contour). Keeping `CLIPPER2_PROVIDER` as the default until that edge case is closed; `--polygon-provider=odin` is available for all CLI runs.
+| Model | Pure Odin + Metal (`OdinVatti 2.0`) | OrcaSlicer 2.5.1 | `Odin / Orca` | Filament vs. Clipper2 | `klipper_validate` |
+|---|---:|---:|---:|---:|---|
+| `cube.obj` | ~40 ms | — | — | `1376.06 mm` (`0.00%`) | PASS |
+| `all-in-one-test.stl` | **779.10 ms** | 1,029.68 ms | **0.76× (1.32× faster)** | `16594.54 mm` (`+0.80%`) | PASS |
+| `benchy.stl` | **764.97 ms** | 876.66 ms | **0.87× (1.15× faster)** | `3754.93 mm` (`-3.14%`) | PASS |
+| `stanford-bunny.stl` | **2,482.25 ms** | 1,659.16 ms | 1.50× | `30160.61 mm` (`-3.12%`) | PASS |
+
+## Status
+- `NATIVE_PROVIDER` (`OdinVatti 2.0`) is the default polygon engine (`use_native_polygon = true`).
+- Zero C++ code executes during default slicing; `--polygon-provider=clipper2` remains available for A/B parity checks.

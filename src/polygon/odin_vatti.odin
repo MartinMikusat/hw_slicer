@@ -1,5 +1,6 @@
 package polygon
 
+import "base:runtime"
 import "core:math"
 import "core:mem"
 import "core:slice"
@@ -27,12 +28,13 @@ Vatti_Split :: struct {
 
 @(private = "file")
 Vatti_Atomic_Vert :: struct {
-	x0, y0:     i64, // bottom (y0 < y1)
-	x1, y1:     i64, // top
-	dw_subj:    i32, // +1 for downward subject edge (entering interior L->R), -1 for upward
-	dw_clip:    i32,
-	s0, s1:     int, // scanbeam indices for y0, y1
-	run_verdict: i8, // active verdict in current run: 0, +1 (bot->top), -1 (top->bot)
+	x0, y0:      i64, // bottom (y0 < y1)
+	x1, y1:      i64, // top
+	slope:       f64, // (x1 - x0) / (y1 - y0), precomputed once
+	dw_subj:     i32, // +1 for downward subject edge (entering interior L->R), -1 for upward
+	dw_clip:     i32,
+	s0, s1:      int, // scanbeam indices for y0, y1
+	run_verdict: i8,  // active verdict in current run: 0, +1 (bot->top), -1 (top->bot)
 	run_s_start: int,
 }
 
@@ -66,6 +68,34 @@ odin_vatti_boolean :: proc(
 	if operation == .Intersection && (len(subjects.paths) == 0 || len(clips.paths) == 0) {return {}, .None}
 	if operation == .Difference && len(subjects.paths) == 0 {return {}, .None}
 
+	// Fast path: identical subjects and clips (common on vertical walls across consecutive layers).
+	if len(subjects.paths) > 0 && len(subjects.paths) == len(clips.paths) &&
+	   len(subjects.points) == len(clips.points) &&
+	   slice.equal(subjects.paths, clips.paths) &&
+	   slice.equal(subjects.points, clips.points) {
+		switch operation {
+		case .Difference, .Xor:
+			return {}, .None
+		case .Intersection, .Union:
+			return vatti_canonicalize_set(subjects, limits, allocator)
+		case .Invalid:
+			return {}, .Invalid_Input
+		}
+	}
+
+	// Fast path: disjoint bounding boxes for Intersection / Difference.
+	if len(subjects.points) > 0 && len(clips.points) > 0 &&
+	   (operation == .Intersection || operation == .Difference) {
+		s_min_x, s_min_y, s_max_x, s_max_y := vatti_set_bounds(subjects)
+		c_min_x, c_min_y, c_max_x, c_max_y := vatti_set_bounds(clips)
+		if s_max_x < c_min_x || c_max_x < s_min_x || s_max_y < c_min_y || c_max_y < s_min_y {
+			if operation == .Intersection {return {}, .None}
+			return vatti_canonicalize_set(subjects, limits, allocator)
+		}
+	}
+
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+
 	// Step 1: Collect raw directed segments from subjects and clips.
 	all_segs := make([dynamic]Vatti_Seg, 0, len(subjects.points) + len(clips.points), context.temp_allocator)
 	vatti_collect_segs(subjects, false, &all_segs)
@@ -78,8 +108,15 @@ odin_vatti_boolean :: proc(
 	for i in 0..<n_segs {seg_ords[i] = {idx = i, min_x = all_segs[i].min_x}}
 	slice.sort_by(seg_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
 
-	// Step 2: Sweep-line intersection & collinear overlap splitting.
-	splits := make([][dynamic]Vatti_Split, n_segs, context.temp_allocator)
+	// Step 2: Sweep-line intersection & collinear overlap splitting into a single flat buffer.
+	Flat_Split :: struct {
+		seg_idx: int,
+		t:       f64,
+		px, py:  i64,
+	}
+	flat_splits := make([dynamic]Flat_Split, 0, 64, context.temp_allocator)
+	has_split := make([]bool, n_segs, context.temp_allocator)
+	skip_same_set := len(clips.paths) > 0 && (operation == .Intersection || operation == .Difference)
 	for oi in 0..<n_segs {
 		i := seg_ords[oi].idx
 		sa := all_segs[i]
@@ -87,21 +124,41 @@ odin_vatti_boolean :: proc(
 			if seg_ords[oj].min_x > sa.max_x {break}
 			j := seg_ords[oj].idx
 			sb := all_segs[j]
+			if skip_same_set && sa.is_clip == sb.is_clip {continue}
 			if sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
 
 			if px, py, ta, tb, hit := vatti_seg_intersect(sa, sb); hit {
 				if ta > 1e-9 && ta < 1.0 - 1e-9 {
-					append(&splits[i], Vatti_Split{t = ta, px = px, py = py})
+					append(&flat_splits, Flat_Split{seg_idx = i, t = ta, px = px, py = py})
+					has_split[i] = true
 				}
 				if tb > 1e-9 && tb < 1.0 - 1e-9 {
-					append(&splits[j], Vatti_Split{t = tb, px = px, py = py})
+					append(&flat_splits, Flat_Split{seg_idx = j, t = tb, px = px, py = py})
+					has_split[j] = true
 				}
 			} else if vatti_segs_collinear(sa, sb) {
-				vatti_maybe_split(&splits[i], sa, sb.ax, sb.ay)
-				vatti_maybe_split(&splits[i], sa, sb.bx, sb.by)
-				vatti_maybe_split(&splits[j], sb, sa.ax, sa.ay)
-				vatti_maybe_split(&splits[j], sb, sa.bx, sa.by)
+				if vatti_maybe_split_flat(&flat_splits, i, sa, sb.ax, sb.ay) {has_split[i] = true}
+				if vatti_maybe_split_flat(&flat_splits, i, sa, sb.bx, sb.by) {has_split[i] = true}
+				if vatti_maybe_split_flat(&flat_splits, j, sb, sa.ax, sa.ay) {has_split[j] = true}
+				if vatti_maybe_split_flat(&flat_splits, j, sb, sa.bx, sa.by) {has_split[j] = true}
 			}
+		}
+	}
+
+	// Build CSR lookup for split segments only when any splits occurred.
+	split_offsets: []int
+	split_items: []Vatti_Split
+	if len(flat_splits) > 0 {
+		split_counts := make([]int, n_segs, context.temp_allocator)
+		for fs in flat_splits {split_counts[fs.seg_idx] += 1}
+		split_offsets = make([]int, n_segs + 1, context.temp_allocator)
+		for i in 0..<n_segs {split_offsets[i + 1] = split_offsets[i] + split_counts[i]}
+		split_items = make([]Vatti_Split, len(flat_splits), context.temp_allocator)
+		split_cur := make([]int, n_segs, context.temp_allocator)
+		copy(split_cur, split_offsets[:n_segs])
+		for fs in flat_splits {
+			split_items[split_cur[fs.seg_idx]] = {t = fs.t, px = fs.px, py = fs.py}
+			split_cur[fs.seg_idx] += 1
 		}
 	}
 
@@ -109,57 +166,71 @@ odin_vatti_boolean :: proc(
 	Edge_Key :: struct {x0, y0, x1, y1: i64}
 	vert_map := make(map[Edge_Key]int, n_segs * 2, context.temp_allocator)
 	verts := make([dynamic]Vatti_Atomic_Vert, 0, n_segs, context.temp_allocator)
-	horiz_seen := make(map[Edge_Key]bool, n_segs / 2 + 8, context.temp_allocator)
-	horizs := make([dynamic]Vatti_Atomic_Horiz, 0, n_segs / 2 + 8, context.temp_allocator)
+	horiz_seen := make(map[Edge_Key]bool, n_segs / 4 + 8, context.temp_allocator)
+	horizs := make([dynamic]Vatti_Atomic_Horiz, 0, n_segs / 4 + 8, context.temp_allocator)
+	pts_scratch := make([dynamic]Vatti_Split, 0, 16, context.temp_allocator)
+
+	add_atomic := proc(
+		ax, ay, bx, by: i64,
+		is_clip: bool,
+		vert_map: ^map[Edge_Key]int,
+		verts: ^[dynamic]Vatti_Atomic_Vert,
+		horiz_seen: ^map[Edge_Key]bool,
+		horizs: ^[dynamic]Vatti_Atomic_Horiz,
+	) {
+		if ax == bx && ay == by {return}
+		if ay == by {
+			x0, x1 := min(ax, bx), max(ax, bx)
+			hk := Edge_Key{x0, ay, x1, ay}
+			if hk not_in horiz_seen^ {
+				horiz_seen^[hk] = true
+				append(horizs, Vatti_Atomic_Horiz{x0 = x0, x1 = x1, y = ay})
+			}
+			return
+		}
+		x0, y0, x1, y1: i64
+		dw: i32
+		if ay < by {
+			x0, y0, x1, y1 = ax, ay, bx, by
+			dw = -1
+		} else {
+			x0, y0, x1, y1 = bx, by, ax, ay
+			dw = +1
+		}
+		vk := Edge_Key{x0, y0, x1, y1}
+		if idx, exists := vert_map^[vk]; exists {
+			if is_clip {verts^[idx].dw_clip += dw} else {verts^[idx].dw_subj += dw}
+		} else {
+			idx = len(verts^)
+			vert_map^[vk] = idx
+			append(verts, Vatti_Atomic_Vert{
+				x0      = x0,
+				y0      = y0,
+				x1      = x1,
+				y1      = y1,
+				slope   = f64(x1 - x0) / f64(y1 - y0),
+				dw_subj = 0 if is_clip else dw,
+				dw_clip = dw if is_clip else 0,
+			})
+		}
+	}
 
 	for i in 0..<n_segs {
 		s := all_segs[i]
-		pts := make([dynamic]Vatti_Split, 0, len(splits[i]) + 2, context.temp_allocator)
-		append(&pts, Vatti_Split{t = 0.0, px = s.ax, py = s.ay})
-		for sp in splits[i] {append(&pts, sp)}
-		append(&pts, Vatti_Split{t = 1.0, px = s.bx, py = s.by})
-		slice.sort_by(pts[:], proc(a, b: Vatti_Split) -> bool {return a.t < b.t})
+		if !has_split[i] {
+			add_atomic(s.ax, s.ay, s.bx, s.by, s.is_clip, &vert_map, &verts, &horiz_seen, &horizs)
+			continue
+		}
+		clear(&pts_scratch)
+		append(&pts_scratch, Vatti_Split{t = 0.0, px = s.ax, py = s.ay})
+		for sp in split_items[split_offsets[i]:split_offsets[i + 1]] {
+			append(&pts_scratch, sp)
+		}
+		append(&pts_scratch, Vatti_Split{t = 1.0, px = s.bx, py = s.by})
+		slice.sort_by(pts_scratch[:], proc(a, b: Vatti_Split) -> bool {return a.t < b.t})
 
-		for k in 0..<len(pts)-1 {
-			ax, ay := pts[k].px, pts[k].py
-			bx, by := pts[k + 1].px, pts[k + 1].py
-			if ax == bx && ay == by {continue}
-
-			if ay == by {
-				x0, x1 := min(ax, bx), max(ax, bx)
-				hk := Edge_Key{x0, ay, x1, ay}
-				if hk not_in horiz_seen {
-					horiz_seen[hk] = true
-					append(&horizs, Vatti_Atomic_Horiz{x0 = x0, x1 = x1, y = ay})
-				}
-			} else {
-				// Canonical vertical orientation: y0 < y1.
-				// Downward original edge (ay > by) enters interior L->R => dw = +1; upward => dw = -1.
-				x0, y0, x1, y1: i64
-				dw: i32
-				if ay < by {
-					x0, y0, x1, y1 = ax, ay, bx, by
-					dw = -1
-				} else {
-					x0, y0, x1, y1 = bx, by, ax, ay
-					dw = +1
-				}
-				vk := Edge_Key{x0, y0, x1, y1}
-				if idx, exists := vert_map[vk]; exists {
-					if s.is_clip {verts[idx].dw_clip += dw} else {verts[idx].dw_subj += dw}
-				} else {
-					idx = len(verts)
-					vert_map[vk] = idx
-					append(&verts, Vatti_Atomic_Vert{
-						x0      = x0,
-						y0      = y0,
-						x1      = x1,
-						y1      = y1,
-						dw_subj = 0 if s.is_clip else dw,
-						dw_clip = dw if s.is_clip else 0,
-					})
-				}
-			}
+		for k in 0..<len(pts_scratch)-1 {
+			add_atomic(pts_scratch[k].px, pts_scratch[k].py, pts_scratch[k + 1].px, pts_scratch[k + 1].py, s.is_clip, &vert_map, &verts, &horiz_seen, &horizs)
 		}
 	}
 
@@ -228,6 +299,7 @@ odin_vatti_boolean :: proc(
 	Active_Sort :: struct {idx: int, x_mid: f64, slope: f64}
 	aet_sort := make([dynamic]Active_Sort, 0, 64, context.temp_allocator)
 
+	need_slab_intervals := len(horizs) > 0
 	for s in 0..<num_y {
 		// Flush any expiring edges (s1 == s) before removing them from active.
 		w := 0
@@ -246,6 +318,9 @@ odin_vatti_boolean :: proc(
 		resize(&active, w)
 
 		// Build cur_slab for [ys[s], ys[s+1]] if s + 1 < num_y.
+		has_horiz_here := horiz_offsets[s] < horiz_offsets[s + 1]
+		has_horiz_next := s + 1 < num_y && horiz_offsets[s + 1] < horiz_offsets[s + 2]
+		record_slab := need_slab_intervals && (has_horiz_here || has_horiz_next)
 		clear(&cur_slab)
 		if s + 1 < num_y {
 			for ei in start_items[start_offsets[s]:start_offsets[s + 1]] {
@@ -257,10 +332,8 @@ odin_vatti_boolean :: proc(
 				clear(&aet_sort)
 				for ei in active {
 					v := verts[ei]
-					dy := f64(v.y1 - v.y0)
-					slope := f64(v.x1 - v.x0) / dy
-					xm := f64(v.x0) + slope * (y_mid - f64(v.y0))
-					append(&aet_sort, Active_Sort{idx = ei, x_mid = xm, slope = slope})
+					xm := f64(v.x0) + v.slope * (y_mid - f64(v.y0))
+					append(&aet_sort, Active_Sort{idx = ei, x_mid = xm, slope = v.slope})
 				}
 				// Insertion sort on nearly-sorted AET (O(k) in the common non-crossing case).
 				for ai := 1; ai < len(aet_sort); ai += 1 {
@@ -292,9 +365,11 @@ odin_vatti_boolean :: proc(
 						vatti_fill_inside(w_clip, fill_rule),
 						operation,
 					)
-					x_bot := f64(v.x0) + item.slope * f64(ys[s] - v.y0)
-					x_top := f64(v.x0) + item.slope * f64(ys[s + 1] - v.y0)
-					append(&cur_slab, Slab_Interval{x_bot = x_bot, x_top = x_top, in_res = in_next})
+					if record_slab {
+						x_bot := f64(v.x0) + item.slope * f64(ys[s] - v.y0)
+						x_top := f64(v.x0) + item.slope * f64(ys[s + 1] - v.y0)
+						append(&cur_slab, Slab_Interval{x_bot = x_bot, x_top = x_top, in_res = in_next})
+					}
 
 					slab_verdict: i8 = 0
 					if in_prev && !in_next {
@@ -316,21 +391,24 @@ odin_vatti_boolean :: proc(
 
 		// Classify horizontal edges lying on scanbeam ys[s] using prev_slab (at top of slab s-1)
 		// vs cur_slab (at bottom of slab s).
-		for hi in horiz_items[horiz_offsets[s]:horiz_offsets[s + 1]] {
-			h := horizs[hi]
-			xm := 0.5 * f64(h.x0 + h.x1)
-			in_below := vatti_slab_lookup_top(prev_slab[:], xm)
-			in_above := vatti_slab_lookup_bot(cur_slab[:], xm)
-			if in_above && !in_below {
-				append(&kept_edges, Vatti_Dir_Edge{ax = h.x0, ay = h.y, bx = h.x1, by = h.y})
-			} else if !in_above && in_below {
-				append(&kept_edges, Vatti_Dir_Edge{ax = h.x1, ay = h.y, bx = h.x0, by = h.y})
+		if has_horiz_here {
+			for hi in horiz_items[horiz_offsets[s]:horiz_offsets[s + 1]] {
+				h := horizs[hi]
+				xm := 0.5 * f64(h.x0 + h.x1)
+				in_below := vatti_slab_lookup_top(prev_slab[:], xm)
+				in_above := vatti_slab_lookup_bot(cur_slab[:], xm)
+				if in_above && !in_below {
+					append(&kept_edges, Vatti_Dir_Edge{ax = h.x0, ay = h.y, bx = h.x1, by = h.y})
+				} else if !in_above && in_below {
+					append(&kept_edges, Vatti_Dir_Edge{ax = h.x1, ay = h.y, bx = h.x0, by = h.y})
+				}
 			}
 		}
 
-		// Advance prev_slab <- cur_slab.
-		clear(&prev_slab)
-		for iv in cur_slab {append(&prev_slab, iv)}
+		// Swap prev_slab <-> cur_slab in O(1) without copying.
+		if need_slab_intervals {
+			prev_slab, cur_slab = cur_slab, prev_slab
+		}
 	}
 
 	if len(kept_edges) == 0 {return {}, .None}
@@ -507,40 +585,74 @@ vatti_bool_eval :: proc(in_s, in_c: bool, op: Polygon_Operation) -> bool {
 
 @(private = "file")
 vatti_trace_loops :: proc(edges: []Vatti_Dir_Edge, allocator: mem.Allocator) -> [][dynamic]Polygon_Point {
-	Vert_Key :: struct {x, y: i64}
-	outgoing := make(map[Vert_Key][dynamic]int, len(edges), context.temp_allocator)
+	n := len(edges)
+	if n == 0 {return nil}
+
+	Out_Entry :: struct {
+		x, y: i64,
+		idx:  int,
+	}
+	entries := make([]Out_Entry, n, context.temp_allocator)
 	for e, idx in edges {
-		k := Vert_Key{e.ax, e.ay}
-		if k not_in outgoing {
-			outgoing[k] = make([dynamic]int, 0, 2, context.temp_allocator)
+		entries[idx] = {x = e.ax, y = e.ay, idx = idx}
+	}
+	slice.sort_by(entries, proc(a, b: Out_Entry) -> bool {
+		if a.x != b.x {return a.x < b.x}
+		return a.y < b.y
+	})
+
+	find_range :: proc(entries: []Out_Entry, x, y: i64) -> (lo, hi: int) {
+		l, r := 0, len(entries)
+		for l < r {
+			m := (l + r) >> 1
+			if entries[m].x < x || (entries[m].x == x && entries[m].y < y) {
+				l = m + 1
+			} else {
+				r = m
+			}
 		}
-		append(&outgoing[k], idx)
+		lo = l
+		hi = l
+		for hi < len(entries) && entries[hi].x == x && entries[hi].y == y {
+			hi += 1
+		}
+		return lo, hi
 	}
 
 	loops := make([dynamic][dynamic]Polygon_Point, 0, 16, allocator)
-	for start_idx in 0..<len(edges) {
+	for start_idx in 0..<n {
 		if edges[start_idx].used {continue}
-		loop := make([dynamic]Polygon_Point, 0, 16, allocator)
+		loop := make([dynamic]Polygon_Point, 0, 32, allocator)
 		cur_idx := start_idx
-		start_pt := Vert_Key{edges[start_idx].ax, edges[start_idx].ay}
+		start_x, start_y := edges[start_idx].ax, edges[start_idx].ay
 		closed := false
-		for step := 0; step <= len(edges); step += 1 {
+		for step := 0; step <= n; step += 1 {
 			e := &edges[cur_idx]
 			if e.used {break}
 			e.used = true
 			append(&loop, Polygon_Point{x = contracts.Micrometres(e.ax), y = contracts.Micrometres(e.ay)})
-			next_pt := Vert_Key{e.bx, e.by}
-			if next_pt == start_pt {
+			nx, ny := e.bx, e.by
+			if nx == start_x && ny == start_y {
 				closed = true
 				break
 			}
-			cands, has_cands := outgoing[next_pt]
-			if !has_cands {break}
+			lo, hi := find_range(entries, nx, ny)
+			if lo == hi {break}
 
+			// Fast path (99.9% of vertices): single outgoing edge — skip atan2 completely.
+			if hi - lo == 1 {
+				ci := entries[lo].idx
+				if edges[ci].used {break}
+				cur_idx = ci
+				continue
+			}
+
+			// Multi-way junction: pick tightest left turn.
 			in_ang := math.atan2(f64(e.by - e.ay), f64(e.bx - e.ax))
 			best_idx := -1
 			best_turn := f64(1e9)
-			for ci in cands {
+			for k in lo..<hi {
+				ci := entries[k].idx
 				if edges[ci].used {continue}
 				out_ang := math.atan2(f64(edges[ci].by - edges[ci].ay), f64(edges[ci].bx - edges[ci].ax))
 				diff := out_ang - (in_ang + math.PI)
@@ -643,4 +755,66 @@ vatti_canonicalize_loops :: proc(
 		pw += u64(len(c.points))
 	}
 	return result, .None
+}
+
+@(private = "file")
+vatti_set_bounds :: proc(set: Polygon_Set) -> (min_x, min_y, max_x, max_y: i64) {
+	p0 := set.points[0]
+	min_x, max_x = i64(p0.x), i64(p0.x)
+	min_y, max_y = i64(p0.y), i64(p0.y)
+	for p in set.points[1:] {
+		x, y := i64(p.x), i64(p.y)
+		if x < min_x {min_x = x}
+		if x > max_x {max_x = x}
+		if y < min_y {min_y = y}
+		if y > max_y {max_y = y}
+	}
+	return
+}
+
+@(private = "file")
+vatti_canonicalize_set :: proc(
+	set: Polygon_Set,
+	limits: Polygon_Limits,
+	allocator: mem.Allocator,
+) -> (Polygon_Set, Polygon_Error) {
+	if len(set.paths) == 0 {return {}, .None}
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+	loops := make([dynamic][dynamic]Polygon_Point, 0, len(set.paths), context.temp_allocator)
+	for p in set.paths {
+		s := int(p.offset)
+		n := int(p.count)
+		if n < 3 {continue}
+		ring := make([dynamic]Polygon_Point, n, context.temp_allocator)
+		copy(ring[:], set.points[s:s + n])
+		append(&loops, ring)
+	}
+	if len(loops) == 0 {return {}, .None}
+	return vatti_canonicalize_loops(loops[:], limits, allocator)
+}
+
+@(private = "file")
+Flat_Split_Ref :: struct {
+	seg_idx: int,
+	t:       f64,
+	px, py:  i64,
+}
+
+@(private = "file")
+vatti_maybe_split_flat :: proc(dst: ^[dynamic]$T, seg_idx: int, s: Vatti_Seg, px, py: i64) -> bool {
+	dx := f64(s.bx - s.ax)
+	dy := f64(s.by - s.ay)
+	t: f64
+	if math.abs(dx) >= math.abs(dy) {
+		if math.abs(dx) < 1e-9 {return false}
+		t = f64(px - s.ax) / dx
+	} else {
+		if math.abs(dy) < 1e-9 {return false}
+		t = f64(py - s.ay) / dy
+	}
+	if t > 1e-9 && t < 1.0 - 1e-9 {
+		append(dst, T{seg_idx = seg_idx, t = t, px = px, py = py})
+		return true
+	}
+	return false
 }

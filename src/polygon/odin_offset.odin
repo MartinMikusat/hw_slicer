@@ -1,5 +1,6 @@
 package polygon
 
+import "base:runtime"
 import "core:math"
 import "core:mem"
 
@@ -30,6 +31,8 @@ odin_offset :: proc(
 	if i64(delta) == 0 {
 		return odin_vatti_boolean(input, {}, .Union, .Non_Zero, limits, allocator)
 	}
+
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 
 	d := f64(i64(delta))
 	abs_d := math.abs(d)

@@ -106,6 +106,7 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	variable_walls_enabled        = true,
 	support_style_tree            = true,
 	adaptive_layers               = false,
+	use_native_polygon            = true,
 	use_gpu                       = true,
 	worker_threads                = 8,
 	scarf_seam_enabled            = false,
