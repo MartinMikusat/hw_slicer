@@ -1,6 +1,7 @@
 package pipeline
 
 import "core:fmt"
+import "core:math"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
@@ -95,6 +96,13 @@ plate_slice_sequential :: proc(
 		obj_opts := options
 		obj_opts.center_on_bed = false
 		obj_opts.object_name = obj.name
+		// Start the plan inside the object's own footprint, so the descent to the first layer and
+		// the first travel stay clear of objects that are already printed.
+		obj_opts.has_plan_start = true
+		obj_opts.plan_start = {
+			x = contracts.Micrometres(i64(math.round((obj.min_x + obj.max_x) * 500.0))),
+			y = contracts.Micrometres(i64(math.round((obj.min_y + obj.max_y) * 500.0))),
+		}
 		obj_res, err := slice_run_decoded_mesh(&obj.mesh, profile, obj_opts, allocator)
 		if len(err.stage) > 0 {
 			return {}, err

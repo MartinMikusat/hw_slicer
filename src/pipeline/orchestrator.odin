@@ -45,6 +45,9 @@ Slice_Run_Options :: struct {
 	overhang_slowdown_enabled:     bool,
 	overhang_speed_percent:        u32,
 	object_name:                   string,
+	// Where the first travel starts; the printer's axis minimum unless has_plan_start is set.
+	has_plan_start:                bool,
+	plan_start:                    polygon.Polygon_Point,
 	// Milestone 3: Infill patterns, monotonic/ironing, G2/G3 arcs, variable walls
 	infill_pattern:                features.Infill_Pattern,
 	monotonic_skin:                bool,
@@ -658,7 +661,11 @@ slice_run_decoded_mesh :: proc(
 	infill_inset := contracts.Micrometres(i64(proc_src.perimeter_count)*i64(proc_src.nominal_line_width))
 	infill: features.Infill_Result
 	pattern_infill: features.Infill_Pattern_Result
-	if options.infill_pattern == .Rectilinear {
+	if options.infill_density_percent <= 0 {
+		// Zero density (spiral vase or an explicit 0%) prints no sparse infill.
+		infill.layers = make([]features.Infill_Layer, layer_count, allocator)
+		record_stage(&result.stages, "infill", t0, 0, 0)
+	} else if options.infill_pattern == .Rectilinear {
 		inf_err: features.Infill_Error
 		infill, inf_err = features.infill_generate(
 			active_topo,
@@ -968,7 +975,7 @@ slice_run_decoded_mesh :: proc(
 		result.spine.schedule.layer_ids,
 		all_sources[:],
 		{
-			start           = {x = profile.printer.axis_minimum_x, y = profile.printer.axis_minimum_y},
+			start           = options.plan_start if options.has_plan_start else {x = profile.printer.axis_minimum_x, y = profile.printer.axis_minimum_y},
 			seam            = proc_src.seam,
 			seam_visibility = proc_src.seam_visibility,
 			seam_strategy   = options.seam_strategy,
@@ -1020,16 +1027,8 @@ slice_run_decoded_mesh :: proc(
 	}
 	record_stage(&result.stages, "extrusion_and_motion", t0, u64(len(result.motion.operations)), u64(result.extrusion.total_filament_nm/1_000_000))
 
-	// Stage 11b: G2/G3 Circular Arc Fitting (skip when scarf/vase Z ramps need linear segments).
-	if options.arc_fitting_enabled && !options.vase_mode {
-		t0 = time.tick_now()
-		arc_cfg := features.DEFAULT_ARC_FIT_CONFIG
-		if options.arc_tolerance_um > 0 {arc_cfg.max_chord_error_um = options.arc_tolerance_um}
-		arc_stats := features.motion_plan_fit_arcs(&result.motion, profile.printer, arc_cfg, allocator)
-		record_stage(&result.stages, "arc_fitting", t0, arc_stats.arcs_fitted, arc_stats.segments_replaced)
-	}
-
-	// Stage 11c: Scarf Seam / Spiral Vase Z Ramps, Modifiers, and Klipper Lookahead Time Estimate.
+	// Stage 11b: Scarf Seam / Spiral Vase Z Ramps. They run on linear segments before arc fitting,
+	// which leaves the ramped moves linear and fits arcs to the rest.
 	if options.scarf_seam_enabled || options.vase_mode {
 		_ = features.motion_plan_apply_z_ramps(
 			&result.motion,
@@ -1042,6 +1041,16 @@ slice_run_decoded_mesh :: proc(
 			perimeters,
 		)
 	}
+	// Stage 11c: G2/G3 Circular Arc Fitting of moves without a Z offset.
+	if options.arc_fitting_enabled && !options.vase_mode {
+		t0 = time.tick_now()
+		arc_cfg := features.DEFAULT_ARC_FIT_CONFIG
+		if options.arc_tolerance_um > 0 {arc_cfg.max_chord_error_um = options.arc_tolerance_um}
+		arc_stats := features.motion_plan_fit_arcs(&result.motion, profile.printer, arc_cfg, allocator)
+		record_stage(&result.stages, "arc_fitting", t0, arc_stats.arcs_fitted, arc_stats.segments_replaced)
+	}
+
+	// Stage 11d: Modifiers and Klipper lookahead time estimate.
 	if len(options.modifiers) > 0 {
 		_ = modifiers_apply_motion(&result.motion, options.modifiers, profile)
 	}
