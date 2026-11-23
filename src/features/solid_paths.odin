@@ -173,61 +173,84 @@ solid_paths_generate :: proc(
 			len(boundaries[mask_index].points),
 		)
 	}
-	scratch_hits := make(
-		[]Bridge_Path_Rational_Hit,
-		maximum_boundary_points,
-		allocator,
-	)
-	if maximum_boundary_points > 0 && scratch_hits == nil {
-		return {}, .Allocation_Failed
+	mask_paths := make([]u64, len(overlap.masks), allocator)
+	mask_scanlines := make([]u64, len(overlap.masks), allocator)
+	mask_path_offsets := make([]u64, len(overlap.masks), allocator)
+	defer {
+		delete(mask_paths, allocator)
+		delete(mask_scanlines, allocator)
+		delete(mask_path_offsets, allocator)
 	}
-	defer delete(scratch_hits, allocator)
+	for &e in mask_errors {e = .None}
+
+	Solid_Scan_Par_Ctx :: struct {
+		overlap:           Role_Overlap_Result,
+		boundaries:        []polygon.Polygon_Set,
+		process:           profiles.Resolved_Process_Profile,
+		spacing:           contracts.Micrometres,
+		line_width:        contracts.Micrometres,
+		limits:            Solid_Path_Limits,
+		allocator:         mem.Allocator,
+		mask_paths:        []u64,
+		mask_scanlines:    []u64,
+		mask_path_offsets: []u64,
+		mask_errors:       []Solid_Path_Error,
+		out_paths:         []Solid_Path,
+		out_hits:          []Bridge_Path_Hit,
+	}
+	ssctx := Solid_Scan_Par_Ctx{
+		overlap           = overlap,
+		boundaries        = boundaries,
+		process           = process,
+		spacing           = spacing,
+		line_width        = line_width,
+		limits            = limits,
+		allocator         = allocator,
+		mask_paths        = mask_paths,
+		mask_scanlines    = mask_scanlines,
+		mask_path_offsets = mask_path_offsets,
+		mask_errors       = mask_errors,
+	}
+	parallel_for(len(overlap.masks), &ssctx, proc(c: ^Solid_Scan_Par_Ctx, mask_index: int) {
+		mask := c.overlap.masks[mask_index]
+		if !solid_path_role_is_skin(mask.role) || len(c.boundaries[mask_index].paths) == 0 {return}
+		angle := solid_path_layer_angle(c.process.source.solid_infill_base_angle, c.process.source.solid_infill_angle_step, mask.layer_index)
+		dx, dy, dir_ok := bridge_direction_vector(angle)
+		if !dir_ok {
+			c.mask_errors[mask_index] = .Invalid_Config
+			return
+		}
+		local_hits := make([]Bridge_Path_Rational_Hit, len(c.boundaries[mask_index].points), c.allocator)
+		defer delete(local_hits, c.allocator)
+		wp, ws, serr := solid_path_scan_boundary(
+			c.boundaries[mask_index], angle, dx, dy, c.spacing, c.line_width,
+			local_hits, nil, nil, mask, u32(mask_index), 0, c.limits,
+		)
+		if serr != .None {
+			c.mask_errors[mask_index] = serr
+			return
+		}
+		c.mask_paths[mask_index] = wp
+		c.mask_scanlines[mask_index] = ws
+	})
 
 	path_count: u64
 	scanline_count: u64
-	for mask, mask_index in overlap.masks {
-		if !solid_path_role_is_skin(mask.role) ||
-		   len(boundaries[mask_index].paths) == 0 {
-			continue
-		}
-		angle := solid_path_layer_angle(
-			process.source.solid_infill_base_angle,
-			process.source.solid_infill_angle_step,
-			mask.layer_index,
-		)
-		direction_x, direction_y, direction_ok :=
-			bridge_direction_vector(angle)
-		if !direction_ok {return {}, .Invalid_Config}
-		written_paths, written_scanlines, scan_error :=
-			solid_path_scan_boundary(
-				boundaries[mask_index],
-				angle,
-				direction_x,
-				direction_y,
-				spacing,
-				line_width,
-				scratch_hits,
-				nil,
-				nil,
-				mask,
-				u32(mask_index),
-				0,
-				limits,
-			)
-		if scan_error != .None {return {}, scan_error}
-		if path_count > limits.max_paths ||
-		   written_paths > limits.max_paths-path_count {
+	for mask_index in 0..<len(overlap.masks) {
+		if mask_errors[mask_index] != .None {return {}, mask_errors[mask_index]}
+		wp := mask_paths[mask_index]
+		ws := mask_scanlines[mask_index]
+		if path_count > limits.max_paths || wp > limits.max_paths - path_count {
 			return {}, .Path_Limit
 		}
-		if scanline_count > limits.max_scanlines ||
-		   written_scanlines > limits.max_scanlines-scanline_count {
+		if scanline_count > limits.max_scanlines || ws > limits.max_scanlines - scanline_count {
 			return {}, .Scanline_Limit
 		}
-		path_count += written_paths
-		scanline_count += written_scanlines
+		mask_path_offsets[mask_index] = path_count
+		path_count += wp
+		scanline_count += ws
 	}
-	if path_count > u64(max(int)) ||
-	   path_count > u64(max(int))/2 {
+	if path_count > u64(max(int)) || path_count > u64(max(int))/2 {
 		return {}, .Arithmetic
 	}
 
@@ -242,11 +265,7 @@ solid_paths_generate :: proc(
 		skin_mask_count = skin_mask_count,
 		collapsed_count = collapsed_count,
 	}
-	result.layers = make(
-		[]Solid_Path_Layer,
-		len(overlap.layers),
-		allocator,
-	)
+	result.layers = make([]Solid_Path_Layer, len(overlap.layers), allocator)
 	result.paths = make([]Solid_Path, int(path_count), allocator)
 	result.hits = make([]Bridge_Path_Hit, int(path_count*2), allocator)
 	if len(result.layers) > 0 && result.layers == nil ||
@@ -255,62 +274,47 @@ solid_paths_generate :: proc(
 		return {}, .Allocation_Failed
 	}
 
+	ssctx.out_paths = result.paths
+	ssctx.out_hits = result.hits
+	parallel_for(len(overlap.masks), &ssctx, proc(c: ^Solid_Scan_Par_Ctx, mask_index: int) {
+		if c.mask_paths[mask_index] == 0 {return}
+		mask := c.overlap.masks[mask_index]
+		angle := solid_path_layer_angle(c.process.source.solid_infill_base_angle, c.process.source.solid_infill_angle_step, mask.layer_index)
+		dx, dy, _ := bridge_direction_vector(angle)
+		local_hits := make([]Bridge_Path_Rational_Hit, len(c.boundaries[mask_index].points), c.allocator)
+		defer delete(local_hits, c.allocator)
+		_, _, serr := solid_path_scan_boundary(
+			c.boundaries[mask_index], angle, dx, dy, c.spacing, c.line_width,
+			local_hits, c.out_paths, c.out_hits, mask, u32(mask_index), c.mask_path_offsets[mask_index], c.limits,
+		)
+		if serr != .None {c.mask_errors[mask_index] = serr}
+	})
+	for err in mask_errors {
+		if err != .None {
+			solid_path_result_destroy(&result, allocator)
+			return {}, err
+		}
+	}
+
 	path_write: u64
 	mask_cursor := 0
 	for overlap_layer, layer_index in overlap.layers {
 		layer_path_start := path_write
-		mask_end :=
-			int(overlap_layer.mask_offset)+int(overlap_layer.mask_count)
+		mask_end := int(overlap_layer.mask_offset) + int(overlap_layer.mask_count)
 		for mask_cursor < mask_end {
-			mask := overlap.masks[mask_cursor]
-			if solid_path_role_is_skin(mask.role) &&
-			   len(boundaries[mask_cursor].paths) > 0 {
-				angle := solid_path_layer_angle(
-					process.source.solid_infill_base_angle,
-					process.source.solid_infill_angle_step,
-					mask.layer_index,
-				)
-				direction_x, direction_y, direction_ok :=
-					bridge_direction_vector(angle)
-				if !direction_ok {
-					solid_path_result_destroy(&result, allocator)
-					return {}, .Invalid_Config
-				}
-				written_paths, _, scan_error :=
-					solid_path_scan_boundary(
-						boundaries[mask_cursor],
-						angle,
-						direction_x,
-						direction_y,
-						spacing,
-						line_width,
-						scratch_hits,
-						result.paths,
-						result.hits,
-						mask,
-						u32(mask_cursor),
-						path_write,
-						limits,
-					)
-				if scan_error != .None {
-					solid_path_result_destroy(&result, allocator)
-					return {}, scan_error
-				}
-				path_write += written_paths
-			}
+			path_write += mask_paths[mask_cursor]
 			mask_cursor += 1
 		}
-		layer_path_count := path_write-layer_path_start
-		if layer_path_count > u64(max(u32)) ||
-		   layer_path_count > u64(max(u32))/2 {
+		layer_path_count := path_write - layer_path_start
+		if layer_path_count > u64(max(u32)) || layer_path_count > u64(max(u32))/2 {
 			solid_path_result_destroy(&result, allocator)
 			return {}, .Arithmetic
 		}
 		result.layers[layer_index] = {
 			path_offset = layer_path_start,
-			path_count = u32(layer_path_count),
-			hit_offset = layer_path_start*2,
-			hit_count = u32(layer_path_count*2),
+			path_count  = u32(layer_path_count),
+			hit_offset  = layer_path_start*2,
+			hit_count   = u32(layer_path_count*2),
 		}
 	}
 	if path_write != path_count ||

@@ -179,150 +179,161 @@ extrusion_calculate :: proc(
 		return {}, .Allocation_Failed
 	}
 
-	move_write := 0
-	remainder: u128
+	// Compute per-layer extrude move offsets so each layer writes into a disjoint slice in parallel.
+	layer_ext_offsets := make([]int, len(plan.layers), allocator)
+	layer_ext_counts := make([]int, len(plan.layers), allocator)
+	layer_errors := make([]Extrusion_Error, len(plan.layers), allocator)
+	defer {
+		delete(layer_ext_offsets, allocator)
+		delete(layer_ext_counts, allocator)
+		delete(layer_errors, allocator)
+	}
+	ext_cursor := 0
 	for plan_layer, layer_index in plan.layers {
-		layer_move_start := move_write
-		move_start := int(plan_layer.move_offset)
-		move_end := move_start+int(plan_layer.move_count)
-		for planned_move_index in move_start..<move_end {
-			move := plan.moves[planned_move_index]
-			if move.kind == .Travel {continue}
-			flow_ratio, flow_ok :=
-				extrusion_role_flow_ratio(process, move.role)
-			if !flow_ok {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Invalid_Config
-			}
-			height := layer_heights[layer_index]
-			if i64(move.line_width_a) < i64(height) ||
-			   i64(move.line_width_b) < i64(height) {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
-			}
-			distance_squared := path_plan_distance_2(
-				move.point_a,
-				move.point_b,
-			)
-			scaled_distance, distance_ok :=
-				extrusion_checked_multiply(
-					distance_squared,
-					1_000_000,
-				)
-			if !distance_ok {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			path_length_nm, length_error, length_ok :=
-				extrusion_integer_sqrt_round(scaled_distance)
-			if !length_ok || path_length_nm == 0 {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			cross_section_numerator, cross_section_ok :=
-				extrusion_cross_section_numerator(
-					height,
-					move.line_width_a,
-					move.line_width_b,
-				)
-			if !cross_section_ok {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			volume_numerator, volume_ok :=
-				extrusion_checked_multiply(
-					cross_section_numerator,
-					u128(path_length_nm),
-				)
-			if volume_ok {
-				volume_numerator, volume_ok =
-					extrusion_checked_multiply(
-						volume_numerator,
-						u128(u32(flow_ratio)),
-					)
-			}
-			if !volume_ok {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			volume_cubic_um, volume_error, volume_round_ok :=
-				extrusion_round_ratio_u64(
-					volume_numerator,
-					volume_denominator,
-				)
-			if !volume_round_ok {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			if remainder > max(u128)-volume_numerator {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			accumulated := remainder+volume_numerator
-			quantized_units :=
-				accumulated/quantized_length_denominator
-			if quantized_units >
-			   u128(max(u64))/
-				u128(result.length_quantum_nm) {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			incremental_filament_nm :=
-				quantized_units*u128(result.length_quantum_nm)
-			remainder =
-				accumulated%quantized_length_denominator
-			if result.total_volume_numerator >
-			   max(u128)-volume_numerator ||
-			   result.total_filament_nm >
-			   max(u128)-incremental_filament_nm {
-				extrusion_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			result.total_volume_numerator += volume_numerator
-			result.total_filament_nm +=
-				incremental_filament_nm
-			result.moves[move_write] = {
-				stable_id = contracts.stable_id_child(
-					move.stable_id,
-					.Feature,
-					0,
-				),
-				planned_move_id = move.stable_id,
-				planned_move_index = u32(planned_move_index),
-				path_id = move.path_id,
-				layer_index = u32(layer_index),
-				role = move.role,
-				flow_ratio = flow_ratio,
-				layer_height = height,
-				line_width_a = move.line_width_a,
-				line_width_b = move.line_width_b,
-				distance_squared_um_2 = distance_squared,
-				path_length_nm = path_length_nm,
-				length_error_squared_nm_2 = length_error,
-				cross_section_numerator =
-					cross_section_numerator,
-				volume_numerator = volume_numerator,
-				volume_cubic_um = volume_cubic_um,
-				volume_error_numerator = volume_error,
-				incremental_filament_nm =
-					u64(incremental_filament_nm),
-				remainder_numerator_after = remainder,
-			}
-			move_write += 1
+		layer_ext_offsets[layer_index] = ext_cursor
+		ms := int(plan_layer.move_offset)
+		me := ms + int(plan_layer.move_count)
+		cnt := 0
+		for pi in ms..<me {
+			if plan.moves[pi].kind == .Extrude {cnt += 1}
 		}
-		layer_move_count := move_write-layer_move_start
-		if layer_move_count > int(max(u32)) {
+		if cnt > int(max(u32)) {
 			extrusion_result_destroy(&result, allocator)
 			return {}, .Arithmetic
 		}
+		layer_ext_counts[layer_index] = cnt
 		result.layers[layer_index] = {
-			move_offset = u64(layer_move_start),
-			move_count = u32(layer_move_count),
+			move_offset = u64(ext_cursor),
+			move_count  = u32(cnt),
 		}
+		ext_cursor += cnt
 	}
-	if move_write != len(result.moves) {
+	if ext_cursor != len(result.moves) {
 		extrusion_result_destroy(&result, allocator)
 		return {}, .Arithmetic
+	}
+
+	Ext_Par_Ctx :: struct {
+		plan:               Unified_Path_Plan_Result,
+		layer_heights:      []contracts.Micrometres,
+		process:            profiles.Resolved_Process_Profile,
+		volume_denominator: u128,
+		layer_ext_offsets:  []int,
+		layer_errors:       []Extrusion_Error,
+		out_moves:          []Extrusion_Move,
+	}
+	ectx := Ext_Par_Ctx{
+		plan               = plan,
+		layer_heights      = layer_heights,
+		process            = process,
+		volume_denominator = volume_denominator,
+		layer_ext_offsets  = layer_ext_offsets,
+		layer_errors       = layer_errors,
+		out_moves          = result.moves,
+	}
+	parallel_for(len(plan.layers), &ectx, proc(c: ^Ext_Par_Ctx, layer_index: int) {
+		plan_layer := c.plan.layers[layer_index]
+		height := c.layer_heights[layer_index]
+		ms := int(plan_layer.move_offset)
+		me := ms + int(plan_layer.move_count)
+		w := c.layer_ext_offsets[layer_index]
+		for planned_move_index in ms..<me {
+			move := c.plan.moves[planned_move_index]
+			if move.kind == .Travel {continue}
+			flow_ratio, flow_ok := extrusion_role_flow_ratio(c.process, move.role)
+			if !flow_ok {
+				c.layer_errors[layer_index] = .Invalid_Config
+				return
+			}
+			if i64(move.line_width_a) < i64(height) || i64(move.line_width_b) < i64(height) {
+				c.layer_errors[layer_index] = .Invalid_Input
+				return
+			}
+			distance_squared := path_plan_distance_2(move.point_a, move.point_b)
+			scaled_distance, distance_ok := extrusion_checked_multiply(distance_squared, 1_000_000)
+			if !distance_ok {
+				c.layer_errors[layer_index] = .Arithmetic
+				return
+			}
+			path_length_nm, length_error, length_ok := extrusion_integer_sqrt_round(scaled_distance)
+			if !length_ok || path_length_nm == 0 {
+				c.layer_errors[layer_index] = .Arithmetic
+				return
+			}
+			cross_section_numerator, cross_section_ok := extrusion_cross_section_numerator(height, move.line_width_a, move.line_width_b)
+			if !cross_section_ok {
+				c.layer_errors[layer_index] = .Arithmetic
+				return
+			}
+			volume_numerator, volume_ok := extrusion_checked_multiply(cross_section_numerator, u128(path_length_nm))
+			if volume_ok {
+				volume_numerator, volume_ok = extrusion_checked_multiply(volume_numerator, u128(u32(flow_ratio)))
+			}
+			if !volume_ok {
+				c.layer_errors[layer_index] = .Arithmetic
+				return
+			}
+			volume_cubic_um, volume_error, volume_round_ok := extrusion_round_ratio_u64(volume_numerator, c.volume_denominator)
+			if !volume_round_ok {
+				c.layer_errors[layer_index] = .Arithmetic
+				return
+			}
+			c.out_moves[w] = {
+				stable_id                 = contracts.stable_id_child(move.stable_id, .Feature, 0),
+				planned_move_id           = move.stable_id,
+				planned_move_index        = u32(planned_move_index),
+				path_id                   = move.path_id,
+				layer_index               = u32(layer_index),
+				role                      = move.role,
+				flow_ratio                = flow_ratio,
+				layer_height              = height,
+				line_width_a              = move.line_width_a,
+				line_width_b              = move.line_width_b,
+				distance_squared_um_2     = distance_squared,
+				path_length_nm            = path_length_nm,
+				length_error_squared_nm_2 = length_error,
+				cross_section_numerator   = cross_section_numerator,
+				volume_numerator          = volume_numerator,
+				volume_cubic_um           = volume_cubic_um,
+				volume_error_numerator    = volume_error,
+			}
+			w += 1
+		}
+	})
+	for err in layer_errors {
+		if err != .None {
+			extrusion_result_destroy(&result, allocator)
+			return {}, err
+		}
+	}
+
+	// Sequential exact remainder accumulation pass (preserves bit-exact filament quantization).
+	remainder: u128
+	quantum := u128(result.length_quantum_nm)
+	max_q := u128(max(u64)) / quantum
+	for &em in result.moves {
+		v_num := em.volume_numerator
+		if remainder > max(u128)-v_num {
+			extrusion_result_destroy(&result, allocator)
+			return {}, .Arithmetic
+		}
+		accumulated := remainder + v_num
+		quantized_units := accumulated / quantized_length_denominator
+		if quantized_units > max_q {
+			extrusion_result_destroy(&result, allocator)
+			return {}, .Arithmetic
+		}
+		incremental_filament_nm := quantized_units * quantum
+		remainder = accumulated % quantized_length_denominator
+		if result.total_volume_numerator > max(u128)-v_num ||
+		   result.total_filament_nm > max(u128)-incremental_filament_nm {
+			extrusion_result_destroy(&result, allocator)
+			return {}, .Arithmetic
+		}
+		result.total_volume_numerator += v_num
+		result.total_filament_nm += incremental_filament_nm
+		em.incremental_filament_nm = u64(incremental_filament_nm)
+		em.remainder_numerator_after = remainder
 	}
 	total_volume, total_volume_error, total_volume_ok :=
 		extrusion_round_ratio_u64(

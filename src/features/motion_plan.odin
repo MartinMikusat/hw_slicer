@@ -224,17 +224,17 @@ motion_plan_build :: proc(
 			   !motion_point_in_machine(move.point_b, profile.printer) {
 				return {}, .Machine_Bounds
 			}
-			length_nm, length_ok :=
-				motion_move_length_nm(move.point_a, move.point_b)
-			if !length_ok || length_nm == 0 {
-				return {}, .Arithmetic
-			}
-			source := Motion_Source_Move{
-				length_nm        = length_nm,
-				travel_length_nm = length_nm,
-			}
+			source: Motion_Source_Move
+			length_nm: u64
 			switch move.kind {
 			case .Travel:
+				length_ok: bool
+				length_nm, length_ok = motion_move_length_nm(move.point_a, move.point_b)
+				if !length_ok || length_nm == 0 {
+					return {}, .Arithmetic
+				}
+				source.length_nm = length_nm
+				source.travel_length_nm = length_nm
 				source.base_speed = profile.process.source.travel.speed
 				source.acceleration =
 					profile.process.source.travel.acceleration
@@ -287,12 +287,17 @@ motion_plan_build :: proc(
 					return {}, .Extrusion_Mismatch
 				}
 				extrusion_move := extrusion.moves[extrusion_cursor]
+				length_nm = extrusion_move.path_length_nm
+				if length_nm == 0 {
+					return {}, .Arithmetic
+				}
+				source.length_nm = length_nm
+				source.travel_length_nm = length_nm
 				if extrusion_move.planned_move_id != move.stable_id ||
 				   extrusion_move.planned_move_index != u32(move_index) ||
 				   extrusion_move.path_id != move.path_id ||
 				   extrusion_move.layer_index != u32(layer_index) ||
-				   extrusion_move.role != move.role ||
-				   extrusion_move.path_length_nm != length_nm {
+				   extrusion_move.role != move.role {
 					return {}, .Extrusion_Mismatch
 				}
 				target, target_ok :=
