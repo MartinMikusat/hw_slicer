@@ -154,7 +154,7 @@ odin_vatti_boolean :: proc(
 	if len(verts) == 0 {return {}, .None}
 
 	// Sort vertical edges by (y0, x0, y1, x1) and merge coincident edges in-place (already sorted by y0!).
-	slice.sort_by(verts[:], proc(a, b: Vatti_Atomic_Vert) -> bool {
+	fast_sort(verts[:], proc(a, b: Vatti_Atomic_Vert) -> bool {
 		if a.y0 != b.y0 {return a.y0 < b.y0}
 		if a.x0 != b.x0 {return a.x0 < b.x0}
 		if a.y1 != b.y1 {return a.y1 < b.y1}
@@ -177,7 +177,7 @@ odin_vatti_boolean :: proc(
 
 	// Sort and deduplicate horizontal edges by (y, x0, x1) in-place.
 	if len(horizs) > 1 {
-		slice.sort_by(horizs[:], proc(a, b: Vatti_Atomic_Horiz) -> bool {
+		fast_sort(horizs[:], proc(a, b: Vatti_Atomic_Horiz) -> bool {
 			if a.y != b.y {return a.y < b.y}
 			if a.x0 != b.x0 {return a.x0 < b.x0}
 			return a.x1 < b.x1
@@ -201,7 +201,7 @@ odin_vatti_boolean :: proc(
 	for h in horizs {
 		append(&raw_ys, h.y)
 	}
-	slice.sort(raw_ys[:])
+	fast_sort(raw_ys[:], proc(a, b: i64) -> bool {return a < b})
 	ys := make([dynamic]i64, 0, len(raw_ys), context.temp_allocator)
 	for y in raw_ys {
 		if len(ys) == 0 || ys[len(ys)-1] != y {
@@ -348,7 +348,7 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	Seg_Ord :: struct {idx: int, min_x: i64}
 	seg_ords := make([]Seg_Ord, n_segs, context.temp_allocator)
 	for i in 0..<n_segs {seg_ords[i] = {idx = i, min_x = segs[i].min_x}}
-	slice.sort_by(seg_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
+	fast_sort(seg_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
 
 	// Hot pixels are every endpoint and every rounded proper intersection. Endpoint pixels are
 	// tested in the same pair sweep that finds intersections (a segment passing within one unit of
@@ -393,7 +393,7 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 		}
 	}
 	if len(hot) > 0 {
-		slice.sort_by(hot[:], proc(a, b: [2]i64) -> bool {
+		fast_sort(hot[:], proc(a, b: [2]i64) -> bool {
 			if a[0] != b[0] {return a[0] < b[0]}
 			return a[1] < b[1]
 		})
@@ -421,7 +421,7 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 		append(&pieces, ..segs)
 		return
 	}
-	slice.sort_by(snaps[:], proc(a, b: Snap_Item) -> bool {
+	fast_sort(snaps[:], proc(a, b: Snap_Item) -> bool {
 		if a.seg != b.seg {return a.seg < b.seg}
 		return a.t < b.t
 	})
@@ -484,7 +484,7 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 		append(&pieces, ..routed[:])
 		return
 	}
-	slice.sort_by(splits[:], proc(a, b: Flat_Split) -> bool {
+	fast_sort(splits[:], proc(a, b: Flat_Split) -> bool {
 		if a.seg_idx != b.seg_idx {return a.seg_idx < b.seg_idx}
 		return a.t < b.t
 	})
@@ -744,7 +744,7 @@ vatti_trace_loops :: proc(edges: []Vatti_Dir_Edge, allocator: mem.Allocator) -> 
 	for e, idx in edges {
 		entries[idx] = {x = e.ax, y = e.ay, idx = idx}
 	}
-	slice.sort_by(entries, proc(a, b: Out_Entry) -> bool {
+	fast_sort(entries, proc(a, b: Out_Entry) -> bool {
 		if a.x != b.x {return a.x < b.x}
 		return a.y < b.y
 	})
@@ -887,7 +887,7 @@ vatti_canonicalize_loops :: proc(
 	if u64(len(canonical)) > limits.max_output_paths || total_points > limits.max_output_points {
 		return {}, .Output_Limit
 	}
-	slice.sort_by(canonical[:], polygon_canonical_path_less)
+	fast_sort(canonical[:], polygon_canonical_path_less)
 	result := Polygon_Set{
 		points = make([]Polygon_Point, int(total_points), allocator),
 		paths  = make([]Polygon_Path, len(canonical), allocator),

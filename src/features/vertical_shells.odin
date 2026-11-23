@@ -62,23 +62,51 @@ vertical_shells_build :: proc(
 		c.inner[li] = set
 	})
 
+	// pair[k] = inner[k] intersect inner[k+1]; a window of layers is then a few pair
+	// intersections instead of one intersection per layer.
+	Pair_Ctx :: struct {
+		inner, pair: []polygon.Polygon_Set,
+		provider:    polygon.Polygon_Provider,
+		allocator:   mem.Allocator,
+	}
+	pair := make([]polygon.Polygon_Set, layer_count, allocator)
+	defer {
+		for &set in pair {polygon.polygon_set_destroy(&set, allocator)}
+		delete(pair, allocator)
+	}
+	pctx := Pair_Ctx{inner, pair, provider, allocator}
+	parallel_for(layer_count - 1, &pctx, proc(c: ^Pair_Ctx, k: int) {
+		if len(c.inner[k].paths) == 0 || len(c.inner[k + 1].paths) == 0 {return}
+		set, err := c.provider.boolean(c.inner[k], c.inner[k + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
+		if err != .None {
+			polygon.polygon_set_destroy(&set, c.allocator)
+			return
+		}
+		c.pair[k] = set
+	})
+
 	Band_Ctx :: struct {
 		model_layers:  []polygon.Polygon_Set,
 		spacing:       f64,
-		inner:         []polygon.Polygon_Set,
+		inner, pair:   []polygon.Polygon_Set,
 		top, bottom:   []polygon.Polygon_Set,
 		top_layers:    int,
 		bottom_layers: int,
 		provider:      polygon.Polygon_Provider,
 		allocator:     mem.Allocator,
 	}
-	bctx := Band_Ctx{model_layers, 1.05 * f64(i64(line_width)), inner, result.top, result.bottom, int(top_layers), int(bottom_layers), provider, allocator}
+	bctx := Band_Ctx{model_layers, 1.05 * f64(i64(line_width)), inner, pair, result.top, result.bottom, int(top_layers), int(bottom_layers), provider, allocator}
 	parallel_for(layer_count, &bctx, proc(c: ^Band_Ctx, li: int) {
 		if len(c.inner[li].paths) == 0 {return}
-		top := vertical_shell_band(c.inner, li, li + 1, li + c.top_layers, c.provider, c.allocator)
-		bottom := vertical_shell_band(c.inner, li, li - c.bottom_layers, li - 1, c.provider, c.allocator)
-		c.top[li] = vertical_shell_regularize(top, c.inner[li], c.model_layers, li, c.spacing, c.provider, c.allocator)
-		c.bottom[li] = vertical_shell_regularize(bottom, c.inner[li], c.model_layers, li, c.spacing, c.provider, c.allocator)
+		object_volume: polygon.Polygon_Set
+		if li > 0 && li + 1 < len(c.model_layers) {
+			object_volume, _ = c.provider.boolean(c.model_layers[li - 1], c.model_layers[li + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
+		}
+		defer polygon.polygon_set_destroy(&object_volume, c.allocator)
+		top := vertical_shell_band(c.inner, c.pair, li, li + 1, li + c.top_layers, c.provider, c.allocator)
+		bottom := vertical_shell_band(c.inner, c.pair, li, li - c.bottom_layers, li - 1, c.provider, c.allocator)
+		c.top[li] = vertical_shell_regularize(top, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
+		c.bottom[li] = vertical_shell_regularize(bottom, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
 		polygon.polygon_set_destroy(&top, c.allocator)
 		polygon.polygon_set_destroy(&bottom, c.allocator)
 	})
@@ -86,10 +114,11 @@ vertical_shells_build :: proc(
 }
 
 // inner[li] minus the intersection of inner[first..last]; a layer outside the model empties the
-// intersection, so the band is all of inner[li].
+// intersection, so the band is all of inner[li]. The intersection is built from pair[k] =
+// inner[k] intersect inner[k+1], stepping two layers at a time.
 @(private = "file")
 vertical_shell_band :: proc(
-	inner: []polygon.Polygon_Set,
+	inner, pair: []polygon.Polygon_Set,
 	li, first, last: int,
 	provider: polygon.Polygon_Provider,
 	allocator: mem.Allocator,
@@ -103,19 +132,32 @@ vertical_shell_band :: proc(
 	}
 	if last < first {return {}}
 	if first < 0 || last >= len(inner) {return clone(inner[li], allocator)}
-	covered := clone(inner[first], allocator)
-	for j in first + 1..=last {
-		if len(covered.paths) == 0 {break}
-		next, err := provider.boolean(covered, inner[j], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, allocator)
+	// Pieces covering [first, last]: pairs (k, k+1) and, for an odd count, the last single layer.
+	covered: polygon.Polygon_Set
+	have := false
+	k := first
+	for k <= last {
+		piece := pair[k] if k + 1 <= last else inner[k]
+		k += 2 if k + 1 <= last else 1
+		if len(piece.paths) == 0 {
+			polygon.polygon_set_destroy(&covered, allocator)
+			return clone(inner[li], allocator)
+		}
+		if !have {
+			covered = clone(piece, allocator)
+			have = true
+			continue
+		}
+		next, err := provider.boolean(covered, piece, .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, allocator)
 		polygon.polygon_set_destroy(&covered, allocator)
 		if err != .None {
 			polygon.polygon_set_destroy(&next, allocator)
 			return clone(inner[li], allocator)
 		}
 		covered = next
+		if len(covered.paths) == 0 {return clone(inner[li], allocator)}
 	}
 	defer polygon.polygon_set_destroy(&covered, allocator)
-	if len(covered.paths) == 0 {return clone(inner[li], allocator)}
 	band, err := provider.boolean(inner[li], covered, .Difference, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, allocator)
 	if err != .None {
 		polygon.polygon_set_destroy(&band, allocator)
@@ -130,9 +172,7 @@ vertical_shell_band :: proc(
 // below and above), and keep only what lies inside the infill area. `spacing` is in micrometres.
 @(private = "file")
 vertical_shell_regularize :: proc(
-	band, inner: polygon.Polygon_Set,
-	model_layers: []polygon.Polygon_Set,
-	li: int,
+	band, inner, object_volume: polygon.Polygon_Set,
 	spacing: f64,
 	provider: polygon.Polygon_Provider,
 	allocator: mem.Allocator,
@@ -159,11 +199,6 @@ vertical_shell_regularize :: proc(
 	if !ok_c || len(c.paths) == 0 {return c}
 
 	// Drop small pieces. Holes are kept only inside a kept outer path.
-	object_volume: polygon.Polygon_Set
-	if li > 0 && li + 1 < len(model_layers) {
-		object_volume, _ = provider.boolean(model_layers[li - 1], model_layers[li + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, allocator)
-	}
-	defer polygon.polygon_set_destroy(&object_volume, allocator)
 	small_area_2 := 2.0 * spacing * 1500.0
 	wrapped_area_2 := 2.0 * spacing * 8000.0
 	keep := make([]bool, len(c.paths), context.temp_allocator)
