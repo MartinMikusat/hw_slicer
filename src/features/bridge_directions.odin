@@ -1,6 +1,7 @@
 package features
 
 import "core:math"
+import "core:mem"
 
 import contracts "../contracts"
 import polygon "../polygon"
@@ -102,9 +103,7 @@ bridge_directions_score :: proc(
 	   evidence.eligible_mask_count > u64(len(evidence.masks)) {
 		return {}, .Invalid_Input
 	}
-	_, regions_ok := slicing.region_result_hash({}, topology, regions)
-	if !regions_ok ||
-	   !bridge_direction_evidence_valid(regions, evidence) {
+	if !bridge_direction_evidence_valid(regions, evidence) {
 		return {}, .Invalid_Input
 	}
 	if evidence.eligible_mask_count > limits.max_selections {
@@ -122,16 +121,21 @@ bridge_directions_score :: proc(
 		return {}, .Arithmetic
 	}
 
-	supports, support_error := bridge_direction_supports_build(
-		topology,
-		regions,
-		process.source.bridge_anchor_margin,
-		provider,
-		evidence.config,
-		limits.polygon,
-		allocator,
-	)
-	if support_error != .None {return {}, support_error}
+	supports: []polygon.Polygon_Set
+	if evidence.eligible_mask_count > 0 {
+		support_error: Bridge_Direction_Error
+		supports, support_error = bridge_direction_supports_build(
+			topology,
+			regions,
+			evidence,
+			process.source.bridge_anchor_margin,
+			provider,
+			evidence.config,
+			limits.polygon,
+			allocator,
+		)
+		if support_error != .None {return {}, support_error}
+	}
 	defer {
 		for &support in supports {
 			polygon.polygon_set_destroy(&support, allocator)
@@ -493,44 +497,38 @@ bridge_polygon_contains_twice :: proc(
 	x_twice, y_twice: i64,
 ) -> bool {
 	inside := false
+	qx := x_twice
+	qy := y_twice
 	for path in set.paths {
-		if path.count < 3 ||
-		   path.offset+path.count > u64(len(set.points)) {
+		n := int(path.count)
+		if n < 3 || path.offset+path.count > u64(len(set.points)) {
 			return false
 		}
 		start := int(path.offset)
-		for edge_index in 0..<int(path.count) {
-			a := set.points[start+edge_index]
-			b := set.points[start+(edge_index+1)%int(path.count)]
-			ax_twice := i128(i64(a.x))*2
-			ay_twice := i128(i64(a.y))*2
-			bx_twice := i128(i64(b.x))*2
-			by_twice := i128(i64(b.y))*2
-			qx := i128(x_twice)
-			qy := i128(y_twice)
-			cross :=
-				(bx_twice-ax_twice)*(qy-ay_twice)-
-				(by_twice-ay_twice)*(qx-ax_twice)
-			if cross == 0 &&
-			   qx >= min(ax_twice, bx_twice) &&
-			   qx <= max(ax_twice, bx_twice) &&
-			   qy >= min(ay_twice, by_twice) &&
-			   qy <= max(ay_twice, by_twice) {
-				return true
+		prev := set.points[start + n - 1]
+		ax_twice := i64(prev.x) * 2
+		ay_twice := i64(prev.y) * 2
+		for edge_index in 0..<n {
+			b := set.points[start + edge_index]
+			bx_twice := i64(b.x) * 2
+			by_twice := i64(b.y) * 2
+			lo_y := min(ay_twice, by_twice)
+			hi_y := max(ay_twice, by_twice)
+			if qy >= lo_y && qy <= hi_y {
+				dx := bx_twice - ax_twice
+				dy := by_twice - ay_twice
+				cross := dx*(qy - ay_twice) - dy*(qx - ax_twice)
+				if cross == 0 && qx >= min(ax_twice, bx_twice) && qx <= max(ax_twice, bx_twice) {
+					return true
+				}
+				if (ay_twice <= qy && qy < by_twice) || (by_twice <= qy && qy < ay_twice) {
+					if (dy > 0 && cross < 0) || (dy < 0 && cross > 0) {
+						inside = !inside
+					}
+				}
 			}
-			crosses := ay_twice <= qy && qy < by_twice ||
-				by_twice <= qy && qy < ay_twice
-			if !crosses {continue}
-			delta_y := i128(i64(b.y))-i128(i64(a.y))
-			numerator :=
-				i128(i64(a.x))*2*delta_y+
-				(qy-ay_twice)*
-				(i128(i64(b.x))-i128(i64(a.x)))
-			right := qx*delta_y
-			if delta_y > 0 && numerator > right ||
-			   delta_y < 0 && numerator < right {
-				inside = !inside
-			}
+			ax_twice = bx_twice
+			ay_twice = by_twice
 		}
 	}
 	return inside
@@ -539,102 +537,109 @@ bridge_polygon_contains_twice :: proc(
 bridge_direction_supports_build :: proc(
 	topology: slicing.Topology_Result,
 	regions: slicing.Region_Result,
+	evidence: Bridge_Evidence_Result,
 	anchor_margin: contracts.Micrometres,
 	provider: polygon.Polygon_Provider,
 	config: Bridge_Evidence_Config,
 	polygon_limits: polygon.Polygon_Limits,
 	allocator := context.allocator,
 ) -> ([]polygon.Polygon_Set, Bridge_Direction_Error) {
-	region_inputs := make(
-		[]polygon.Polygon_Set,
-		len(regions.regions),
-		allocator,
-	)
-	layer_inputs := make(
-		[]polygon.Polygon_Set,
-		len(regions.layers),
-		allocator,
-	)
-	supports := make(
-		[]polygon.Polygon_Set,
-		len(regions.layers),
-		allocator,
-	)
+	needed_layer := make([]bool, len(regions.layers), allocator)
+	defer delete(needed_layer, allocator)
+	for mask in evidence.masks {
+		if mask.kind == .Eligible_Unsupported && mask.layer_index > 0 && int(mask.layer_index) < len(needed_layer) {
+			needed_layer[mask.layer_index] = true
+		}
+	}
+	region_inputs := make([]polygon.Polygon_Set, len(regions.regions), allocator)
+	layer_inputs := make([]polygon.Polygon_Set, len(regions.layers), allocator)
+	supports := make([]polygon.Polygon_Set, len(regions.layers), allocator)
 	if len(regions.regions) > 0 && region_inputs == nil ||
-	   len(regions.layers) > 0 &&
-	    (layer_inputs == nil || supports == nil) {
+	   len(regions.layers) > 0 && (layer_inputs == nil || supports == nil) {
 		delete(region_inputs, allocator)
 		delete(layer_inputs, allocator)
 		delete(supports, allocator)
 		return nil, .Allocation_Failed
 	}
 	defer {
-		for &input in region_inputs {
-			polygon.polygon_set_destroy(&input, allocator)
-		}
-		for &input in layer_inputs {
-			polygon.polygon_set_destroy(&input, allocator)
-		}
+		for &input in region_inputs {polygon.polygon_set_destroy(&input, allocator)}
+		for &input in layer_inputs {polygon.polygon_set_destroy(&input, allocator)}
 		delete(region_inputs, allocator)
 		delete(layer_inputs, allocator)
 	}
-	for _, region_index in regions.regions {
-		input, input_error := perimeter_region_input(
-			topology,
-			regions,
-			u32(region_index),
-			allocator,
-		)
+	for region, region_index in regions.regions {
+		next_l := int(region.layer_index) + 1
+		if next_l >= len(needed_layer) || !needed_layer[next_l] {continue}
+		input, input_error := perimeter_region_input(topology, regions, u32(region_index), allocator)
 		if input_error != .None {
-			for &support in supports {
-				polygon.polygon_set_destroy(&support, allocator)
-			}
+			for &support in supports {polygon.polygon_set_destroy(&support, allocator)}
 			delete(supports, allocator)
 			return nil, bridge_direction_perimeter_error(input_error)
 		}
 		region_inputs[region_index] = input
 	}
-	layer_error := bridge_evidence_join_layers(
-		regions,
-		region_inputs,
-		layer_inputs,
-		allocator,
-	)
+	layer_error := bridge_evidence_join_layers(regions, region_inputs, layer_inputs, allocator)
 	if layer_error != .None {
 		delete(supports, allocator)
 		return nil, bridge_direction_evidence_error(layer_error)
 	}
-	for layer_index in 1..<len(layer_inputs) {
-		previous := layer_inputs[layer_index-1]
-		if len(previous.paths) == 0 {continue}
-		if anchor_margin == 0 {
-			cloned, clone_ok := skin_polygon_clone(previous, allocator)
+
+	layer_errs := make([]Bridge_Direction_Error, len(layer_inputs), allocator)
+	defer delete(layer_errs, allocator)
+	BD_Sup_Par_Ctx :: struct {
+		needed_layer:   []bool,
+		layer_inputs:   []polygon.Polygon_Set,
+		supports:       []polygon.Polygon_Set,
+		layer_errs:     []Bridge_Direction_Error,
+		anchor_margin:  contracts.Micrometres,
+		provider:       polygon.Polygon_Provider,
+		config:         Bridge_Evidence_Config,
+		polygon_limits: polygon.Polygon_Limits,
+		allocator:      mem.Allocator,
+	}
+	sctx := BD_Sup_Par_Ctx{
+		needed_layer   = needed_layer,
+		layer_inputs   = layer_inputs,
+		supports       = supports,
+		layer_errs     = layer_errs,
+		anchor_margin  = anchor_margin,
+		provider       = provider,
+		config         = config,
+		polygon_limits = polygon_limits,
+		allocator      = allocator,
+	}
+	parallel_for(len(layer_inputs), &sctx, proc(c: ^BD_Sup_Par_Ctx, layer_index: int) {
+		if layer_index == 0 || !c.needed_layer[layer_index] {return}
+		previous := c.layer_inputs[layer_index - 1]
+		if len(previous.paths) == 0 {return}
+		if c.anchor_margin == 0 {
+			cloned, clone_ok := skin_polygon_clone(previous, c.allocator)
 			if !clone_ok {
-				for &support in supports {
-					polygon.polygon_set_destroy(&support, allocator)
-				}
-				delete(supports, allocator)
-				return nil, .Allocation_Failed
+				c.layer_errs[layer_index] = .Allocation_Failed
+				return
 			}
-			supports[layer_index] = cloned
-			continue
+			c.supports[layer_index] = cloned
+			return
 		}
-		support, support_error := provider.offset(
+		support, support_error := c.provider.offset(
 			previous,
-			anchor_margin,
-			config.join_type,
-			config.miter_limit,
-			config.arc_tolerance,
-			polygon_limits,
-			allocator,
+			c.anchor_margin,
+			c.config.join_type,
+			c.config.miter_limit,
+			c.config.arc_tolerance,
+			c.polygon_limits,
+			c.allocator,
 		)
-		supports[layer_index] = support
+		c.supports[layer_index] = support
 		if support_error != .None {
-			for &item in supports {
-				polygon.polygon_set_destroy(&item, allocator)
-			}
+			c.layer_errs[layer_index] = .Provider
+		}
+	})
+	for err in layer_errs {
+		if err != .None {
+			for &support in supports {polygon.polygon_set_destroy(&support, allocator)}
 			delete(supports, allocator)
-			return nil, .Provider
+			return nil, err
 		}
 	}
 	return supports, .None

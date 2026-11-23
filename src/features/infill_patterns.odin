@@ -404,6 +404,34 @@ infill_pat_flush_run :: proc(
 	append(out, Infill_Pattern_Path{layer_index = layer_index, points = pts, line_widths = ws})
 }
 
+// Band-filtered edge representation for O(band_edges) point-in-polygon tests along a gyroid wave.
+@(private = "file")
+Band_Edge_2 :: struct {
+	ax2, ay2, bx2, by2: i64,
+}
+
+@(private = "file")
+band_edges_contains_twice :: proc(edges: []Band_Edge_2, qx, qy: i64) -> bool {
+	inside := false
+	for e in edges {
+		lo_y := min(e.ay2, e.by2)
+		hi_y := max(e.ay2, e.by2)
+		if qy < lo_y || qy > hi_y {continue}
+		dx := e.bx2 - e.ax2
+		dy := e.by2 - e.ay2
+		cross := dx*(qy - e.ay2) - dy*(qx - e.ax2)
+		if cross == 0 && qx >= min(e.ax2, e.bx2) && qx <= max(e.ax2, e.bx2) {
+			return true
+		}
+		if (e.ay2 <= qy && qy < e.by2) || (e.by2 <= qy && qy < e.ay2) {
+			if (dy > 0 && cross < 0) || (dy < 0 && cross > 0) {
+				inside = !inside
+			}
+		}
+	}
+	return inside
+}
+
 // Gyroid sinusoidal wave infill alternating X/Y across layers with smooth Z phase progression.
 @(private)
 infill_pat_gyroid :: proc(
@@ -421,11 +449,77 @@ infill_pat_gyroid :: proc(
 	z_phase := (2.0 * math.PI * z_um) / period
 	step := max(period / 8.0, 500.0)
 	horizontal := (layer_index % 2) == 0
+	amp_margin2 := i64(math.ceil((amp + 20.0) * 2.0))
 
+	// Flatten boundary edges once per layer (transposed for vertical waves so ray-cast is always in band-axis).
+	all_edges := make([dynamic]Band_Edge_2, 0, len(boundary.points), context.temp_allocator)
+	for path in boundary.paths {
+		n := int(path.count)
+		if n < 3 {continue}
+		s := int(path.offset)
+		prev := boundary.points[s + n - 1]
+		for ei in 0..<n {
+			cur := boundary.points[s + ei]
+			if horizontal {
+				append(&all_edges, Band_Edge_2{i64(prev.x)*2, i64(prev.y)*2, i64(cur.x)*2, i64(cur.y)*2})
+			} else {
+				append(&all_edges, Band_Edge_2{i64(prev.y)*2, i64(prev.x)*2, i64(cur.y)*2, i64(cur.x)*2})
+			}
+			prev = cur
+		}
+	}
+
+	band := make([dynamic]Band_Edge_2, 0, 32, context.temp_allocator)
 	raw := make([dynamic]polygon.Polygon_Point, 0, 128, context.temp_allocator)
+	run := make([dynamic]polygon.Polygon_Point, 0, 128, context.temp_allocator)
+
+	emit_band_clipped :: proc(
+		out: ^[dynamic]Infill_Pattern_Path,
+		band_edges: []Band_Edge_2,
+		horizontal: bool,
+		layer_index: u32,
+		raw_pts: []polygon.Polygon_Point,
+		run: ^[dynamic]polygon.Polygon_Point,
+		line_width: contracts.Micrometres,
+		allocator: mem.Allocator,
+	) {
+		if len(raw_pts) < 2 || len(band_edges) == 0 {return}
+		clear(run)
+		for i in 0..<len(raw_pts)-1 {
+			a := raw_pts[i]
+			b := raw_pts[i + 1]
+			if a == b {continue}
+			qx := i64(a.x) + i64(b.x)
+			qy := i64(a.y) + i64(b.y)
+			inside := band_edges_contains_twice(band_edges, qx, qy) if horizontal else band_edges_contains_twice(band_edges, qy, qx)
+			if inside {
+				if len(run^) == 0 {append(run, a)}
+				if run^[len(run^)-1] != b {append(run, b)}
+			} else if len(run^) >= 2 {
+				infill_pat_flush_run(out, layer_index, run^[:], line_width, allocator)
+				clear(run)
+			} else {
+				clear(run)
+			}
+		}
+		if len(run^) >= 2 {
+			infill_pat_flush_run(out, layer_index, run^[:], line_width, allocator)
+		}
+	}
+
 	if horizontal {
 		y0 := math.floor(f64(min_y)/spacing) * spacing
 		for y := y0; y <= f64(max_y) + spacing; y += spacing {
+			y2 := i64(math.round(y * 2.0))
+			lo_band := y2 - amp_margin2
+			hi_band := y2 + amp_margin2
+			clear(&band)
+			for e in all_edges {
+				if max(e.ay2, e.by2) >= lo_band && min(e.ay2, e.by2) <= hi_band {
+					append(&band, e)
+				}
+			}
+			if len(band) == 0 {continue}
 			clear(&raw)
 			row_phase := z_phase + (math.PI if (i64(math.round(y/spacing)) % 2 != 0) else 0.0)
 			for x := f64(min_x); x <= f64(max_x) + step; x += step {
@@ -437,11 +531,21 @@ infill_pat_gyroid :: proc(
 				})
 				if cx >= f64(max_x) {break}
 			}
-			infill_pat_emit_clipped_polyline(out, boundary, layer_index, raw[:], line_width, allocator)
+			emit_band_clipped(out, band[:], true, layer_index, raw[:], &run, line_width, allocator)
 		}
 	} else {
 		x0 := math.floor(f64(min_x)/spacing) * spacing
 		for x := x0; x <= f64(max_x) + spacing; x += spacing {
+			x2 := i64(math.round(x * 2.0))
+			lo_band := x2 - amp_margin2
+			hi_band := x2 + amp_margin2
+			clear(&band)
+			for e in all_edges {
+				if max(e.ay2, e.by2) >= lo_band && min(e.ay2, e.by2) <= hi_band {
+					append(&band, e)
+				}
+			}
+			if len(band) == 0 {continue}
 			clear(&raw)
 			col_phase := z_phase + (math.PI if (i64(math.round(x/spacing)) % 2 != 0) else 0.0)
 			for y := f64(min_y); y <= f64(max_y) + step; y += step {
@@ -453,7 +557,7 @@ infill_pat_gyroid :: proc(
 				})
 				if cy >= f64(max_y) {break}
 			}
-			infill_pat_emit_clipped_polyline(out, boundary, layer_index, raw[:], line_width, allocator)
+			emit_band_clipped(out, band[:], false, layer_index, raw[:], &run, line_width, allocator)
 		}
 	}
 }

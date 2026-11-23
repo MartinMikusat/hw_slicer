@@ -109,8 +109,9 @@ bridge_evidence_build :: proc(
 	   len(topology.layers) != len(regions.layers) {
 		return {}, .Invalid_Input
 	}
-	_, regions_ok := slicing.region_result_hash({}, topology, regions)
-	if !regions_ok {return {}, .Invalid_Input}
+	if len(regions.layers) == 0 && len(regions.regions) > 0 {
+		return {}, .Invalid_Input
+	}
 	if u64(len(regions.regions)) > u64(max(u32)) {
 		return {}, .Arithmetic
 	}
@@ -188,60 +189,128 @@ bridge_evidence_build :: proc(
 	)
 	if layer_error != .None {return {}, layer_error}
 
-	for layer_index in 1..<len(layer_inputs) {
-		previous := layer_inputs[layer_index-1]
-		if len(previous.paths) == 0 {continue}
-		if process.source.bridge_anchor_margin == 0 {
-			cloned, clone_ok := skin_polygon_clone(previous, allocator)
-			if !clone_ok {return {}, .Allocation_Failed}
-			expanded_supports[layer_index] = cloned
-			continue
+	layer_errs := make([]Bridge_Evidence_Error, len(layer_inputs), allocator)
+	defer delete(layer_errs, allocator)
+	Bridge_Support_Par_Ctx :: struct {
+		layer_inputs:      []polygon.Polygon_Set,
+		expanded_supports: []polygon.Polygon_Set,
+		layer_errs:        []Bridge_Evidence_Error,
+		anchor_margin:     contracts.Micrometres,
+		provider:          polygon.Polygon_Provider,
+		config:            Bridge_Evidence_Config,
+		limits:            Bridge_Evidence_Limits,
+		allocator:         mem.Allocator,
+	}
+	bsctx := Bridge_Support_Par_Ctx{
+		layer_inputs      = layer_inputs,
+		expanded_supports = expanded_supports,
+		layer_errs        = layer_errs,
+		anchor_margin     = process.source.bridge_anchor_margin,
+		provider          = provider,
+		config            = config,
+		limits            = limits,
+		allocator         = allocator,
+	}
+	parallel_for(len(layer_inputs), &bsctx, proc(c: ^Bridge_Support_Par_Ctx, layer_index: int) {
+		if layer_index == 0 {return}
+		previous := c.layer_inputs[layer_index - 1]
+		if len(previous.paths) == 0 {return}
+		if c.anchor_margin == 0 {
+			cloned, clone_ok := skin_polygon_clone(previous, c.allocator)
+			if !clone_ok {
+				c.layer_errs[layer_index] = .Allocation_Failed
+				return
+			}
+			c.expanded_supports[layer_index] = cloned
+			return
 		}
-		expanded, expand_error := provider.offset(
+		expanded, expand_error := c.provider.offset(
 			previous,
-			process.source.bridge_anchor_margin,
-			config.join_type,
-			config.miter_limit,
-			config.arc_tolerance,
-			limits.polygon,
-			allocator,
+			c.anchor_margin,
+			c.config.join_type,
+			c.config.miter_limit,
+			c.config.arc_tolerance,
+			c.limits.polygon,
+			c.allocator,
 		)
-		expanded_supports[layer_index] = expanded
-		if expand_error != .None {return {}, .Provider}
+		c.expanded_supports[layer_index] = expanded
+		if expand_error != .None {c.layer_errs[layer_index] = .Provider}
+	})
+	for err in layer_errs {
+		if err != .None {return {}, err}
+	}
+
+	reg_errs := make([]Bridge_Evidence_Error, len(regions.regions), allocator)
+	defer delete(reg_errs, allocator)
+	Bridge_Diff_Par_Ctx :: struct {
+		regions:           slicing.Region_Result,
+		region_inputs:     []polygon.Polygon_Set,
+		expanded_supports: []polygon.Polygon_Set,
+		outputs:           []polygon.Polygon_Set,
+		output_areas_2:    []i128,
+		reg_errs:          []Bridge_Evidence_Error,
+		provider:          polygon.Polygon_Provider,
+		config:            Bridge_Evidence_Config,
+		limits:            Bridge_Evidence_Limits,
+		allocator:         mem.Allocator,
+	}
+	bdctx := Bridge_Diff_Par_Ctx{
+		regions           = regions,
+		region_inputs     = region_inputs,
+		expanded_supports = expanded_supports,
+		outputs           = outputs,
+		output_areas_2    = output_areas_2,
+		reg_errs          = reg_errs,
+		provider          = provider,
+		config            = config,
+		limits            = limits,
+		allocator         = allocator,
+	}
+	parallel_for(len(regions.regions), &bdctx, proc(c: ^Bridge_Diff_Par_Ctx, region_index: int) {
+		region := c.regions.regions[region_index]
+		if region.layer_index == 0 {return}
+		unsupported, unsupported_error := c.provider.boolean(
+			c.region_inputs[region_index],
+			c.expanded_supports[region.layer_index],
+			.Difference,
+			c.config.fill_rule,
+			c.limits.polygon,
+			c.allocator,
+		)
+		c.outputs[region_index] = unsupported
+		if unsupported_error != .None {
+			c.reg_errs[region_index] = .Provider
+			return
+		}
+		if len(unsupported.paths) == 0 {return}
+		area_2, area_ok := bridge_evidence_area_2(unsupported)
+		if !area_ok {
+			c.reg_errs[region_index] = .Provider
+			return
+		}
+		c.output_areas_2[region_index] = area_2
+	})
+	for err in reg_errs {
+		if err != .None {return {}, err}
 	}
 
 	total_masks: u64
 	total_paths: u64
 	total_points: u64
 	minimum_area_2 := i128(process.source.minimum_bridge_area)*2
-	for region, region_index in regions.regions {
-		if region.layer_index == 0 {continue}
-		unsupported, unsupported_error := provider.boolean(
-			region_inputs[region_index],
-			expanded_supports[region.layer_index],
-			.Difference,
-			config.fill_rule,
-			limits.polygon,
-			allocator,
-		)
-		outputs[region_index] = unsupported
-		if unsupported_error != .None {return {}, .Provider}
+	for _, region_index in regions.regions {
+		unsupported := outputs[region_index]
 		if len(unsupported.paths) == 0 {continue}
-		area_2, area_ok := bridge_evidence_area_2(unsupported)
-		if !area_ok {return {}, .Provider}
-		output_areas_2[region_index] = area_2
 		total_masks += 1
 		if total_masks > limits.max_masks {
 			return {}, .Mask_Limit
 		}
 		if total_paths > limits.max_paths ||
-		   u64(len(unsupported.paths)) >
-		    limits.max_paths-total_paths {
+		   u64(len(unsupported.paths)) > limits.max_paths-total_paths {
 			return {}, .Path_Limit
 		}
 		if total_points > limits.max_points ||
-		   u64(len(unsupported.points)) >
-		    limits.max_points-total_points {
+		   u64(len(unsupported.points)) > limits.max_points-total_points {
 			return {}, .Point_Limit
 		}
 		total_paths += u64(len(unsupported.paths))

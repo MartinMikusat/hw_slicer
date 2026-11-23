@@ -145,7 +145,7 @@ role_overlap_resolve :: proc(
 			profiles.printable_role_priority(source.role)
 		ordinal, ordinal_ok :=
 			feature_role_overlap_ordinal(source.role)
-		_, geometry_ok := polygon.polygon_set_hash(source.geometry)
+		geometry_ok := polygon.polygon_set_validate(source.geometry, limits.polygon) == .None
 		source_area, area_ok := role_overlap_area_2(source.geometry)
 		if !priority_ok || !ordinal_ok ||
 		   source.stable_id == contracts.INVALID_STABLE_ID ||

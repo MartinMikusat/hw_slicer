@@ -38,6 +38,7 @@ bridge_direction_result_hash :: proc(
 	supports, support_error := bridge_direction_supports_build(
 		topology,
 		regions,
+		evidence,
 		process.source.bridge_anchor_margin,
 		provider,
 		evidence.config,

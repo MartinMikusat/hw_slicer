@@ -209,9 +209,7 @@ motion_plan_build :: proc(
 		   z > i64(profile.printer.axis_maximum_z) {
 			return {}, .Invalid_Layer
 		}
-		if _, geometry_ok := polygon.polygon_set_hash(
-			model_layers[layer_index],
-		); !geometry_ok {
+		if polygon.polygon_set_validate(model_layers[layer_index], polygon.DEFAULT_POLYGON_LIMITS) != .None {
 			return {}, .Invalid_Model
 		}
 		move_start := int(layer.move_offset)

@@ -104,12 +104,9 @@ perimeters_generate :: proc(
 	if len(regions.layers) != len(topology.layers) {
 		return {}, .Invalid_Input
 	}
-	_, regions_ok := slicing.region_result_hash(
-		contracts.Content_Hash{},
-		topology,
-		regions,
-	)
-	if !regions_ok {return {}, .Invalid_Input}
+	if len(regions.layers) == 0 && len(regions.regions) > 0 {
+		return {}, .Invalid_Input
+	}
 	if config.topology_policy == .Strict_Printable &&
 	   (topology.open_chain_count > 0 ||
 	    topology.degenerate_loop_count > 0 ||

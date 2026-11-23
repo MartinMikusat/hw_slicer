@@ -115,14 +115,9 @@ gap_evidence_build :: proc(
 	   len(perimeters.layers) != len(regions.layers) {
 		return {}, .Invalid_Input
 	}
-	region_hash, region_ok := slicing.region_result_hash(
-		{},
-		topology,
-		regions,
-	)
-	if !region_ok {return {}, .Invalid_Input}
-	_, perimeter_ok := perimeter_result_hash(region_hash, perimeters)
-	if !perimeter_ok {return {}, .Invalid_Input}
+	if len(perimeters.groups) != len(regions.regions) * int(perimeters.config.count) {
+		return {}, .Invalid_Input
+	}
 	if len(regions.regions) > max(int)/6 {
 		return {}, .Arithmetic
 	}

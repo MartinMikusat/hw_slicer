@@ -124,14 +124,7 @@ skins_propagate :: proc(
 	for height in layer_heights {
 		if i64(height) <= 0 {return {}, .Invalid_Input}
 	}
-	region_hash, region_ok := slicing.region_result_hash(
-		{},
-		topology,
-		regions,
-	)
-	if !region_ok {return {}, .Invalid_Input}
-	_, surface_ok := surface_result_hash(region_hash, surfaces)
-	if !surface_ok || surfaces.config.fill_rule != config.fill_rule {
+	if surfaces.config.fill_rule != config.fill_rule {
 		return {}, .Invalid_Input
 	}
 	if len(regions.regions) > max(int)/3 ||
