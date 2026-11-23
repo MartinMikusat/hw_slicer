@@ -257,9 +257,10 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
 - **Issue:** The step is taken from the slope bin at the current Z, not the smallest target height over the span the new layer covers, so a coarse layer can step over the start of a shallow-slope region.
 - **Resolution:** The step is the smallest target height over every slope bin between the current top and the provisional next top. Adaptive Benchy now has 472 layers (457 before), finer where shallow slopes begin.
 
-### [CR-38] Contour Simplification Is Independent per Loop
+### [CR-38] Contour Simplification Is Independent per Loop — **ACCEPTED**
 - **Location:** `src/slicing/simplify.odin`
 - **Issue:** Each loop is simplified alone (12 µm default tolerance) with only an area-sign guard, so neighbouring loops closer than the tolerance can cross. Kept segment indices no longer describe the simplified edges, so segment lineage becomes approximate.
+- **Resolution:** Accepted without a change. `slice_run` in `src/pipeline/orchestrator.odin` builds regions from the simplified topology, and `regions_build` rejects crossing or touching contours with `Contour_Intersection`. The orchestrator then repairs the layer with `repair.contour_path_repair` (polygon union, lineage tolerance 50 µm) up to `max_contour_repairs` times, and fails the slice beyond that. Crossings therefore cannot reach later stages unnoticed. Lineage after simplification stays approximate within that tolerance.
 
 ### [CR-39] Tree Support Trunks Cross the Skirt on the First Layer — **RESOLVED**
 - **Location:** `src/features/tree_supports.odin`
