@@ -16,13 +16,13 @@
 
 With closed-ring Douglas-Peucker contour simplification (`12 µm`), `DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()`, identical/disjoint AABB fast paths, flat split arrays, subject-vs-clip pair filtering, precomputed slopes, and flat degree-1 loop tracing, **100% pure Odin + Metal (zero C++ executed)** passes the full 3-model suite and all 12 checks in `scripts/accept.sh`:
 
-| Model | Pure Odin + Metal (`OdinVatti 2.0`) | OrcaSlicer 2.5.1 | `Odin / Orca` | Filament vs. Clipper2 | `klipper_validate` |
+| Model | Pure Odin + Metal (`OdinVatti 2.0`) | OrcaSlicer 2.5.1 | `Odin / Orca` | Filament (`--threads=1..8`, CPU/GPU) | `klipper_validate` |
 |---|---:|---:|---:|---:|---|
-| `cube.obj` | ~38 ms | — | — | `1376.06 mm` (`0.00%`) | PASS |
-| `all-in-one-test.stl` | **760.15 ms** | 1,032.32 ms | **0.74× (1.36× faster)** | `16594.48 mm` (`+0.80%`) | PASS |
-| `benchy.stl` | **708.21 ms** | 810.64 ms | **0.87× (1.14× faster)** | `3754.38 mm` (`-3.15%`) | PASS |
-| `stanford-bunny.stl` | **2,305.22 ms** | 2,134.05 ms | 1.08× | `30163.92 mm` (`-3.11%`) | PASS |
-| **Combined 3-Model Suite** | **3,773.58 ms** | **3,977.01 ms** | **0.95× (1.05× faster)** | — | **PASS** |
+| `cube.obj` | ~35 ms | — | — | `1376.06 mm` (`0.00%` vs Clipper2) | PASS |
+| `all-in-one-test.stl` | **656.56 ms** | 1,016.99 ms | **0.65× (1.55× faster)** | `16630.10 mm` (bit-exact) | PASS |
+| `benchy.stl` | **581.05 ms** | 791.00 ms | **0.73× (1.36× faster)** | `3753.50 mm` (bit-exact) | PASS |
+| `stanford-bunny.stl` | **1,411.57 ms** | 1,825.93 ms | **0.77× (1.29× faster)** | `30164.85 mm` (bit-exact) | PASS |
+| **Combined 3-Model Suite** | **2,649.18 ms** | **3,633.92 ms** | **0.73× (1.37× faster)** | **100% bit-exact** | **PASS** |
 
 ## Status
 - `NATIVE_PROVIDER` (`OdinVatti 2.0`) is the default polygon engine (`use_native_polygon = true`).

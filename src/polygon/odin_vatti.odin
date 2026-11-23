@@ -428,8 +428,8 @@ vatti_emit_vert_run :: proc(
 	if s_end <= s_start {return}
 	yb := ys[s_start]
 	yt := ys[s_end]
-	xb := v.x0 if s_start == v.s0 else v.x0 + i64(math.round(f64(v.x1 - v.x0) * f64(yb - v.y0) / f64(v.y1 - v.y0)))
-	xt := v.x1 if s_end == v.s1 else v.x0 + i64(math.round(f64(v.x1 - v.x0) * f64(yt - v.y0) / f64(v.y1 - v.y0)))
+	xb := v.x0 if yb == v.y0 else v.x0 + i64(math.round(v.slope * f64(yb - v.y0)))
+	xt := v.x1 if yt == v.y1 else v.x0 + i64(math.round(v.slope * f64(yt - v.y0)))
 	if xb == xt && yb == yt {return}
 	if verdict == +1 {
 		append(out, Vatti_Dir_Edge{ax = xb, ay = yb, bx = xt, by = yt})
@@ -469,14 +469,14 @@ vatti_collect_segs :: proc(set: Polygon_Set, is_clip: bool, out: ^[dynamic]Vatti
 
 @(private = "file")
 vatti_seg_intersect :: proc(a, b: Vatti_Seg) -> (px, py: i64, ta, tb: f64, hit: bool) {
-	dax := i128(a.bx - a.ax)
-	day := i128(a.by - a.ay)
-	dbx := i128(b.bx - b.ax)
-	dby := i128(b.by - b.ay)
+	dax := a.bx - a.ax
+	day := a.by - a.ay
+	dbx := b.bx - b.ax
+	dby := b.by - b.ay
 	denom := dax*dby - day*dbx
 	if denom == 0 {return 0, 0, 0, 0, false}
-	rx := i128(b.ax - a.ax)
-	ry := i128(b.ay - a.ay)
+	rx := b.ax - a.ax
+	ry := b.ay - a.ay
 	num_a := rx*dby - ry*dbx
 	num_b := rx*day - ry*dax
 	if denom > 0 {
@@ -486,17 +486,17 @@ vatti_seg_intersect :: proc(a, b: Vatti_Seg) -> (px, py: i64, ta, tb: f64, hit: 
 	}
 	ta = f64(num_a) / f64(denom)
 	tb = f64(num_b) / f64(denom)
-	px = a.ax + i64(math.round(ta * f64(a.bx - a.ax)))
-	py = a.ay + i64(math.round(ta * f64(a.by - a.ay)))
+	px = a.ax + i64(math.round(ta * f64(dax)))
+	py = a.ay + i64(math.round(ta * f64(day)))
 	return px, py, ta, tb, true
 }
 
 @(private = "file")
 vatti_segs_collinear :: proc(a, b: Vatti_Seg) -> bool {
-	dax := i128(a.bx - a.ax)
-	day := i128(a.by - a.ay)
-	return dax*i128(b.ax - a.ax) - day*i128(b.ay - a.ay) == 0 &&
-	       dax*i128(b.bx - a.ax) - day*i128(b.by - a.ay) == 0
+	dax := a.bx - a.ax
+	day := a.by - a.ay
+	return dax*(b.ax - a.ax) - day*(b.ay - a.ay) == 0 &&
+	       dax*(b.bx - a.ax) - day*(b.by - a.ay) == 0
 }
 
 @(private = "file")

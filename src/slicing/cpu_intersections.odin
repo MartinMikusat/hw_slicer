@@ -1,9 +1,54 @@
 package slicing
 
 import "core:mem"
+import "core:sync"
+import "core:thread"
 
 import contracts "../contracts"
 import geometry "../geometry"
+
+@(private = "file")
+g_slicing_worker_threads := 8
+
+slicing_set_worker_threads :: proc(n: int) {
+	g_slicing_worker_threads = clamp(n, 1, 16)
+}
+
+@(private = "file")
+slicing_parallel_for :: proc(count: int, ctx: ^$T, body: proc(ctx: ^T, index: int)) {
+	if count <= 0 {return}
+	workers := min(g_slicing_worker_threads, count)
+	if workers <= 1 || count < 4 {
+		for i in 0..<count {body(ctx, i)}
+		return
+	}
+	State :: struct {
+		next:  int,
+		count: int,
+		ctx:   ^T,
+		body:  proc(ctx: ^T, index: int),
+	}
+	state := State{count = count, ctx = ctx, body = body}
+	worker_fn :: proc(st: ^State) {
+		for {
+			idx := sync.atomic_add(&st.next, 1)
+			if idx >= st.count {break}
+			st.body(st.ctx, idx)
+		}
+	}
+	threads: [15]^thread.Thread
+	spawned := workers - 1
+	for i in 0..<spawned {
+		threads[i] = thread.create_and_start_with_poly_data(&state, worker_fn)
+	}
+	worker_fn(&state)
+	for i in 0..<spawned {
+		if threads[i] != nil {
+			thread.join(threads[i])
+			thread.destroy(threads[i])
+		}
+	}
+}
 
 Planar_Candidate_Kind :: enum u8 {
 	Invalid,
@@ -127,155 +172,177 @@ cpu_intersections_build :: proc(
 	defer delete(segment_counts, allocator)
 	defer delete(planar_counts, allocator)
 
-	total_segments: u64
-	total_planar: u64
 	expected_pair_offset: u64
-	for layer, layer_index in span_index.layers {
+	for layer in span_index.layers {
 		if layer.offset != expected_pair_offset ||
 		   u64(layer.count) > u64(pair_count)-expected_pair_offset {
 			cpu_intersections_destroy(&result, allocator)
 			return {}, .Invalid_Index
 		}
 		expected_pair_offset += u64(layer.count)
-		for local_pair in 0..<int(layer.count) {
-			pair_index := int(layer.offset)+local_pair
-			triangle_index := span_index.triangle_indices[pair_index]
-			evaluation, error := cpu_intersection_evaluate_pair(
-				mesh,
-				schedule,
-				span_index,
-				u32(layer_index),
-				triangle_index,
-				pair_index,
-			)
-			if error != .None {
-				cpu_intersections_destroy(&result, allocator)
-				return {}, error
-			}
-			result.exact_predicate_count +=
-				u64(evaluation.exact_predicate_count)
-			switch evaluation.kind {
-			case .Segment:
-				if total_segments >= limits.max_segments {
-					cpu_intersections_destroy(&result, allocator)
-					return {}, .Segment_Limit
-				}
-				total_segments += 1
-				segment_counts[layer_index] += 1
-			case .Planar:
-				if total_planar >= limits.max_planar_candidates {
-					cpu_intersections_destroy(&result, allocator)
-					return {}, .Planar_Limit
-				}
-				total_planar += 1
-				planar_counts[layer_index] += 1
-			case .Tangent:
-				result.tangent_count += 1
-			case .Degenerate:
-				result.degenerate_count += 1
-			case .None:
-			}
-		}
 	}
 	if expected_pair_offset != u64(pair_count) {
 		cpu_intersections_destroy(&result, allocator)
 		return {}, .Invalid_Index
+	}
+
+	tangent_counts := make([]u64, layer_count, allocator)
+	degen_counts := make([]u64, layer_count, allocator)
+	exact_counts := make([]u64, layer_count, allocator)
+	layer_errs := make([]CPU_Intersection_Error, layer_count, allocator)
+	defer {
+		delete(tangent_counts, allocator)
+		delete(degen_counts, allocator)
+		delete(exact_counts, allocator)
+		delete(layer_errs, allocator)
+	}
+
+	Isect_Par_Ctx :: struct {
+		mesh:           geometry.Canonical_Mesh,
+		schedule:       Fixed_Layer_Schedule,
+		span_index:     Layer_Span_Index,
+		segment_counts: []u64,
+		planar_counts:  []u64,
+		tangent_counts: []u64,
+		degen_counts:   []u64,
+		exact_counts:   []u64,
+		layer_errs:     []CPU_Intersection_Error,
+		result:         ^CPU_Intersection_Result,
+	}
+	ictx := Isect_Par_Ctx{
+		mesh           = mesh,
+		schedule       = schedule,
+		span_index     = span_index,
+		segment_counts = segment_counts,
+		planar_counts  = planar_counts,
+		tangent_counts = tangent_counts,
+		degen_counts   = degen_counts,
+		exact_counts   = exact_counts,
+		layer_errs     = layer_errs,
+		result         = &result,
+	}
+
+	slicing_parallel_for(layer_count, &ictx, proc(c: ^Isect_Par_Ctx, layer_index: int) {
+		layer := c.span_index.layers[layer_index]
+		segs, planars, tangents, degens, exacts: u64
+		for local_pair in 0..<int(layer.count) {
+			pair_index := int(layer.offset) + local_pair
+			triangle_index := c.span_index.triangle_indices[pair_index]
+			evaluation, error := cpu_intersection_evaluate_pair(
+				c.mesh, c.schedule, c.span_index, u32(layer_index), triangle_index, pair_index,
+			)
+			if error != .None {
+				c.layer_errs[layer_index] = error
+				return
+			}
+			exacts += u64(evaluation.exact_predicate_count)
+			switch evaluation.kind {
+			case .Segment:    segs += 1
+			case .Planar:     planars += 1
+			case .Tangent:    tangents += 1
+			case .Degenerate: degens += 1
+			case .None:
+			}
+		}
+		c.segment_counts[layer_index] = segs
+		c.planar_counts[layer_index] = planars
+		c.tangent_counts[layer_index] = tangents
+		c.degen_counts[layer_index] = degens
+		c.exact_counts[layer_index] = exacts
+	})
+
+	total_segments: u64
+	total_planar: u64
+	for layer_index in 0..<layer_count {
+		if layer_errs[layer_index] != .None {
+			cpu_intersections_destroy(&result, allocator)
+			return {}, layer_errs[layer_index]
+		}
+		sc := segment_counts[layer_index]
+		pc := planar_counts[layer_index]
+		if total_segments > limits.max_segments || sc > limits.max_segments - total_segments {
+			cpu_intersections_destroy(&result, allocator)
+			return {}, .Segment_Limit
+		}
+		if total_planar > limits.max_planar_candidates || pc > limits.max_planar_candidates - total_planar {
+			cpu_intersections_destroy(&result, allocator)
+			return {}, .Planar_Limit
+		}
+		if sc > u64(max(u32)) || pc > u64(max(u32)) {
+			cpu_intersections_destroy(&result, allocator)
+			return {}, .Allocation_Failed
+		}
+		result.layers[layer_index] = {
+			segment_offset = total_segments,
+			segment_count  = u32(sc),
+			planar_offset  = total_planar,
+			planar_count   = u32(pc),
+		}
+		total_segments += sc
+		total_planar += pc
+		result.tangent_count += tangent_counts[layer_index]
+		result.degenerate_count += degen_counts[layer_index]
+		result.exact_predicate_count += exact_counts[layer_index]
 	}
 	if total_segments > u64(max(int)) || total_planar > u64(max(int)) {
 		cpu_intersections_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
 
-	segment_offset: u64
-	planar_offset: u64
-	for layer_index in 0..<layer_count {
-		if segment_counts[layer_index] > u64(max(u32)) ||
-		   planar_counts[layer_index] > u64(max(u32)) {
-			cpu_intersections_destroy(&result, allocator)
-			return {}, .Allocation_Failed
-		}
-		result.layers[layer_index] = {
-			segment_offset = segment_offset,
-			segment_count = u32(segment_counts[layer_index]),
-			planar_offset = planar_offset,
-			planar_count = u32(planar_counts[layer_index]),
-		}
-		segment_offset += segment_counts[layer_index]
-		planar_offset += planar_counts[layer_index]
-	}
-	if !raw_segment_soa_allocate(
-		&result.segments,
-		int(total_segments),
-		allocator,
-	) {
+	if !raw_segment_soa_allocate(&result.segments, int(total_segments), allocator) {
 		cpu_intersections_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
-	result.planar_candidates = make(
-		[]Planar_Candidate,
-		int(total_planar),
-		allocator,
-	)
+	result.planar_candidates = make([]Planar_Candidate, int(total_planar), allocator)
 	if total_planar > 0 && result.planar_candidates == nil {
 		cpu_intersections_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
 
-	segment_cursors := make([]u64, layer_count, allocator)
-	planar_cursors := make([]u64, layer_count, allocator)
-	if segment_cursors == nil || planar_cursors == nil {
-		delete(segment_cursors, allocator)
-		delete(planar_cursors, allocator)
-		cpu_intersections_destroy(&result, allocator)
-		return {}, .Allocation_Failed
-	}
-	defer delete(segment_cursors, allocator)
-	defer delete(planar_cursors, allocator)
-	for layer, layer_index in result.layers {
-		segment_cursors[layer_index] = layer.segment_offset
-		planar_cursors[layer_index] = layer.planar_offset
-	}
-	for layer, layer_index in span_index.layers {
+	slicing_parallel_for(layer_count, &ictx, proc(c: ^Isect_Par_Ctx, layer_index: int) {
+		layer := c.span_index.layers[layer_index]
+		out_layer := c.result.layers[layer_index]
+		seg_cur := out_layer.segment_offset
+		pla_cur := out_layer.planar_offset
 		for local_pair in 0..<int(layer.count) {
-			pair_index := int(layer.offset)+local_pair
-			triangle_index := span_index.triangle_indices[pair_index]
+			pair_index := int(layer.offset) + local_pair
+			triangle_index := c.span_index.triangle_indices[pair_index]
 			evaluation, error := cpu_intersection_evaluate_pair(
-				mesh,
-				schedule,
-				span_index,
-				u32(layer_index),
-				triangle_index,
-				pair_index,
+				c.mesh, c.schedule, c.span_index, u32(layer_index), triangle_index, pair_index,
 			)
 			if error != .None {
-				cpu_intersections_destroy(&result, allocator)
-				return {}, error
+				c.layer_errs[layer_index] = error
+				return
 			}
 			switch evaluation.kind {
 			case .Segment:
-				write_index := segment_cursors[layer_index]
 				cpu_intersection_write_segment(
-					&result.segments,
-					int(write_index),
+					&c.result.segments,
+					int(seg_cur),
 					u32(layer_index),
 					triangle_index,
-					span_index.triangle_ids[pair_index],
-					schedule.layer_ids[layer_index],
+					c.span_index.triangle_ids[pair_index],
+					c.schedule.layer_ids[layer_index],
 					evaluation.segment,
 				)
-				segment_cursors[layer_index] += 1
+				seg_cur += 1
 			case .Planar:
-				write_index := planar_cursors[layer_index]
-				result.planar_candidates[write_index] = {
-					layer_index = u32(layer_index),
+				c.result.planar_candidates[pla_cur] = {
+					layer_index    = u32(layer_index),
 					triangle_index = triangle_index,
-					triangle_id = span_index.triangle_ids[pair_index],
-					kind = evaluation.planar_kind,
-					source_edge = evaluation.segment.edge_a,
+					triangle_id    = c.span_index.triangle_ids[pair_index],
+					kind           = evaluation.planar_kind,
+					source_edge    = evaluation.segment.edge_a,
 				}
-				planar_cursors[layer_index] += 1
+				pla_cur += 1
 			case .None, .Tangent, .Degenerate:
 			}
+		}
+	})
+	for err in layer_errs {
+		if err != .None {
+			cpu_intersections_destroy(&result, allocator)
+			return {}, err
 		}
 	}
 	return result, .None

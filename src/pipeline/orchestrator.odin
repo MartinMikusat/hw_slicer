@@ -403,6 +403,7 @@ slice_run_decoded_mesh :: proc(
 	t_total := time.tick_now()
 	result.stages = make([dynamic]Stage_Trace, 0, 20, allocator)
 	features.set_worker_threads(options.worker_threads)
+	slicing.slicing_set_worker_threads(options.worker_threads)
 	provider := polygon.NATIVE_PROVIDER if options.use_native_polygon else polygon.CLIPPER2_PROVIDER
 	process := profile.process
 	proc_src := process.source

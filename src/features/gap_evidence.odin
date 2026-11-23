@@ -518,6 +518,40 @@ gap_evidence_process_region :: proc(
 	coverage: polygon.Polygon_Set
 	group_start := region_index * int(perimeters.config.count)
 	group_end := group_start + int(perimeters.config.count)
+
+	// Fast path for thick single-loop regions where every concentric perimeter survived as a single ring:
+	// the contiguous outer shell covers the region down to offset(innermost_perimeter, -half_w).
+	if config.uncovered_only && perimeters.config.count >= 2 && region.contour_count == 1 {
+		all_single := true
+		for gi in group_start..<group_end {
+			if perimeters.groups[gi].path_count != 1 {
+				all_single = false
+				break
+			}
+		}
+		if all_single {
+			innermost, in_err := gap_perimeter_group_input(perimeters, u32(group_end - 1), allocator)
+			if in_err == .None {
+				residual_fast, off_err := provider.offset(
+					innermost,
+					contracts.Micrometres(-i64(derived.shell_half_width)),
+					config.join_type,
+					config.miter_limit,
+					config.arc_tolerance,
+					limits.polygon,
+					allocator,
+				)
+				polygon.polygon_set_destroy(&innermost, allocator)
+				if off_err == .None {
+					polygon.polygon_set_destroy(&region_input, allocator)
+					output_offset := region_index * 6
+					outputs[output_offset + 1] = residual_fast
+					return .None
+				}
+				polygon.polygon_set_destroy(&residual_fast, allocator)
+			}
+		}
+	}
 	for group_index in group_start..<group_end {
 		group := perimeters.groups[group_index]
 		if group.region_index != u32(region_index) ||
