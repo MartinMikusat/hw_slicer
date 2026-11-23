@@ -350,21 +350,36 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	for i in 0..<n_segs {seg_ords[i] = {idx = i, min_x = segs[i].min_x}}
 	slice.sort_by(seg_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
 
-	// Hot pixels: every endpoint and every rounded proper intersection.
-	hot := make([dynamic][2]i64, 0, n_segs * 2 + 16, context.temp_allocator)
-	for sg in segs {
-		append(&hot, [2]i64{sg.ax, sg.ay})
-		append(&hot, [2]i64{sg.bx, sg.by})
+	// Hot pixels are every endpoint and every rounded proper intersection. Endpoint pixels are
+	// tested in the same pair sweep that finds intersections (a segment passing within one unit of
+	// another segment's endpoint has an overlapping widened box); intersection pixels are few and
+	// are looked up per segment afterwards.
+	Snap_Item :: struct {seg: int, t: f64, x, y: i64}
+	snaps := make([dynamic]Snap_Item, 0, 64, context.temp_allocator)
+	try_snap :: proc(snaps: ^[dynamic]Snap_Item, idx: int, sg: Vatti_Seg, h: [2]i64) {
+		if (h[0] == sg.ax && h[1] == sg.ay) || (h[0] == sg.bx && h[1] == sg.by) {return}
+		if h[0] < sg.min_x - 1 || h[0] > sg.max_x + 1 || h[1] < sg.min_y - 1 || h[1] > sg.max_y + 1 {return}
+		if !vatti_segment_hits_pixel(sg, h) {return}
+		dx := f64(sg.bx - sg.ax)
+		dy := f64(sg.by - sg.ay)
+		t := (f64(h[0] - sg.ax)*dx + f64(h[1] - sg.ay)*dy) / (dx*dx + dy*dy)
+		append(snaps, Snap_Item{idx, t, h[0], h[1]})
 	}
+	hot := make([dynamic][2]i64, 0, 16, context.temp_allocator)
 	for oi in 0..<n_segs {
 		i := seg_ords[oi].idx
 		sa := segs[i]
 		for oj := oi + 1; oj < n_segs; oj += 1 {
-			if seg_ords[oj].min_x > sa.max_x {break}
+			if seg_ords[oj].min_x > sa.max_x + 1 {break}
 			j := seg_ords[oj].idx
 			sb := segs[j]
+			if sb.max_y < sa.min_y - 1 || sb.min_y > sa.max_y + 1 {continue}
+			try_snap(&snaps, i, sa, {sb.ax, sb.ay})
+			try_snap(&snaps, i, sa, {sb.bx, sb.by})
+			try_snap(&snaps, j, sb, {sa.ax, sa.ay})
+			try_snap(&snaps, j, sb, {sa.bx, sa.by})
+			if sb.min_x > sa.max_x || sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
 			if skip_same_set && sa.is_clip == sb.is_clip {continue}
-			if sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
 			if px, py, ta, tb, hit := vatti_seg_intersect(sa, sb); hit {
 				if (ta > 1e-9 && ta < 1.0 - 1e-9) || (tb > 1e-9 && tb < 1.0 - 1e-9) {
 					append(&hot, [2]i64{px, py})
@@ -377,49 +392,52 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 			}
 		}
 	}
-	slice.sort_by(hot[:], proc(a, b: [2]i64) -> bool {
-		if a[0] != b[0] {return a[0] < b[0]}
-		return a[1] < b[1]
-	})
-	unique := 0
-	for h in hot {
-		if unique == 0 || hot[unique - 1] != h {
-			hot[unique] = h
-			unique += 1
+	if len(hot) > 0 {
+		slice.sort_by(hot[:], proc(a, b: [2]i64) -> bool {
+			if a[0] != b[0] {return a[0] < b[0]}
+			return a[1] < b[1]
+		})
+		unique := 0
+		for h in hot {
+			if unique == 0 || hot[unique - 1] != h {
+				hot[unique] = h
+				unique += 1
+			}
+		}
+		resize(&hot, unique)
+		for sg, i in segs {
+			lo, hi := 0, len(hot)
+			for lo < hi {
+				mid := (lo + hi) / 2
+				if hot[mid][0] < sg.min_x - 1 {lo = mid + 1} else {hi = mid}
+			}
+			for k := lo; k < len(hot) && hot[k][0] <= sg.max_x + 1; k += 1 {
+				try_snap(&snaps, i, sg, hot[k])
+			}
 		}
 	}
-	resize(&hot, unique)
+	if len(snaps) == 0 && crossings == 0 {
+		pieces = make([dynamic]Vatti_Seg, 0, n_segs, context.temp_allocator)
+		append(&pieces, ..segs)
+		return
+	}
+	slice.sort_by(snaps[:], proc(a, b: Snap_Item) -> bool {
+		if a.seg != b.seg {return a.seg < b.seg}
+		return a.t < b.t
+	})
 
-	// Route each segment through the hot pixels it passes through.
-	Snap :: struct {t: f64, x, y: i64}
-	snaps := make([dynamic]Snap, 0, 16, context.temp_allocator)
-	routed := make([dynamic]Vatti_Seg, 0, n_segs + len(hot), context.temp_allocator)
-	for sg in segs {
-		clear(&snaps)
-		dx := f64(sg.bx - sg.ax)
-		dy := f64(sg.by - sg.ay)
-		l2 := dx*dx + dy*dy
-		// First hot pixel with x >= min_x - 1.
-		lo, hi := 0, len(hot)
-		for lo < hi {
-			mid := (lo + hi) / 2
-			if hot[mid][0] < sg.min_x - 1 {lo = mid + 1} else {hi = mid}
-		}
-		for k := lo; k < len(hot) && hot[k][0] <= sg.max_x + 1; k += 1 {
-			h := hot[k]
-			if h[1] < sg.min_y - 1 || h[1] > sg.max_y + 1 {continue}
-			if (h[0] == sg.ax && h[1] == sg.ay) || (h[0] == sg.bx && h[1] == sg.by) {continue}
-			if !vatti_segment_hits_pixel(sg, h) {continue}
-			t := (f64(h[0] - sg.ax)*dx + f64(h[1] - sg.ay)*dy) / l2
-			append(&snaps, Snap{t = t, x = h[0], y = h[1]})
-		}
-		if len(snaps) == 0 {
-			append(&routed, sg)
-			continue
-		}
-		slice.sort_by(snaps[:], proc(a, b: Snap) -> bool {return a.t < b.t})
+	// Route each segment through its hot pixels in order along the segment. Parents are visited
+	// in min-x order, so the pieces come out nearly sorted by min-x.
+	snap_offsets := make([]int, n_segs + 1, context.temp_allocator)
+	for sn in snaps {snap_offsets[sn.seg + 1] += 1}
+	for i in 0..<n_segs {snap_offsets[i + 1] += snap_offsets[i]}
+	routed := make([dynamic]Vatti_Seg, 0, n_segs + len(snaps), context.temp_allocator)
+	for oi in 0..<n_segs {
+		i := seg_ords[oi].idx
+		sg := segs[i]
 		px, py := sg.ax, sg.ay
-		for sn in snaps {
+		for sn in snaps[snap_offsets[i]:snap_offsets[i + 1]] {
+			if sn.x == px && sn.y == py {continue}
 			vatti_append_piece(&routed, px, py, sn.x, sn.y, sg.is_clip)
 			px, py = sn.x, sn.y
 		}
@@ -430,7 +448,16 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	n_routed := len(routed)
 	route_ords := make([]Seg_Ord, n_routed, context.temp_allocator)
 	for i in 0..<n_routed {route_ords[i] = {idx = i, min_x = routed[i].min_x}}
-	slice.sort_by(route_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
+	// Insertion sort: the pieces are nearly sorted already.
+	for ai := 1; ai < n_routed; ai += 1 {
+		key := route_ords[ai]
+		aj := ai - 1
+		for aj >= 0 && route_ords[aj].min_x > key.min_x {
+			route_ords[aj + 1] = route_ords[aj]
+			aj -= 1
+		}
+		route_ords[aj + 1] = key
+	}
 	Flat_Split :: struct {
 		seg_idx: int,
 		t:       f64,
@@ -461,14 +488,14 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 		if a.seg_idx != b.seg_idx {return a.seg_idx < b.seg_idx}
 		return a.t < b.t
 	})
-	k := 0
+	ks := 0
 	for i in 0..<n_routed {
 		sg := routed[i]
 		px, py := sg.ax, sg.ay
-		for k < len(splits) && splits[k].seg_idx == i {
-			vatti_append_piece(&pieces, px, py, splits[k].px, splits[k].py, sg.is_clip)
-			px, py = splits[k].px, splits[k].py
-			k += 1
+		for ks < len(splits) && splits[ks].seg_idx == i {
+			vatti_append_piece(&pieces, px, py, splits[ks].px, splits[ks].py, sg.is_clip)
+			px, py = splits[ks].px, splits[ks].py
+			ks += 1
 		}
 		vatti_append_piece(&pieces, px, py, sg.bx, sg.by, sg.is_clip)
 	}
