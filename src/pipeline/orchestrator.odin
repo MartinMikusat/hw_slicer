@@ -670,8 +670,12 @@ slice_run_decoded_mesh :: proc(
 
 	// Stage 7: Sparse infill (Rectilinear fast path or general pattern generator).
 	t0 = time.tick_now()
+	// Density is a volume fraction. A line deposits a rounded cross-section of
+	// w*h - (1 - pi/4)*h^2, so rows of straight lines at spacing (w - (1 - pi/4)*h) / density fill
+	// that fraction. Patterns with longer rows (gyroid) widen this spacing themselves.
 	density := clamp(options.infill_density_percent, 1.0, 100.0)
-	infill_spacing := contracts.Micrometres(max(i64(proc_src.nominal_line_width), i64(math.round(f64(proc_src.nominal_line_width)*100.0/density))))
+	effective_width := f64(i64(proc_src.nominal_line_width)) - (1.0 - math.PI/4.0)*f64(i64(proc_src.layer_height))
+	infill_spacing := contracts.Micrometres(max(i64(proc_src.nominal_line_width), i64(math.round(effective_width*100.0/density))))
 	infill_inset := contracts.Micrometres(i64(proc_src.perimeter_count)*i64(proc_src.nominal_line_width))
 	infill: features.Infill_Result
 	pattern_infill: features.Infill_Pattern_Result

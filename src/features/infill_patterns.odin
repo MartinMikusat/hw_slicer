@@ -471,6 +471,15 @@ infill_pat_gyroid :: proc(
 	line_width: contracts.Micrometres,
 	allocator := context.allocator,
 ) {
+	// Each row is sampled as a polyline of a sine wave with amplitude 0.42 and period 2 (in row
+	// spacings), 8 samples per period, which is longer than a straight row by the factor below.
+	// Widen the rows by that factor so the deposited density matches the requested one.
+	length_factor := 0.0
+	for j in 0..<8 {
+		dy := 0.21 * (math.sin(2.0*math.PI*f64(j + 1)/8.0) - math.sin(2.0*math.PI*f64(j)/8.0))
+		length_factor += math.hypot(1.0/8.0, dy)
+	}
+	spacing := spacing * length_factor
 	period := max(spacing * 2.0, 2000.0)
 	amp := spacing * 0.42
 	z_phase := (2.0 * math.PI * z_um) / period
@@ -600,8 +609,9 @@ infill_pat_honeycomb :: proc(
 	line_width: contracts.Micrometres,
 	allocator := context.allocator,
 ) {
-	// Hex side length L such that cell height sqrt(3)*L ~= spacing * 1.5.
-	side := max(spacing * 0.8660254, 800.0)
+	// Each zig-zag row has 4 sides of path per 3 sides of width, and rows are sqrt(3) sides apart,
+	// so the path per area equals straight rows at `spacing` when side = 4 / (3*sqrt(3)) * spacing.
+	side := max(spacing * 0.7698003589195010, 800.0)
 	h_half := side * 0.8660254037844386
 	row_step := h_half * 2.0
 	col_step := side * 3.0
