@@ -239,14 +239,17 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
 - **Issue:** A branch whose centre is inside the model, or whose ring no longer fits the clearance, emits nothing on that layer but continues downward. Its ring sections above the gap rest on nothing.
 - **Fix:** Route branches around the model before they enter it, or end a branch where it meets the model (allowed only with `support_mode = everywhere`) and remove its upper sections when it cannot reach the plate.
 
-### [CR-35] Inconsistent Triangle Winding Is Not Repaired
+### [CR-35] Inconsistent Triangle Winding Is Not Repaired — **RESOLVED**
 - **Location:** mesh audit and `src/repair/mesh_repair.odin`
 - **Issue:** A mesh with mixed face orientation (signed volume −603 mm³ for a 1,810 mm³ part) slices with `repairs=0`. The mesh audit reports inconsistent winding, but the slice pipeline neither repairs nor rejects it. Support classification then reads downward faces as upward, and grid supports silently produce nothing.
-- **Fix:** Repair orientation by propagating it across shared edges when the audit reports inconsistent winding, or reject the mesh with the audit report.
+- **Cause:** `mesh_auto_repair` paired edges by vertex index, but the STL decoder gives every triangle its own three vertices, so no STL mesh was ever "closed" and even the CR-08 global flip never ran for STL input.
+- **Resolution:** `mesh_auto_repair` matches vertices by exact coordinates, propagates orientation across edges shared by exactly two faces, and turns each component outward: by signed volume when at most 10% of its edge uses are unpaired, otherwise by requiring the steepest face at the component's highest vertex to face up. A tee with every other face flipped and a fully inverted tee now slice to G-code identical to the valid tee (545 grid support paths each, previously 0). Benchy, the Stanford Bunny, the all-in-one model, and the other test meshes are unchanged (0 flips).
 
-### [CR-36] Skin Lines Outside Every Perimeter Loop on Benchy (Needs Diagnosis)
-- **Location:** unknown; observed in the Benchy layer 59 path plan
-- **Issue:** Top and top/bottom skin lines lie outside every perimeter loop, more than 1.5 mm from the model outline used by supports. Either skin is generated outside the layer outline or perimeters are missing for a region. Not yet diagnosed.
+### [CR-36] Skin Extruded Outside the Layer Outline on Benchy (Partly Diagnosed)
+- **Location:** between skin propagation and solid-path generation; not yet isolated
+- **Issue:** A harness that runs the production pipeline and tests every extrusion midpoint against the layer's own model outline (`build_model_polygon_sets`) finds, on Benchy, 598 top/bottom-skin, 356 top-skin, 345 bottom-skin, and 8 sparse-infill segments outside the outline by more than 0.05 mm (worst 1.47 mm), spread over most layers with a few per layer. Gap fill, bridges, and thin walls are clean.
+- **Ruled out:** a layer-index offset (the segments are not inside the adjacent layers' outlines), basic hole handling (a box with a square through-hole has no skin outside its outline), and the solid-path inset (half a line width, inward). `skins_propagate` intersects every skin with the current region.
+- **Next step:** compare the role-overlap masks and the solid-path boundaries with the region outline per layer to find the stage that grows the skin.
 
 ### Low Severity (Pass 4)
 
