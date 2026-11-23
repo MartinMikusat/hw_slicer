@@ -287,10 +287,49 @@ unified_path_sources_build :: proc(
 			source_order += 1
 		}
 
+		// Consecutive scanlines of one mask are joined into a zig-zag when the connector between
+		// their ends is at most two line spacings, so solid skin prints without a travel between
+		// every line.
 		solid_layer := solids.layers[layer_index]
 		path_start = int(solid_layer.path_offset)
 		path_end = path_start+int(solid_layer.path_count)
 		source_order = 0
+		connect_limit := 2*i128(i64(solids.spacing))
+		chain := make([dynamic]polygon.Polygon_Point, 0, 64, context.temp_allocator)
+		chain_first := -1
+		chain_last := -1
+		flush_chain :: proc(
+			result: ^Unified_Path_Source_Result,
+			source_write, point_write: ^int,
+			solids: Solid_Path_Result,
+			chain: ^[dynamic]polygon.Polygon_Point,
+			chain_first: int,
+			layer_id: contracts.Stable_ID,
+			layer_index: int,
+			source_order: ^u64,
+		) -> bool {
+			if chain_first < 0 {return true}
+			first := solids.paths[chain_first]
+			ok := unified_path_source_append(
+				result,
+				source_write,
+				point_write,
+				first.stable_id,
+				layer_id,
+				u32(layer_index),
+				first.role,
+				.Solid,
+				u32(chain_first),
+				source_order^,
+				false,
+				chain[:],
+				nil,
+				first.line_width,
+			)
+			source_order^ += 1
+			clear(chain)
+			return ok
+		}
 		for path_index in path_start..<path_end {
 			path := solids.paths[path_index]
 			if path.layer_index != u32(layer_index) ||
@@ -298,30 +337,39 @@ unified_path_sources_build :: proc(
 				unified_path_source_result_destroy(&result, allocator)
 				return {}, .Invalid_Input
 			}
-			points := [2]polygon.Polygon_Point{
-				path.point_a,
-				path.point_b,
+			joined := false
+			if chain_last >= 0 {
+				prev := solids.paths[chain_last]
+				end := chain[len(chain)-1]
+				da := path_plan_distance_2(end, path.point_a)
+				db := path_plan_distance_2(end, path.point_b)
+				if prev.overlap_mask_index == path.overlap_mask_index &&
+				   prev.role == path.role &&
+				   prev.angle == path.angle &&
+				   prev.line_width == path.line_width &&
+				   path.scanline_index == prev.scanline_index+1 &&
+				   i128(min(da, db)) <= connect_limit*connect_limit {
+					if da <= db {
+						append(&chain, path.point_a, path.point_b)
+					} else {
+						append(&chain, path.point_b, path.point_a)
+					}
+					joined = true
+				}
 			}
-			if !unified_path_source_append(
-				&result,
-				&source_write,
-				&point_write,
-				path.stable_id,
-				layer_id,
-				u32(layer_index),
-				path.role,
-				.Solid,
-				u32(path_index),
-				source_order,
-				false,
-				points[:],
-				nil,
-				path.line_width,
-			) {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+			if !joined {
+				if !flush_chain(&result, &source_write, &point_write, solids, &chain, chain_first, layer_id, layer_index, &source_order) {
+					unified_path_source_result_destroy(&result, allocator)
+					return {}, .Invalid_Input
+				}
+				append(&chain, path.point_a, path.point_b)
+				chain_first = path_index
 			}
-			source_order += 1
+			chain_last = path_index
+		}
+		if !flush_chain(&result, &source_write, &point_write, solids, &chain, chain_first, layer_id, layer_index, &source_order) {
+			unified_path_source_result_destroy(&result, allocator)
+			return {}, .Invalid_Input
 		}
 
 		infill_layer := infill.layers[layer_index]
@@ -412,11 +460,15 @@ unified_path_sources_build :: proc(
 			point_count = u32(layer_point_count),
 		}
 	}
-	if source_write != len(result.sources) ||
-	   point_write != len(result.points) {
+	if source_write > len(result.sources) ||
+	   point_write > len(result.points) {
 		unified_path_source_result_destroy(&result, allocator)
 		return {}, .Arithmetic
 	}
+	// Joined skin lines need fewer sources than the per-path upper bound.
+	result.sources = result.sources[:source_write]
+	result.points = result.points[:point_write]
+	result.line_widths = result.line_widths[:point_write]
 	for source in result.sources {
 		_, source_ok := unified_path_source_validate(source, layer_ids)
 		if !source_ok {
