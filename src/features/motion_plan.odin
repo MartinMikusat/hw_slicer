@@ -1,5 +1,8 @@
 package features
 
+import "core:sync"
+import "core:thread"
+
 import contracts "../contracts"
 import geometry "../geometry"
 import gpu "../gpu"
@@ -60,6 +63,7 @@ Motion_Plan_Options :: struct {
 	overhang_slowdown_enabled: bool,
 	overhang_speed_percent:    u32,
 	use_gpu:                   bool,
+	worker_threads:            int, // <= 1 = single-core; > 1 = multi-core CPU overhang detection
 }
 
 Motion_Plan_Result :: struct {
@@ -167,17 +171,26 @@ motion_plan_build :: proc(
 		delete(layer_dwells, allocator)
 	}
 
-	// Precompute per-move overhang flags in one headless Metal GPU compute batch when enabled.
-	gpu_overhang_flags: []bool
-	gpu_overhang_ready := false
-	if options.use_gpu && options.overhang_slowdown_enabled && len(plan.moves) > 0 && len(model_layers) > 1 {
-		gpu_overhang_flags, gpu_overhang_ready = motion_gpu_compute_overhangs(
-			model_layers,
-			plan,
-			allocator,
-		)
+	// Precompute per-move overhang flags via Metal GPU compute or multi-core CPU when enabled.
+	precomputed_overhangs: []bool
+	precomputed_overhangs_ready := false
+	if options.overhang_slowdown_enabled && len(plan.moves) > 0 && len(model_layers) > 1 {
+		if options.use_gpu {
+			precomputed_overhangs, precomputed_overhangs_ready = motion_gpu_compute_overhangs(
+				model_layers,
+				plan,
+				allocator,
+			)
+		} else if options.worker_threads > 1 {
+			precomputed_overhangs, precomputed_overhangs_ready = motion_cpu_mt_compute_overhangs(
+				model_layers,
+				plan,
+				options.worker_threads,
+				allocator,
+			)
+		}
 	}
-	defer delete(gpu_overhang_flags, allocator)
+	defer delete(precomputed_overhangs, allocator)
 
 	extrusion_cursor := 0
 	has_extruded := false
@@ -286,8 +299,8 @@ motion_plan_build :: proc(
 				if options.overhang_slowdown_enabled &&
 				   layer_index > 0 &&
 				   (move.role == .Perimeter || move.role == .Thin_Wall) {
-					if gpu_overhang_ready {
-						is_ov = gpu_overhang_flags[move_index]
+					if precomputed_overhangs_ready {
+						is_ov = precomputed_overhangs[move_index]
 					} else {
 						is_ov = motion_segment_is_overhang(move.point_a, move.point_b, model_layers[layer_index - 1])
 					}
@@ -956,6 +969,67 @@ motion_compute_wipe :: proc(
 		return {}, 0, 0, false
 	}
 	return wipe_pt, w_len, t_len, true
+}
+
+@(private = "file")
+motion_cpu_mt_compute_overhangs :: proc(
+	model_layers: []polygon.Polygon_Set,
+	plan: Unified_Path_Plan_Result,
+	worker_threads: int,
+	allocator := context.allocator,
+) -> (flags: []bool, ok: bool) {
+	flags = make([]bool, len(plan.moves), allocator)
+	if flags == nil {return nil, false}
+
+	Ov_Worker_Ctx :: struct {
+		model_layers: []polygon.Polygon_Set,
+		plan:         Unified_Path_Plan_Result,
+		flags:        []bool,
+		next_layer:   int,
+		layer_count:  int,
+	}
+	wctx := Ov_Worker_Ctx{
+		model_layers = model_layers,
+		plan         = plan,
+		flags        = flags,
+		next_layer   = 1,
+		layer_count  = len(plan.layers),
+	}
+	worker_proc :: proc(c: ^Ov_Worker_Ctx) {
+		for {
+			li := sync.atomic_add(&c.next_layer, 1)
+			if li >= c.layer_count {break}
+			prev := c.model_layers[li - 1]
+			if len(prev.paths) == 0 {continue}
+			layer := c.plan.layers[li]
+			ms := int(layer.move_offset)
+			me := ms + int(layer.move_count)
+			for mi in ms..<me {
+				m := c.plan.moves[mi]
+				if m.kind != .Extrude || (m.role != .Perimeter && m.role != .Thin_Wall) {continue}
+				c.flags[mi] = motion_segment_is_overhang(m.point_a, m.point_b, prev)
+			}
+		}
+	}
+
+	num_workers := clamp(worker_threads, 1, 16)
+	if len(plan.layers) < 8 || num_workers <= 1 {
+		worker_proc(&wctx)
+	} else {
+		threads: [15]^thread.Thread
+		spawn_count := num_workers - 1
+		for wi in 0..<spawn_count {
+			threads[wi] = thread.create_and_start_with_poly_data(&wctx, worker_proc)
+		}
+		worker_proc(&wctx)
+		for wi in 0..<spawn_count {
+			if threads[wi] != nil {
+				thread.join(threads[wi])
+				thread.destroy(threads[wi])
+			}
+		}
+	}
+	return flags, true
 }
 
 @(private = "file")

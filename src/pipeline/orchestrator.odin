@@ -59,8 +59,9 @@ Slice_Run_Options :: struct {
 	adaptive_layers:               bool,
 	// Milestone 5: Pure-Odin polygon engine toggle
 	use_native_polygon:            bool,
-	// Milestone 6: Metal GPU compute acceleration toggle
+	// Milestone 6: Metal GPU compute & CPU thread count
 	use_gpu:                       bool,
+	worker_threads:                int,
 }
 
 DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
@@ -94,6 +95,7 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	support_style_tree            = true,
 	adaptive_layers               = false,
 	use_gpu                       = true,
+	worker_threads                = 8,
 }
 
 Slice_Run_Result :: struct {
@@ -653,6 +655,7 @@ slice_run_decoded_mesh :: proc(
 				spacing_um     = infill_spacing,
 				line_width_um  = proc_src.nominal_line_width,
 				boundary_inset = infill_inset,
+				worker_threads = options.worker_threads,
 			},
 			allocator,
 		)
@@ -944,6 +947,7 @@ slice_run_decoded_mesh :: proc(
 			overhang_slowdown_enabled = options.overhang_slowdown_enabled,
 			overhang_speed_percent    = options.overhang_speed_percent,
 			use_gpu                   = options.use_gpu,
+			worker_threads            = options.worker_threads,
 		},
 	)
 	if mot_err != .None {

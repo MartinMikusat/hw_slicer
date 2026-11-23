@@ -39,6 +39,7 @@ CLI_Options :: struct {
 	lay_flat:           bool,
 	use_native_polygon: bool,
 	use_gpu:            bool,
+	worker_threads:     int,
 	overrides:          [dynamic]CLI_Override,
 }
 
@@ -150,9 +151,10 @@ main :: proc() {
 		process      = "0.20-standard",
 		profiles_dir = "resources/profiles",
 		clone_count  = 1,
-		scale        = 1.0,
-		use_gpu      = true,
-		input_paths  = make([dynamic]string),
+		scale          = 1.0,
+		use_gpu        = true,
+		worker_threads = 8,
+		input_paths    = make([dynamic]string),
 		overrides    = make([dynamic]CLI_Override),
 	}
 	defer delete(opts.input_paths)
@@ -195,6 +197,10 @@ main :: proc() {
 			opts.use_gpu = true
 		} else if arg == "--no-gpu" {
 			opts.use_gpu = false
+		} else if strings.has_prefix(arg, "--threads=") {
+			if n, ok := strconv.parse_int(arg[len("--threads="):]); ok && n >= 1 {
+				opts.worker_threads = n
+			}
 		} else if strings.has_prefix(arg, "--clone=") {
 			if n, ok := strconv.parse_int(arg[len("--clone="):]); ok && n >= 1 {
 				opts.clone_count = n
@@ -326,6 +332,7 @@ main :: proc() {
 	run_opts.adaptive_layers = opts.adaptive_layers || extras.adaptive_layers
 	run_opts.use_native_polygon = opts.use_native_polygon
 	run_opts.use_gpu = opts.use_gpu
+	run_opts.worker_threads = opts.worker_threads
 	raw_stem := strings.trim_suffix(filepath.base(opts.input_path), filepath.ext(opts.input_path))
 	run_opts.object_name = strings.clone(raw_stem, context.temp_allocator)
 

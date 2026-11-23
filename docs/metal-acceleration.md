@@ -44,20 +44,38 @@ This document records the measured release-mode (`-o:speed`) CPU profiling basel
 - Dispatches 8 worker threads (`core:thread` + `sync.atomic_add` dynamic layer stealing) for per-layer sparse infill generation (`Grid`, `Triangles`, `Gyroid`, `Cubic`, `Honeycomb`, `Lightning`).
 - Each layer writes into its own independent slice slot and merges in strict layer order, guaranteeing 100% deterministic output.
 
-## 4. Measured Before vs. After Results
+## 4. Measured 4-Way Comparison (`(a)` vs `(b)` vs `(c)` vs `(d)`)
 
-| Model | Stage / Metric | CPU Baseline | Metal GPU + 8-Core CPU | Speedup |
-|---|---|---:|---:|---:|
-| **`all-in-one-test.stl`** | `extrusion_and_motion` | 1,147.99 ms | **626.35 ms** | **1.83×** |
-| | `infill` (Gyroid) | 97.65 ms | **23.81 ms** | **4.10×** |
-| | **Total Slice Time** | **3,468.74 ms** | **2,904.19 ms** | **1.19×** |
-| **`benchy.stl`** | `extrusion_and_motion` | 8,015.91 ms | **619.52 ms** | **12.94×** |
-| | `infill` (Gyroid) | 388.26 ms | **77.74 ms** | **5.00×** |
-| | **Total Slice Time** | **15,820.61 ms** | **7,941.03 ms** | **2.00×** |
-| **`stanford-bunny.stl`** | `extrusion_and_motion` | 7,194.48 ms | **1,282.02 ms** | **5.61×** |
-| | `infill` (Gyroid) | 3,389.28 ms | **604.74 ms** | **5.60×** |
-| | **Total Slice Time** | **20,559.51 ms** | **11,788.94 ms** | **1.74×** |
-| **Combined 3-Model Suite** | **Total Wall Time** | **39,848.86 ms** | **22,634.16 ms** | **1.76×** |
+All four configurations were measured on the same `cli-release` (`-o:speed`) binary using `--threads=1|8` and `--no-gpu|--gpu`:
+
+- **(a) Single-core CPU:** `--threads=1 --no-gpu`
+- **(b) Multicore CPU (8 threads):** `--threads=8 --no-gpu` (8-core CPU overhang detection + 8-core CPU infill)
+- **(c) Single-core CPU + Metal:** `--threads=1 --gpu` (Metal GPU overhang kernel + single-core infill)
+- **(d) Multicore CPU (8 threads) + Metal:** `--threads=8 --gpu` (Metal GPU overhang kernel + 8-core CPU infill)
+
+### Total Slice Time
+
+| Model | (a) 1-Core CPU | (b) 8-Core CPU | (c) 1-Core + Metal | (d) 8-Core + Metal | (d) vs (a) | (d) vs (b) |
+|---|---:|---:|---:|---:|---:|---:|
+| `all-in-one-test.stl` | 3,449.87 ms | 2,846.50 ms | 2,837.51 ms | **2,748.20 ms** | 1.26× | 1.04× |
+| `benchy.stl` | 15,250.28 ms | 9,066.70 ms | 8,344.15 ms | **7,983.02 ms** | 1.91× | 1.14× |
+| `stanford-bunny.stl` | 20,792.29 ms | 12,692.16 ms | 15,796.08 ms | **11,802.46 ms** | 1.76× | 1.08× |
+| **Combined 3-Model Suite** | **39,492.44 ms** | **24,605.36 ms** | **26,977.74 ms** | **22,533.68 ms** | **1.75×** | **1.09×** |
+
+### Accelerated Stage Breakdown (`extrusion_and_motion` & `infill`)
+
+| Model | Stage | (a) 1-Core CPU | (b) 8-Core CPU | (c) 1-Core + Metal | (d) 8-Core + Metal | Metal vs 8-Core CPU |
+|---|---|---:|---:|---:|---:|---:|
+| `all-in-one-test.stl` | `extrusion_and_motion` | 1,153.30 ms | 653.83 ms | 571.08 ms | **570.76 ms** | **1.15×** |
+| | `infill` (Gyroid) | 96.64 ms | 24.18 ms | 96.45 ms | **22.74 ms** | — (CPU MT: 4.25×) |
+| `benchy.stl` | `extrusion_and_motion` | 7,683.97 ms | 1,734.32 ms | 668.30 ms | **584.67 ms** | **2.97×** |
+| | `infill` (Gyroid) | 385.80 ms | 78.30 ms | 388.98 ms | **78.30 ms** | — (CPU MT: 4.93×) |
+| `stanford-bunny.stl` | `extrusion_and_motion` | 7,326.81 ms | 2,201.09 ms | 1,228.28 ms | **1,264.37 ms** | **1.74×** |
+| | `infill` (Gyroid) | 3,340.58 ms | 601.56 ms | 3,408.30 ms | **621.62 ms** | — (CPU MT: 5.55×) |
+
+### Key Takeaway
+- Even against **8-core CPU** `(b)`, offloading overhang point-in-polygon queries to the Metal GPU cuts `extrusion_and_motion` by **2.97×** on `benchy.stl` (`1,734 ms → 585 ms`) and **1.74×** on `stanford-bunny.stl` (`2,201 ms → 1,264 ms`), leaving the remaining time in sequential extrusion accumulation and travel exterior-crossing checks.
+- Combining both **(d) 8-Core CPU + Metal** is strictly the fastest configuration across every model, reducing combined 3-model wall time from `39.49 s` `(a)` to `24.61 s` `(b)` and `22.53 s` `(d)`.
 
 ## 5. Parity & Validation Verification
 

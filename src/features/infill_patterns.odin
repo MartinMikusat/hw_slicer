@@ -26,6 +26,7 @@ Infill_Pattern_Config :: struct {
 	spacing_um:     contracts.Micrometres,
 	line_width_um:  contracts.Micrometres,
 	boundary_inset: contracts.Micrometres,
+	worker_threads: int, // <= 1 = single-core; > 1 = multi-core CPU threads
 }
 
 Infill_Pattern_Path :: struct {
@@ -227,19 +228,20 @@ infill_pattern_generate :: proc(
 		}
 	}
 
-	NUM_WORKERS :: 8
-	if layer_count < 16 {
+	num_workers := clamp(config.worker_threads, 1, 16)
+	if layer_count < 16 || num_workers <= 1 {
 		worker_proc(&wctx)
 	} else {
-		threads: [NUM_WORKERS - 1]^thread.Thread
-		for wi in 0..<len(threads) {
+		threads: [15]^thread.Thread
+		spawn_count := num_workers - 1
+		for wi in 0..<spawn_count {
 			threads[wi] = thread.create_and_start_with_poly_data(&wctx, worker_proc)
 		}
 		worker_proc(&wctx)
-		for t in threads {
-			if t != nil {
-				thread.join(t)
-				thread.destroy(t)
+		for wi in 0..<spawn_count {
+			if threads[wi] != nil {
+				thread.join(threads[wi])
+				thread.destroy(threads[wi])
 			}
 		}
 	}
