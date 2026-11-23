@@ -109,6 +109,11 @@ UI_Action :: enum u64 {
 	Junction_Size,
 	Junction_Toggle_Kind,
 	Junction_Close,
+	Profile_Edit,
+	Profile_Fit,
+	Profile_Save,
+	Profile_Discard,
+	Profile_Point,
 	Evidence_Stage_Base = 1000,
 }
 
@@ -231,6 +236,11 @@ UI_State :: struct {
 	section_dragging: bool,
 	design_active:       bool,
 	design_playing:      bool,
+	profile_available:    bool,
+	profile_editing:      bool,
+	profile_preview_enabled: bool,
+	profile_save_enabled: bool,
+	profile_discard_enabled: bool,
 	design_fraction:     f64,
 	design_layer:        int,
 	design_layers:       int,
@@ -743,6 +753,13 @@ ui_build_controls :: proc(
 		} else {
 			ui_add_control(ui, "lay on face", "Lay on face", {20, 86, 150, 30}, .Lay_On_Face, true, 1, ui.lay_on_face)
 		}
+	}
+	if ui.profile_editing {
+		ui_profile_controls(ui, viewport)
+		return
+	}
+	if ui.profile_available {
+		ui_add_control(ui, "edit profile", "Edit Bézier profile in top view", {viewport.x+12, viewport.y+50, 108, 30}, .Profile_Edit)
 	}
 	ui_add_control(
 		ui,
@@ -1357,6 +1374,10 @@ ui_draw_evidence_line :: proc(painter: ^UI_Painter, ui: ^UI_State, line: UI_Evid
 	}
 }
 
+ui_error_color :: proc(ui: ^UI_State) -> Vec4 {
+	return {0.956863, 0.203922, 0.203922, 1} if ui.dark else {0.768627, 0.145098, 0.145098, 1}
+}
+
 ui_draw_status :: proc(painter: ^UI_Painter, ui: ^UI_State, status: string, failed: bool) {
 	if status == "" {return}
 	compact := ui_compact(ui)
@@ -1374,7 +1395,7 @@ ui_draw_status :: proc(painter: ^UI_Painter, ui: ^UI_State, status: string, fail
 	y := area.y+area.h-8-height
 	if compact {ui_add_rect(painter, {x-4, y-2, width+8, height+4}, ui_theme(ui).canvas)}
 	color := ui_theme(ui).text
-	if failed {color = {0.956863, 0.203922, 0.203922, 1} if ui.dark else {0.768627, 0.145098, 0.145098, 1}}
+	if failed {color = ui_error_color(ui)}
 	for line, index in lines {
 		ui_draw_text(painter, painter.font, ui, line, {x, y+f64(index)*row, width, row}, color, 0)
 	}
@@ -1820,6 +1841,7 @@ ui_draw :: proc(
 	modal_open := ui.help_open || ui.settings_open || (ui.evidence_open && ui_evidence_available(evidence_view))
 	if !modal_open {
 		ui_draw_panels(painter, ui)
+		if ui.profile_editing {ui_draw_profile(painter, ui, design_state)}
 		ui_draw_controls(painter, ui, evidence_view)
 		ui_draw_labels(painter, ui, mesh, model_name, status, status_failed, design_state)
 		ui_draw_flash_hints(painter, ui)
@@ -1836,6 +1858,7 @@ ui_draw :: proc(
 	underlay.focused_id = 0
 	ui_build_controls(&underlay)
 	ui_draw_panels(painter, &underlay)
+	if underlay.profile_editing {ui_draw_profile(painter, &underlay, design_state)}
 	ui_draw_controls(painter, &underlay)
 	ui_add_rect(painter, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.8})
 	gpu.push_opacity(painter.list, 0.2)
@@ -1967,8 +1990,8 @@ ui_draw_labels :: proc(
 			.Center,
 		)
 	}
-	// Performance stats pill in the top-right corner of the 3D viewport.
-	{
+	if ui.profile_available {ui_profile_button_labels(painter, ui)}
+	if !ui.profile_editing {
 		vp := ui_viewport_rect(ui)
 		pill_w := min(320.0, max(160.0, vp.w-290))
 		pill := UI_Rect{vp.x+vp.w-pill_w-12, vp.y+12, pill_w, 28}
@@ -2069,7 +2092,11 @@ ui_draw_labels :: proc(
 
 	}
 
-	ui_draw_status(painter, ui, status, status_failed)
+	if ui.profile_editing && design_state != nil && design_state.profile_dirty && !design_state.profile_valid && !design_state.profile_conflict && design_state.profile_error != "" {
+		ui_draw_status(painter, ui, design_state.profile_error, true)
+	} else {
+		ui_draw_status(painter, ui, status, status_failed)
+	}
 	ui_draw_text(painter, painter.font, ui, "Previous", ui_control_rect(ui, .Previous_Stage), ui_control_ink(ui, .Previous_Stage), 0, .Center)
 	ui_draw_text(painter, painter.font, ui, "Next", ui_control_rect(ui, .Next_Stage), ui_control_ink(ui, .Next_Stage), 0, .Center)
 	bar := ui_action_bar_rect(ui)
@@ -2089,6 +2116,7 @@ ui_draw_design_settings :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_
 	if ui.design_layers > 0 {
 		layer_text := fmt.tprintf("%d / %d (%.0f%%)", ui.design_layer+1, ui.design_layers, ui.design_in_layer*100)
 		ui_draw_measurement(painter, ui, "Layer", layer_text, layout.layer_info, 70 if ui_compact(ui) else 90)
+		if ui.profile_editing {return}
 		// Floating badge next to the vertical layer slider thumb.
 		layer_rect := ui_design_layer_slider_rect(ui)
 		track_top := layer_rect.y+12
@@ -2147,6 +2175,9 @@ ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_S
 		y += row
 	}
 	gcode_text := filepath.base(s.export_path) if s.export_error == .None else design_export_error_text(s.export_error)
+	if s.profile_dirty {
+		gcode_text = "G-code pending Save" if s.profile_valid else "G-code blocked by invalid profile"
+	}
 	ui_draw_text(painter, painter.font, ui, gcode_text, {area.x, y, area.w, row}, theme.text, 0)
 	y += row
 	bottom := ui_left_rect(ui).y+ui_left_rect(ui).h-60

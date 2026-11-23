@@ -36,6 +36,7 @@ cylinder(KEY = EXPRESSION, ...)
 tube(KEY = EXPRESSION, ...)
 cone(KEY = EXPRESSION, ...)
 polygon(KEY = EXPRESSION, ...)
+let NAME = profile(height = LENGTH, walls = COUNT, outer = loop(...), hole = loop(...))
 bevel(OBJECT_A, OBJECT_B, size = LENGTH)
 fillet(OBJECT_A, OBJECT_B, radius = LENGTH)
 ```
@@ -119,13 +120,65 @@ Each box corner radius must be between zero and half the smaller of `width`
 and `depth`. Zero produces square corners. When either end override is
 present, each rounded end has a separate radius slider in the viewport.
 
-Each layer prints concentric loops from the outside in. When `inner_diameter > 0`,
+Boxes and radial objects print concentric loops from the outside in. When `inner_diameter > 0`,
 floor layers fill the annular ring down to `inner_diameter`, and wall layers print
 `walls` outer loops inward and `walls` inner bore loops outward. A wall layer prints
 `walls` loops. A floor layer prints loops until the shape is full. Set
 `floor` to at least the layer count for a solid object. A feature starting at
 `z = 0mm` spans `1 + round((height - first_layer_height) / layer_height)` layers;
 a stacked feature (`z > 0mm`) spans the layers from `z` to `z + height`.
+
+## Closed Bézier profiles
+
+A `profile` repeats a closed XY cross-section through its `height`. The outline
+defines the finished material boundary. The feature accepts the existing `x`,
+`y`, `z`, `walls`, `floor`, speed, acceleration, and fan settings.
+The [asymmetric mounting plate](../resources/designs/asymmetric-mounting-plate.hwsdesign)
+defines a 2 mm waist between two lobes and a 6.4 mm bolt hole in each lobe.
+
+Give the outer loop first. Add one `hole = loop(...)` argument for each
+through-hole. Name each loop within the profile and each anchor within its loop.
+A loop joins consecutive anchors with cubic Béziers and joins the last anchor
+back to the first. Each loop needs at least two anchors.
+
+```text
+smooth(name, x, y, tangent_x, tangent_y, incoming_length, outgoing_length)
+corner(name, x, y, incoming_x, incoming_y, outgoing_x, outgoing_y)
+```
+
+Coordinates are local to the profile and accept length expressions. For
+`smooth`, the two unitless tangent components give the outgoing direction.
+The incoming handle points the other way. Both lengths are nonnegative.
+For `corner`, each handle is an independent vector in millimetres from the
+anchor. Winding is inferred from the loop's role. Crossing, touching, and
+nested holes produce a design error.
+
+The generator subdivides cubics to a 0.009 mm chord tolerance before rounding
+the boundary to the 0.001 mm polygon grid. It places the first bead centre
+half a line width inside the material. Further wall passes advance by one line
+width. Each separate loop starts with travel. Floor layers use a boundary pass
+around the outline and each hole, then horizontal fill clipped to the printable
+region. The preview and Klipper export use the same linear extrusion moves.
+If the first pass splits at a waist or merges a hole with another boundary,
+the editor reports the location and blocks Save.
+
+### Edit a profile
+
+Select **Edit profile** to open the XY view. Select an anchor to show its two
+handles. Drag the anchor to move both handles with it. Drag a handle to change
+the curve. **Next point** cycles through the anchors and handles. The arrow
+keys move the selection by 0.1 mm. Shift increases the step to 1 mm.
+
+The outline follows the pointer. Release validates the draft and updates the
+bead preview. Escape cancels the current drag. **Save** or Command-S writes
+the design and its G-code. **Discard** reloads the file from disk. An external
+edit blocks Save until the file is reloaded.
+
+Save records local edits in an optional final `shift(...)` on each edited
+anchor. For a smooth anchor the fields are XY displacement, tangent rotation
+in degrees, and the two handle-length changes. For a corner they are XY
+displacements for the anchor, incoming handle vector, and outgoing handle
+vector. Authored expressions continue to evaluate when their parameters change.
 
 ## Feature settings
 

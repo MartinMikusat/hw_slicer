@@ -54,6 +54,14 @@ Application_API :: struct {
 	window_state: proc "c" (visible, active: bool),
 }
 
+Design_Write_Result :: enum i32 {Failed, Saved, Conflict, Gcode_Failed}
+
 foreign {
+	hw_slicer_replace_design :: proc "c" (
+		path: cstring,
+		expected: ^u8, expected_size: int,
+		source: ^u8, source_size: int,
+		staged_gcode, destination: cstring,
+	) -> Design_Write_Result ---
 	hw_slicer_host_run :: proc "c" (application: ^Application_API) -> i32 ---
 }

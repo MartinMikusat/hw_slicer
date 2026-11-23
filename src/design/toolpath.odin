@@ -163,6 +163,10 @@ generate_layers :: proc(d: ^Design, start_layer, end_layer: int, t: ^Toolpath) {
 			g.feature = index
 			g.junction = -1
 			g.settings = object.settings
+			if object.shape == .Profile {
+				emit_profile_layer(&g, object, layer-start_layer < object.floor)
+				continue
+			}
 			if object.top_morph_transition != .None && object.top_morph_height > EPSILON {
 				morph_start := object.z+object.height-object.top_morph_height
 				z_mid := g.z-0.5*g.thickness
@@ -266,6 +270,8 @@ emit_loop :: proc(g: ^Generator, object: Object, inset: f64) -> bool {
 			if base > EPSILON && radius > CHORD_TOLERANCE {radii[end] = radius}
 		}
 		emit_box_loop(g, c, half, radii, object.corner_junctions)
+	case .Profile:
+		panic("profile loops are emitted as a layer")
 	case .Cylinder, .Tube, .Cone, .Polygon:
 		emit_radial_loop(g, object, half.x)
 	}

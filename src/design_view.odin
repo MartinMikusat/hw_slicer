@@ -51,6 +51,14 @@ Design_State :: struct {
 	modified:       time.Time,
 	poll_tick:      time.Tick,
 	nozzle_index:   int,
+	editor:             Profile_Editor,
+	profile_dirty:      bool,
+	profile_valid:      bool,
+	profile_conflict:   bool,
+	profile_error:      string,
+	profile_issue_xy:   Maybe([2]f64),
+	profile_disk:       string,
+	profile_text:       string,
 	evaluated:         design.Design,
 	toolpath:          design.Toolpath,
 	beads:             [dynamic]Design_Bead,
@@ -90,6 +98,9 @@ design_state_clear :: proc(s: ^Design_State) {
 	delete(s.scratch_layers)
 	delete(s.path)
 	delete(s.export_path)
+	delete(s.profile_disk)
+	delete(s.profile_text)
+	delete(s.profile_error)
 	nozzle, rate, pinned := s.nozzle_index, s.rate_index, s.pinned
 	s^ = {}
 	s.nozzle_index, s.rate_index, s.pinned = nozzle, rate, pinned
@@ -126,13 +137,17 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	site := devlog.Site{feature = "design", operation = "load"}
 	devlog.started(devlog.global(), site, {scope = "design", stage = "read"})
 	info, stat_error := os.stat(path, context.temp_allocator)
+	if stat_error == nil && info.size > DESIGN_SOURCE_LIMIT {
+		app_set_status("DESIGN TOO LARGE", true)
+		return false
+	}
 	source, read_error := os.read_entire_file(path, context.allocator)
+	defer delete(source)
 	if stat_error != nil || read_error != nil {
 		devlog.failed(devlog.global(), site, {reason = "design read failed", detail = filepath.base(path), severity = .Error}, {scope = "design", stage = "read"})
 		app_set_status("DESIGN READ FAILED", true)
 		return false
 	}
-	defer delete(source)
 	if len(source) > DESIGN_SOURCE_LIMIT {
 		devlog.failed(devlog.global(), site, {reason = "design source too large", severity = .Error}, {scope = "design", stage = "read"})
 		app_set_status("DESIGN TOO LARGE", true)
@@ -145,13 +160,43 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 		devlog.failed(devlog.global(), site, {reason = "design evaluation failed", code = i32(evaluate_error.line), severity = .Warning}, {scope = "design", stage = "evaluate"})
 		app_set_status(fmt.tprintf("DESIGN LINE %d: %s", evaluate_error.line, evaluate_error.message), true)
 		// Track the file anyway, so the next edit is picked up.
-		if app.design.path != path {
+		if !app.design.active && app.design.path != path {
 			delete(app.design.path)
 			app.design.path = strings.clone(path)
 		}
-		app.design.modified = info.modification_time
+		if app.design.path == path {app.design.modified = info.modification_time}
 		return false
 	}
+	if !app_install_design_preview(evaluated, keep_time) {return false}
+	s := &app.design
+	path_copy := strings.clone(path)
+	delete(s.path)
+	s.path = path_copy
+	s.modified = info.modification_time
+	s.editor = {}
+	delete(s.profile_disk)
+	delete(s.profile_text)
+	delete(s.profile_error)
+	s.profile_disk, s.profile_text, s.profile_error = "", "", ""
+	for object in s.evaluated.objects {
+		if object.profile != nil {
+			s.profile_disk = strings.clone(string(source))
+			s.profile_text = strings.clone(string(source))
+			break
+		}
+	}
+	s.profile_dirty, s.profile_valid, s.profile_conflict = false, true, false
+	s.profile_issue_xy = nil
+	delete(app.model_name)
+	app.model_name = strings.clone(filepath.base(s.path))
+	devlog.succeeded(devlog.global(), site, {scope = "design", stage = "loaded"}, {rows = i64(len(s.beads))})
+	_ = app_export_current_design()
+	if !keep_time {app_frame_camera()}
+	return true
+}
+
+app_install_design_preview :: proc(candidate: design.Design, keep_time: bool) -> bool {
+	evaluated := candidate
 	t_gen0 := time.tick_now()
 	toolpath := design.generate(&evaluated)
 	t_gen1 := time.tick_now()
@@ -166,7 +211,7 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 		delete(layers)
 		design.toolpath_destroy(&toolpath)
 		design.design_destroy(&evaluated)
-		devlog.failed(devlog.global(), site, {reason = "renderer bead upload failed", severity = .Critical}, {scope = "design", stage = "upload"})
+		devlog.failed(devlog.global(), devlog.Site{feature = "design", operation = "preview"}, {reason = "renderer bead upload failed", severity = .Critical}, {scope = "design", stage = "upload"})
 		app_set_status("DESIGN FAILED: METAL BUFFER", true)
 		return false
 	}
@@ -183,11 +228,14 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 		fraction = app.design.clock/design_duration(&app.design)
 	}
 	playing := keep_time && app.design.playing
-	path_copy := strings.clone(path)
-	design_state_clear(&app.design)
+	design.design_destroy(&app.design.evaluated)
+	design.toolpath_destroy(&app.design.toolpath)
+	delete(app.design.beads)
+	delete(app.design.gpu_beads)
+	delete(app.design.layers)
+	app.design.selected_junction = -1
+	app.design.dirty = false
 	app.design.active = true
-	app.design.path = path_copy
-	app.design.modified = info.modification_time
 	app.design.evaluated = evaluated
 	app.design.toolpath = toolpath
 	app.design.beads = beads
@@ -207,20 +255,22 @@ app_load_design :: proc(path: string, keep_time := false) -> bool {
 	app.face_pressed = -1
 	app.ui.selected_model = 3
 	app.section_dirty = true
-	delete(app.model_name)
-	app.model_name = strings.clone(filepath.base(path))
-	devlog.succeeded(devlog.global(), site, {scope = "design", stage = "loaded"}, {rows = i64(len(beads))})
+	app.needs_redraw = true
+	return true
+}
+
+app_export_current_design :: proc() -> bool {
 	export_site := devlog.Site{feature = "design", operation = "export"}
+	delete(app.design.export_path)
 	app.design.export_path, app.design.export_error = design_export(&app.design)
 	if app.design.export_error == .None {
-		devlog.succeeded(devlog.global(), export_site, {scope = "design", stage = "gcode"}, {rows = i64(len(toolpath.moves))})
-		app_set_status(fmt.tprintf("DESIGN: %d LAYERS, G-CODE WRITTEN", toolpath.layers))
+		devlog.succeeded(devlog.global(), export_site, {scope = "design", stage = "gcode"}, {rows = i64(len(app.design.toolpath.moves))})
+		app_set_status(fmt.tprintf("DESIGN: %d LAYERS, G-CODE WRITTEN", app.design.toolpath.layers))
 	} else {
 		devlog.failed(devlog.global(), export_site, {reason = "design export failed", detail = design_export_error_text(app.design.export_error), code = i32(app.design.export_error), severity = .Error}, {scope = "design", stage = "gcode"})
 		app_set_status(fmt.tprintf("G-CODE FAILED: %s", design_export_error_text(app.design.export_error)), true)
 	}
-	if !keep_time {app_frame_camera()}
-	return true
+	return app.design.export_error == .None
 }
 
 // Re-slices the affected layer span of the currently evaluated in-memory design
@@ -412,6 +462,27 @@ design_newest :: proc() -> (path: string, ok: bool) {
 app_poll_design :: proc() {
 	if app.design.poll_tick != {} && time.duration_seconds(time.tick_since(app.design.poll_tick)) < DESIGN_POLL_SECONDS {return}
 	app.design.poll_tick = time.tick_now()
+	s := &app.design
+	if s.editor.dragging {return}
+	if s.profile_dirty {
+		info, err := os.stat(s.path, context.temp_allocator)
+		if err == nil && info.modification_time == s.modified {return}
+		if err == nil {s.modified = info.modification_time}
+		matches := false
+		if err == nil && info.size == i64(len(s.profile_disk)) {
+			disk, read_error := os.read_entire_file(s.path, context.allocator)
+			matches = read_error == nil && string(disk) == s.profile_disk
+			delete(disk)
+		}
+		if !matches && !s.profile_conflict {
+			s.profile_conflict = true
+			app_set_status("The design changed on disk. Discard to load the external edit.", true)
+		} else if matches && s.profile_conflict {
+			s.profile_conflict = false
+			app_set_status("The file on disk matches the original design")
+		}
+		return
+	}
 	if !app.design.pinned {
 		if newest, found := design_newest(); found && newest != app.design.path {
 			_ = app_load_design(newest)

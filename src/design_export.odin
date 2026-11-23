@@ -350,7 +350,7 @@ design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Prof
 
 // Writes the G-code for the loaded design to DEV_GCODE_DIRECTORY and returns its path,
 // allocated with `allocator`.
-design_export :: proc(s: ^Design_State, allocator := context.allocator) -> (path: string, error: Design_Export_Error) {
+design_export :: proc(s: ^Design_State, allocator := context.allocator, directory := DEV_GCODE_DIRECTORY) -> (path: string, error: Design_Export_Error) {
 	assert(s.active)
 	profile, profile_error := design_profiles(&s.evaluated, design_nozzle(s))
 	if profile_error != .None {return "", .Profile}
@@ -363,10 +363,11 @@ design_export :: proc(s: ^Design_State, allocator := context.allocator) -> (path
 	emitted, emit_error := gcode.klipper_emit(plan, profile)
 	if emit_error != .None {return "", .Emit}
 	defer gcode.klipper_result_destroy(&emitted)
-	if os.make_directory_all(DEV_GCODE_DIRECTORY) != nil && !os.is_dir(DEV_GCODE_DIRECTORY) {return "", .Directory}
+	if os.make_directory_all(directory) != nil && !os.is_dir(directory) {return "", .Directory}
 	stem := strings.trim_suffix(filepath.base(s.path), filepath.ext(s.path))
 	name := fmt.tprintf("%s-%.2fmm.gcode", stem, design_nozzle(s))
-	destination, _ := filepath.join({DEV_GCODE_DIRECTORY, name}, allocator)
+	destination, path_err := filepath.join({directory, name}, allocator)
+	if path_err != nil {return "", .Directory}
 	if gcode.klipper_file_publish(emitted, profile, plan, destination, replace_existing = true) != .None {
 		delete(destination, allocator)
 		return "", .Publish

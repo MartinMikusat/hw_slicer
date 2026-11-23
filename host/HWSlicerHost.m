@@ -526,6 +526,38 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
 }
 @end
 
+int32_t hw_slicer_replace_design(const char *path, const uint8_t *expected, intptr_t expectedSize,
+                                 const uint8_t *source, intptr_t sourceSize,
+                                 const char *stagedGcode, const char *destination) {
+    @autoreleasepool {
+        NSURL *url = [NSURL fileURLWithFileSystemRepresentation:path isDirectory:NO relativeToURL:nil];
+        NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+        __block HW_Design_Write_Result result = HW_DESIGN_WRITE_FAILED;
+        NSError *coordinationError = nil;
+        [coordinator coordinateWritingItemAtURL:url options:NSFileCoordinatorWritingForReplacing
+                                         error:&coordinationError byAccessor:^(NSURL *target) {
+            NSNumber *size = nil;
+            if (![target getResourceValue:&size forKey:NSURLFileSizeKey error:nil] ||
+                size.unsignedLongLongValue != (NSUInteger)expectedSize) {
+                result = HW_DESIGN_WRITE_CONFLICT;
+                return;
+            }
+            NSData *disk = [NSData dataWithContentsOfURL:target options:NSDataReadingMappedIfSafe error:nil];
+            if (!disk || disk.length != (NSUInteger)expectedSize ||
+                memcmp(disk.bytes, expected, (size_t)expectedSize) != 0) {
+                result = HW_DESIGN_WRITE_CONFLICT;
+                return;
+            }
+            NSData *replacement = [NSData dataWithBytes:source length:(NSUInteger)sourceSize];
+            if ([replacement isEqualToData:disk] || [replacement writeToURL:target atomically:YES]) {
+                result = rename(stagedGcode, destination) == 0
+                    ? HW_DESIGN_WRITE_SAVED : HW_DESIGN_WRITE_GCODE_FAILED;
+            }
+        }];
+        return coordinationError ? HW_DESIGN_WRITE_FAILED : result;
+    }
+}
+
 int32_t hw_slicer_host_run(const HW_Slicer_Application_API *applicationAPI) {
     if (!applicationAPI || !applicationAPI->initialize ||
         !applicationAPI->shutdown || !applicationAPI->frame ||

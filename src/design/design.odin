@@ -41,6 +41,7 @@ Shape :: enum u8 {
 	Tube,
 	Cone,
 	Polygon,
+	Profile,
 }
 
 shape_name :: proc(shape: Shape) -> string {
@@ -50,6 +51,7 @@ shape_name :: proc(shape: Shape) -> string {
 	case .Tube:     return "tube"
 	case .Cone:     return "cone"
 	case .Polygon:  return "polygon"
+	case .Profile:  return "profile"
 	}
 	return "object"
 }
@@ -85,6 +87,7 @@ Junction :: struct {
 
 Object :: struct {
 	shape:                Shape,
+	profile:              ^Bezier_Profile,
 	name:                 string,
 	line:                 int,
 	center:               [2]f64, // mm from the bed centre
@@ -134,8 +137,9 @@ Design :: struct {
 }
 
 Error :: struct {
-	line:    int,
-	message: string,
+	line:     int,
+	message:  string,
+	position: Maybe([2]f64),
 }
 
 DEFAULT_PRINT_SPEED :: 40
@@ -149,7 +153,10 @@ EPSILON :: 1e-9
 
 design_destroy :: proc(d: ^Design) {
 	for parameter in d.parameters {delete(parameter.name, d.parameters.allocator)}
-	for object in d.objects {delete(object.name, d.objects.allocator)}
+	for object in d.objects {
+		if object.profile != nil {destroy_bezier_profile(object.profile, d.objects.allocator)}
+		delete(object.name, d.objects.allocator)
+	}
 	delete(d.parameters)
 	delete(d.objects)
 	delete(d.junctions)
@@ -258,6 +265,7 @@ Token :: struct {
 	text:  string,
 	value: Value,
 	line:  int,
+	start: int,
 }
 
 @(private)
@@ -324,7 +332,7 @@ tokenize :: proc(p: ^Parser, source: string) -> bool {
 			for i < len(source) && is_ident_start(source[i]) {i += 1}
 			unit := source[unit_start:i]
 			if unit != "" && unit != "mm" {return fail(p, line, "unknown unit '%s'; use mm or no unit", unit)}
-			append(&p.tokens, Token{kind = .Number, text = source[start:i], value = {amount, unit == "mm"}, line = line})
+			append(&p.tokens, Token{kind = .Number, text = source[start:i], value = {amount, unit == "mm"}, line = line, start = start})
 		case:
 			kind: Token_Kind
 			switch c {
@@ -341,7 +349,7 @@ tokenize :: proc(p: ^Parser, source: string) -> bool {
 			case '/': kind = .Slash
 			case: return fail(p, line, "unexpected character '%c'", rune(c))
 			}
-			append(&p.tokens, Token{kind = kind, text = source[i:i+1], line = line})
+			append(&p.tokens, Token{kind = kind, text = source[i:i+1], line = line, start = i})
 			i += 1
 		}
 	}
@@ -391,7 +399,7 @@ lookup_object :: proc(p: ^Parser, name: string) -> (int, bool) {
 
 @(private)
 is_object_keyword :: proc(text: string) -> bool {
-	return text == "box" || text == "cylinder" || text == "tube" || text == "cone" || text == "polygon"
+	return text == "box" || text == "cylinder" || text == "tube" || text == "cone" || text == "polygon" || text == "profile"
 }
 
 @(private)
@@ -429,7 +437,7 @@ parse_statements :: proc(p: ^Parser) -> bool {
 			} else if token.text == "bevel" || token.text == "fillet" {
 				parse_junction(p, token) or_return
 			} else {
-				return fail(p, token.line, "unknown statement '%s'; use let, box, cylinder, tube, cone, polygon, bevel or fillet", token.text)
+				return fail(p, token.line, "unknown statement '%s'; use let, box, cylinder, tube, cone, polygon, profile, bevel or fillet", token.text)
 			}
 			expect(p, .Newline, "end of line") or_return
 		case .Number, .Left_Paren, .Right_Paren, .Comma, .Equals, .Plus, .Minus, .Star, .Slash, .End:
@@ -467,6 +475,9 @@ parse_junction :: proc(p: ^Parser, head: Token) -> bool {
 
 	a := &p.design.objects[a_idx]
 	b := &p.design.objects[b_idx]
+	if a.shape == .Profile || b.shape == .Profile {
+		return fail(p, head.line, "%s cannot join a constant-section profile", head.text)
+	}
 	lower, upper: ^Object
 	lower_idx, upper_idx: int
 	if abs((a.z+a.height)-b.z) <= 1e-4 {
@@ -627,6 +638,8 @@ Object_Key :: enum u8 {
 	Speed,
 	Acceleration,
 	Fan,
+	Outer,
+	Hole,
 }
 
 @(private)
@@ -649,6 +662,8 @@ OBJECT_KEY_NAMES := [Object_Key]string {
 	.Speed          = "speed",
 	.Acceleration   = "acceleration",
 	.Fan            = "fan",
+	.Outer          = "outer",
+	.Hole           = "hole",
 }
 
 @(private)
@@ -660,12 +675,21 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	case "tube":     shape = .Tube
 	case "cone":     shape = .Cone
 	case "polygon":  shape = .Polygon
+	case "profile":  shape = .Profile
 	}
 	allowed := bit_set[Object_Key]{.X, .Y, .Z, .Height, .Walls, .Floor, .Speed, .Acceleration, .Fan}
 	required := bit_set[Object_Key]{.Height, .Walls}
+	profile: ^Bezier_Profile
+	defer {if profile != nil {destroy_bezier_profile(profile, p.allocator)}}
 	if shape == .Box {
 		allowed += {.Width, .Depth, .Radius, .Radius_South, .Radius_North}
 		required += {.Width, .Depth}
+	} else if shape == .Profile {
+		allowed += {.Outer, .Hole}
+		required += {.Outer}
+		profile = new(Bezier_Profile, p.allocator)
+		profile.line = head.line
+		profile.loops = make([dynamic]Bezier_Loop, p.allocator)
 	} else {
 		allowed += {.Diameter, .Top_Diameter, .Inner_Diameter, .Sides}
 		required += {.Diameter}
@@ -681,9 +705,18 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 		name := expect(p, .Ident, "an argument name") or_return
 		key, found := object_key(name.text)
 		if !found || key not_in allowed {return fail(p, name.line, "%s has no argument '%s'", head.text, name.text)}
-		if key in seen {return fail(p, name.line, "argument '%s' is given twice", name.text)}
+		if key in seen && key != .Hole {return fail(p, name.line, "argument '%s' is given twice", name.text)}
 		expect(p, .Equals, "'=' after the argument name") or_return
+		if key == .Outer || key == .Hole {
+			if key == .Hole && .Outer not_in seen {return fail(p, name.line, "define the outer loop before its holes")}
+			parse_profile_loop(p, profile) or_return
+			seen += {key}
+			continue
+		}
 		value := parse_expression(p) or_return
+		if shape == .Profile && (math.is_nan(value.amount) || math.is_inf(value.amount)) {
+			return fail(p, name.line, "profile argument '%s' must be finite", name.text)
+		}
 		wants_length := key not_in bit_set[Object_Key]{.Sides, .Walls, .Floor, .Speed, .Acceleration, .Fan}
 		if value.length != wants_length {
 			return fail(p, name.line, "argument '%s' must be %s", name.text, "a length" if wants_length else "a scalar count")
@@ -698,6 +731,9 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	for key in ([3]Object_Key{.Walls, .Floor, .Sides}) {
 		if key not_in seen {continue}
 		v := values[key].amount
+		if shape == .Profile && (v < 0 || v >= f64(max(int))) {
+			return fail(p, head.line, "'%s' is outside the supported count range", OBJECT_KEY_NAMES[key])
+		}
 		if abs(v-math.round(v)) > EPSILON {return fail(p, head.line, "'%s' must be a whole count, got %.3f", OBJECT_KEY_NAMES[key], v)}
 	}
 	object := Object{
@@ -722,7 +758,7 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	if shape == .Box {
 		object.size = {values[.Width].amount, values[.Depth].amount}
 		object.top_diameter = object.size.x
-	} else {
+	} else if shape != .Profile {
 		dia := values[.Diameter].amount
 		top_dia := values[.Top_Diameter].amount if .Top_Diameter in seen else dia
 		inner_dia := values[.Inner_Diameter].amount if .Inner_Diameter in seen else 0
@@ -742,12 +778,17 @@ parse_object :: proc(p: ^Parser, head: Token, object_name: string) -> bool {
 	}
 	if object.walls < 1 {return fail(p, head.line, "walls must be at least 1, got %d", object.walls)}
 	if object.floor < 0 {return fail(p, head.line, "floor must not be negative, got %d", object.floor)}
-	if object.size.x <= 0 || object.size.y <= 0 || object.height <= 0 {return fail(p, head.line, "%s sizes must be positive", head.text)}
+	if (shape != .Profile && (object.size.x <= 0 || object.size.y <= 0)) || object.height <= 0 {return fail(p, head.line, "%s sizes must be positive", head.text)}
 	if len(p.design.objects) >= MAX_OBJECTS {return fail(p, head.line, "more than %d objects", MAX_OBJECTS)}
 	if object.shape == .Box {
 		resolve_box_corners(p, &object, values, seen) or_return
 	}
 	if len(object_name) > 0 {object.name = strings.clone(object_name, p.allocator)}
+	if profile != nil {
+		profile.name = object.name
+		object.profile = profile
+		profile = nil
+	}
 	append(&p.design.objects, object)
 	return true
 }
@@ -928,7 +969,7 @@ resolve_process :: proc(p: ^Parser, printer: Printer) -> bool {
 	length :: proc(p: ^Parser, name: string, required: bool, fallback: f64) -> (f64, bool) {
 		for parameter in p.design.parameters {
 			if parameter.name != name {continue}
-			if !parameter.value.length || parameter.value.amount <= 0 {
+			if !parameter.value.length || !(parameter.value.amount > 0 && parameter.value.amount <= max(f64)) {
 				return 0, fail(p, parameter.line, "'%s' must be a positive length", name)
 			}
 			return parameter.value.amount, true
@@ -939,7 +980,7 @@ resolve_process :: proc(p: ^Parser, printer: Printer) -> bool {
 	scalar :: proc(p: ^Parser, name, unit: string, fallback: f64) -> (f64, bool) {
 		for parameter in p.design.parameters {
 			if parameter.name != name {continue}
-			if parameter.value.length || parameter.value.amount < 0 {
+			if parameter.value.length || !(parameter.value.amount >= 0 && parameter.value.amount <= max(f64)) {
 				return 0, fail(p, parameter.line, "'%s' must be a scalar in %s", name, unit)
 			}
 			return parameter.value.amount, true
@@ -962,6 +1003,7 @@ resolve_process :: proc(p: ^Parser, printer: Printer) -> bool {
 		return fail(p, 1, "travel_acceleration must be above 0 and at most the printer's %.0f mm/s²", printer.max_acceleration)
 	}
 	if len(d.objects) == 0 {return fail(p, 1, "the design has no objects; add a box or cylinder")}
+	profile_moves_left := PROFILE_MOVE_LIMIT
 	for &object in d.objects {
 		if .Speed not_in object.given {object.settings.speed = d.defaults.speed}
 		if .Acceleration not_in object.given {object.settings.acceleration = d.defaults.acceleration}
@@ -980,17 +1022,20 @@ resolve_process :: proc(p: ^Parser, printer: Printer) -> bool {
 		if flow > printer.max_volumetric_flow {
 			return fail(p, object.line, "%.1f mm/s needs %.1f mm³/s, above the printer's %.1f mm³/s", settings.speed, flow, printer.max_volumetric_flow)
 		}
+		if object.z == 0 && object.height < d.first_layer_height || object.z > 0 && object.height < d.layer_height {
+			return fail(p, object.line, "the object is lower than one layer")
+		}
+		if object.profile != nil {
+			prepare_printable_profile(p, &object, &profile_moves_left) or_return
+		}
 		if min(object.size.x, object.size.y) < d.line_width {
 			return fail(p, object.line, "the object is narrower than one line (%.3f mm)", d.line_width)
 		}
-		if object.shape != .Box && object.top_diameter < d.line_width {
+		if object.shape != .Box && object.shape != .Profile && object.top_diameter < d.line_width {
 			return fail(p, object.line, "the object top_diameter is narrower than one line (%.3f mm)", d.line_width)
 		}
 		if object.inner_diameter > 0 && (min(object.size.x, object.top_diameter)-object.inner_diameter)*0.5 < d.line_width-EPSILON {
 			return fail(p, object.line, "the annular wall is narrower than one line (%.3f mm)", d.line_width)
-		}
-		if object.z == 0 && object.height < d.first_layer_height || object.z > 0 && object.height < d.layer_height {
-			return fail(p, object.line, "the object is lower than one layer")
 		}
 	}
 	return true

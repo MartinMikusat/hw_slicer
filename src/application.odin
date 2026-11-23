@@ -256,7 +256,16 @@ app_load_evidence :: proc(path: string) -> bool {
 	return true
 }
 
+app_profile_can_replace :: proc() -> bool {
+	if app.design.profile_dirty || app.design.editor.dragging {
+		app_set_status("Save or discard the profile edits first.", true)
+		return false
+	}
+	return true
+}
+
 app_open_document :: proc() {
+	if !app_profile_can_replace() {return}
 	path: [4096]u8
 	if app.host.open_document == nil ||
 	   !app.host.open_document(raw_data(path[:]), len(path)) {
@@ -354,6 +363,17 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.face_hover = -1
 		app.face_pressed = -1
 		app_set_status("SELECT A FACE TO PLACE ON THE BED; ESC CANCELS" if app.ui.lay_on_face else "FACE SELECTION CANCELLED")
+	case .Profile_Edit:
+		profile_editor_toggle()
+	case .Profile_Fit:
+		profile_editor_fit(&app.design, ui_viewport_rect(&app.ui))
+		app.needs_redraw = true
+	case .Profile_Save:
+		return app_profile_save()
+	case .Profile_Discard:
+		return app_profile_discard()
+	case .Profile_Point:
+		profile_editor_next_control()
 	case .Frame_Mesh:
 		app_frame_camera()
 	case .Toggle_Wireframe:
@@ -383,11 +403,13 @@ app_activate :: proc(action: UI_Action) -> bool {
 	case .Section_Height, .Simulation_Time, .Design_Layer, .Design_Layer_Progress:
 		return true
 	case .Design_Nozzle:
+		if !app_profile_can_replace() {return false}
 		nozzles := DESIGN_NOZZLES
-		app.design.nozzle_index = (app.design.nozzle_index+1)%len(nozzles)
+		previous := app.design.nozzle_index
+		app.design.nozzle_index = (previous+1)%len(nozzles)
 		if app.design.path != "" {
 			path := strings.clone(app.design.path, context.temp_allocator)
-			_ = app_load_design(path, true)
+			if !app_load_design(path, true) {app.design.nozzle_index = previous}
 		}
 		app.needs_redraw = true
 	case .Simulation_Play:
@@ -655,6 +677,11 @@ renderer_draw_application :: proc() -> Render_Result {
 	evidence_view := app_evidence_view()
 	app.ui.design_active = app.design.active
 	app.ui.design_playing = app.design.playing
+	app.ui.profile_available = profile_first_object(&app.design) >= 0
+	app.ui.profile_editing = app.ui.profile_available && app.design.editor.active
+	app.ui.profile_preview_enabled = !app.design.profile_dirty || app.design.profile_valid
+	app.ui.profile_save_enabled = app.design.profile_dirty && app.design.profile_valid && !app.design.profile_conflict && !app.design.editor.dragging
+	app.ui.profile_discard_enabled = app.design.profile_dirty || app.design.profile_conflict
 	app.ui.design_fraction = app.design.clock/design_duration(&app.design) if design_duration(&app.design) > 0 else 0
 	app.ui.design_layer, app.ui.design_layers, app.ui.design_layer_z, app.ui.design_in_layer = design_layer_state(&app.design)
 	if app.design.active && app.design.selected_junction >= 0 && app.design.selected_junction < len(app.design.evaluated.junctions) {
@@ -839,6 +866,7 @@ application_mouse :: proc "c" (
 	app.ui.pointer_x = point_x
 	app.ui.pointer_y = point_y
 	if phase == 4 {return}
+	if profile_editor_mouse(phase, button, {point_x, point_y}) {return}
 	if app.ui.lay_on_face && !app.ui.settings_open && !app.ui.help_open && !app.ui.evidence_open &&
 	   ui_hit_test(&app.ui, point_x, point_y) == 0 && ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
 		if phase == 3 || (phase == 0 && button == 0) || (phase == 2 && button == 0) {
@@ -980,6 +1008,10 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 		return
 	}
 	if app.ui.settings_open || app.ui.help_open {return}
+	if app.design.editor.active {
+		profile_editor_zoom(delta_y)
+		return
+	}
 	if app.design.active && len(app.design.layers) > 0 {
 		px, py := app.ui.pointer_x, app.ui.pointer_y
 		layer_rect := ui_design_layer_slider_rect(&app.ui)
@@ -1059,6 +1091,7 @@ application_key :: proc "c" (
 	modifiers: u64,
 ) {
 	context = app_context()
+	if profile_editor_key(key_code, modifiers) {return}
 	if key_code == 53 {
 		if app.ui.lay_on_face && !app.ui.settings_open && !app.ui.help_open &&
 		   !app.ui.evidence_open && !flash.is_active(&app.ui.flash_state) {
@@ -1238,6 +1271,9 @@ application_control_at :: proc "c" (
 	if output == nil || index >= uint(len(app.ui.controls)) {return false}
 	control := app.ui.controls[index]
 	if !ui_control_accessible(&app.ui, control) {return false}
+	if control.action == .Profile_Point {
+		control.label = fmt.tprintf("%s. Select the next point. Arrow keys move this point.", profile_selection_label(&app.design))
+	}
 	ui_scale := app.ui.ui_scale
 	role := control.role
 	if control.action == .Toggle_Section {role = 2}
@@ -1291,6 +1327,9 @@ application_adjust_control :: proc "c" (control_id: u64, direction: i32) -> bool
 
 application_window_state :: proc "c" (visible, active: bool) {
 	context = app_context()
+	if (!visible || !active) && (app.design.editor.dragging || app.design.editor.panning) {
+		profile_editor_cancel_drag()
+	}
 	site := devlog.Site{feature = "window", operation = "show"}
 	switch {
 	case visible && active:

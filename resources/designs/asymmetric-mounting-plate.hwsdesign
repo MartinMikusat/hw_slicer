@@ -1,0 +1,38 @@
+let line_width = nozzle * 1.1
+let layer_height = nozzle * 0.5
+let print_speed = 28
+
+let width = 72mm
+let waist = 2mm
+let bolt_spacing = 44mm
+let bore_radius = 3.2mm
+let bore_handle = bore_radius * 0.55228475
+let left = -bolt_spacing / 2
+let right = bolt_spacing / 2
+let thickness = 3mm
+
+let plate = profile(
+    height = thickness, walls = 4, floor = ceil(0.6mm / layer_height),
+    outer = loop(outline,
+        smooth(west_shoulder, left, 16mm, -1, 0, 8mm, 9mm),
+        smooth(west_tip, -width / 2, 0mm, 0, -1, 10mm, 8mm),
+        smooth(west_heel, left, -12mm, 1, 0, 8mm, 10mm),
+        smooth(lower_waist, 0mm, -waist / 2, 1, 0, 7mm, 7mm),
+        smooth(east_heel, right, -10mm, 1, 0, 6mm, 8mm),
+        corner(east_tip, width / 2, 1mm, 0mm, -6mm, -2mm, 8mm),
+        smooth(east_shoulder, right, 13mm, -1, 0, 9mm, 10mm),
+        smooth(upper_waist, 0mm, waist / 2, -1, 0, 7mm, 7mm)
+    ),
+    hole = loop(west_bolt,
+        smooth(east, left + bore_radius, 0mm, 0, -1, bore_handle, bore_handle),
+        smooth(south, left, -bore_radius, -1, 0, bore_handle, bore_handle),
+        smooth(west, left - bore_radius, 0mm, 0, 1, bore_handle, bore_handle),
+        smooth(north, left, bore_radius, 1, 0, bore_handle, bore_handle)
+    ),
+    hole = loop(east_bolt,
+        smooth(east, right + bore_radius, 0mm, 0, -1, bore_handle, bore_handle),
+        smooth(south, right, -bore_radius, -1, 0, bore_handle, bore_handle),
+        smooth(west, right - bore_radius, 0mm, 0, 1, bore_handle, bore_handle),
+        smooth(north, right, bore_radius, 1, 0, bore_handle, bore_handle)
+    )
+)

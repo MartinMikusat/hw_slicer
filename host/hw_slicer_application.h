@@ -69,6 +69,16 @@ typedef struct HW_Slicer_Application_API {
     void (*window_state)(bool visible, bool active);
 } HW_Slicer_Application_API;
 
+typedef enum {
+    HW_DESIGN_WRITE_FAILED,
+    HW_DESIGN_WRITE_SAVED,
+    HW_DESIGN_WRITE_CONFLICT,
+    HW_DESIGN_WRITE_GCODE_FAILED
+} HW_Design_Write_Result;
+
+int32_t hw_slicer_replace_design(const char *path, const uint8_t *expected, intptr_t expected_size,
+                                 const uint8_t *source, intptr_t source_size,
+                                 const char *staged_gcode, const char *destination);
 int32_t hw_slicer_host_run(const HW_Slicer_Application_API *application);
 
 #endif
