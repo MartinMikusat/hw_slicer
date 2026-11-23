@@ -208,3 +208,61 @@ Scope: G-code emission and validation (`src/gcode/`), pipeline orchestration, mo
 - **Location:** `src/cli/main.odin:123-126`
 - **Issue:** The input file name and profile names are written with `"%s"` without JSON escaping. A name that contains `"` or `\` produces invalid JSON.
 - **Resolution:** `write_json_string` escapes quote, backslash and control characters for all string values in the trace JSON.
+
+---
+
+## Pass 4 Findings (as of `0d40440`)
+
+Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin`), tree supports, and grid supports, checked by slicing generated models (box, cylinder, T-shape, 30° frustum) and Benchy. Not yet covered: `src/formats/`, `src/evidence/`, the remaining `src/slicing/` core, adhesion, ironing, gap fill, and infill patterns.
+
+### High Severity (Pass 4)
+
+### [CR-31] Every Model Prints One Layer Short
+- **Locations:** `src/slicing/layers.odin:48-54`, `src/pipeline/spine.odin:314-345`
+- **Issue:** The layer Z is also the slicing plane, and the fixed schedule creates planes from `minimum_z + first_layer_height` strictly below `maximum_z`. The model top is never reached: a 5 mm box prints to 4.8 mm and a 6 mm cylinder to 5.8 mm (0.20 mm layers). A plane at exactly `maximum_z` would only touch the top face, so the gap cannot be closed by adding one plane.
+- **Fix:** Slice each layer at its mid-height (`layer_z - layer_height/2`) and print it at `layer_z`, with layers up to `maximum_z`. This changes the slicing contract and every pinned topology, region, and path-plan fixture hash, so it needs an explicit decision.
+
+### [CR-32] Tree Supports Ignore the Overhang Angle — **RESOLVED**
+- **Location:** `src/features/tree_supports.odin`
+- **Issue:** `overhang_angle_deg` was never read. Any contour vertex outside the layer below spawned a support tip, so a 30° overhang (threshold 45°) received 608 support lines on its first layer.
+- **Resolution:** A vertex is an overhang tip only when its distance outside the layer below exceeds `layer height * tan(overhang angle)`. The 30° frustum now gets no supports; a T-shape with 15 mm horizontal wings keeps them.
+
+### [CR-33] Tree Support Rings Overlap the Model — **RESOLVED**
+- **Location:** `src/features/tree_supports.odin`
+- **Issue:** `xy_clearance_um` was never read, and a ring was emitted when only its centre was outside the model. Rings up to 6 mm in radius overlapped the part: on the frustum, 27 of 448 support points lay inside the model outline.
+- **Resolution:** Each ring's radius is limited to the centre's distance from the model boundary minus the XY clearance and half the line width. A ring that would be thinner than one line width is skipped. Benchy, the T-shape and the frustum show no support inside a perimeter loop.
+
+### Medium Severity (Pass 4)
+
+### [CR-34] Tree Support Trunks Have Gaps
+- **Location:** `src/features/tree_supports.odin`
+- **Issue:** A branch whose centre is inside the model, or whose ring no longer fits the clearance, emits nothing on that layer but continues downward. Its ring sections above the gap rest on nothing.
+- **Fix:** Route branches around the model before they enter it, or end a branch where it meets the model (allowed only with `support_mode = everywhere`) and remove its upper sections when it cannot reach the plate.
+
+### [CR-35] Inconsistent Triangle Winding Is Not Detected
+- **Location:** mesh audit and `src/repair/mesh_repair.odin`
+- **Issue:** A mesh with mixed face orientation (signed volume −603 mm³ for a 1,810 mm³ part) slices with `repairs=0`. Support classification then reads downward faces as upward, and grid supports silently produce nothing.
+- **Fix:** Detect inconsistent orientation in the mesh audit (directed-edge pairing), report it, and repair it by propagating orientation across shared edges.
+
+### [CR-36] Skin Lines Outside Every Perimeter Loop on Benchy (Needs Diagnosis)
+- **Location:** unknown; observed in the Benchy layer 59 path plan
+- **Issue:** Top and top/bottom skin lines lie outside every perimeter loop, more than 1.5 mm from the model outline used by supports. Either skin is generated outside the layer outline or perimeters are missing for a region. Not yet diagnosed.
+
+### Low Severity (Pass 4)
+
+### [CR-37] Adaptive Layers Choose the Step From the Layer Bottom Only
+- **Location:** `src/slicing/adaptive_layers.odin:120-125`
+- **Issue:** The step is taken from the slope bin at the current Z, not the smallest target height over the span the new layer covers, so a coarse layer can step over the start of a shallow-slope region.
+
+### [CR-38] Contour Simplification Is Independent per Loop
+- **Location:** `src/slicing/simplify.odin`
+- **Issue:** Each loop is simplified alone (12 µm default tolerance) with only an area-sign guard, so neighbouring loops closer than the tolerance can cross. Kept segment indices no longer describe the simplified edges, so segment lineage becomes approximate.
+
+### [CR-39] Tree Support Trunks Cross the Skirt on the First Layer
+- **Location:** `src/features/tree_supports.odin`
+- **Issue:** Ring clearance uses the model outline only. On Benchy's first layer a support line touches a perimeter-role line outside the model, consistent with the skirt.
+
+### [CR-40] `sim-verify.sh` Used a Stale Release Binary — **RESOLVED**
+- **Location:** `scripts/sim-verify.sh`
+- **Issue:** The script preferred `build/release/hw-slicer-cli` whenever it existed, so simulator runs after a debug build tested old code.
+- **Resolution:** The script uses whichever of the debug and release CLIs was built most recently and prints which one it uses.

@@ -7,10 +7,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PRINTER_DIR="${HW_PRINTER_DIR:-$ROOT_DIR/../hw_printer}"
-SLICER_BIN="$ROOT_DIR/build/release/hw-slicer-cli"
-if [ ! -x "$SLICER_BIN" ]; then
-  SLICER_BIN="$ROOT_DIR/build/hw-slicer-cli"
+# Use the most recently built CLI, so a stale release build never stands in for current code.
+SLICER_BIN="$ROOT_DIR/build/hw-slicer-cli"
+RELEASE_BIN="$ROOT_DIR/build/release/hw-slicer-cli"
+if [ -x "$RELEASE_BIN" ] && { [ ! -x "$SLICER_BIN" ] || [ "$RELEASE_BIN" -nt "$SLICER_BIN" ]; }; then
+  SLICER_BIN="$RELEASE_BIN"
 fi
+echo "==> Using $SLICER_BIN"
 SIM_BIN="$PRINTER_DIR/build/darwin_arm64-debug/hw-printer-sim"
 HOST_BIN="$PRINTER_DIR/build/darwin_arm64-debug/hw-printer"
 

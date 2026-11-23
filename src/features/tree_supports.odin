@@ -74,6 +74,10 @@ tree_supports_generate :: proc(
 	tan_branch := math.tan(branch_ang * math.PI / 180.0)
 	iface_layers := config.interface_layers if config.interface_layers > 0 else 2
 	lw := config.line_width_um
+	overhang_ang := config.overhang_angle_deg if config.overhang_angle_deg > 0.0 && config.overhang_angle_deg < 89.0 else 45.0
+	tan_overhang := math.tan(overhang_ang * math.PI / 180.0)
+	// A ring keeps the XY clearance plus half its line width from the model.
+	keep_out := f64(i64(config.xy_clearance_um)) + f64(i64(lw)) / 2.0
 
 	// Compute model centroid on layer 0 (fallback: bed center) for outward avoidance steering.
 	cx_sum, cy_sum: f64
@@ -105,9 +109,16 @@ tree_supports_generate :: proc(
 			if vc < 3 {continue}
 			// Sample along contour vertices.
 			stride := max(1, vc / 64)
+			// A point overhangs when it lies farther outside the layer below than the overhang
+			// angle allows: layer height * tan(angle), with the angle measured from vertical.
+			layer_dz := f64(i64(layer_z[li]) - i64(layer_z[li - 1]))
+			allowed_um := max(0.0, layer_dz) * tan_overhang
 			for vi := 0; vi < vc; vi += stride {
 				pt := slicing.region_path_point(topology, path, vi)
 				if bridge_polygon_contains_twice(prev_model, i64(pt.x)*2, i64(pt.y)*2) {
+					continue
+				}
+				if tree_support_boundary_distance(prev_model, f64(i64(pt.x)), f64(i64(pt.y))) <= allowed_um {
 					continue
 				}
 				// Cluster against existing tips on this layer.
@@ -234,14 +245,20 @@ tree_supports_generate :: proc(
 			if bridge_polygon_contains_twice(cur_model, bx_i*2, by_i*2) {
 				continue
 			}
+			// A ring whose radius is below the centre's distance to the model, less the keep-out,
+			// cannot touch the model because the centre lies outside it.
+			ring_r := min(b.radius, tree_support_boundary_distance(cur_model, b.x, b.y) - keep_out)
+			if ring_r < f64(i64(lw)) {
+				continue
+			}
 
 			sides :: 16
 			pts := make([]polygon.Polygon_Point, sides, allocator)
 			in_bounds := true
 			for s in 0..<sides {
 				ang := (2.0 * math.PI * f64(s)) / f64(sides)
-				px := contracts.Micrometres(i64(math.round(b.x + b.radius * math.cos(ang))))
-				py := contracts.Micrometres(i64(math.round(b.y + b.radius * math.sin(ang))))
+				px := contracts.Micrometres(i64(math.round(b.x + ring_r * math.cos(ang))))
+				py := contracts.Micrometres(i64(math.round(b.y + ring_r * math.sin(ang))))
 				if i64(px) < i64(config.bed_min_x) || i64(px) > i64(config.bed_max_x) ||
 				   i64(py) < i64(config.bed_min_y) || i64(py) > i64(config.bed_max_y) {
 					in_bounds = false
@@ -270,4 +287,28 @@ tree_supports_generate :: proc(
 		tip_count    = total_tips,
 		branch_nodes = total_nodes,
 	}
+}
+
+// The distance from (x, y) to the nearest edge of any path in `set`, or +Inf for an empty set.
+@(private = "file")
+tree_support_boundary_distance :: proc(set: polygon.Polygon_Set, x, y: f64) -> f64 {
+	best_sq := math.INF_F64
+	for path in set.paths {
+		n := int(path.count)
+		if n < 2 || path.offset+path.count > u64(len(set.points)) {continue}
+		start := int(path.offset)
+		prev := set.points[start + n - 1]
+		for i in 0..<n {
+			cur := set.points[start + i]
+			ax, ay := f64(i64(prev.x)), f64(i64(prev.y))
+			dx, dy := f64(i64(cur.x)) - ax, f64(i64(cur.y)) - ay
+			len_sq := dx*dx + dy*dy
+			t := 0.0
+			if len_sq > 0 {t = clamp(((x - ax)*dx + (y - ay)*dy) / len_sq, 0.0, 1.0)}
+			ex, ey := x - (ax + t*dx), y - (ay + t*dy)
+			best_sq = min(best_sq, ex*ex + ey*ey)
+			prev = cur
+		}
+	}
+	return math.sqrt(best_sq)
 }
