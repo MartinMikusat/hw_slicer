@@ -4,11 +4,13 @@ import "core:fmt"
 import "core:math"
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import devlog "devlog:."
 
 import contracts "../contracts"
 import features "../features"
+import formats "../formats"
 import pipeline "../pipeline"
 import profiles "../profiles"
 
@@ -19,6 +21,7 @@ CLI_Override :: struct {
 
 CLI_Options :: struct {
 	input_path:      string,
+	input_paths:     [dynamic]string,
 	output_path:     string,
 	printer:         string,
 	material:        string,
@@ -27,6 +30,13 @@ CLI_Options :: struct {
 	trace_json_path: string,
 	svg_dir:         string,
 	enable_supports: bool,
+	adaptive_layers: bool,
+	clone_count:     int,
+	scale:           f64,
+	rot_x:           f64,
+	rot_y:           f64,
+	rot_z:           f64,
+	lay_flat:        bool,
 	overrides:       [dynamic]CLI_Override,
 }
 
@@ -137,15 +147,21 @@ main :: proc() {
 		material     = "pla",
 		process      = "0.20-standard",
 		profiles_dir = "resources/profiles",
+		clone_count  = 1,
+		scale        = 1.0,
+		input_paths  = make([dynamic]string),
 		overrides    = make([dynamic]CLI_Override),
 	}
+	defer delete(opts.input_paths)
 	defer delete(opts.overrides)
 
 	args := os.args[1:]
 	for i := 0; i < len(args); i += 1 {
 		arg := args[i]
 		if strings.has_prefix(arg, "--input=") {
-			opts.input_path = arg[len("--input="):]
+			p := arg[len("--input="):]
+			if len(opts.input_path) == 0 {opts.input_path = p}
+			append(&opts.input_paths, p)
 		} else if strings.has_prefix(arg, "--out=") {
 			opts.output_path = arg[len("--out="):]
 		} else if strings.has_prefix(arg, "--printer=") {
@@ -164,6 +180,25 @@ main :: proc() {
 			opts.enable_supports = true
 		} else if arg == "--no-supports" {
 			opts.enable_supports = false
+		} else if arg == "--adaptive-layers" {
+			opts.adaptive_layers = true
+		} else if arg == "--lay-flat" {
+			opts.lay_flat = true
+		} else if strings.has_prefix(arg, "--clone=") {
+			if n, ok := strconv.parse_int(arg[len("--clone="):]); ok && n >= 1 {
+				opts.clone_count = n
+			}
+		} else if strings.has_prefix(arg, "--scale=") {
+			if s, ok := strconv.parse_f64(arg[len("--scale="):]); ok && s > 0 {
+				opts.scale = s
+			}
+		} else if strings.has_prefix(arg, "--rotate=") {
+			parts := strings.split(arg[len("--rotate="):], ",", context.temp_allocator)
+			if len(parts) == 3 {
+				if v, ok := strconv.parse_f64(parts[0]); ok {opts.rot_x = v}
+				if v, ok := strconv.parse_f64(parts[1]); ok {opts.rot_y = v}
+				if v, ok := strconv.parse_f64(parts[2]); ok {opts.rot_z = v}
+			}
 		} else if arg == "--set" && i+1 < len(args) {
 			i += 1
 			pair := args[i]
@@ -276,10 +311,67 @@ main :: proc() {
 	run_opts.arc_fitting_enabled = extras.arc_fitting_enabled
 	run_opts.arc_tolerance_um = extras.arc_tolerance_mm * 1000.0
 	run_opts.variable_walls_enabled = extras.variable_walls_enabled
+	run_opts.support_style_tree = extras.support_style != "grid"
+	run_opts.adaptive_layers = opts.adaptive_layers || extras.adaptive_layers
 	raw_stem := strings.trim_suffix(filepath.base(opts.input_path), filepath.ext(opts.input_path))
 	run_opts.object_name = strings.clone(raw_stem, context.temp_allocator)
 
-	res, slice_err := pipeline.slice_run_bytes(input_bytes, opts.input_path, resolved, run_opts)
+	has_plate_ops := len(opts.input_paths) > 1 || opts.clone_count > 1 ||
+		opts.scale != 1.0 || opts.rot_x != 0 || opts.rot_y != 0 || opts.rot_z != 0 || opts.lay_flat
+
+	res: pipeline.Slice_Run_Result
+	slice_err: pipeline.Slice_Run_Error
+	if has_plate_ops {
+		plate_objs := make([dynamic]pipeline.Plate_Object, 0, len(opts.input_paths) * opts.clone_count)
+		defer {
+			for &po in plate_objs {formats.decoded_mesh_destroy(&po.mesh)}
+			delete(plate_objs)
+		}
+		for in_p in opts.input_paths {
+			b, r_err := os.read_entire_file(in_p, context.allocator)
+			if r_err != nil {
+				fmt.eprintf("error: failed to read '%s'\n", in_p)
+				os.exit(1)
+			}
+			mesh, units, dec_err := pipeline.decode_mesh_bytes(b, in_p, run_opts.source_units)
+			delete(b)
+			if len(dec_err.stage) > 0 {
+				fmt.eprintf("SLICE FAILED at [%s]: %s\n", dec_err.stage, dec_err.detail)
+				os.exit(1)
+			}
+			run_opts.source_units = units
+			stem := strings.trim_suffix(filepath.base(in_p), filepath.ext(in_p))
+			base_obj := pipeline.Plate_Object{
+				name = stem,
+				mesh = mesh,
+				transform = {
+					scale_x   = opts.scale,
+					scale_y   = opts.scale,
+					scale_z   = opts.scale,
+					rot_x_deg = opts.rot_x,
+					rot_y_deg = opts.rot_y,
+					rot_z_deg = opts.rot_z,
+					lay_flat  = opts.lay_flat,
+				},
+			}
+			pipeline.plate_object_apply_transform(&base_obj)
+			append(&plate_objs, base_obj)
+			for ci in 1..<opts.clone_count {
+				cloned := pipeline.plate_object_clone(base_obj, fmt.tprintf("%s_%d", stem, ci))
+				append(&plate_objs, cloned)
+			}
+		}
+		if !pipeline.plate_auto_arrange(plate_objs[:], resolved.printer) {
+			fmt.eprintln("error: plate objects do not fit on build plate")
+			os.exit(1)
+		}
+		merged := pipeline.plate_merge_to_mesh(plate_objs[:])
+		defer formats.decoded_mesh_destroy(&merged)
+		run_opts.center_on_bed = false
+		res, slice_err = pipeline.slice_run_decoded_mesh(&merged, resolved, run_opts)
+	} else {
+		res, slice_err = pipeline.slice_run_bytes(input_bytes, opts.input_path, resolved, run_opts)
+	}
 	if len(slice_err.stage) > 0 {
 		devlog.failed(devlog.global(), site, {reason = slice_err.detail, detail = slice_err.stage, severity = .Error}, {scope = "cli", stage = slice_err.stage})
 		fmt.eprintf("SLICE FAILED at [%s]: %s\n", slice_err.stage, slice_err.detail)

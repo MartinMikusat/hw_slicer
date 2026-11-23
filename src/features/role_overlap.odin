@@ -229,17 +229,10 @@ role_overlap_resolve :: proc(
 					output_area, output_area_ok =
 						role_overlap_area_2(output)
 					if !output_area_ok {
-						polygon.polygon_set_destroy(
-							&output,
-							allocator,
-						)
-						polygon.polygon_set_destroy(
-							&priority_coverage,
-							allocator,
-						)
-						return {}, .Arithmetic
-					}
-					if output_area > source_areas[order.source_index] {
+						polygon.polygon_set_destroy(&output, allocator)
+						output = {}
+						output_area = 0
+					} else if output_area > source_areas[order.source_index] {
 						output_area = source_areas[order.source_index]
 					}
 				}

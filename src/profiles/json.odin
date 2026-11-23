@@ -41,6 +41,9 @@ Process_JSON_Extras :: struct {
 	arc_fitting_enabled:           bool,
 	arc_tolerance_mm:              f64,
 	variable_walls_enabled:        bool,
+	// Milestone 4
+	support_style:                 string, // "tree" | "grid"
+	adaptive_layers:               bool,
 }
 
 @(private = "file")
@@ -137,6 +140,9 @@ Process_JSON :: struct {
 	arc_fitting_enabled:           bool,
 	arc_tolerance_mm:              f64,
 	variable_walls_enabled:        bool,
+	// Milestone 4
+	support_style:                 string, // "tree" | "grid"
+	adaptive_layers:               bool,
 }
 
 @(private = "file")
@@ -342,6 +348,8 @@ process_profile_load_json :: proc(
 		arc_fitting_enabled           = raw.arc_fitting_enabled,
 		arc_tolerance_mm              = raw.arc_tolerance_mm if raw.arc_tolerance_mm > 0 else 0.02,
 		variable_walls_enabled        = raw.variable_walls_enabled,
+		support_style                 = raw.support_style if len(raw.support_style) > 0 else "tree",
+		adaptive_layers               = raw.adaptive_layers,
 	}
 	return p, extras, .None
 }
@@ -414,6 +422,21 @@ profile_apply_override :: proc(
 	}
 	if key == "variable_walls" || key == "variable_walls_enabled" {
 		extras.variable_walls_enabled = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "support_style" {
+		if strings.equal_fold(val, "tree") || strings.equal_fold(val, "organic") {
+			extras.support_style = "tree"
+			return .None
+		}
+		if strings.equal_fold(val, "grid") || strings.equal_fold(val, "rectilinear") {
+			extras.support_style = "grid"
+			return .None
+		}
+		return .Invalid_Override_Value
+	}
+	if key == "adaptive_layers" {
+		extras.adaptive_layers = strings.equal_fold(val, "true") || val == "1"
 		return .None
 	}
 	num, ok := strconv.parse_f64(val)

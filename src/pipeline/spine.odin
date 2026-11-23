@@ -10,16 +10,22 @@ import slicing "../slicing"
 SLICE_SPINE_REQUEST_SCHEMA_VERSION :: u32(1)
 
 Slice_Spine_Config :: struct {
-	source_units:       contracts.Source_Units,
-	first_layer_height: contracts.Micrometres,
-	layer_height:       contracts.Micrometres,
-	max_layer_count:    u32,
+	source_units:        contracts.Source_Units,
+	first_layer_height:  contracts.Micrometres,
+	layer_height:        contracts.Micrometres,
+	max_layer_count:     u32,
+	adaptive_layers:     bool,
+	min_adaptive_height: contracts.Micrometres,
+	max_adaptive_height: contracts.Micrometres,
 }
 
 Slice_Spine_Layer_Config :: struct {
-	first_layer_height: contracts.Micrometres,
-	layer_height:       contracts.Micrometres,
-	max_layer_count:    u32,
+	first_layer_height:  contracts.Micrometres,
+	layer_height:        contracts.Micrometres,
+	max_layer_count:     u32,
+	adaptive_layers:     bool,
+	min_adaptive_height: contracts.Micrometres,
+	max_adaptive_height: contracts.Micrometres,
 }
 
 Slice_Spine_Hashes :: struct {
@@ -306,17 +312,35 @@ slice_spine_decoded_mesh :: proc(
 		return {}, .Schedule
 	}
 	schedule_error: slicing.Schedule_Error
-	result.schedule, schedule_error = slicing.fixed_layer_schedule_build(
-		{
-			request_hash = result.hashes.request,
-			minimum_z = minimum_z,
-			maximum_z = maximum_z,
-			first_plane_z = contracts.Micrometres(i64(first_plane_128)),
-			layer_step = config.layer_height,
-			max_layer_count = config.max_layer_count,
-		},
-		allocator,
-	)
+	if config.adaptive_layers {
+		min_ah := config.min_adaptive_height if i64(config.min_adaptive_height) > 0 else contracts.Micrometres(80)
+		max_ah := config.max_adaptive_height if i64(config.max_adaptive_height) > 0 else contracts.Micrometres(280)
+		result.schedule, schedule_error = slicing.adaptive_layer_schedule_build(
+			result.mesh,
+			{
+				request_hash       = result.hashes.request,
+				first_layer_height = config.first_layer_height,
+				min_layer_height   = min_ah,
+				max_layer_height   = max_ah,
+				nominal_height     = config.layer_height,
+				max_layer_count    = config.max_layer_count,
+				smooth_passes      = 3,
+			},
+			allocator,
+		)
+	} else {
+		result.schedule, schedule_error = slicing.fixed_layer_schedule_build(
+			{
+				request_hash = result.hashes.request,
+				minimum_z = minimum_z,
+				maximum_z = maximum_z,
+				first_plane_z = contracts.Micrometres(i64(first_plane_128)),
+				layer_step = config.layer_height,
+				max_layer_count = config.max_layer_count,
+			},
+			allocator,
+		)
+	}
 	if schedule_error != .None {
 		slice_spine_result_destroy(&result, allocator)
 		return {}, .Schedule

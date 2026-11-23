@@ -427,6 +427,9 @@ motion_plan_build :: proc(
 				)
 				filament_delta_nm =
 					i128(extrusion.moves[source.extrusion_index].incremental_filament_nm)
+				if filament_delta_nm <= 0 {
+					filament_delta_nm = i128(max(u32(10), profile.process.source.extrusion_length_quantum_nm))
+				}
 			} else if source.has_wipe {
 				move_point_a = source.wipe_point
 				move_len_nm = source.travel_length_nm

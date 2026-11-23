@@ -30,23 +30,40 @@ fixed_layer_schedule_hash :: proc(
 	   layer_step <= 0 {
 		return {}, false
 	}
-	span := i128(maximum_z)-i128(first_plane_z)
-	expected_count := (span+i128(layer_step)-1)/i128(layer_step)
-	if expected_count != i128(layer_count) {return {}, false}
 	schedule_root_id :=
 		contracts.stable_id_root(schedule.request_hash, .Layer)
-	for layer_z, layer_index in schedule.layer_z {
-		expected_z :=
-			i128(first_plane_z)+i128(layer_index)*i128(layer_step)
-		expected_id := contracts.stable_id_child(
-			schedule_root_id,
-			.Layer,
-			u64(layer_index),
-		)
-		if expected_z >= i128(maximum_z) ||
-		   i128(i64(layer_z)) != expected_z ||
-		   schedule.layer_ids[layer_index] != expected_id {
-			return {}, false
+	if schedule.adaptive {
+		prev_z := minimum_z
+		for layer_z, layer_index in schedule.layer_z {
+			expected_id := contracts.stable_id_child(
+				schedule_root_id,
+				.Layer,
+				u64(layer_index),
+			)
+			if i64(layer_z) <= prev_z ||
+			   i64(layer_z) > maximum_z ||
+			   schedule.layer_ids[layer_index] != expected_id {
+				return {}, false
+			}
+			prev_z = i64(layer_z)
+		}
+	} else {
+		span := i128(maximum_z)-i128(first_plane_z)
+		expected_count := (span+i128(layer_step)-1)/i128(layer_step)
+		if expected_count != i128(layer_count) {return {}, false}
+		for layer_z, layer_index in schedule.layer_z {
+			expected_z :=
+				i128(first_plane_z)+i128(layer_index)*i128(layer_step)
+			expected_id := contracts.stable_id_child(
+				schedule_root_id,
+				.Layer,
+				u64(layer_index),
+			)
+			if expected_z >= i128(maximum_z) ||
+			   i128(i64(layer_z)) != expected_z ||
+			   schedule.layer_ids[layer_index] != expected_id {
+				return {}, false
+			}
 		}
 	}
 	hash: contracts.Canonical_Hash

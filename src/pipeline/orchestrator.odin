@@ -54,6 +54,9 @@ Slice_Run_Options :: struct {
 	arc_fitting_enabled:           bool,
 	arc_tolerance_um:              f64,
 	variable_walls_enabled:        bool,
+	// Milestone 4: Tree supports & Adaptive layer height
+	support_style_tree:            bool,
+	adaptive_layers:               bool,
 }
 
 DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
@@ -84,6 +87,8 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	arc_fitting_enabled           = true,
 	arc_tolerance_um              = 20.0,
 	variable_walls_enabled        = true,
+	support_style_tree            = true,
+	adaptive_layers               = false,
 }
 
 Slice_Run_Result :: struct {
@@ -227,6 +232,17 @@ destroy_model_polygon_sets :: proc(sets: []polygon.Polygon_Set, allocator: mem.A
 }
 
 @(private = "file")
+polygon_set_total_area_2 :: proc(set: polygon.Polygon_Set) -> i128 {
+	total: i128
+	for p in set.paths {
+		s := int(p.offset)
+		e := s + int(p.count)
+		total += polygon.polygon_path_area_2(set.points[s:e])
+	}
+	return total
+}
+
+@(private = "file")
 make_role_overlap_sources :: proc(
 	layer_ids: []contracts.Stable_ID,
 	bridges: features.Bridge_Evidence_Result,
@@ -250,6 +266,10 @@ make_role_overlap_sources :: proc(
 			}
 		}
 		set := polygon.Polygon_Set{paths = paths, points = pts}
+		if _, ok := polygon.polygon_set_hash(set); !ok || polygon_set_total_area_2(set) <= 0 {
+			polygon.polygon_set_destroy(&set, allocator)
+			continue
+		}
 		append(&owned_sets, set)
 		append(&list, features.Role_Overlap_Source{
 			stable_id   = m.stable_id,
@@ -281,6 +301,10 @@ make_role_overlap_sources :: proc(
 			}
 		}
 		set := polygon.Polygon_Set{paths = paths, points = pts}
+		if _, ok := polygon.polygon_set_hash(set); !ok || polygon_set_total_area_2(set) <= 0 {
+			polygon.polygon_set_destroy(&set, allocator)
+			continue
+		}
 		append(&owned_sets, set)
 		append(&list, features.Role_Overlap_Source{
 			stable_id   = m.stable_id,
@@ -294,9 +318,54 @@ make_role_overlap_sources :: proc(
 }
 
 // Executes the full staged STL/OBJ/3MF slicing pipeline into validated Klipper G-code.
+// Decodes STL (binary/ASCII), OBJ, or 3MF bytes into a Decoded_Mesh.
+decode_mesh_bytes :: proc(
+	bytes: []u8,
+	filename: string,
+	default_units := contracts.Source_Units.Millimetres,
+	allocator := context.allocator,
+) -> (mesh: formats.Decoded_Mesh, units: contracts.Source_Units, err: Slice_Run_Error) {
+	is_3mf := strings.has_suffix(strings.to_lower(filename, context.temp_allocator), ".3mf")
+	is_obj := strings.has_suffix(strings.to_lower(filename, context.temp_allocator), ".obj") || formats.obj_source_likely(bytes)
+	if is_3mf {
+		pkg, pkg_err := formats.three_mf_package_open(bytes, allocator = allocator)
+		if pkg_err != .None {return {}, default_units, {stage = "decode_3mf", detail = fmt.tprintf("3mf package error: %v", pkg_err)}}
+		defer formats.three_mf_package_destroy(&pkg, allocator)
+		scene, scene_err := formats.three_mf_model_decode(pkg, allocator = allocator)
+		if scene_err != .None {return {}, default_units, {stage = "decode_3mf", detail = fmt.tprintf("3mf scene error: %v", scene_err)}}
+		defer formats.three_mf_scene_destroy(&scene, allocator)
+		flat, flat_err := formats.three_mf_scene_flatten(scene, allocator = allocator)
+		if flat_err != .None {return {}, default_units, {stage = "decode_3mf", detail = fmt.tprintf("3mf flatten error: %v", flat_err)}}
+		// Transfer flat.mesh ownership directly to caller.
+		return flat.mesh, scene.source.units, {}
+	}
+	if is_obj {
+		obj_dec, obj_err := formats.obj_decode(bytes, default_units, allocator = allocator)
+		if obj_err != .None {return {}, default_units, {stage = "decode_obj", detail = fmt.tprintf("obj decode error: %v", obj_err)}}
+		return obj_dec.mesh, default_units, {}
+	}
+	stl_dec, stl_err := formats.stl_decode(bytes, default_units, allocator = allocator)
+	if stl_err != .None {return {}, default_units, {stage = "decode_stl", detail = fmt.tprintf("stl decode error: %v", stl_err)}}
+	return stl_dec, default_units, {}
+}
+
 slice_run_bytes :: proc(
 	bytes: []u8,
 	filename: string,
+	profile: profiles.Resolved_Profiles,
+	options := DEFAULT_SLICE_RUN_OPTIONS,
+	allocator := context.allocator,
+) -> (result: Slice_Run_Result, err: Slice_Run_Error) {
+	decoded, units, dec_err := decode_mesh_bytes(bytes, filename, options.source_units, allocator)
+	if len(dec_err.stage) > 0 {return {}, dec_err}
+	defer formats.decoded_mesh_destroy(&decoded, allocator)
+	opts := options
+	opts.source_units = units
+	return slice_run_decoded_mesh(&decoded, profile, opts, allocator)
+}
+
+slice_run_decoded_mesh :: proc(
+	decoded: ^formats.Decoded_Mesh,
 	profile: profiles.Resolved_Profiles,
 	options := DEFAULT_SLICE_RUN_OPTIONS,
 	allocator := context.allocator,
@@ -307,74 +376,23 @@ slice_run_bytes :: proc(
 	process := profile.process
 	proc_src := process.source
 
-	// Stage 1: Decode, center on bed, and run Slice Spine (normalize -> audit -> schedule -> spans -> intersections -> snap -> planar -> topology).
+	// Stage 1: Center on bed (if requested) and run Slice Spine.
 	t0 := time.tick_now()
-	decoded: formats.Decoded_Mesh
-	is_3mf := strings.has_suffix(strings.to_lower(filename, context.temp_allocator), ".3mf")
-	is_obj := strings.has_suffix(strings.to_lower(filename, context.temp_allocator), ".obj") || formats.obj_source_likely(bytes)
+	if options.center_on_bed {center_decoded_on_bed(decoded, profile.printer)}
 	spine_cfg := Slice_Spine_Config{
-		source_units       = options.source_units,
-		first_layer_height = proc_src.first_layer_height,
-		layer_height       = proc_src.layer_height,
-		max_layer_count    = options.max_layer_count,
+		source_units        = options.source_units,
+		first_layer_height  = proc_src.first_layer_height,
+		layer_height        = proc_src.layer_height,
+		max_layer_count     = options.max_layer_count,
+		adaptive_layers     = options.adaptive_layers,
+		min_adaptive_height = profile.printer.minimum_layer_height,
+		max_adaptive_height = profile.printer.maximum_layer_height,
 	}
-	if is_3mf {
-		pkg, pkg_err := formats.three_mf_package_open(bytes, allocator = allocator)
-		if pkg_err != .None {
-			slice_run_result_destroy(&result, allocator)
-			return {}, {stage = "decode_3mf", detail = fmt.tprintf("3mf package error: %v", pkg_err)}
-		}
-		defer formats.three_mf_package_destroy(&pkg, allocator)
-		scene, scene_err := formats.three_mf_model_decode(pkg, allocator = allocator)
-		if scene_err != .None {
-			slice_run_result_destroy(&result, allocator)
-			return {}, {stage = "decode_3mf", detail = fmt.tprintf("3mf scene error: %v", scene_err)}
-		}
-		defer formats.three_mf_scene_destroy(&scene, allocator)
-		flat, flat_err := formats.three_mf_scene_flatten(scene, allocator = allocator)
-		if flat_err != .None {
-			slice_run_result_destroy(&result, allocator)
-			return {}, {stage = "decode_3mf", detail = fmt.tprintf("3mf flatten error: %v", flat_err)}
-		}
-		defer formats.three_mf_flattened_mesh_destroy(&flat, allocator)
-		decoded = flat.mesh
-		if options.center_on_bed {center_decoded_on_bed(&decoded, profile.printer)}
-		spine_cfg.source_units = scene.source.units
-		decoded_hash, _ := formats.decoded_mesh_hash(decoded)
-		spine_err: Slice_Spine_Error
-		result.spine, spine_err = slice_spine_decoded_mesh(decoded, spine_cfg, {decoded_mesh = decoded_hash}, allocator)
-		if spine_err != .None {
-			slice_run_result_destroy(&result, allocator)
-			return {}, {stage = "slice_spine", detail = fmt.tprintf("spine error: %v", spine_err)}
-		}
-	} else if is_obj {
-		obj_dec, obj_err := formats.obj_decode(bytes, options.source_units, allocator = allocator)
-		if obj_err != .None {
-			slice_run_result_destroy(&result, allocator)
-			return {}, {stage = "decode_obj", detail = fmt.tprintf("obj decode error: %v", obj_err)}
-		}
-		defer formats.obj_decoded_mesh_destroy(&obj_dec, allocator)
-		if options.center_on_bed {center_decoded_on_bed(&obj_dec.mesh, profile.printer)}
-		spine_err: Slice_Spine_Error
-		result.spine, spine_err = slice_spine_stl_decoded(obj_dec.mesh, spine_cfg, allocator)
-		if spine_err != .None {
-			slice_run_result_destroy(&result, allocator)
-			return {}, {stage = "slice_spine", detail = fmt.tprintf("spine error: %v", spine_err)}
-		}
-	} else {
-		stl_dec, stl_err := formats.stl_decode(bytes, options.source_units, allocator = allocator)
-		if stl_err != .None {
-			slice_run_result_destroy(&result, allocator)
-			return {}, {stage = "decode_stl", detail = fmt.tprintf("stl decode error: %v", stl_err)}
-		}
-		defer formats.decoded_mesh_destroy(&stl_dec, allocator)
-		if options.center_on_bed {center_decoded_on_bed(&stl_dec, profile.printer)}
-		spine_err: Slice_Spine_Error
-		result.spine, spine_err = slice_spine_stl_decoded(stl_dec, spine_cfg, allocator)
-		if spine_err != .None {
-			slice_run_result_destroy(&result, allocator)
-			return {}, {stage = "slice_spine", detail = fmt.tprintf("spine error: %v", spine_err)}
-		}
+	spine_err: Slice_Spine_Error
+	result.spine, spine_err = slice_spine_stl_decoded(decoded^, spine_cfg, allocator)
+	if spine_err != .None {
+		slice_run_result_destroy(&result, allocator)
+		return {}, {stage = "slice_spine", detail = fmt.tprintf("spine error: %v", spine_err)}
 	}
 	record_stage(&result.stages, "slice_spine", t0, u64(len(result.spine.mesh.triangle_ids)), u64(len(result.spine.schedule.layer_ids)))
 
@@ -421,7 +439,13 @@ slice_run_bytes :: proc(
 	layer_heights := make([]contracts.Micrometres, layer_count, allocator)
 	defer delete(layer_heights, allocator)
 	for i in 0..<layer_count {
-		layer_heights[i] = proc_src.first_layer_height if i == 0 else proc_src.layer_height
+		if options.adaptive_layers {
+			prev_z := i64(result.spine.schedule.minimum_z) if i == 0 else i64(result.spine.schedule.layer_z[i-1])
+			dz := i64(result.spine.schedule.layer_z[i]) - prev_z
+			layer_heights[i] = contracts.Micrometres(max(i64(10), dz))
+		} else {
+			layer_heights[i] = proc_src.first_layer_height if i == 0 else proc_src.layer_height
+		}
 	}
 
 	// Stage 3: Perimeters (with optional layer-0 elephant-foot compensation) & Bed Adhesion.
@@ -673,10 +697,38 @@ slice_run_bytes :: proc(
 	defer features.gap_centerline_result_destroy(&gaps, allocator)
 	record_stage(&result.stages, "gap_fill", t0, u64(len(gaps.paths)), u64(len(gaps.vertices)))
 
-	// Stage 9: Supports (faces -> demand -> geometry -> paths), or empty layers when disabled.
+	// Stage 9: Supports (Tree/Organic or Grid/Rectilinear), or empty layers when disabled.
 	t0 = time.tick_now()
 	supports: features.Support_Path_Result
-	if options.enable_supports {
+	tree_supports: features.Tree_Support_Result
+	if options.enable_supports && options.support_style_tree {
+		supports.pattern = proc_src.support_pattern
+		supports.line_width = proc_src.nominal_line_width
+		supports.layers = make([]features.Support_Path_Layer, layer_count, allocator)
+		model_sets_sup := build_model_polygon_sets(active_topo, result.regions, allocator)
+		defer destroy_model_polygon_sets(model_sets_sup, allocator)
+		tree_supports = features.tree_supports_generate(
+			active_topo,
+			result.regions,
+			model_sets_sup,
+			result.spine.schedule.layer_z,
+			{
+				overhang_angle_deg  = f64(i32(proc_src.support_overhang_angle)) / 1000.0,
+				branch_angle_deg    = 45.0,
+				tip_radius_um       = 800,
+				trunk_max_radius_um = 6_000,
+				tip_spacing_um      = 4_000,
+				xy_clearance_um     = proc_src.support_clearance_xy,
+				interface_layers    = proc_src.support_interface_layers,
+				line_width_um       = proc_src.nominal_line_width,
+				bed_min_x           = profile.printer.axis_minimum_x,
+				bed_max_x           = profile.printer.axis_maximum_x,
+				bed_min_y           = profile.printer.axis_minimum_y,
+				bed_max_y           = profile.printer.axis_maximum_y,
+			},
+			allocator,
+		)
+	} else if options.enable_supports {
 		sup_faces, sf_err := features.support_faces_classify(result.spine.mesh, process, allocator = allocator)
 		if sf_err != .None {
 			slice_run_result_destroy(&result, allocator)
@@ -724,7 +776,9 @@ slice_run_bytes :: proc(
 		supports.layers = make([]features.Support_Path_Layer, layer_count, allocator)
 	}
 	defer features.support_path_result_destroy(&supports, allocator)
-	record_stage(&result.stages, "supports", t0, u64(len(supports.paths)), 1 if options.enable_supports else 0)
+	defer features.tree_support_result_destroy(&tree_supports, allocator)
+	sup_count := u64(len(tree_supports.paths)) if (options.enable_supports && options.support_style_tree) else u64(len(supports.paths))
+	record_stage(&result.stages, "supports", t0, sup_count, 2 if (options.enable_supports && options.support_style_tree) else (1 if options.enable_supports else 0))
 
 	// Stage 10: Unified path sources & unified path plan (seam + travel ordering).
 	t0 = time.tick_now()
@@ -804,12 +858,38 @@ slice_run_bytes :: proc(
 			line_widths  = ir.line_widths,
 		})
 	}
+	for tp, ti in tree_supports.paths {
+		if int(tp.layer_index) >= len(result.spine.schedule.layer_ids) {continue}
+		layer_id := result.spine.schedule.layer_ids[tp.layer_index]
+		append(&all_sources, features.Unified_Path_Source{
+			stable_id    = contracts.stable_id_child(layer_id, .Feature, u64(1)<<59 | u64(ti)),
+			layer_id     = layer_id,
+			layer_index  = tp.layer_index,
+			role         = .Support_Interface if tp.is_interface else .Support,
+			source_kind  = .Support,
+			source_index = u32(ti),
+			source_order = u64(ti),
+			closed       = true,
+			points       = tp.points,
+			line_widths  = tp.line_widths,
+		})
+	}
 	if options.variable_walls_enabled {
 		_ = features.variable_walls_adapt(all_sources[:], {
 			enabled          = true,
 			nominal_width_um = proc_src.nominal_line_width,
 			min_width_um     = max(max_lh, contracts.Micrometres((i64(proc_src.nominal_line_width)*65)/100)),
 		})
+	}
+	// Guarantee every extrusion vertex meets rounded-bead invariant (line_width >= layer_height).
+	for &src in all_sources {
+		if int(src.layer_index) >= len(layer_heights) {continue}
+		lh := layer_heights[src.layer_index]
+		for wi in 0..<len(src.line_widths) {
+			if i64(src.line_widths[wi]) < i64(lh) {
+				src.line_widths[wi] = lh
+			}
+		}
 	}
 	plan_err: features.Unified_Path_Plan_Error
 	result.unified_plan, plan_err = features.unified_path_plan_build(

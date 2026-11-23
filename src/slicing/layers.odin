@@ -17,6 +17,7 @@ Fixed_Layer_Schedule :: struct {
 	maximum_z:     contracts.Micrometres,
 	first_plane_z: contracts.Micrometres,
 	layer_step:    contracts.Micrometres,
+	adaptive:      bool,
 	layer_z:       []contracts.Micrometres,
 	layer_ids:     []contracts.Stable_ID,
 }
