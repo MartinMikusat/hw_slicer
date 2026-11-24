@@ -24,6 +24,10 @@ An Apple Silicon macOS slicer that converts 3D models into deterministic FFF too
 
 Follow the shared visual rules in `../hw_delta_support/DESIGN.md` for applicable controls and surfaces. Implement them in `src/ui.odin`.
 
+## Performance
+
+The project aims for the highest possible performance in every part. Record every identified optimization in the [optimization ledger](docs/optimization-ledger.md) with its measured or estimated gain. A small gain or a high cost orders an optimization later; it is not a reason to drop it. Reject an optimization only when evidence shows it cannot pay off, and record that evidence in the ledger.
+
 ## Pipeline workspace
 
 For pipeline workspace design and development priorities, follow [TODO.md](TODO.md).
