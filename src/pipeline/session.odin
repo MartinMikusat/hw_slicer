@@ -438,10 +438,11 @@ session_clear_stage :: proc(s: ^Slice_Session, id: Stage_Id) {
 		features.bridge_path_result_destroy(&s.bridges, a)
 		features.bridge_direction_result_destroy(&s.bridge_directions, a)
 		features.bridge_evidence_result_destroy(&s.bridge_evidence, a)
-	case .Solid_Skin:
+	case .Solid_Areas:
+		features.role_overlap_result_destroy(&s.overlap, a)
+	case .Solid_Paths:
 		features.ironing_result_destroy(&s.ironing, a)
 		features.solid_path_result_destroy(&s.solids, a)
-		features.role_overlap_result_destroy(&s.overlap, a)
 	case .Sparse_Infill:
 		features.infill_pattern_result_destroy(&s.pattern_infill, a)
 		features.infill_result_destroy(&s.infill, a)
@@ -481,7 +482,8 @@ session_run_stage :: proc(s: ^Slice_Session, id: Stage_Id) -> Slice_Run_Error {
 	case .Surfaces_Skin: return stage_surfaces_skin(s)
 	case .Perimeters:    return stage_perimeters(s)
 	case .Bridges:       return stage_bridges(s)
-	case .Solid_Skin:    return stage_solid_skin(s)
+	case .Solid_Areas:   return stage_solid_areas(s)
+	case .Solid_Paths:   return stage_solid_paths(s)
 	case .Sparse_Infill: return stage_sparse_infill(s)
 	case .Gap_Fill:      return stage_gap_fill(s)
 	case .Supports:      return stage_supports(s)
@@ -754,7 +756,7 @@ stage_bridges :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 }
 
 @(private = "file")
-stage_solid_skin :: proc(s: ^Slice_Session) -> Slice_Run_Error {
+stage_solid_areas :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	a := s.allocator
 	process := s.profile.process
 	proc_src := process.source
@@ -813,6 +815,17 @@ stage_solid_skin :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		allocator = a,
 	)
 	if ov_err != .None {return {stage = "role_overlap", detail = fmt.tprintf("role overlap error: %v", ov_err)}}
+	s.slots[.Solid_Areas].count_a = u64(len(s.overlap.masks))
+	s.slots[.Solid_Areas].count_b = u64(len(s.overlap.paths))
+	return {}
+}
+
+@(private = "file")
+stage_solid_paths :: proc(s: ^Slice_Session) -> Slice_Run_Error {
+	a := s.allocator
+	process := s.profile.process
+	proc_src := process.source
+	provider := session_provider(s)
 	sol_err: features.Solid_Path_Error
 	s.solids, sol_err = features.solid_paths_generate(s.overlap, process, provider, allocator = a)
 	if sol_err != .None {return {stage = "solid_paths", detail = fmt.tprintf("solid paths error: %v", sol_err)}}
@@ -831,8 +844,8 @@ stage_solid_skin :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		},
 		a,
 	)
-	s.slots[.Solid_Skin].count_a = u64(len(s.solids.paths))
-	s.slots[.Solid_Skin].count_b = u64(len(s.ironing.paths))
+	s.slots[.Solid_Paths].count_a = u64(len(s.solids.paths))
+	s.slots[.Solid_Paths].count_b = u64(len(s.ironing.paths))
 	return {}
 }
 

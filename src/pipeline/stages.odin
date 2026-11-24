@@ -16,7 +16,8 @@ Stage_Id :: enum u8 {
 	Surfaces_Skin,
 	Perimeters,
 	Bridges,
-	Solid_Skin,
+	Solid_Areas,
+	Solid_Paths,
 	Sparse_Infill,
 	Gap_Fill,
 	Supports,
@@ -91,17 +92,23 @@ stage_descriptors := [Stage_Id]Stage_Descriptor {
 		purpose = "Finds unsupported spans and chooses a bridge direction for each.",
 		inputs = {.Regions},
 	},
-	.Solid_Skin = {
-		name = "Solid skin",
-		counts = {"Solid paths", "Ironing paths"},
-		purpose = "Resolves overlapping roles and fills skin areas, including ironing.",
+	.Solid_Areas = {
+		name = "Solid areas",
+		counts = {"Solid masks", "Solid contours"},
+		purpose = "Resolves overlapping bridge and skin roles into disjoint solid areas.",
 		inputs = {.Layer_Schedule, .Regions, .Surfaces_Skin, .Bridges},
+	},
+	.Solid_Paths = {
+		name = "Solid paths",
+		counts = {"Solid paths", "Ironing paths"},
+		purpose = "Fills the solid areas with hatched lines and optional top-surface ironing.",
+		inputs = {.Layer_Schedule, .Solid_Areas},
 	},
 	.Sparse_Infill = {
 		name = "Sparse infill",
 		counts = {"Infill paths", "Line spacing µm"},
 		purpose = "Fills the interior outside the solid areas with the infill pattern.",
-		inputs = {.Layer_Schedule, .Regions, .Surfaces_Skin, .Solid_Skin},
+		inputs = {.Layer_Schedule, .Regions, .Surfaces_Skin, .Solid_Areas},
 	},
 	.Gap_Fill = {
 		name = "Gap fill",
@@ -119,7 +126,7 @@ stage_descriptors := [Stage_Id]Stage_Descriptor {
 		name = "Path plan",
 		counts = {"Extrude moves", "Travel moves"},
 		purpose = "Merges all print roles into ordered paths with seams and travel moves.",
-		inputs = {.Layer_Schedule, .Perimeters, .Bridges, .Solid_Skin, .Sparse_Infill, .Gap_Fill, .Supports},
+		inputs = {.Layer_Schedule, .Perimeters, .Bridges, .Solid_Paths, .Sparse_Infill, .Gap_Fill, .Supports},
 	},
 	.Motion = {
 		name = "Motion",
@@ -241,18 +248,21 @@ stage_settings_hash :: proc(
 	case .Bridges:
 		hash_content(&h, feature_hash)
 		hash_pod(&h, options.use_native_polygon)
-	case .Solid_Skin:
+	case .Solid_Areas:
 		hash_content(&h, feature_hash)
 		hash_pod(&h, options.use_native_polygon)
 		hash_pod(&h, options.ensure_vertical_shells)
-		hash_pod(&h, options.monotonic_skin)
-		hash_pod(&h, options.ironing_enabled)
-		hash_pod(&h, options.ironing_spacing_um)
-		hash_pod(&h, options.ironing_flow_percent)
 		hash_pod(&h, p.perimeter_count)
 		hash_pod(&h, p.nominal_line_width)
 		hash_pod(&h, p.top_skin)
 		hash_pod(&h, p.bottom_skin)
+	case .Solid_Paths:
+		hash_pod(&h, options.use_native_polygon)
+		hash_pod(&h, options.monotonic_skin)
+		hash_pod(&h, options.ironing_enabled)
+		hash_pod(&h, options.ironing_spacing_um)
+		hash_pod(&h, options.ironing_flow_percent)
+		hash_pod(&h, p.nominal_line_width)
 		hash_pod(&h, p.first_layer_height)
 		hash_pod(&h, p.layer_height)
 	case .Sparse_Infill:

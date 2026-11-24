@@ -116,7 +116,15 @@ workspace_stage_segments :: proc(w: ^Workspace, id: Stage_Id, layer: int, out: ^
 		for p in int(l.path_offset)..<min(int(l.path_offset)+int(l.path_count), len(r.paths)) {
 			emit_point_pair(&e, r.paths[p].point_a, r.paths[p].point_b)
 		}
-	case .Solid_Skin:
+	case .Solid_Areas:
+		r := s.overlap
+		if layer >= len(r.layers) {return false}
+		l := r.layers[layer]
+		for p in int(l.path_offset)..<min(int(l.path_offset)+int(l.path_count), len(r.paths)) {
+			path := r.paths[p]
+			emit_points(&e, r.points, int(path.point_offset), int(path.point_count), true)
+		}
+	case .Solid_Paths:
 		r := s.solids
 		if layer >= len(r.layers) {return false}
 		l := r.layers[layer]

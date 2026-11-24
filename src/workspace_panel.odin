@@ -301,7 +301,7 @@ evidence_stage_nodes :: proc(name: string) -> pipeline.Stage_Set {
 	case "reconstruct-topology":                return {.Topology}
 	case "calculate-regions":                   return {.Regions}
 	case "generate-features":
-		return {.Surfaces_Skin, .Perimeters, .Bridges, .Solid_Skin, .Sparse_Infill, .Gap_Fill, .Supports}
+		return {.Surfaces_Skin, .Perimeters, .Bridges, .Solid_Areas, .Solid_Paths, .Sparse_Infill, .Gap_Fill, .Supports}
 	case "plan-paths":                          return {.Path_Plan, .Motion}
 	case "emit-gcode":                          return {.Gcode}
 	}

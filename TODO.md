@@ -21,13 +21,14 @@ The engine stages (`Stage_Id`) are, in execution order:
 6. Surfaces and skin
 7. Perimeters
 8. Bridges
-9. Solid skin
-10. Sparse infill
-11. Gap fill
-12. Supports and adhesion
-13. Path plan
-14. Motion
-15. G-code, including simulation when implemented
+9. Solid areas
+10. Solid paths
+11. Sparse infill
+12. Gap fill
+13. Supports and adhesion
+14. Path plan
+15. Motion
+16. G-code, including simulation when implemented
 
 Show each stage's purpose, input, output, and implementation status in the workspace.
 Label unimplemented stages as placeholders. Do not imply that their results exist.
