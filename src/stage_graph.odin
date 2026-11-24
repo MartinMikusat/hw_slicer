@@ -714,15 +714,23 @@ GRAPH_BLUE :: Vec4{0.329, 0.518, 0.796, 1}
 GRAPH_GREY :: Vec4{0.553, 0.553, 0.537, 1}
 
 ui_stage_color :: proc(ui: ^UI_State, stage: pipeline.Stage_View) -> Vec4 {
-	if stage.queued {return GRAPH_BLUE}
-	if stage.cancelled {return GRAPH_GREY}
+	theme := ui_theme(ui)
+	if stage.queued {return theme.blue}
+	if stage.cancelled {return theme.disabled_fill}
 	switch stage.state {
-	case .Failed:            return ui_error_color(ui)
-	case .Running:           return GRAPH_ORANGE
-	case .Complete, .Stale:  return GRAPH_GREEN
-	case .Not_Run:           return GRAPH_GREY
+	case .Failed:   return theme.danger
+	case .Running:  return theme.peach
+	case .Complete: return theme.mint
+	case .Stale:    return theme.warning
+	case .Not_Run:  return {0.20, 0.20, 0.27, 1} if ui.dark else {0.91, 0.89, 0.95, 1}
 	}
-	return GRAPH_GREY
+	return theme.track
+}
+
+ui_stage_header_is_pastel :: proc(stage: pipeline.Stage_View) -> bool {
+	if stage.queued {return true}
+	if stage.cancelled {return false}
+	return stage.state != .Not_Run
 }
 
 ui_stage_state_text :: proc(stage: pipeline.Stage_View) -> string {
@@ -749,20 +757,20 @@ ui_stage_status :: proc(ui: ^UI_State, stage: pipeline.Stage_View) -> string {
 ui_draw_graph_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	theme := ui_theme(ui)
 	ui_add_rect(painter, {0, 0, ui.width, 40}, theme.header)
-	ui_add_rect(painter, {0, 39, ui.width, 1}, theme.border)
+	ui_add_rect(painter, {0, 40-theme.border_width, ui.width, theme.border_width}, theme.border)
 	g := ui_graph_rect(ui)
-	ui_add_rect(painter, g, theme.surface)
-	ui_add_border(painter, g, theme.border)
+	ui_neo_panel(painter, ui, g, theme.surface, theme.radius, true)
 	d := ui_graph_divider_rect(ui)
-	grip := theme.accent if ui.workspace.graph.split_dragging || ui.hovered_id == u64(UI_Action.Graph_Divider) else theme.border
-	ui_add_round_rect(painter, {d.x+d.w/2-2, d.y+d.h/2-24, 4, 48}, 2, grip)
+	grip_fill := theme.peach if ui.workspace.graph.split_dragging || ui.hovered_id == u64(UI_Action.Graph_Divider) else theme.surface
+	ui_neo_box(painter, {d.x+d.w/2-2, d.y+d.h/2-28, 6, 56}, 3, grip_fill, theme.border, 1.4)
 }
 
 @(private = "file")
-ui_graph_font :: proc(painter: ^UI_Painter, ui: ^UI_State, scale: f64) -> (text.Font, bool) {
+ui_graph_font :: proc(painter: ^UI_Painter, ui: ^UI_State, scale: f64, bold := false) -> (text.Font, bool) {
 	size := math.round(BASE_FONT_SIZE*ui.workspace.graph.zoom*scale*2)/2
 	if size < 5 {return {}, false}
-	return text.font(painter.glyphs, {family = .Named, name = "Inter-Regular", size = f32(size)}), true
+	face := ui_font_face_bold() if bold else ui_font_face_regular()
+	return text.font(painter.glyphs, {family = .Named, name = face, size = f32(size)}), true
 }
 
 @(private = "file")
@@ -788,10 +796,10 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 			a, b := ui_graph_edge_ends(ui, dep, id)
 			selected := dep == view.selected || id == view.selected
 			hovered := v.hover_edge && v.hover_from == dep && v.hover_to == id
-			color := theme.border
-			if selected {color = theme.accent}
-			if hovered {color = theme.text}
-			width := f32(clamp((2.2 if selected || hovered else 1.4)*z, 0.8, 3))
+			color := theme.muted
+			if selected {color = theme.focus}
+			if hovered {color = theme.border}
+			width := f32(clamp((2.6 if selected || hovered else 1.5)*z, 1.0, 3.5))
 			dashed := view.stages[dep].state == .Stale
 			previous := a
 			for i in 1..=GRAPH_EDGE_SAMPLES {
@@ -804,8 +812,8 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		}
 	}
 
-	title_font, title_ok := ui_graph_font(painter, ui, 0.88)
-	body_font, body_ok := ui_graph_font(painter, ui, 0.78)
+	title_font, title_ok := ui_graph_font(painter, ui, 0.88, true)
+	body_font, body_ok := ui_graph_font(painter, ui, 0.78, false)
 	mono_font, mono_ok := ui_graph_mono_font(painter, ui, 0.76, false)
 	mono_bold, mono_bold_ok := ui_graph_mono_font(painter, ui, 0.76, true)
 
@@ -814,44 +822,48 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		if ui_rect_intersection(r, g).w <= 0 || ui_rect_intersection(r, g).h <= 0 {continue}
 		stage := view.stages[id]
 		d := pipeline.stage_descriptors[id]
-		radius := f32(6*z)
+		radius := f32(8*z)
 		title_h := GRAPH_NODE_TITLE_H * z
 		base_h := ui_graph_node_base_h(id)
 		state_color := ui_stage_color(ui, stage)
 		hovered := ui.hovered_id == u64(ui_graph_node_action(id))
-		body := theme.raised
-		if hovered {body = ui_theme_blend(theme, 0.12)}
+		body := theme.surface
+		if hovered {body = ui_neo_hover_fill(theme, body)}
+		// Neobrutalist hard offset shadow under each graph node.
+		shadow_d := max(1.5, theme.depth*z)
+		ui_neo_shadow(painter, r, f64(radius), shadow_d, theme.shadow)
 		gpu.draw_box(painter.list, {rect = ui_gpu_rect(r), radii = {radius, radius, radius, radius}, fill = ui_color(body)})
 		gpu.draw_rect(painter.list, ui_gpu_rect({r.x, r.y, r.w, title_h}), ui_color(state_color), {radius, radius, 0, 0})
+		ui_add_rect(painter, {r.x, r.y+title_h-max(1.0, 1.4*z), r.w, max(1.0, 1.4*z)}, theme.border)
 
-		// Running indicator: a block that sweeps across the bottom of the title bar.
+		// Running indicator: a bold ink block sweeping across the bottom of the title bar.
 		if stage.state == .Running {
-			track := UI_Rect{r.x+4*z, r.y+title_h-4*z, r.w-8*z, 3*z}
+			track := UI_Rect{r.x+4*z, r.y+title_h-5*z, r.w-8*z, 3*z}
 			phase := v.clock*0.8-math.floor(v.clock*0.8)
 			block := UI_Rect{track.x+(track.w*0.7)*phase, track.y, track.w*0.3, track.h}
-			ui_add_rect(painter, block, {1, 1, 1, 0.85})
+			ui_add_rect(painter, block, NEO_DARK_INK)
 		}
 
 		total_settings, visible_settings, adv_total := ui_graph_stage_setting_counts(ui, id)
 		is_collapsed := id in v.collapsed
 
 		if title_ok {
-			ink := Vec4{0.98, 0.97, 0.94, 1} if stage.state != .Not_Run && !stage.cancelled else theme.text
+			ink := NEO_DARK_INK if ui_stage_header_is_pastel(stage) else theme.text
 			title_x := r.x
 			if total_settings > 0 {
 				chevron := "▸" if is_collapsed else "▾"
 				col_hover := ui.hovered_id == u64(ui_graph_node_collapse_action(id))
-				ui_draw_text(painter, title_font, ui, chevron, {r.x + 2*z, r.y, 18*z, title_h}, theme.accent if col_hover else ink, 0, .Center)
+				ui_draw_text(painter, title_font, ui, chevron, {r.x + 2*z, r.y, 18*z, title_h}, theme.focus if col_hover else ink, 0, .Center)
 				title_x = r.x + 16*z
 			}
 			label := d.name
 			if stage.cancelled {label = fmt.tprintf("× %s", d.name)}
-			stale_w := 34*z if stage.state == .Stale else 0.0
+			stale_w := 38*z if stage.state == .Stale else 0.0
 			ui_draw_text(painter, title_font, ui, label, {title_x, r.y, max(1.0, r.x+r.w-title_x-stale_w), title_h}, ink, 6*z)
 			if stage.state == .Stale {
-				badge := UI_Rect{r.x+r.w-32*z, r.y+4*z, 28*z, title_h-8*z}
-				gpu.draw_rect(painter.list, ui_gpu_rect(badge), ui_color(GRAPH_ORANGE), {f32(3*z), f32(3*z), f32(3*z), f32(3*z)})
-				if body_ok {ui_draw_text(painter, body_font, ui, "stale", badge, {0.1, 0.1, 0.1, 1}, 0, .Center)}
+				badge := UI_Rect{r.x+r.w-36*z, r.y+3*z, 32*z, title_h-6*z}
+				ui_neo_box(painter, badge, 4*z, theme.peach, theme.border, max(1.0, 1.2*z))
+				if body_ok {ui_draw_text(painter, body_font, ui, "stale", badge, NEO_DARK_INK, 0, .Center)}
 			}
 		}
 
@@ -880,17 +892,18 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 			status_ink := ui_error_color(ui) if stage.state == .Failed else (theme.text if stage.state == .Complete || stage.state == .Stale else theme.muted)
 			ui_draw_text(painter, body_font, ui, status_line, {r.x + 8*z, status_y, max(1.0, r.w - 26*z), status_h}, status_ink, 0)
 			if id in v.evidence {
-				ui_draw_text(painter, body_font, ui, "E", {r.x+r.w-18*z, status_y, 14*z, status_h}, theme.accent, 0, .Center)
+				ui_draw_text(painter, title_font, ui, "E", {r.x+r.w-18*z, status_y, 14*z, status_h}, theme.focus, 0, .Center)
 			}
 		}
 
-		// Inline Blender-style settings inside the node body.
+		// Inline neobrutalist settings inside the node body.
 		if total_settings > 0 && !is_collapsed {
 			sep_y := r.y + (base_h + 1.0)*z
-			ui_add_rect(painter, {r.x + 6*z, sep_y, max(1.0, r.w - 12*z), max(1.0, z)}, theme.border)
+			ui_add_rect(painter, {r.x + 6*z, sep_y, max(1.0, r.w - 12*z), max(1.0, 1.2*z)}, theme.border)
 			if z >= GRAPH_INLINE_MIN_ZOOM && body_ok {
 				show_adv := id in v.advanced_open
-				ctrl_rad := f32(3*z)
+				ctrl_rad := f32(5*z)
+				bw := max(f32(1.0), f32(1.4*z))
 				local := 0
 				for row, row_index in ui.workspace.rows {
 					if row.owner_stage != id {continue}
@@ -907,46 +920,48 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 						act := ui_setting_action(row_index, 1)
 						is_on := row.value == "true"
 						hov := ui.hovered_id == u64(act)
-						fill := theme.accent if is_on else (ui_theme_blend(theme, 0.22) if hov else theme.control)
-						ink := theme.accent_ink if is_on else theme.text
-						gpu.draw_box(painter.list, {rect = ui_gpu_rect(right_btn), radii = {ctrl_rad, ctrl_rad, ctrl_rad, ctrl_rad}, fill = ui_color(fill), border_color = ui_color(theme.border), border_width = 1})
+						fill := theme.mint if is_on else (ui_neo_hover_fill(theme, theme.surface) if hov else theme.surface)
+						ink := NEO_DARK_INK if is_on else theme.text
+						gpu.draw_box(painter.list, {rect = ui_gpu_rect(right_btn), radii = {ctrl_rad, ctrl_rad, ctrl_rad, ctrl_rad}, fill = ui_color(fill), border_color = ui_color(theme.border), border_width = bw})
 						ui_draw_text(painter, body_font, ui, "On" if is_on else "Off", right_btn, ink, 0, .Center)
 					} else {
 						act_l := ui_setting_action(row_index, 0)
 						act_r := ui_setting_action(row_index, 1)
 						full_box := UI_Rect{left_btn.x, left_btn.y, right_btn.x+right_btn.w-left_btn.x, left_btn.h}
-						gpu.draw_box(painter.list, {rect = ui_gpu_rect(full_box), radii = {ctrl_rad, ctrl_rad, ctrl_rad, ctrl_rad}, fill = ui_color(theme.control), border_color = ui_color(theme.accent if row.changed else theme.border), border_width = 1})
+						box_fill := theme.peach if row.changed else theme.surface
+						gpu.draw_box(painter.list, {rect = ui_gpu_rect(full_box), radii = {ctrl_rad, ctrl_rad, ctrl_rad, ctrl_rad}, fill = ui_color(box_fill), border_color = ui_color(theme.border), border_width = bw})
 						if ui.hovered_id == u64(act_l) {
-							gpu.draw_rect(painter.list, ui_gpu_rect(left_btn), ui_color(ui_theme_blend(theme, 0.24)), {ctrl_rad, 0, 0, ctrl_rad})
+							gpu.draw_rect(painter.list, ui_gpu_rect(left_btn), ui_color(theme.lavender), {ctrl_rad, 0, 0, ctrl_rad})
 						}
 						if ui.hovered_id == u64(act_r) {
-							gpu.draw_rect(painter.list, ui_gpu_rect(right_btn), ui_color(ui_theme_blend(theme, 0.24)), {0, ctrl_rad, ctrl_rad, 0})
+							gpu.draw_rect(painter.list, ui_gpu_rect(right_btn), ui_color(theme.lavender), {0, ctrl_rad, ctrl_rad, 0})
 						}
+						ui_add_rect(painter, {left_btn.x+left_btn.w, full_box.y, max(1.0, 1.2*z), full_box.h}, theme.border)
+						ui_add_rect(painter, {right_btn.x, full_box.y, max(1.0, 1.2*z), full_box.h}, theme.border)
 						l_glyph := "‹" if row.kind == .Choice else "−"
 						r_glyph := "›" if row.kind == .Choice else "+"
-						ui_draw_text(painter, body_font, ui, l_glyph, left_btn, theme.text, 0, .Center)
-						ui_draw_text(painter, body_font, ui, r_glyph, right_btn, theme.text, 0, .Center)
+						btn_ink := NEO_DARK_INK if row.changed else theme.text
+						ui_draw_text(painter, body_font, ui, l_glyph, left_btn, btn_ink, 0, .Center)
+						ui_draw_text(painter, body_font, ui, r_glyph, right_btn, btn_ink, 0, .Center)
 						val_font := mono_bold if (row.changed && mono_bold_ok) else (mono_font if mono_ok else body_font)
-						val_ink := theme.accent if row.changed else theme.text
-						ui_draw_text(painter, val_font, ui, row.value, val_rect, val_ink, 0, .Center)
+						ui_draw_text(painter, val_font, ui, row.value, val_rect, btn_ink, 0, .Center)
 					}
 				}
 				if adv_total > 0 {
 					adv_r := ui_graph_advanced_row_rect(id, r, z, visible_settings)
 					adv_hov := ui.hovered_id == u64(ui_graph_node_advanced_action(id))
 					if adv_hov {
-						gpu.draw_box(painter.list, {rect = ui_gpu_rect(adv_r), radii = {ctrl_rad, ctrl_rad, ctrl_rad, ctrl_rad}, fill = ui_color(theme.control)})
+						gpu.draw_box(painter.list, {rect = ui_gpu_rect(adv_r), radii = {ctrl_rad, ctrl_rad, ctrl_rad, ctrl_rad}, fill = ui_color(theme.lavender), border_color = ui_color(theme.border), border_width = bw})
 					}
 					adv_label := "Hide advanced" if show_adv else fmt.tprintf("+%d advanced", adv_total)
-					ui_draw_text(painter, body_font, ui, adv_label, adv_r, theme.text if adv_hov else theme.muted, 0, .Center)
+					ui_draw_text(painter, body_font, ui, adv_label, adv_r, NEO_DARK_INK if adv_hov else theme.muted, 0, .Center)
 				}
 			}
 		}
 
 		outline := theme.border
-		outline_width := f32(1)
-		if stage.state == .Stale {outline = GRAPH_ORANGE; outline_width = 2}
-		if id == view.selected {outline = theme.accent; outline_width = 2.5}
+		outline_width := max(f32(1.2), f32(theme.border_width*z))
+		if id == view.selected {outline = theme.focus; outline_width = max(f32(2.4), f32(2.8*z))}
 		gpu.draw_box(painter.list, {rect = ui_gpu_rect(r), radii = {radius, radius, radius, radius}, border_color = ui_color(outline), border_width = outline_width})
 	}
 	gpu.pop_clip(painter.list)
@@ -966,37 +981,31 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 
 @(private = "file")
 ui_draw_tooltip :: proc(painter: ^UI_Painter, ui: ^UI_State, label: string) {
-	theme := ui_theme(ui)
-	layout := text.layout(painter.glyphs, label, painter.font)
-	w := 16.0
+	layout := text.layout(painter.glyphs, label, painter.semibold)
+	w := 18.0
 	if len(layout.lines) > 0 {w += f64(layout.lines[0].advance)}
-	rect := UI_Rect{clamp(ui.pointer_x+14, 4, max(4, ui.width-w-4)), ui.pointer_y+18, w, 24}
-	ui_add_round_rect(painter, rect, 5, theme.overlay)
-	ui_add_border(painter, rect, theme.border)
-	ui_draw_text(painter, painter.font, ui, label, rect, theme.text, 8)
+	rect := UI_Rect{clamp(ui.pointer_x+14, 4, max(4, ui.width-w-4)), ui.pointer_y+18, w, 26}
+	ui_neo_tooltip(painter, ui, rect, label)
 }
 
 @(private = "file")
 ui_draw_graph_minimap :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	theme := ui_theme(ui)
 	m := ui_graph_minimap_rect(ui)
-	fill := theme.overlay
-	fill.w = 0.94
-	ui_add_round_rect(painter, m, 5, fill)
-	ui_add_border(painter, m, theme.border)
+	ui_neo_panel(painter, ui, m, theme.surface, 8, true)
 	origin, scale, lo := ui_minimap_scale(ui)
 	for id in pipeline.Stage_Id {
 		o := ui_graph_node_origin(ui, id)
 		sz := ui_graph_node_size(ui, id)
 		p := origin+(o-lo)*scale
-		ui_add_rect(painter, {p.x, p.y, sz.x*scale, sz.y*scale}, ui_stage_color(ui, ui.workspace.view.stages[id]))
+		ui_neo_box(painter, {p.x, p.y, sz.x*scale, sz.y*scale}, 2, ui_stage_color(ui, ui.workspace.view.stages[id]), theme.border, 0.8)
 	}
 	g := ui_graph_rect(ui)
 	v := ui.workspace.graph
 	a := origin+(v.pan-lo)*scale
 	view := UI_Rect{a.x, a.y, g.w/v.zoom*scale, g.h/v.zoom*scale}
 	gpu.push_clip(painter.list, ui_gpu_rect(m))
-	ui_add_border(painter, view, theme.accent, 1.5)
+	ui_add_border(painter, view, theme.focus, 2.0, 2)
 	gpu.pop_clip(painter.list)
 }
 
@@ -1004,17 +1013,18 @@ ui_draw_graph_menu :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	if !ui.workspace.graph.menu_open {return}
 	theme := ui_theme(ui)
 	m := ui_graph_menu_rect(ui)
-	ui_menu_shadow(painter, ui, m)
-	ui_add_round_rect(painter, m, 8, theme.overlay)
-	ui_add_border(painter, m, theme.border)
+	ui_neo_panel(painter, ui, m, theme.surface, 9, true)
 	for item, index in GRAPH_MENU_ITEMS {
 		r := ui_graph_menu_item_rect(ui, index)
 		enabled := ui_graph_menu_enabled(ui, item.action)
-		if enabled && ui.hovered_id == u64(item.action) {ui_add_round_rect(painter, r, 5, theme.accent)}
+		hovered := enabled && ui.hovered_id == u64(item.action)
+		if hovered {
+			ui_neo_box(painter, r, 6, theme.lavender, theme.border, 1.3)
+		}
 		ink := theme.text
-		if !enabled {ink = theme.muted}
-		if enabled && ui.hovered_id == u64(item.action) {ink = theme.accent_ink}
-		ui_draw_text(painter, painter.font, ui, item.label, r, ink, 10)
+		if !enabled {ink = theme.disabled_ink}
+		if hovered {ink = NEO_DARK_INK}
+		ui_draw_text(painter, painter.semibold if hovered else painter.font, ui, item.label, r, ink, 10)
 	}
 }
 
@@ -1059,35 +1069,33 @@ ui_draw_gcode_legend :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	if mode == .Line_Type {
 		swatches := pipeline.GCODE_LINE_SWATCHES
 		row_h := 18.0
-		card_w := 152.0
+		card_w := 156.0
 		card_h := 32.0 + f64(len(swatches))*row_h + 8.0
 		if vp.h < card_h + 150 || legend_right - card_w < vp.x + 12 {return}
 		card := UI_Rect{legend_right - card_w, vp.y + 50, card_w, card_h}
-		ui_add_rect(painter, card, bg)
-		ui_add_border(painter, card, theme.border)
-		ui_draw_text(painter, painter.font, ui, "Line type", {card.x+10, card.y+6, card.w-20, 20}, theme.muted, 0)
+		ui_neo_panel(painter, ui, card, theme.surface, theme.radius, true)
+		ui_draw_text(painter, painter.bold, ui, "Line type", {card.x+10, card.y+6, card.w-20, 20}, theme.text, 0)
 		for sw, idx in swatches {
 			ry := card.y + 28 + f64(idx)*row_h
 			col := Vec4{sw.color[0], sw.color[1], sw.color[2], 1}
-			ui_add_round_rect(painter, {card.x+10, ry+3, 12, 12}, 2, col)
+			ui_neo_box(painter, {card.x+10, ry+3, 12, 12}, 3, col, theme.border, 1.2)
 			ui_draw_text(painter, painter.font, ui, sw.label, {card.x+28, ry, card.w-36, row_h}, theme.text, 0)
 		}
 		return
 	}
 
-	card_w := 184.0
+	card_w := 188.0
 	bar_h := 140.0
 	card_h := 38.0 + bar_h + 14.0
 	if vp.h < card_h + 150 || legend_right - card_w < vp.x + 12 {return}
 	card := UI_Rect{legend_right - card_w, vp.y + 50, card_w, card_h}
-	ui_add_rect(painter, card, bg)
-	ui_add_border(painter, card, theme.border)
+	ui_neo_panel(painter, ui, card, theme.surface, theme.radius, true)
 
 	header := info.label
 	if len(info.unit) > 0 {
 		header = fmt.tprintf("%s (%s)", info.label, info.unit)
 	}
-	ui_draw_text(painter, painter.font, ui, header, {card.x+10, card.y+6, card.w-20, 22}, theme.muted, 0)
+	ui_draw_text(painter, painter.bold, ui, header, {card.x+10, card.y+6, card.w-20, 22}, theme.text, 0)
 
 	bar := UI_Rect{card.x+12, card.y+34, 16, bar_h}
 	steps :: 35
@@ -1129,31 +1137,28 @@ ui_draw_graph_view_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		{.Lay_On_Face, "Lay on face"},
 	}
 	for label in labels {
-		ui_draw_text(painter, painter.font, ui, label.text, ui_control_rect(ui, label.action), ui_control_ink(ui, label.action), 0, .Center)
+		ui_draw_text(painter, painter.semibold, ui, label.text, ui_control_rect(ui, label.action), ui_control_ink(ui, label.action), 0, .Center)
 	}
 	if ui_gcode_preview_visible(ui) {
 		v := ui.workspace.graph
 		mode_label := fmt.tprintf("%s  ›", pipeline.GCODE_VIEW_INFOS[v.gcode_mode].label)
-		ui_draw_text(painter, painter.font, ui, "‹", ui_control_rect(ui, .View_GCode_Prev), ui_control_ink(ui, .View_GCode_Prev), 0, .Center)
-		ui_draw_text(painter, painter.font, ui, mode_label, ui_control_rect(ui, .View_GCode_Next), ui_control_ink(ui, .View_GCode_Next), 0, .Center)
-		ui_draw_text(painter, painter.font, ui, "1 layer" if v.gcode_single_layer else "Stack", ui_control_rect(ui, .View_GCode_Single_Layer), ui_control_ink(ui, .View_GCode_Single_Layer), 0, .Center)
+		ui_draw_text(painter, painter.bold, ui, "‹", ui_control_rect(ui, .View_GCode_Prev), ui_control_ink(ui, .View_GCode_Prev), 0, .Center)
+		ui_draw_text(painter, painter.semibold, ui, mode_label, ui_control_rect(ui, .View_GCode_Next), ui_control_ink(ui, .View_GCode_Next), 0, .Center)
+		ui_draw_text(painter, painter.semibold, ui, "1 layer" if v.gcode_single_layer else "Stack", ui_control_rect(ui, .View_GCode_Single_Layer), ui_control_ink(ui, .View_GCode_Single_Layer), 0, .Center)
 		ui_draw_gcode_legend(painter, ui)
 	} else if ui_seam_markers_visible(ui) {
 		dec_r := ui_control_rect(ui, .View_Seam_Size_Dec)
 		inc_r := ui_control_rect(ui, .View_Seam_Size_Inc)
 		pill := UI_Rect{dec_r.x+dec_r.w+4, dec_r.y, max(1.0, inc_r.x-(dec_r.x+dec_r.w+8)), dec_r.h}
-		bg := theme.overlay
-		bg.w = 0.9
-		ui_add_round_rect(painter, pill, 5, bg)
-		ui_add_border(painter, pill, theme.border)
+		ui_neo_badge(painter, ui, pill, theme.peach, true)
 		r_mm := ui.workspace.graph.seam_marker_radius if ui.workspace.graph.seam_marker_radius > 0 else f32(0.35)
-		ui_draw_text(painter, painter.font, ui, "−", dec_r, ui_control_ink(ui, .View_Seam_Size_Dec), 0, .Center)
-		ui_draw_text(painter, painter.mono, ui, fmt.tprintf("Seam %.2f mm", r_mm), pill, theme.text, 0, .Center)
-		ui_draw_text(painter, painter.font, ui, "+", inc_r, ui_control_ink(ui, .View_Seam_Size_Inc), 0, .Center)
+		ui_draw_text(painter, painter.bold, ui, "−", dec_r, ui_control_ink(ui, .View_Seam_Size_Dec), 0, .Center)
+		ui_draw_text(painter, painter.mono, ui, fmt.tprintf("Seam %.2f mm", r_mm), pill, NEO_DARK_INK, 0, .Center)
+		ui_draw_text(painter, painter.bold, ui, "+", inc_r, ui_control_ink(ui, .View_Seam_Size_Inc), 0, .Center)
 	}
 	vp := ui_viewport_rect(ui)
 	section := ui_section_bar_rect(ui)
-	ui_draw_text(painter, painter.font, ui, "Layer", {section.x+50, section.y, section.w-50, section.h}, theme.text, 0)
+	ui_draw_text(painter, painter.semibold, ui, "Layer", {section.x+50, section.y, section.w-50, section.h}, theme.text, 0)
 	slider := ui_section_slider_rect(ui)
 	readout := fmt.tprintf("%.2f mm", ui.section_z)
 	if ui.workspace.layer_count > 0 {
@@ -1168,8 +1173,8 @@ ui_draw_graph_view_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	view := ui.workspace.view
 	run_rect := ui_control_rect(ui, .Workspace_Run)
 	auto_rect := ui_control_rect(ui, .Workspace_Auto)
-	ui_draw_text(painter, painter.font, ui, "Cancel" if view.running else "Run", run_rect, ui_control_ink(ui, .Workspace_Run), 0, .Center)
-	ui_draw_text(painter, painter.font, ui, "Auto on" if ui.workspace.auto_run else "Auto off", auto_rect, ui_control_ink(ui, .Workspace_Auto), 0, .Center)
+	ui_draw_text(painter, painter.bold, ui, "Cancel" if view.running else "Run", run_rect, ui_control_ink(ui, .Workspace_Run), 0, .Center)
+	ui_draw_text(painter, painter.semibold, ui, "Auto on" if ui.workspace.auto_run else "Auto off", auto_rect, ui_control_ink(ui, .Workspace_Auto), 0, .Center)
 	complete, stale, failed := 0, 0, 0
 	for stage in view.stages {
 		switch stage.state {

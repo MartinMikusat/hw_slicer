@@ -681,12 +681,12 @@ ui_draw_printer_config :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printer_
 			r := ui_control_rect(ui, printer_cfg_row_action(row))
 			selected := idx == c.selected_row
 			if selected {
-				ui_add_round_rect(painter, r, 5, theme.accent)
+				ui_neo_box(painter, r, 6, theme.lavender, theme.border, theme.border_width)
 			} else if ui.hovered_id == u64(printer_cfg_row_action(row)) {
-				ui_add_round_rect(painter, r, 5, theme.raised)
+				ui_neo_box(painter, r, 6, theme.track, theme.border, 1.2)
 			}
-			ink := theme.accent_ink if selected else theme.text
-			muted := theme.accent_ink if selected else theme.muted
+			ink := NEO_DARK_INK if selected else theme.text
+			muted := NEO_DARK_INK if selected else theme.muted
 			prefix := "! " if fr.drifted else ""
 			left_text := fmt.tprintf("%s[%s] %s", prefix, sec.name, key.name)
 			ui_draw_text(painter, painter.mono, ui, left_text, {r.x+6, r.y, r.w*0.56, r.h}, ink, 0, tracked = true)

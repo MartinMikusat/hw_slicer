@@ -837,18 +837,18 @@ ui_printer_controls :: proc(ui: ^UI_State) {
 @(private = "file")
 printer_connection_label :: proc(p: ^Printer_State) -> (text: string, color: Vec4) {
 	theme := ui_theme(&app.ui)
-	if p.demo {return "Offline preview (sample data)", GRAPH_ORANGE}
+	if p.demo {return "Offline preview (sample data)", theme.warning}
 	switch p.client.state.connection {
 	case .Connected:
-		if p.client.state.stale {return "Connected (stale)", GRAPH_ORANGE}
+		if p.client.state.stale {return "Connected (stale)", theme.warning}
 		host := p.client.state.hostname if len(p.client.state.hostname) > 0 else "ratos"
-		return fmt.tprintf("Connected · %s", host), GRAPH_GREEN
+		return fmt.tprintf("Connected · %s", host), theme.mint
 	case .Connecting, .Initializing:
-		return "Connecting…", GRAPH_BLUE
+		return "Connecting…", theme.blue
 	case .Reconnecting:
-		return "Reconnecting…", GRAPH_ORANGE
+		return "Reconnecting…", theme.warning
 	case .Failed:
-		return "Connection failed", ui_error_color(&app.ui)
+		return "Connection failed", theme.danger
 	case .Offline:
 		return "Offline", theme.muted
 	}
@@ -861,8 +861,16 @@ printer_draw_text_field :: proc(painter: ^UI_Painter, ui: ^UI_State, action: UI_
 	theme := ui_theme(ui)
 	p := &app.printer
 	active := p.edit.active_field == text_input.Field_ID(u64(action))
-	ui_add_round_rect(painter, rect, 5, theme.canvas)
-	ui_add_border(painter, rect, theme.accent if active else theme.border, 1.5 if active else 1.0)
+	enabled := true
+	for c in ui.controls {
+		if c.action == action {enabled = c.enabled; break}
+	}
+	fill := theme.surface if enabled else theme.disabled_fill
+	border := theme.border if enabled else theme.disabled_ink
+	ui_neo_box(painter, rect, 8, fill, border, theme.border_width)
+	if active && enabled {
+		ui_neo_focus_ring(painter, theme, rect, 8)
+	}
 
 	display := value
 	if masked && len(value) > 0 {
@@ -882,13 +890,13 @@ printer_draw_text_field :: proc(painter: ^UI_Painter, ui: ^UI_State, action: UI_
 			sx := rect.x + 8 + f64(start)*ch
 			sw := min(f64(end-start)*ch, rect.x+rect.w-6-sx)
 			if sw > 0 {
-				sel_col := theme.accent
-				sel_col.w = 0.28
+				sel_col := theme.lavender
+				sel_col.w = 0.55
 				ui_add_rect(painter, {sx, rect.y+4, sw, rect.h-8}, sel_col)
 			}
 		}
 		caret_x := min(rect.x + 8 + f64(p.edit.caret_byte_offset)*ch, rect.x + rect.w - 6)
-		ui_add_rect(painter, {caret_x, rect.y+5, 1.5, rect.h-10}, theme.accent)
+		ui_add_rect(painter, {caret_x, rect.y+5, 1.8, rect.h-10}, theme.focus)
 	}
 	ui_draw_text(painter, painter.mono, ui, display, rect, theme.text, 8, tracked = true)
 }
@@ -897,31 +905,23 @@ ui_draw_printer_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	theme := ui_theme(ui)
 	p := &app.printer
 	ui_add_rect(painter, {0, 0, ui.width, 40}, theme.header)
-	ui_add_rect(painter, {0, 39, ui.width, 1}, theme.border)
+	ui_add_rect(painter, {0, 40-theme.border_width, ui.width, theme.border_width}, theme.border)
 
 	vp := ui_printer_viewport_rect(ui)
 	switch p.subtab {
 	case .Control:
 		ctrl := ui_printer_control_card_rect(ui)
-		ui_menu_shadow(painter, ui, ctrl)
-		bg := theme.overlay
-		bg.w = 0.92
-		ui_add_round_rect(painter, ctrl, 8, bg)
-		ui_add_border(painter, ctrl, theme.border)
+		ui_neo_panel(painter, ui, ctrl, theme.surface, theme.radius, true)
 
 		chart := ui_printer_chart_card_rect(ui)
 		if chart.w >= 260 {
-			ui_menu_shadow(painter, ui, chart)
-			ui_add_round_rect(painter, chart, 8, bg)
-			ui_add_border(painter, chart, theme.border)
+			ui_neo_panel(painter, ui, chart, theme.surface, theme.radius, true)
 		}
 	case .Config:
 		panel := ui_printer_config_left_rect(ui)
-		ui_add_round_rect(painter, panel, 8, theme.surface)
-		ui_add_border(painter, panel, theme.border)
+		ui_neo_panel(painter, ui, panel, theme.surface, theme.radius, true)
 	case .Files, .Console, .Connection:
-		ui_add_round_rect(painter, vp, 8, theme.surface)
-		ui_add_border(painter, vp, theme.border)
+		ui_neo_panel(painter, ui, vp, theme.surface, theme.radius, true)
 	}
 }
 
@@ -939,22 +939,33 @@ ui_draw_printer_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		{.Printer_Sub_Connection, "Connection"},
 	}
 	for item in sub_labels {
-		ui_draw_text(painter, painter.font, ui, item.text, ui_control_rect(ui, item.action), ui_control_ink(ui, item.action), 0, .Center)
+		ui_draw_text(painter, painter.semibold, ui, item.text, ui_control_rect(ui, item.action), ui_control_ink(ui, item.action), 0, .Center)
 	}
 	// Live connection badge in the sub-bar.
 	conn_text, conn_col := printer_connection_label(p)
 	conn_x := sub.x + 436
 	stop_rect := ui_control_rect(ui, .Printer_Emergency_Stop)
-	if stop_rect.x - conn_x > 120 {
-		ui_add_round_rect(painter, {conn_x, sub.y+13, 8, 8}, 4, conn_col)
-		ui_draw_text(painter, painter.font, ui, conn_text, {conn_x+14, sub.y+3, stop_rect.x-conn_x-24, 30}, theme.text, 0)
+	if stop_rect.x - conn_x > 130 {
+		badge_w := min(220.0, stop_rect.x - conn_x - 16)
+		badge_r := UI_Rect{conn_x, sub.y+4, badge_w, 28}
+		ui_neo_badge(painter, ui, badge_r, theme.surface, true)
+		ui_neo_box(painter, {badge_r.x+10, badge_r.y+9, 10, 10}, 5, conn_col, theme.border, 1.3)
+		ui_draw_text(painter, painter.semibold, ui, conn_text, {badge_r.x+26, badge_r.y, badge_r.w-34, badge_r.h}, theme.text, 0)
 	}
-	// Prominent red Emergency STOP button fill & label.
+	// Prominent neobrutalist Emergency STOP button.
 	if stop_rect.w > 0 {
-		stop_fill := ui_error_color(ui)
-		if !(s.connection == .Connected && !p.demo) {stop_fill.w = 0.35}
-		ui_add_round_rect(painter, ui_pill_rect(ui, stop_rect), 6, stop_fill)
-		ui_draw_text(painter, painter.font, ui, "STOP", stop_rect, {1, 1, 1, 1}, 0, .Center)
+		can_stop := s.connection == .Connected && !p.demo
+		stop_r := stop_rect
+		if can_stop {
+			ui_neo_shadow(painter, stop_r, 8, theme.depth*0.75, theme.shadow)
+			if ui.pressed_id == u64(UI_Action.Printer_Emergency_Stop) {
+				stop_r = {stop_r.x+theme.depth*0.75, stop_r.y+theme.depth*0.75, stop_r.w, stop_r.h}
+			}
+		}
+		stop_fill := theme.danger if can_stop else theme.disabled_fill
+		stop_border := theme.border if can_stop else theme.disabled_ink
+		ui_neo_box(painter, stop_r, 8, stop_fill, stop_border, theme.border_width)
+		ui_draw_text(painter, painter.bold, ui, "STOP", stop_r, NEO_DARK_INK if can_stop else theme.disabled_ink, 0, .Center)
 	}
 
 	vp := ui_printer_viewport_rect(ui)
@@ -984,7 +995,7 @@ printer_draw_control_overlay :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Pr
 	s := &p.client.state
 	ctrl := ui_printer_control_card_rect(ui)
 
-	ui_draw_text(painter, painter.font, ui, "Frame", ui_control_rect(ui, .Frame_Mesh), ui_control_ink(ui, .Frame_Mesh), 0, .Center)
+	ui_draw_text(painter, painter.semibold, ui, "Frame", ui_control_rect(ui, .Frame_Mesh), ui_control_ink(ui, .Frame_Mesh), 0, .Center)
 
 	// Status header inside left floating card.
 	state_str := s.printer_state if len(s.printer_state) > 0 else "disconnected"
@@ -1006,7 +1017,7 @@ printer_draw_control_overlay :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Pr
 		status_line = fmt.tprintf("%s · %s", status_line, TRACKING_STATUS_NAMES[p.tracking.status])
 	}
 	ui_draw_text(painter, painter.font, ui, status_line, {ctrl.x+12, ctrl.y+78, ctrl.w-24, 20}, theme.muted, 0)
-	ui_add_rect(painter, {ctrl.x+12, ctrl.y+104, ctrl.w-24, 1}, theme.border)
+	ui_neo_dashed_divider(painter, ui, ctrl.x+12, ctrl.y+104, ctrl.w-24)
 
 	// Heaters list.
 	y := ctrl.y + 116
@@ -1036,8 +1047,8 @@ printer_draw_control_overlay :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Pr
 
 	// Motion section labels.
 	motion_y := max(y + 12, ctrl.y + ctrl.h - 210)
-	ui_add_rect(painter, {ctrl.x+12, motion_y-6, ctrl.w-24, 1}, theme.border)
-	ui_draw_text(painter, painter.font, ui, "Motion & Machine", {ctrl.x+12, motion_y, ctrl.w-24, 20}, theme.muted, 0)
+	ui_neo_dashed_divider(painter, ui, ctrl.x+12, motion_y-6, ctrl.w-24)
+	ui_draw_text(painter, painter.bold, ui, "Motion & Machine", {ctrl.x+12, motion_y, ctrl.w-24, 20}, theme.text, 0)
 	btn_labels := [17]struct {action: UI_Action, text: string}{
 		{.Printer_Home_All, "Home All"}, {.Printer_Home_X, "X"}, {.Printer_Home_Y, "Y"}, {.Printer_Home_Z, "Z"},
 		{.Printer_Disable_Motors, "Motors Off"},
@@ -1048,7 +1059,7 @@ printer_draw_control_overlay :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Pr
 		{.Printer_Restart, "Restart"}, {.Printer_Firmware_Restart, "FW Restart"},
 	}
 	for b in btn_labels {
-		ui_draw_text(painter, painter.font, ui, b.text, ui_control_rect(ui, b.action), ui_control_ink(ui, b.action), 0, .Center)
+		ui_draw_text(painter, painter.semibold, ui, b.text, ui_control_rect(ui, b.action), ui_control_ink(ui, b.action), 0, .Center)
 	}
 	move_fields := [3]UI_Action{.Printer_Move_X_Field, .Printer_Move_Y_Field, .Printer_Move_Z_Field}
 	move_gos := [3]UI_Action{.Printer_Move_X_Go, .Printer_Move_Y_Go, .Printer_Move_Z_Go}
@@ -1061,11 +1072,11 @@ printer_draw_control_overlay :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Pr
 	// Floating temperature history chart.
 	chart := ui_printer_chart_card_rect(ui)
 	if chart.w >= 260 {
-		ui_draw_text(painter, painter.font, ui, "Temperatures", {chart.x+12, chart.y+8, 120, 22}, theme.text, 0)
-		ui_draw_text(painter, painter.font, ui, "1m", ui_control_rect(ui, .Printer_History_1m), ui_control_ink(ui, .Printer_History_1m), 0, .Center)
-		ui_draw_text(painter, painter.font, ui, "5m", ui_control_rect(ui, .Printer_History_5m), ui_control_ink(ui, .Printer_History_5m), 0, .Center)
-		ui_draw_text(painter, painter.font, ui, "20m", ui_control_rect(ui, .Printer_History_20m), ui_control_ink(ui, .Printer_History_20m), 0, .Center)
-		ui_draw_text(painter, painter.font, ui, "Sync", ui_control_rect(ui, .Printer_History_Refresh), ui_control_ink(ui, .Printer_History_Refresh), 0, .Center)
+		ui_draw_text(painter, painter.bold, ui, "Temperatures", {chart.x+12, chart.y+8, 120, 22}, theme.text, 0)
+		ui_draw_text(painter, painter.semibold, ui, "1m", ui_control_rect(ui, .Printer_History_1m), ui_control_ink(ui, .Printer_History_1m), 0, .Center)
+		ui_draw_text(painter, painter.semibold, ui, "5m", ui_control_rect(ui, .Printer_History_5m), ui_control_ink(ui, .Printer_History_5m), 0, .Center)
+		ui_draw_text(painter, painter.semibold, ui, "20m", ui_control_rect(ui, .Printer_History_20m), ui_control_ink(ui, .Printer_History_20m), 0, .Center)
+		ui_draw_text(painter, painter.semibold, ui, "Sync", ui_control_rect(ui, .Printer_History_Refresh), ui_control_ink(ui, .Printer_History_Refresh), 0, .Center)
 		printer_draw_temperature_chart(painter, ui, p, {chart.x+12, chart.y+38, chart.w-24, chart.h-50})
 	}
 }
@@ -1073,8 +1084,7 @@ printer_draw_control_overlay :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Pr
 @(private = "file")
 printer_draw_temperature_chart :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printer_State, plot: UI_Rect) {
 	theme := ui_theme(ui)
-	ui_add_rect(painter, plot, theme.canvas)
-	ui_add_border(painter, plot, theme.border)
+	ui_neo_box(painter, plot, 7, theme.track, theme.border, theme.border_width)
 	histories := p.client.state.temperature_history
 	if len(histories) == 0 {
 		msg := p.client.state.history_error if len(p.client.state.history_error) > 0 else "Waiting for temperature history…"
@@ -1142,12 +1152,12 @@ printer_draw_files_panel :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printe
 		selected := file.path == p.selected_file
 		hovered := ui.hovered_id == u64(printer_file_row_action(row))
 		if selected {
-			ui_add_round_rect(painter, r, 6, theme.accent)
+			ui_neo_box(painter, r, 7, theme.lavender, theme.border, theme.border_width)
 		} else if hovered {
-			ui_add_round_rect(painter, r, 6, theme.raised)
+			ui_neo_box(painter, r, 7, theme.track, theme.border, 1.2)
 		}
-		ink := theme.accent_ink if selected else theme.text
-		muted := theme.accent_ink if selected else theme.muted
+		ink := NEO_DARK_INK if selected else theme.text
+		muted := NEO_DARK_INK if selected else theme.muted
 		ui_draw_text(painter, painter.font, ui, file.path, {r.x+8, r.y, r.w-100, r.h}, ink, 0)
 		size_mb := f64(file.size) / (1024.0 * 1024.0)
 		ui_draw_text(painter, painter.mono, ui, fmt.tprintf("%.1f MB", size_mb), {r.x+r.w-92, r.y, 84, r.h}, muted, 0, .End, tracked = true)

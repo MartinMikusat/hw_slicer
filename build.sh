@@ -28,6 +28,7 @@ else
   COMPONENTS_ROOT="$ROOT/../hw_odin_ui_components"
 fi
 RUNE_ROOT="$ROOT/../hw_odin_rune"
+NEO_ROOT="$ROOT/../hw_neobrutalism/neo"
 MODE=${1:-debug}
 
 case "$MODE" in
@@ -117,6 +118,7 @@ if [ "$MODE" != "cli-release" ]; then
       -collection:devlog="$DEVLOG_ROOT" \
       -collection:rune="$RUNE_ROOT" \
       -collection:components="$COMPONENTS_ROOT" \
+      -collection:neo="$NEO_ROOT" \
       -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$CLIPPER_MODE/libhw_clipper2.a" \
       -extra-linker-flags:"$HOST_OBJECT $METAL_COMPUTE_OBJECT $MOONRAKER_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
   )

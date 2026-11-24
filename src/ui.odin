@@ -8,6 +8,7 @@ import "core:strings"
 import CF "core:sys/darwin/CoreFoundation"
 import CT "core:sys/darwin/CoreText"
 import flash "flash:."
+import neo "neo:."
 import "rune:gpu"
 import "rune:text"
 
@@ -219,66 +220,80 @@ UI_Evidence_View :: struct {
 }
 
 Theme :: struct {
-	canvas:     Vec4,
-	header:     Vec4,
-	surface:    Vec4,
-	raised:     Vec4,
-	control:    Vec4,
-	overlay:    Vec4,
-	border:     Vec4,
-	text:       Vec4,
-	muted:      Vec4,
-	accent:     Vec4,
-	accent_ink: Vec4,
-	bead:       Vec4,
-	arc:        Vec4,
-	marker:     Vec4,
+	canvas:        Vec4,
+	header:        Vec4,
+	surface:       Vec4,
+	raised:        Vec4,
+	control:       Vec4,
+	overlay:       Vec4,
+	border:        Vec4,
+	text:          Vec4,
+	muted:         Vec4,
+	accent:        Vec4,
+	accent_ink:    Vec4,
+	bead:          Vec4,
+	arc:           Vec4,
+	marker:        Vec4,
+	// Neobrutalism semantic tokens from hw_neobrutalism/neo.
+	shadow:        Vec4,
+	track:         Vec4,
+	mint:          Vec4,
+	blue:          Vec4,
+	lavender:      Vec4,
+	peach:         Vec4,
+	danger:        Vec4,
+	warning:       Vec4,
+	focus:         Vec4,
+	disabled_fill: Vec4,
+	disabled_ink:  Vec4,
+	radius:        f64,
+	border_width:  f64,
+	depth:         f64,
 }
 
-// Light theme: Palladian (#EEE9DF), Bone (#E6E0D6), Oatmeal (#C9C1B1),
-// Abyssal Blue (#1B2632) ink, Marble Garden (#646256) muted, Truffle (#A35139) accent,
-// Urban Charm/Tobacco clay beads, and Olive (#5C6E4E) G2/G3 arcs.
-LIGHT_THEME :: Theme{
-	canvas     = {0.933333, 0.913725, 0.874510, 1}, // #EEE9DF Palladian
-	header     = {0.874510, 0.847059, 0.800000, 1}, // #DFD8CC Warm Stone
-	surface    = {0.901961, 0.878431, 0.839216, 1}, // #E6E0D6 Bone
-	raised     = {0.960784, 0.945098, 0.913725, 1}, // #F5F1E9 Lifted Palladian
-	control    = {0.858824, 0.827451, 0.772549, 1}, // #DBD3C5 Soft Oatmeal
-	overlay    = {0.956863, 0.937255, 0.901961, 1}, // #F4EFE6
-	border     = {0.788235, 0.756863, 0.694118, 1}, // #C9C1B1 Oatmeal
-	text       = {0.105882, 0.149020, 0.196078, 1}, // #1B2632 Abyssal Blue
-	muted      = {0.392157, 0.384314, 0.337255, 1}, // #646256 Marble Garden
-	accent     = {0.639216, 0.317647, 0.223529, 1}, // #A35139 Truffle Trouble
-	accent_ink = {0.933333, 0.913725, 0.874510, 1}, // #EEE9DF Palladian
-	bead       = {0.725490, 0.600000, 0.474510, 1}, // #B99979 Warm Clay (Urban Charm + Tobacco)
-	arc        = {0.360784, 0.431373, 0.305882, 1}, // #5C6E4E Refined Olive
-	marker     = {1.000000, 0.694118, 0.384314, 1}, // #FFB162 Burning Flame
+NEO_DARK_INK :: Vec4{0.141176, 0.137255, 0.168627, 1} // #24232B
+
+ui_neo_vec4 :: proc(c: neo.Color) -> Vec4 {
+	return {c.r, c.g, c.b, c.a}
 }
 
-// Dark theme: Abyssal Blue (#1B2632), Midnight Blue (#161E28), Blue Fantastic (#2C3B4D),
-// Palladian (#EEE9DF) ink, Urban Charm (#AFA38D) muted, Burning Flame (#FFB162) accent,
-// Oatmeal warm-stone beads, and Olive (#7A8B62) G2/G3 arcs.
-DARK_THEME :: Theme{
-	canvas     = {0.105882, 0.149020, 0.196078, 1}, // #1B2632 Abyssal Anchorfish Blue
-	header     = {0.074510, 0.101961, 0.133333, 1}, // #131A22 Deep Midnight
-	surface    = {0.086275, 0.117647, 0.156863, 1}, // #161E28 Midnight Blue
-	raised     = {0.172549, 0.231373, 0.301961, 1}, // #2C3B4D Blue Fantastic
-	control    = {0.141176, 0.192157, 0.250980, 1}, // #243140 Slate Navy
-	overlay    = {0.125490, 0.172549, 0.227451, 1}, // #202C3A
-	border     = {0.219608, 0.286275, 0.364706, 1}, // #38495D Lifted Blue Fantastic
-	text       = {0.933333, 0.913725, 0.874510, 1}, // #EEE9DF Palladian
-	muted      = {0.686275, 0.639216, 0.552941, 1}, // #AFA38D Urban Charm
-	accent     = {1.000000, 0.694118, 0.384314, 1}, // #FFB162 Burning Flame
-	accent_ink = {0.105882, 0.149020, 0.196078, 1}, // #1B2632 Abyssal Blue
-	bead       = {0.788235, 0.713725, 0.603922, 1}, // #C9B69A Warm Oatmeal Stone
-	arc        = {0.478431, 0.545098, 0.384314, 1}, // #7A8B62 Botanical Olive
-	marker     = {1.000000, 0.694118, 0.384314, 1}, // #FFB162 Burning Flame
+ui_theme_from_neo :: proc(nt: neo.Theme, dark: bool) -> Theme {
+	return Theme{
+		canvas        = ui_neo_vec4(nt.canvas),
+		header        = ui_neo_vec4(nt.paper if dark else nt.lavender),
+		surface       = ui_neo_vec4(nt.paper),
+		raised        = ui_neo_vec4(nt.paper),
+		control       = ui_neo_vec4(nt.track if dark else nt.paper),
+		overlay       = ui_neo_vec4(nt.paper),
+		border        = ui_neo_vec4(nt.ink),
+		text          = ui_neo_vec4(nt.ink),
+		muted         = ui_neo_vec4(nt.muted),
+		accent        = ui_neo_vec4(nt.mint),
+		accent_ink    = NEO_DARK_INK,
+		bead          = {0.84, 0.79, 0.71, 1} if dark else {0.78, 0.71, 0.62, 1},
+		arc           = {0.43, 0.83, 0.73, 1} if dark else {0.20, 0.45, 0.40, 1},
+		marker        = {0.96, 0.75, 0.56, 1} if dark else {0.92, 0.42, 0.34, 1},
+		shadow        = ui_neo_vec4(nt.shadow),
+		track         = ui_neo_vec4(nt.track),
+		mint          = ui_neo_vec4(nt.mint),
+		blue          = ui_neo_vec4(nt.blue),
+		lavender      = ui_neo_vec4(nt.lavender),
+		peach         = ui_neo_vec4(nt.peach),
+		danger        = ui_neo_vec4(nt.danger),
+		warning       = ui_neo_vec4(nt.warning),
+		focus         = ui_neo_vec4(nt.focus),
+		disabled_fill = ui_neo_vec4(nt.disabled_fill),
+		disabled_ink  = ui_neo_vec4(nt.disabled_ink),
+		radius        = f64(nt.radius),
+		border_width  = f64(nt.border),
+		depth         = f64(nt.depth),
+	}
 }
 
-COLOR_COFFEE :: Vec4{0.725490, 0.600000, 0.474510, 1}
-COLOR_SECTION :: Vec4{0.639216, 0.317647, 0.223529, 1}
-COLOR_NOZZLE_MARKER :: Vec4{1.000000, 0.694118, 0.384314, 1}
-COLOR_ARC :: Vec4{0.360784, 0.431373, 0.305882, 1}
+COLOR_COFFEE :: Vec4{0.78, 0.71, 0.62, 1}
+COLOR_SECTION :: Vec4{0.141176, 0.137255, 0.168627, 1}
+COLOR_NOZZLE_MARKER :: Vec4{0.92, 0.42, 0.34, 1}
+COLOR_ARC :: Vec4{0.20, 0.45, 0.40, 1}
 
 UI_Setting_Row :: struct {
 	key:           string,
@@ -403,7 +418,8 @@ ui_destroy :: proc(ui: ^UI_State) {
 }
 
 ui_theme :: proc(ui: ^UI_State) -> Theme {
-	return DARK_THEME if ui.dark else LIGHT_THEME
+	nt := neo.dark_theme() if ui.dark else neo.default_theme()
+	return ui_theme_from_neo(nt, ui.dark)
 }
 
 ui_contains :: proc(rect: UI_Rect, x, y: f64) -> bool {
@@ -734,11 +750,10 @@ ui_build_controls :: proc(
 	evidence_view: ^UI_Evidence_View = nil,
 ) {
 	clear(&ui.controls)
-	ch := ui_character_width(ui)
-	window_width := 3*ch
+	window_width := 30.0
 	ui_add_control(ui, "window close", "close window", {ui.width-12-window_width, 5, window_width, 30}, .Window_Close)
-	ui_add_control(ui, "window minimize", "minimize window", {ui.width-12-3*window_width, 5, window_width, 30}, .Window_Minimize)
-	ui_add_control(ui, "window zoom", "zoom window", {ui.width-12-2*window_width, 5, window_width, 30}, .Window_Zoom)
+	ui_add_control(ui, "window minimize", "minimize window", {ui.width-12-3*window_width-8, 5, window_width, 30}, .Window_Minimize)
+	ui_add_control(ui, "window zoom", "zoom window", {ui.width-12-2*window_width-4, 5, window_width, 30}, .Window_Zoom)
 	if ui.help_open {
 		modal := ui_help_modal_rect(ui)
 		ui_add_control(ui, "help scrim", "close viewer help", {0, 0, ui.width, ui.height}, .Dismiss_Help)
@@ -871,7 +886,7 @@ ui_build_controls :: proc(
 			ui,
 			"settings",
 			"open settings",
-			{ui.width-108, 5, 96, 30},
+			{ui.width-214, 5, 96, 30},
 			.Open_Settings,
 		)
 	} else {
@@ -879,15 +894,15 @@ ui_build_controls :: proc(
 			ui,
 			"theme",
 			"switch to light theme" if ui.dark else "switch to dark theme",
-			{ui.width-255, 5, 74, 30},
+			{ui.width-292, 5, 74, 30},
 			.Toggle_Theme,
 		)
-		ui_add_control(ui, "help", "viewer help", {ui.width-174, 5, 87, 30}, .Show_Help)
+		ui_add_control(ui, "help", "viewer help", {ui.width-208, 5, 84, 30}, .Show_Help)
 		ui_add_control(
 			ui,
 			"settings",
 			"open settings",
-			{ui.width-359, 5, 97, 30},
+			{ui.width-396, 5, 96, 30},
 			.Open_Settings,
 		)
 	}
@@ -1117,17 +1132,56 @@ ui_begin_flash :: proc(ui: ^UI_State) {
 }
 
 UI_Painter :: struct {
-	list:    ^gpu.Draw_List,
-	glyphs:  ^text.System,
-	font:    text.Font,
-	mono:    text.Font,
-	tracked: text.Font,
+	list:     ^gpu.Draw_List,
+	glyphs:   ^text.System,
+	font:     text.Font,
+	semibold: text.Font,
+	bold:     text.Font,
+	mono:     text.Font,
+	tracked:  text.Font,
+}
+
+ui_allo_checked: bool
+ui_allo_available: bool
+
+ui_has_allo :: proc() -> bool {
+	if !ui_allo_checked {
+		ui_allo_checked = true
+		name := ui_cf_string("Allo-Regular")
+		if name != nil {
+			defer CFRelease(name)
+			font := CTFontCreateWithName(name, 14, nil)
+			if font != nil {
+				defer CFRelease(font)
+				actual := CT.FontCopyPostScriptName(CT.FontRef(font))
+				if actual != nil {
+					defer CFRelease(rawptr(actual))
+					ui_allo_available = bool(CF.Equal(CF.TypeRef(name), CF.TypeRef(actual)))
+				}
+			}
+		}
+	}
+	return ui_allo_available
+}
+
+ui_font_face_regular :: proc() -> string {
+	return "Allo-Regular" if ui_has_allo() else "AvenirNext-Regular"
+}
+
+ui_font_face_semibold :: proc() -> string {
+	return "Allo-SemiBold" if ui_has_allo() else "AvenirNext-DemiBold"
+}
+
+ui_font_face_bold :: proc() -> string {
+	return "Allo-Bold" if ui_has_allo() else "AvenirNext-Bold"
 }
 
 ui_painter_fonts :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	ui_register_fonts()
 	size := f32(f64(ui.font_size)/ui.ui_scale)
-	painter.font = text.font(painter.glyphs, {family = .Named, name = "Inter-Regular", size = size})
+	painter.font = text.font(painter.glyphs, {family = .Named, name = ui_font_face_regular(), size = size})
+	painter.semibold = text.font(painter.glyphs, {family = .Named, name = ui_font_face_semibold(), size = size})
+	painter.bold = text.font(painter.glyphs, {family = .Named, name = ui_font_face_bold(), size = size})
 	painter.mono = text.font(painter.glyphs, {family = .Named, name = "JetBrainsMono-Regular", size = size})
 	painter.tracked = text.font(
 		painter.glyphs,
@@ -1147,14 +1201,137 @@ ui_add_rect :: proc(painter: ^UI_Painter, rect: UI_Rect, color: Vec4) {
 	gpu.draw_rect(painter.list, ui_gpu_rect(rect), ui_color(color))
 }
 
-ui_add_border :: proc(painter: ^UI_Painter, rect: UI_Rect, color: Vec4, width := 1.0) {
-	gpu.draw_box(painter.list, {rect = ui_gpu_rect(rect), border_color = ui_color(color), border_width = f32(width)})
+ui_add_border :: proc(painter: ^UI_Painter, rect: UI_Rect, color: Vec4, width := 1.6, radius := 0.0) {
+	r := f32(min(radius, min(rect.w, rect.h)/2))
+	gpu.draw_box(
+		painter.list,
+		{
+			rect = ui_gpu_rect(rect),
+			radii = {r, r, r, r},
+			border_color = ui_color(color),
+			border_width = f32(width),
+		},
+	)
 }
 
 ui_add_round_rect :: proc(painter: ^UI_Painter, rect: UI_Rect, radius: f64, color: Vec4) {
 	r := f32(min(radius, min(rect.w, rect.h)/2))
-	if r <= 0 {return}
+	if r < 0 {r = 0}
 	gpu.draw_rect(painter.list, ui_gpu_rect(rect), ui_color(color), {r, r, r, r})
+}
+
+ui_neo_box :: proc(painter: ^UI_Painter, rect: UI_Rect, radius: f64, fill, border: Vec4, border_width: f64) {
+	if rect.w <= 0 || rect.h <= 0 {return}
+	r := f32(min(radius, min(rect.w, rect.h)/2))
+	if r < 0 {r = 0}
+	gpu.draw_box(
+		painter.list,
+		{
+			rect = ui_gpu_rect(rect),
+			radii = {r, r, r, r},
+			fill = ui_color(fill),
+			border_color = ui_color(border),
+			border_width = f32(border_width),
+		},
+	)
+}
+
+ui_neo_shadow :: proc(painter: ^UI_Painter, rect: UI_Rect, radius, depth: f64, color: Vec4) {
+	if rect.w <= 0 || rect.h <= 0 || depth <= 0 {return}
+	ui_add_round_rect(painter, {rect.x+depth, rect.y+depth, rect.w, rect.h}, radius, color)
+}
+
+ui_neo_panel :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect, fill: Vec4, radius := -1.0, raised := true) {
+	if rect.w <= 0 || rect.h <= 0 {return}
+	theme := ui_theme(ui)
+	rad := theme.radius if radius < 0 else radius
+	if raised {
+		ui_neo_shadow(painter, rect, rad, theme.depth, theme.shadow)
+	}
+	ui_neo_box(painter, rect, rad, fill, theme.border, theme.border_width)
+}
+
+ui_neo_hover_fill :: proc(theme: Theme, fill: Vec4) -> Vec4 {
+	return {
+		fill.x*0.76 + theme.lavender.x*0.24,
+		fill.y*0.76 + theme.lavender.y*0.24,
+		fill.z*0.76 + theme.lavender.z*0.24,
+		fill.w,
+	}
+}
+
+ui_neo_focus_ring :: proc(painter: ^UI_Painter, theme: Theme, rect: UI_Rect, radius: f64) {
+	if rect.w <= 8 || rect.h <= 8 {return}
+	ring := UI_Rect{rect.x+3, rect.y+3, rect.w-6, rect.h-6}
+	ui_add_border(painter, ring, theme.focus, 1.6, max(1.0, radius-2))
+}
+
+ui_neo_dashed_divider :: proc(painter: ^UI_Painter, ui: ^UI_State, x, y, width: f64) {
+	if width <= 0 {return}
+	theme := ui_theme(ui)
+	for d := 0.0; d < width; d += 8.0 {
+		ui_add_round_rect(painter, {x+d, y, min(4.0, width-d), 1.4}, 0.7, theme.muted)
+	}
+}
+
+ui_neo_badge :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect, fill: Vec4, raised := false) {
+	if rect.w <= 0 || rect.h <= 0 {return}
+	theme := ui_theme(ui)
+	rad := min(rect.h/2, 9.0)
+	if raised {
+		ui_neo_shadow(painter, rect, rad, theme.depth*0.65, theme.shadow)
+	}
+	ui_neo_box(painter, rect, rad, fill, theme.border, theme.border_width)
+}
+
+ui_neo_tooltip :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect, label: string) {
+	if rect.w <= 0 || rect.h <= 0 {return}
+	theme := ui_theme(ui)
+	ui_neo_shadow(painter, rect, 7, theme.depth*0.75, theme.shadow)
+	ui_neo_box(painter, rect, 7, theme.warning, theme.border, theme.border_width)
+	ui_draw_text(painter, painter.semibold, ui, label, rect, NEO_DARK_INK, 8)
+}
+
+ui_neo_button_fill :: proc(ui: ^UI_State, control: UI_Control) -> (fill: Vec4, pastel: bool) {
+	theme := ui_theme(ui)
+	if !control.enabled {return theme.disabled_fill, false}
+	#partial switch control.action {
+	case .Window_Minimize: return theme.warning, true
+	case .Window_Zoom:     return theme.mint, true
+	case .Window_Close:    return theme.danger, true
+	case .Workspace_Run:
+		return theme.danger if ui.workspace.view.running else theme.mint, true
+	case .Workspace_Auto:
+		return theme.peach if control.selected else theme.control, control.selected
+	case .Simulation_Play:
+		return theme.mint, true
+	case .Simulation_Rate:
+		return theme.blue, true
+	case .Open_Settings:
+		return theme.surface, false
+	case .Toggle_Theme:
+		return theme.peach, true
+	case .Show_Help:
+		return theme.blue, true
+	case .Close_Help, .Close_Settings, .Close_Evidence:
+		return theme.peach, true
+	case .Profile_Save, .Printer_Cfg_Save, .Printer_Conn_Connect:
+		return theme.mint, true
+	case .Profile_Discard, .Printer_Cfg_Revert, .Printer_Conn_Disconnect:
+		return theme.danger, true
+	case .Printer_Restart, .Printer_Firmware_Restart:
+		return theme.warning, true
+	case .Printer_Home_All, .Printer_Home_X, .Printer_Home_Y, .Printer_Home_Z:
+		return theme.blue, true
+	case .Printer_Disable_Motors:
+		return theme.peach, true
+	case .Demo_Tab_Design, .Demo_Tab_Slicer, .Demo_Tab_Printer:
+		return theme.peach if control.selected else theme.control, control.selected
+	}
+	if control.selected {
+		return theme.lavender, true
+	}
+	return theme.control, false
 }
 
 ui_shadow_layer :: proc(
@@ -1163,15 +1340,9 @@ ui_shadow_layer :: proc(
 	radius, blur, offset_y: f64,
 	opacity: f32,
 ) {
-	assert(blur > 0 && opacity >= 0 && opacity <= 1)
-	r := f32(min(radius, min(rect.w, rect.h)/2))
-	if r <= 0 {return}
-	gpu.draw_shadow(
-		painter.list,
-		ui_gpu_rect(rect),
-		{r, r, r, r},
-		{offset = {0, f32(offset_y)}, blur = f32(blur), spread = f32(blur/2), color = {0, 0, 0, opacity}},
-	)
+	_ = blur
+	_ = opacity
+	ui_neo_shadow(painter, rect, radius, max(2.0, offset_y), {0, 0, 0, 1})
 }
 
 ui_style_scale :: proc(ui: ^UI_State) -> f64 {
@@ -1209,26 +1380,18 @@ ui_pill_highlight :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect, ra
 }
 
 ui_pill_shadow :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect) {
-	scale := ui_style_scale(ui)
-	row := ui_style_row_height(ui)
-	radius := 6/scale
-	outer := 5*math.round(row*0.25)
-	ui_shadow_layer(painter, rect, radius, outer/scale, math.round(outer/6)/scale, 0.05)
-	ui_shadow_layer(painter, rect, radius, math.round(row*0.15)/scale, 1/scale, 55.0/255.0)
+	theme := ui_theme(ui)
+	ui_neo_shadow(painter, rect, 8, theme.depth*0.75, theme.shadow)
 }
 
 ui_menu_shadow :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect) {
-	scale := ui_style_scale(ui)
-	blur := math.round(ui_style_row_height(ui)*0.15)/scale
-	ui_shadow_layer(painter, rect, 6/scale, blur, 1/scale, 60.0/255.0)
+	theme := ui_theme(ui)
+	ui_neo_shadow(painter, rect, theme.radius, theme.depth, theme.shadow)
 }
 
 ui_modal_shadow :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect) {
-	scale := ui_style_scale(ui)
-	row := ui_style_row_height(ui)
-	radius := 12/scale
-	ui_shadow_layer(painter, rect, radius, math.round(row*5)/scale, math.round(row)/scale, 0.07)
-	ui_shadow_layer(painter, rect, radius, math.round(row*1.5)/scale, 6/scale, 80.0/255.0)
+	theme := ui_theme(ui)
+	ui_neo_shadow(painter, rect, theme.radius, theme.depth*1.5, theme.shadow)
 }
 
 ui_theme_blend :: proc(theme: Theme, amount: f32) -> Vec4 {
@@ -1255,10 +1418,12 @@ ui_control_ink :: proc(ui: ^UI_State, action: UI_Action) -> Vec4 {
 	theme := ui_theme(ui)
 	for control in ui.controls {
 		if control.action != action {continue}
-		if !control.enabled {return {0.501961, 0.501961, 0.501961, 1}}
+		if !control.enabled {return theme.disabled_ink}
 		if action == .Toggle_Section {return theme.text}
-		if action == .Window_Close || action == .Window_Minimize || action == .Window_Zoom {return {0.1, 0.1, 0.1, 1}}
-		if ui_control_standing(ui, control) {return theme.accent_ink}
+		if action == .Window_Close || action == .Window_Minimize || action == .Window_Zoom {return NEO_DARK_INK}
+		_, pastel := ui_neo_button_fill(ui, control)
+		if pastel || control.id == ui.pressed_id {return NEO_DARK_INK}
+		if ui.dark && control.id == ui.hovered_id {return NEO_DARK_INK}
 		break
 	}
 	return theme.text
@@ -1274,26 +1439,45 @@ ui_draw_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		return
 	}
 	theme := ui_theme(ui)
+	// Neobrutalist header bar with crisp ink bottom rule.
 	ui_add_rect(painter, {0, 0, ui.width, 40}, theme.header)
+	ui_add_rect(painter, {0, 40-theme.border_width, ui.width, theme.border_width}, theme.border)
+	// Raised paper sidebar cards with hard offset shadows and ink outlines.
 	left := ui_left_rect(ui)
 	right := ui_right_rect(ui)
-	ui_add_rect(painter, left, theme.surface)
-	ui_add_rect(painter, right, theme.surface)
-	if !ui.design_active {ui_add_rect(painter, ui_action_bar_rect(ui), theme.header)}
-	// Crisp 1px architectural hairlines between chrome panels and the 3D viewport.
-	ui_add_rect(painter, {0, 39, ui.width, 1}, theme.border)
-	if left.w > 0 {ui_add_rect(painter, {left.x+left.w-1, left.y, 1, left.h}, theme.border)}
-	if right.w > 0 {ui_add_rect(painter, {right.x, right.y, 1, right.h}, theme.border)}
+	if left.w > 0 && left.h > 0 {
+		ui_neo_panel(painter, ui, left, theme.surface, theme.radius, true)
+	}
+	if right.w > 0 && right.h > 0 && right != left {
+		ui_neo_panel(painter, ui, right, theme.surface, theme.radius, true)
+	}
+	if !ui.design_active {
+		bar := ui_action_bar_rect(ui)
+		if bar.h > 0 {
+			ui_neo_panel(painter, ui, bar, theme.surface, theme.radius, true)
+		}
+	}
 }
 
 ui_draw_modal_surface :: proc(painter: ^UI_Painter, ui: ^UI_State, modal: UI_Rect) {
 	theme := ui_theme(ui)
 	ui_modal_shadow(painter, ui, modal)
-	scale := ui_style_scale(ui)
-	radius := 12/scale
-	edge := 1/scale
-	ui_add_round_rect(painter, modal, radius, theme.border)
-	ui_add_round_rect(painter, {modal.x+edge, modal.y+edge, modal.w-2*edge, modal.h-2*edge}, radius-edge, theme.overlay)
+	ui_neo_box(painter, modal, theme.radius, theme.overlay, theme.border, theme.border_width)
+	header_fill := theme.lavender
+	if ui.help_open {header_fill = theme.blue}
+	if ui.evidence_open {header_fill = theme.peach}
+	header_h := min(44.0, modal.h*0.3)
+	r := f32(theme.radius)
+	gpu.draw_box(
+		painter.list,
+		{
+			rect = ui_gpu_rect({modal.x, modal.y, modal.w, header_h}),
+			radii = {r, r, 0, 0},
+			fill = ui_color(header_fill),
+			border_color = ui_color(theme.border),
+			border_width = f32(theme.border_width),
+		},
+	)
 }
 
 ui_draw_controls :: proc(
@@ -1303,16 +1487,22 @@ ui_draw_controls :: proc(
 ) {
 	theme := ui_theme(ui)
 	modal_open := ui.help_open || (ui.evidence_open && ui_evidence_available(evidence_view)) || ui.settings_open
+	// Draw a unified neobrutalist segmented container behind the 3 top-level workspace tabs.
+	if !modal_open {
+		t0 := ui_demo_tab_rect(ui, 0)
+		t2 := ui_demo_tab_rect(ui, 2)
+		if t0.w > 0 && t2.w > 0 {
+			strip := UI_Rect{t0.x-4, t0.y-2, (t2.x+t2.w)-(t0.x)+8, t0.h+4}
+			ui_neo_box(painter, strip, 9, theme.track, theme.border, theme.border_width)
+		}
+	}
 	for control in ui.controls {
 		hovered := control.enabled && control.id == ui.hovered_id
+		pressed := control.enabled && control.id == ui.pressed_id
+		focused := control.enabled && control.id == ui.focused_id
 		standing := ui_control_standing(ui, control)
 		if control.action == .Modal_Surface && control.name == "junction card" {
-			bg := theme.raised
-			bg.w = 0.94
-			ui_add_round_rect(painter, control.rect, 10, bg)
-			accent_border := theme.accent
-			accent_border.w = 0.82
-			ui_add_border(painter, control.rect, accent_border)
+			ui_neo_panel(painter, ui, control.rect, theme.surface, theme.radius, true)
 			continue
 		}
 		if ui_graph_custom_control(control.action) || ui_printer_custom_control(control.action) || control.action == .Printer_Emergency_Stop {continue}
@@ -1321,128 +1511,136 @@ ui_draw_controls :: proc(
 		if window_control && modal_open {continue}
 		if control.action == .Design_Layer {
 			panel := control.rect
-			panel_fill := theme.raised
-			panel_fill.w = 0.92
-			ui_add_round_rect(painter, panel, 13, panel_fill)
-			ui_add_border(painter, panel, theme.accent if control.id == ui.focused_id else theme.border)
-			track := UI_Rect{panel.x+panel.w/2-2, panel.y+12, 4, max(1.0, panel.h-24)}
-			ui_add_round_rect(painter, track, 2, theme.border)
+			ui_neo_panel(painter, ui, panel, theme.surface, 12, true)
+			track := UI_Rect{panel.x+panel.w/2-4, panel.y+14, 8, max(1.0, panel.h-28)}
+			ui_neo_box(painter, track, 4, theme.track, theme.border, theme.border_width)
 			fraction := 1.0
 			if ui.design_layers > 1 {
 				fraction = clamp(f64(ui.design_layer)/f64(ui.design_layers-1), 0, 1)
 			}
-			ink := theme.accent if control.enabled else theme.muted
+			fill_col := theme.mint if control.enabled else theme.disabled_fill
 			thumb_y := track.y+track.h*(1-fraction)
 			fill_h := max(1.0, track.y+track.h-thumb_y)
-			ui_add_round_rect(painter, {track.x, thumb_y, track.w, fill_h}, 2, ink)
-			ui_add_round_rect(painter, {panel.x+(panel.w-14)/2, thumb_y-7, 14, 14}, 7, ink)
+			ui_neo_box(painter, {track.x, thumb_y, track.w, fill_h}, 4, fill_col, theme.border, theme.border_width)
+			thumb := UI_Rect{panel.x+(panel.w-18)/2, thumb_y-9, 18, 18}
+			ui_neo_shadow(painter, thumb, 9, theme.depth*0.65, theme.shadow)
+			thumb_fill := theme.lavender if pressed else theme.peach
+			ui_neo_box(painter, thumb, 9, thumb_fill, theme.border, theme.border_width)
+			if focused {ui_neo_focus_ring(painter, theme, panel, 12)}
 			// Floating layer readout pill to the left of the vertical thumb.
-			badge_w := 118.0
-			badge_h := 24.0
+			badge_w := 124.0
+			badge_h := 26.0
 			badge_y := clamp(thumb_y-badge_h/2, panel.y, panel.y+panel.h-badge_h)
-			badge := UI_Rect{panel.x-badge_w-8, badge_y, badge_w, badge_h}
-			ui_add_round_rect(painter, badge, 6, panel_fill)
-			ui_add_border(painter, badge, theme.border)
+			badge := UI_Rect{panel.x-badge_w-10, badge_y, badge_w, badge_h}
+			ui_neo_badge(painter, ui, badge, theme.peach, true)
 			continue
 		}
 		if control.action == .Design_Layer_Progress {
 			panel := control.rect
-			panel_fill := theme.raised
-			panel_fill.w = 0.92
-			ui_add_round_rect(painter, panel, 13, panel_fill)
-			ui_add_border(painter, panel, theme.accent if control.id == ui.focused_id else theme.border)
-			track := UI_Rect{panel.x+14, panel.y+panel.h/2-2, max(1.0, panel.w-28), 4}
-			ui_add_round_rect(painter, track, 2, theme.border)
+			ui_neo_panel(painter, ui, panel, theme.surface, 12, true)
+			track := UI_Rect{panel.x+16, panel.y+panel.h/2-4, max(1.0, panel.w-32), 8}
+			ui_neo_box(painter, track, 4, theme.track, theme.border, theme.border_width)
 			fraction := clamp(ui.design_in_layer, 0, 1)
-			ink := theme.accent if control.enabled else theme.muted
-			ui_add_round_rect(painter, {track.x, track.y, max(1.0, track.w*fraction), track.h}, 2, ink)
-			ui_add_round_rect(painter, {track.x+track.w*fraction-7, panel.y+(panel.h-14)/2, 14, 14}, 7, ink)
+			fill_col := theme.blue if control.enabled else theme.disabled_fill
+			if track.w*fraction > 1 {
+				ui_neo_box(painter, {track.x, track.y, max(4.0, track.w*fraction), track.h}, 4, fill_col, theme.border, theme.border_width)
+			}
+			thumb := UI_Rect{track.x+track.w*fraction-9, panel.y+(panel.h-18)/2, 18, 18}
+			ui_neo_shadow(painter, thumb, 9, theme.depth*0.65, theme.shadow)
+			ui_neo_box(painter, thumb, 9, theme.lavender if pressed else theme.mint, theme.border, theme.border_width)
+			if focused {ui_neo_focus_ring(painter, theme, panel, 12)}
 			continue
 		}
 		if control.action == .Junction_Size {
-			track := UI_Rect{control.rect.x+6, control.rect.y+control.rect.h/2-2, max(1.0, control.rect.w-12), 4}
-			ui_add_round_rect(painter, track, 2, theme.border)
+			track := UI_Rect{control.rect.x+8, control.rect.y+control.rect.h/2-4, max(1.0, control.rect.w-16), 8}
+			ui_neo_box(painter, track, 4, theme.track, theme.border, theme.border_width)
 			fraction := clamp(ui.junction_size/max(ui.junction_max_size, 0.001), 0, 1)
-			ui_add_round_rect(painter, {track.x, track.y, max(1.0, track.w*fraction), track.h}, 2, theme.accent)
-			ui_add_round_rect(painter, {track.x+track.w*fraction-7, control.rect.y+(control.rect.h-14)/2, 14, 14}, 7, theme.accent)
+			if track.w*fraction > 1 {
+				ui_neo_box(painter, {track.x, track.y, max(4.0, track.w*fraction), track.h}, 4, theme.peach, theme.border, theme.border_width)
+			}
+			thumb := UI_Rect{track.x+track.w*fraction-8, control.rect.y+(control.rect.h-16)/2, 16, 16}
+			ui_neo_shadow(painter, thumb, 8, theme.depth*0.6, theme.shadow)
+			ui_neo_box(painter, thumb, 8, theme.peach, theme.border, theme.border_width)
 			continue
 		}
 		if control.action == .Section_Height || control.action == .Simulation_Time {
-			if control.id == ui.focused_id {ui_add_border(painter, control.rect, theme.accent)}
-			track := UI_Rect{control.rect.x+4, control.rect.y+control.rect.h/2-2, control.rect.w-8, 4}
-			ui_add_round_rect(painter, track, 2, theme.border)
+			if focused {ui_neo_focus_ring(painter, theme, control.rect, 8)}
+			track := UI_Rect{control.rect.x+8, control.rect.y+control.rect.h/2-4, max(1.0, control.rect.w-16), 8}
+			ui_neo_box(painter, track, 4, theme.surface, theme.border, theme.border_width)
 			fraction := 0.0
 			if control.action == .Simulation_Time {
 				fraction = clamp(ui.design_fraction, 0, 1)
 			} else if ui.section_max > 0 {
 				fraction = clamp(f64(ui.section_z/ui.section_max), 0, 1)
 			}
-			ink := theme.accent if control.enabled else theme.muted
-			ui_add_round_rect(painter, {track.x, track.y, max(1, track.w*fraction), track.h}, 2, ink)
-			ui_add_round_rect(painter, {track.x+track.w*fraction-6, control.rect.y+(control.rect.h-12)/2, 12, 12}, 6, ink)
+			fill_col := (theme.mint if control.action == .Section_Height else theme.peach) if control.enabled else theme.disabled_fill
+			if track.w*fraction > 1 {
+				ui_neo_box(painter, {track.x, track.y, max(4.0, track.w*fraction), track.h}, 4, fill_col, theme.border, theme.border_width)
+			}
+			thumb := UI_Rect{track.x+track.w*fraction-8, control.rect.y+(control.rect.h-16)/2, 16, 16}
+			if control.enabled {ui_neo_shadow(painter, thumb, 8, theme.depth*0.6, theme.shadow)}
+			ui_neo_box(painter, thumb, 8, theme.lavender if pressed else fill_col, theme.border if control.enabled else theme.disabled_ink, theme.border_width)
 			continue
 		}
 		if control.action == .Toggle_Section {
-			if control.id == ui.focused_id {ui_add_border(painter, control.rect, theme.text)}
-			scale := ui_style_scale(ui)
-			height_px := math.round(ui_style_row_height(ui)*0.85)
-			height := height_px/scale
-			width := math.round(height_px*1.8)/scale
-			inset := 2/scale
-			track := UI_Rect{control.rect.x+8, control.rect.y+(control.rect.h-height)/2, width, height}
-			track_color := ui_theme_blend(theme, 0.22 if hovered else 0.16)
-			if !control.enabled {track_color = ui_theme_blend(theme, 0.04)}
-			if ui.section_enabled && control.enabled {track_color = theme.text}
-			ui_add_round_rect(painter, track, height/2, track_color)
-			thumb_size := height-2*inset
-			thumb_x := track.x+inset
-			if ui.section_enabled {thumb_x = track.x+track.w-inset-thumb_size}
-			thumb := theme.raised
-			if ui.section_enabled || !control.enabled {thumb = theme.canvas}
-			ui_add_round_rect(painter, {thumb_x, track.y+inset, thumb_size, thumb_size}, thumb_size/2, thumb)
+			track_h := min(control.rect.h-4, 22.0)
+			track_w := track_h*1.85
+			track := UI_Rect{control.rect.x+4, control.rect.y+(control.rect.h-track_h)/2, track_w, track_h}
+			ink := theme.border if control.enabled else theme.disabled_ink
+			track_fill := theme.disabled_fill
+			if control.enabled {
+				track_fill = theme.mint if ui.section_enabled else theme.surface
+				if hovered && !pressed {track_fill = ui_neo_hover_fill(theme, track_fill)}
+			}
+			sd := theme.depth*0.6
+			if control.enabled {ui_neo_shadow(painter, track, track_h/2, sd, theme.shadow)}
+			if pressed {track = {track.x+sd, track.y+sd, track.w, track.h}}
+			ui_neo_box(painter, track, track_h/2, track_fill, ink, theme.border_width)
+			pad := 3.0
+			knob_size := max(4.0, track_h-2*pad)
+			knob_x := track.x+track.w-pad-knob_size if ui.section_enabled else track.x+pad
+			ui_neo_box(painter, {knob_x, track.y+pad, knob_size, knob_size}, knob_size/2, theme.surface, ink, theme.border_width)
+			if focused {ui_neo_focus_ring(painter, theme, track, track_h/2)}
 			continue
 		}
 		menu := control.action == .Evidence_Stages || control.action == .Evidence_Details || control.action == .Panel_Models || control.action == .Panel_Section || control.action == .Panel_Mesh || control.action == .Select_Benchy || control.action == .Select_All_In_One || control.action == .Select_Bunny
 		if _, stage := ui_evidence_stage_action_index(control.action, len(evidence_view.replay.root.stages) if ui_evidence_available(evidence_view) else 0); stage {menu = true}
-		rect := ui_pill_rect(ui, control.rect)
+		is_top_tab := control.action == .Demo_Tab_Design || control.action == .Demo_Tab_Slicer || control.action == .Demo_Tab_Printer
+		rect := control.rect
 		if window_control {
-			size := min(rect.w, rect.h)
+			size := min(rect.w, 24.0)
 			rect = {rect.x+(rect.w-size)/2, rect.y+(rect.h-size)/2, size, size}
 		}
 		if rect.w <= 0 || rect.h <= 0 {continue}
-		fill := theme.control
-		if hovered {
-			fill = theme.raised if ui.dark else {min(1, fill.x+0.05), min(1, fill.y+0.05), min(1, fill.z+0.05), 1}
+		fill, _ := ui_neo_button_fill(ui, control)
+		if control.enabled && hovered && !pressed {
+			fill = ui_neo_hover_fill(theme, fill)
 		}
-		if standing {fill = theme.accent}
-		if window_control {
-			#partial switch control.action {
-			case .Window_Minimize: fill = {1.0, 0.741, 0.18, 1}
-			case .Window_Zoom: fill = {0.157, 0.788, 0.251, 1}
-			case .Window_Close: fill = {1.0, 0.373, 0.341, 1}
-			}
-			if standing {
-				fill = {fill.x*0.85, fill.y*0.85, fill.z*0.85, 1}
+		if pressed {
+			fill = theme.mint
+		}
+		if is_top_tab {
+			radius := 7.0
+			if control.selected || pressed {
+				ui_neo_box(painter, rect, radius, fill, theme.border, theme.border_width)
 			} else if hovered {
-				#partial switch control.action {
-				case .Window_Minimize: fill = {1.0, 0.81, 0.12, 1}
-				case .Window_Zoom: fill = {0.12, 0.90, 0.22, 1}
-				case .Window_Close: fill = {1.0, 0.45, 0.30, 1}
-				}
+				ui_add_round_rect(painter, rect, radius, theme.surface)
 			}
+			if focused {ui_neo_focus_ring(painter, theme, rect, radius)}
+			continue
 		}
 		if menu && !hovered && !standing {continue}
-		if !menu {ui_pill_shadow(painter, ui, rect)}
-		if menu && standing {ui_menu_shadow(painter, ui, rect)}
-		scale := ui_style_scale(ui)
-		radius := 6/scale
-		ui_add_round_rect(painter, rect, radius, fill)
-		if !menu && !standing {
-			highlight_alpha := (f32(0.10) if hovered else f32(0.05)) if ui.dark else (f32(0.28) if hovered else f32(0.18))
-			highlight := Vec4{theme.raised.x, theme.raised.y, theme.raised.z, highlight_alpha}
-			if window_control {highlight = {fill.x+(1-fill.x)*0.35, fill.y+(1-fill.y)*0.35, fill.z+(1-fill.z)*0.35, 1}}
-			ui_pill_highlight(painter, ui, rect, radius, highlight)
+		radius := 7.0 if window_control else 8.0
+		depth := theme.depth*0.65 if window_control else theme.depth*0.75
+		if !menu && control.enabled {
+			ui_neo_shadow(painter, rect, radius, depth, theme.shadow)
+			if pressed {
+				rect = {rect.x+depth, rect.y+depth, rect.w, rect.h}
+			}
 		}
+		ink := theme.border if control.enabled else theme.disabled_ink
+		ui_neo_box(painter, rect, radius, fill, ink, theme.border_width)
+		if focused {ui_neo_focus_ring(painter, theme, rect, radius)}
 	}
 }
 
@@ -1629,13 +1827,17 @@ ui_font :: proc(name: string, size: f64) -> rawptr {
 ui_draw_flash_hints :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	theme := ui_theme(ui)
 	for hint in flash.visible_hints(&ui.flash_state) {
-		width := max(16.0, 8.0+8.0*f64(len(hint.label)))
-		rect := UI_Rect{hint.target.rect.x+2, hint.target.rect.y+2, width, 18}
-		rect.x = min(rect.x, ui.width-rect.w)
-		rect.y = min(rect.y, ui.height-rect.h)
-		ui_add_rect(painter, rect, theme.text)
-		if hint.selected {ui_add_border(painter, {hint.target.rect.x, hint.target.rect.y, hint.target.rect.w, hint.target.rect.h}, theme.text)}
-		ui_draw_text(painter, painter.font, ui, hint.label, rect, theme.canvas, 0, .Center)
+		width := max(22.0, 10.0+8.0*f64(len(hint.label)))
+		rect := UI_Rect{hint.target.rect.x+2, hint.target.rect.y+2, width, 20}
+		rect.x = min(rect.x, ui.width-rect.w-4)
+		rect.y = min(rect.y, ui.height-rect.h-4)
+		fill := theme.mint if hint.selected else theme.warning
+		ui_neo_shadow(painter, rect, 5, 2.0, theme.shadow)
+		ui_neo_box(painter, rect, 5, fill, theme.border, theme.border_width)
+		if hint.selected {
+			ui_add_border(painter, {hint.target.rect.x, hint.target.rect.y, hint.target.rect.w, hint.target.rect.h}, theme.focus, 2.0, 8)
+		}
+		ui_draw_text(painter, painter.bold, ui, hint.label, rect, NEO_DARK_INK, 0, .Center)
 	}
 }
 
@@ -1834,11 +2036,11 @@ ui_draw_evidence_overlay :: proc(
 
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.bold,
 		ui,
 		"Evidence inspector",
-		{modal.x+20, modal.y+12, modal.w-40, 26},
-		theme.text,
+		{modal.x+20, modal.y+8, modal.w-40, 28},
+		NEO_DARK_INK,
 		0,
 	)
 	if ui_evidence_compact(ui) {
@@ -1923,25 +2125,25 @@ ui_draw_settings_overlay :: proc(
 	modal := ui_settings_modal_rect(ui)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.bold,
 		ui,
 		"Settings",
-		{modal.x+20, modal.y+14, modal.w-40, 32},
-		theme.text,
+		{modal.x+20, modal.y+6, modal.w-40, 32},
+		NEO_DARK_INK,
 		0,
 	)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.semibold,
 		ui,
 		"Appearance",
-		{modal.x+24, modal.y+52, modal.w-48, 22},
+		{modal.x+24, modal.y+54, modal.w-48, 22},
 		theme.muted,
 		0,
 	)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.semibold,
 		ui,
 		"Light",
 		{modal.x+24, modal.y+82, 92, 34},
@@ -1951,7 +2153,7 @@ ui_draw_settings_overlay :: proc(
 	)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.semibold,
 		ui,
 		"Dark",
 		{modal.x+124, modal.y+82, 92, 34},
@@ -1959,18 +2161,19 @@ ui_draw_settings_overlay :: proc(
 		0,
 		.Center,
 	)
+	ui_neo_dashed_divider(painter, ui, modal.x+24, modal.y+125, modal.w-48)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.semibold,
 		ui,
 		"Font size",
-		{modal.x+24, modal.y+132, modal.w-48, 22},
+		{modal.x+24, modal.y+134, modal.w-48, 22},
 		theme.muted,
 		0,
 	)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.bold,
 		ui,
 		"−",
 		{modal.x+24, modal.y+162, 48, 36},
@@ -1980,7 +2183,7 @@ ui_draw_settings_overlay :: proc(
 	)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.bold,
 		ui,
 		"+",
 		{modal.x+82, modal.y+162, 48, 36},
@@ -1999,7 +2202,7 @@ ui_draw_settings_overlay :: proc(
 	)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.semibold,
 		ui,
 		"Close",
 		{modal.x+modal.w-120, modal.y+modal.h-52, 96, 36},
@@ -2042,7 +2245,7 @@ ui_draw :: proc(
 	ui_draw_panels(painter, &underlay)
 	if underlay.profile_editing {ui_draw_profile(painter, &underlay, design_state)}
 	ui_draw_controls(painter, &underlay)
-	ui_add_rect(painter, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.8})
+	ui_add_rect(painter, {0, 0, ui.width, ui.height}, {0, 0, 0, 0.42})
 	gpu.push_opacity(painter.list, 0.2)
 	ui_draw_labels(painter, &underlay, mesh, model_name, status, status_failed, design_state)
 	gpu.pop_opacity(painter.list)
@@ -2074,19 +2277,21 @@ ui_draw_labels :: proc(
 		title = "hw_slicer / Printer"
 	}
 	if design_shown {title = fmt.tprintf("hw_slicer / %s", model_name) if title_width >= 230 else model_name}
-	ui_draw_text(painter, painter.font, ui, title, {12, 0, min(title_width, 220), 40}, theme.text, 0)
-	ui_draw_text(painter, painter.font, ui, "Toolpath design", ui_control_rect(ui, .Demo_Tab_Design), ui_control_ink(ui, .Demo_Tab_Design), 0, .Center)
-	ui_draw_text(painter, painter.font, ui, "Slicer stages", ui_control_rect(ui, .Demo_Tab_Slicer), ui_control_ink(ui, .Demo_Tab_Slicer), 0, .Center)
-	ui_draw_text(painter, painter.font, ui, "Printer", ui_control_rect(ui, .Demo_Tab_Printer), ui_control_ink(ui, .Demo_Tab_Printer), 0, .Center)
+	header_ink := theme.text if ui.dark else NEO_DARK_INK
+	title_max_w := max(120.0, min(title_width, ui_demo_tab_rect(ui, 0).x - 24))
+	ui_draw_text(painter, painter.bold, ui, title, {14, 0, title_max_w, 40}, header_ink, 0)
+	ui_draw_text(painter, painter.semibold, ui, "Toolpath design", ui_control_rect(ui, .Demo_Tab_Design), ui_control_ink(ui, .Demo_Tab_Design), 0, .Center)
+	ui_draw_text(painter, painter.semibold, ui, "Slicer stages", ui_control_rect(ui, .Demo_Tab_Slicer), ui_control_ink(ui, .Demo_Tab_Slicer), 0, .Center)
+	ui_draw_text(painter, painter.semibold, ui, "Printer", ui_control_rect(ui, .Demo_Tab_Printer), ui_control_ink(ui, .Demo_Tab_Printer), 0, .Center)
 	window_labels := [3]string{"−", "+", "×"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
 	for label, index in window_labels {
 		action := window_actions[index]
-		ui_draw_text(painter, painter.mono, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center, tracked = true)
+		ui_draw_text(painter, painter.bold, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
 	}
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.semibold,
 		ui,
 		"Dark" if !ui.dark else "Light",
 		ui_control_rect(ui, .Toggle_Theme),
@@ -2096,7 +2301,7 @@ ui_draw_labels :: proc(
 	)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.semibold,
 		ui,
 		"Settings",
 		ui_control_rect(ui, .Open_Settings),
@@ -2104,7 +2309,7 @@ ui_draw_labels :: proc(
 		0,
 		.Center,
 	)
-	ui_draw_text(painter, painter.font, ui, "Help", ui_control_rect(ui, .Show_Help), ui_control_ink(ui, .Show_Help), 0, .Center)
+	ui_draw_text(painter, painter.semibold, ui, "Help", ui_control_rect(ui, .Show_Help), ui_control_ink(ui, .Show_Help), 0, .Center)
 	if ui_graph_mode(ui) {
 		ui_draw_stage_graph(painter, ui)
 		ui_draw_graph_view_labels(painter, ui)
@@ -2156,7 +2361,7 @@ ui_draw_labels :: proc(
 	viewport := ui_viewport_rect(ui)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.semibold,
 		ui,
 		"Frame",
 		ui_control_rect(ui, .Frame_Mesh),
@@ -2166,7 +2371,7 @@ ui_draw_labels :: proc(
 	)
 	ui_draw_text(
 		painter,
-		painter.font,
+		painter.semibold,
 		ui,
 		"Wireframe",
 		ui_control_rect(ui, .Toggle_Wireframe),
@@ -2177,7 +2382,7 @@ ui_draw_labels :: proc(
 	if ui.design_active {
 		ui_draw_text(
 			painter,
-			painter.font,
+			painter.semibold,
 			ui,
 			"Arcs",
 			ui_control_rect(ui, .Toggle_Arcs),
@@ -2189,12 +2394,9 @@ ui_draw_labels :: proc(
 	if ui.profile_available {ui_profile_button_labels(painter, ui)}
 	if !ui.profile_editing {
 		vp := ui_viewport_rect(ui)
-		pill_w := min(320.0, max(160.0, vp.w-290))
+		pill_w := min(328.0, max(168.0, vp.w-290))
 		pill := UI_Rect{vp.x+vp.w-pill_w-12, vp.y+12, pill_w, 28}
-		bg := theme.raised
-		bg.w = 0.90
-		ui_add_round_rect(painter, pill, 6, bg)
-		ui_add_border(painter, pill, theme.border)
+		ui_neo_badge(painter, ui, pill, theme.surface, true)
 		tris_text := fmt.tprintf("%.2fM", f64(ui.render_tris)/1_000_000.0) if ui.render_tris >= 1_000_000 else fmt.tprintf("%dk", ui.render_tris/1000)
 		stats_text := fmt.tprintf("%.1f FPS · %.1f ms · %s tris · %d draws", ui.fps, ui.frame_ms, tris_text, ui.render_draws)
 		ui_draw_text(painter, painter.mono, ui, stats_text, pill, theme.text, 0, .Center)
@@ -2289,11 +2491,14 @@ ui_draw_labels :: proc(
 ui_draw_design_settings :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_State) {
 	theme := ui_theme(ui)
 	layout := ui_design_layout(ui)
-	ui_draw_text(painter, painter.font, ui, "Printer", layout.printer, theme.text, 0)
-	ui_draw_text(painter, painter.font, ui, fmt.tprintf("Nozzle %.2f mm", design_nozzle(s)), layout.nozzle, ui_control_ink(ui, .Design_Nozzle), 0, .Center)
-	ui_draw_text(painter, painter.font, ui, "Simulation", layout.simulation, theme.muted, 0)
-	ui_draw_text(painter, painter.font, ui, "Pause" if s.playing else "Play", layout.play, ui_control_ink(ui, .Simulation_Play), 0, .Center)
-	ui_draw_text(painter, painter.font, ui, fmt.tprintf("%.0f×", design_rate(s)), layout.rate, ui_control_ink(ui, .Simulation_Rate), 0, .Center)
+	ui_draw_text(painter, painter.bold, ui, "Printer", layout.printer, theme.text, 0)
+	ui_draw_text(painter, painter.semibold, ui, fmt.tprintf("Nozzle %.2f mm", design_nozzle(s)), layout.nozzle, ui_control_ink(ui, .Design_Nozzle), 0, .Center)
+	if !ui_compact(ui) {
+		ui_neo_dashed_divider(painter, ui, layout.nozzle.x, layout.nozzle.y+layout.nozzle.h+6, layout.nozzle.w)
+	}
+	ui_draw_text(painter, painter.bold, ui, "Simulation", layout.simulation, theme.text, 0)
+	ui_draw_text(painter, painter.semibold, ui, "Pause" if s.playing else "Play", layout.play, ui_control_ink(ui, .Simulation_Play), 0, .Center)
+	ui_draw_text(painter, painter.semibold, ui, fmt.tprintf("%.0f×", design_rate(s)), layout.rate, ui_control_ink(ui, .Simulation_Rate), 0, .Center)
 	clock := fmt.tprintf("%s / %s", design_time_text(s.clock), design_time_text(design_duration(s)))
 	ui_draw_measurement(painter, ui, "Time", clock, layout.clock, 70 if ui_compact(ui) else 90)
 	if ui.design_layers > 0 {
@@ -2302,19 +2507,19 @@ ui_draw_design_settings :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_
 		if ui.profile_editing {return}
 		// Floating badge next to the vertical layer slider thumb.
 		layer_rect := ui_design_layer_slider_rect(ui)
-		track_top := layer_rect.y+12
-		track_h := max(1.0, layer_rect.h-24)
+		track_top := layer_rect.y+14
+		track_h := max(1.0, layer_rect.h-28)
 		fraction := 1.0
 		if ui.design_layers > 1 {
 			fraction = clamp(f64(ui.design_layer)/f64(ui.design_layers-1), 0, 1)
 		}
 		thumb_y := track_top+track_h*(1-fraction)
-		badge_w := 118.0
-		badge_h := 24.0
+		badge_w := 124.0
+		badge_h := 26.0
 		badge_y := clamp(thumb_y-badge_h/2, layer_rect.y, layer_rect.y+layer_rect.h-badge_h)
-		badge := UI_Rect{layer_rect.x-badge_w-8, badge_y, badge_w, badge_h}
+		badge := UI_Rect{layer_rect.x-badge_w-10, badge_y, badge_w, badge_h}
 		badge_text := fmt.tprintf("L %d/%d  %.2fmm", ui.design_layer+1, ui.design_layers, ui.design_layer_z)
-		ui_draw_text(painter, painter.mono, ui, badge_text, badge, theme.text, 0, .Center)
+		ui_draw_text(painter, painter.mono, ui, badge_text, badge, NEO_DARK_INK, 0, .Center)
 		// Compact label above the bottom in-layer progress bar.
 		prog_rect := ui_design_progress_slider_rect(ui)
 		move_arc, move_r := design_current_move_info(s)
@@ -2329,7 +2534,7 @@ ui_draw_design_settings :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_
 			}
 		}
 		prog_text := fmt.tprintf("Layer %d / %d  ·  Z %.2f mm  ·  In-layer %.0f%%%s", ui.design_layer+1, ui.design_layers, ui.design_layer_z, ui.design_in_layer*100, move_label)
-		ui_draw_text(painter, painter.mono, ui, prog_text, {prog_rect.x+4, prog_rect.y-22, prog_rect.w, 20}, theme.text, 0)
+		ui_draw_text(painter, painter.mono, ui, prog_text, {prog_rect.x+4, prog_rect.y-24, prog_rect.w, 20}, theme.text, 0)
 	}
 }
 
@@ -2340,11 +2545,11 @@ ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_S
 	row, label_width := 18.0, 70.0
 	if !compact {
 		right := ui_right_rect(ui)
-		ui_draw_text(painter, painter.font, ui, "Design results", {right.x+12, right.y+8, 240, 28}, theme.muted, 0)
+		ui_draw_text(painter, painter.bold, ui, "Design results", {right.x+12, right.y+8, 240, 28}, theme.text, 0)
 		area = {right.x+12, right.y+42, 252, right.h}
 		row, label_width = 24, 120
 	}
-	ui_draw_text(painter, painter.font, ui, model_name, {area.x, area.y, area.w, row}, theme.text, 0)
+	ui_draw_text(painter, painter.semibold, ui, model_name, {area.x, area.y, area.w, row}, theme.muted, 0)
 	y := area.y+row+(row if !compact else 2)
 	stats := [5][2]string{
 		{"Layers", fmt.tprintf("%d", s.toolpath.layers)},
@@ -2364,8 +2569,9 @@ ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_S
 	ui_draw_text(painter, painter.font, ui, gcode_text, {area.x, y, area.w, row}, theme.text, 0)
 	y += row
 	bottom := ui_left_rect(ui).y+ui_left_rect(ui).h-60
+	ui_neo_dashed_divider(painter, ui, area.x, y+4, area.w)
 	y += row*0.5
-	ui_draw_text(painter, painter.font, ui, "Features: mm/s, mm/s², fan", {area.x, y, area.w, row}, theme.muted, 0)
+	ui_draw_text(painter, painter.bold, ui, "Features: mm/s, mm/s², fan", {area.x, y, area.w, row}, theme.text, 0)
 	y += row
 	for object in s.evaluated.objects {
 		if y+row > bottom {break}
@@ -2374,8 +2580,9 @@ ui_draw_design_results :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_S
 		ui_draw_measurement(painter, ui, name, value, {area.x, y, area.w, row}, label_width)
 		y += row
 	}
+	ui_neo_dashed_divider(painter, ui, area.x, y+4, area.w)
 	y += row*0.5
-	ui_draw_text(painter, painter.font, ui, "Parameters", {area.x, y, area.w, row}, theme.muted, 0)
+	ui_draw_text(painter, painter.bold, ui, "Parameters", {area.x, y, area.w, row}, theme.text, 0)
 	y += row
 	for parameter in s.evaluated.parameters {
 		if y+row > bottom {break}
@@ -2394,11 +2601,11 @@ ui_draw_modal_labels :: proc(
 		modal := ui_help_modal_rect(ui)
 		ui_draw_text(
 			painter,
-			painter.font,
+			painter.bold,
 			ui,
 			"Mesh viewer help",
-			{modal.x+20, modal.y+14, 440, 32},
-			theme.text,
+			{modal.x+20, modal.y+6, 440, 32},
+			NEO_DARK_INK,
 			0,
 		)
 		help_lines := [7]string{

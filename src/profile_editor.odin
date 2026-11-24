@@ -289,7 +289,7 @@ ui_profile_button_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	actions := [5]UI_Action{.Profile_Edit, .Profile_Fit, .Profile_Save, .Profile_Discard, .Profile_Point}
 	labels := [5]string{"Preview" if ui.profile_editing else "Edit profile", "Fit", "Save", "Discard", "Next point"}
 	for action, i in actions {
-		ui_draw_text(painter, painter.font, ui, labels[i], ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
+		ui_draw_text(painter, painter.semibold, ui, labels[i], ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
 	}
 }
 
@@ -299,9 +299,8 @@ ui_draw_profile :: proc(p: ^UI_Painter, ui: ^UI_State, s: ^Design_State) {
 	view := ui_viewport_rect(ui)
 	canvas := profile_canvas(view)
 	theme := ui_theme(ui)
-	ui_add_rect(p, view, theme.surface)
-	ui_add_rect(p, canvas, theme.canvas)
-	ui_add_border(p, canvas, theme.border)
+	ui_add_rect(p, view, theme.canvas)
+	ui_neo_panel(p, ui, canvas, theme.surface, theme.radius, true)
 	{
 		gpu.push_clip(p.list, ui_gpu_rect(canvas))
 		defer gpu.pop_clip(p.list)

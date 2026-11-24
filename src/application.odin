@@ -79,6 +79,7 @@ App_State :: struct {
 
 app: App_State
 startup_font_size: int
+startup_theme: int // 0 = preference, 1 = light, 2 = dark
 startup_settings_open: bool
 startup_design: string
 startup_design_time := -1.0
@@ -525,7 +526,9 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 	app = {}
 	app.host = host^
 	app.resource_root = strings.clone(string(host.resource_root))
-	app.ui.dark = host.preference_get_int("theme-dark", 1) != 0
+	app.ui.dark = host.preference_get_int("theme-dark", 0) != 0
+	if startup_theme == 1 {app.ui.dark = false}
+	if startup_theme == 2 {app.ui.dark = true}
 	app.ui.selected_model = 0
 	ui_initialize(&app.ui)
 	design_state_init(&app.design)
@@ -1674,6 +1677,10 @@ main :: proc() {
 			}
 		} else if argument == "--settings" {
 			startup_settings_open = true
+		} else if argument == "--theme=light" {
+			startup_theme = 1
+		} else if argument == "--theme=dark" {
+			startup_theme = 2
 		} else if strings.has_prefix(argument, "--design=") {
 			startup_design = argument[len("--design="):]
 		} else if strings.has_prefix(argument, "--design-time=") {
