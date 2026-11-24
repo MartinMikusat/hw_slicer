@@ -127,6 +127,76 @@ mesh_normalize_units :: proc(
 	return mesh, .None
 }
 
+mesh_normalize_units_consume :: proc(
+	decoded: ^formats.Decoded_Mesh,
+) -> (Canonical_Mesh, Normalize_Error) {
+	vertex_count := len(decoded.vertex_x)
+	triangle_count := len(decoded.triangle_ids)
+	if vertex_count == 0 ||
+	   len(decoded.vertex_y) != vertex_count ||
+	   len(decoded.vertex_z) != vertex_count ||
+	   len(decoded.vertex_ids) != vertex_count ||
+	   len(decoded.triangle_a) != triangle_count ||
+	   len(decoded.triangle_b) != triangle_count ||
+	   len(decoded.triangle_c) != triangle_count ||
+	   len(decoded.source_record_offsets) != triangle_count {
+		return {}, .Invalid_Input
+	}
+	scale, scale_ok := source_units_to_millimetres(decoded.source.units)
+	if !scale_ok {return {}, .Unsupported_Units}
+
+	bounds: Mesh_Bounds
+	for vertex_index in 0 ..< vertex_count {
+		x := decoded.vertex_x[vertex_index] * scale
+		y := decoded.vertex_y[vertex_index] * scale
+		z := decoded.vertex_z[vertex_index] * scale
+		if math.is_nan(x) || math.is_inf(x) ||
+		   math.is_nan(y) || math.is_inf(y) ||
+		   math.is_nan(z) || math.is_inf(z) {
+			return {}, .Non_Finite
+		}
+		if x == 0 {x = 0}
+		if y == 0 {y = 0}
+		if z == 0 {z = 0}
+		decoded.vertex_x[vertex_index] = x
+		decoded.vertex_y[vertex_index] = y
+		decoded.vertex_z[vertex_index] = z
+		if vertex_index == 0 {
+			bounds.minimum = {
+				contracts.Millimetres(x),
+				contracts.Millimetres(y),
+				contracts.Millimetres(z),
+			}
+			bounds.maximum = bounds.minimum
+		} else {
+			bounds.minimum.x = contracts.Millimetres(min(f64(bounds.minimum.x), x))
+			bounds.minimum.y = contracts.Millimetres(min(f64(bounds.minimum.y), y))
+			bounds.minimum.z = contracts.Millimetres(min(f64(bounds.minimum.z), z))
+			bounds.maximum.x = contracts.Millimetres(max(f64(bounds.maximum.x), x))
+			bounds.maximum.y = contracts.Millimetres(max(f64(bounds.maximum.y), y))
+			bounds.maximum.z = contracts.Millimetres(max(f64(bounds.maximum.z), z))
+		}
+	}
+
+	mesh := Canonical_Mesh{
+		source                = decoded.source,
+		coordinate_units      = .Millimetres,
+		source_root_id        = decoded.source_root_id,
+		bounds                = bounds,
+		vertex_x              = decoded.vertex_x,
+		vertex_y              = decoded.vertex_y,
+		vertex_z              = decoded.vertex_z,
+		vertex_ids            = decoded.vertex_ids,
+		triangle_a            = decoded.triangle_a,
+		triangle_b            = decoded.triangle_b,
+		triangle_c            = decoded.triangle_c,
+		triangle_ids          = decoded.triangle_ids,
+		source_record_offsets = decoded.source_record_offsets,
+	}
+	decoded^ = {}
+	return mesh, .None
+}
+
 canonical_mesh_destroy :: proc(
 	mesh: ^Canonical_Mesh,
 	allocator := context.allocator,

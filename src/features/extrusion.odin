@@ -213,23 +213,30 @@ extrusion_calculate :: proc(
 		return {}, .Arithmetic
 	}
 
+	quantum := u128(result.length_quantum_nm)
+	max_q := u128(max(u64)) / quantum
+
 	Ext_Par_Ctx :: struct {
-		plan:               Unified_Path_Plan_Result,
-		layer_heights:      []contracts.Micrometres,
-		process:            profiles.Resolved_Process_Profile,
-		volume_denominator: u128,
-		layer_ext_offsets:  []int,
-		layer_errors:       []Extrusion_Error,
-		out_moves:          []Extrusion_Move,
+		plan:                         Unified_Path_Plan_Result,
+		layer_heights:                []contracts.Micrometres,
+		process:                      profiles.Resolved_Process_Profile,
+		volume_denominator:           u128,
+		quantized_length_denominator: u128,
+		max_q:                        u128,
+		layer_ext_offsets:            []int,
+		layer_errors:                 []Extrusion_Error,
+		out_moves:                    []Extrusion_Move,
 	}
 	ectx := Ext_Par_Ctx{
-		plan               = plan,
-		layer_heights      = layer_heights,
-		process            = process,
-		volume_denominator = volume_denominator,
-		layer_ext_offsets  = layer_ext_offsets,
-		layer_errors       = layer_errors,
-		out_moves          = result.moves,
+		plan                         = plan,
+		layer_heights                = layer_heights,
+		process                      = process,
+		volume_denominator           = volume_denominator,
+		quantized_length_denominator = quantized_length_denominator,
+		max_q                        = max_q,
+		layer_ext_offsets            = layer_ext_offsets,
+		layer_errors                 = layer_errors,
+		out_moves                    = result.moves,
 	}
 	parallel_for(len(plan.layers), &ectx, proc(c: ^Ext_Par_Ctx, layer_index: int) {
 		plan_layer := c.plan.layers[layer_index]
@@ -278,6 +285,12 @@ extrusion_calculate :: proc(
 				c.layer_errors[layer_index] = .Arithmetic
 				return
 			}
+			base_units := volume_numerator / c.quantized_length_denominator
+			if base_units > c.max_q {
+				c.layer_errors[layer_index] = .Arithmetic
+				return
+			}
+			base_rem := volume_numerator % c.quantized_length_denominator
 			c.out_moves[w] = {
 				stable_id                 = contracts.stable_id_child(move.stable_id, .Feature, 0),
 				planned_move_id           = move.stable_id,
@@ -296,6 +309,8 @@ extrusion_calculate :: proc(
 				volume_numerator          = volume_numerator,
 				volume_cubic_um           = volume_cubic_um,
 				volume_error_numerator    = volume_error,
+				incremental_filament_nm   = u64(base_units),
+				remainder_numerator_after = base_rem,
 			}
 			w += 1
 		}
@@ -307,24 +322,26 @@ extrusion_calculate :: proc(
 		}
 	}
 
-	// Sequential exact remainder accumulation pass (preserves bit-exact filament quantization).
+	// Sequential exact remainder carry pass (preserves bit-exact filament quantization without serial u128 div).
 	remainder: u128
-	quantum := u128(result.length_quantum_nm)
-	max_q := u128(max(u64)) / quantum
 	for &em in result.moves {
 		v_num := em.volume_numerator
 		if remainder > max(u128)-v_num {
 			extrusion_result_destroy(&result, allocator)
 			return {}, .Arithmetic
 		}
-		accumulated := remainder + v_num
-		quantized_units := accumulated / quantized_length_denominator
+		quantized_units := u128(em.incremental_filament_nm)
+		rem_sum := remainder + em.remainder_numerator_after
+		if rem_sum >= quantized_length_denominator {
+			rem_sum -= quantized_length_denominator
+			quantized_units += 1
+		}
 		if quantized_units > max_q {
 			extrusion_result_destroy(&result, allocator)
 			return {}, .Arithmetic
 		}
 		incremental_filament_nm := quantized_units * quantum
-		remainder = accumulated % quantized_length_denominator
+		remainder = rem_sum
 		if result.total_volume_numerator > max(u128)-v_num ||
 		   result.total_filament_nm > max(u128)-incremental_filament_nm {
 			extrusion_result_destroy(&result, allocator)

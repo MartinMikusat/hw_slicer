@@ -229,6 +229,13 @@ skins_propagate :: proc(
 		}
 		delete(surface_inputs, allocator)
 	}
+	surface_bboxes := make([][4]i64, len(surfaces.masks), allocator)
+	defer delete(surface_bboxes, allocator)
+	region_bboxes := make([][4]i64, len(regions.regions), allocator)
+	defer delete(region_bboxes, allocator)
+	for ri, region_index in region_inputs {
+		region_bboxes[region_index] = skin_polygon_bbox(ri)
+	}
 	layer_items := make([][dynamic]Skin_Layer_Item, len(regions.layers), allocator)
 	defer {
 		for &li in layer_items {delete(li)}
@@ -263,6 +270,7 @@ skins_propagate :: proc(
 			return {}, .Invalid_Input
 		}
 		surface_inputs[surface_mask_index] = source_input
+		surface_bboxes[surface_mask_index] = skin_polygon_bbox(source_input)
 		for target_layer in int(first_layer)..=int(last_layer) {
 			append(&layer_items[target_layer], Skin_Layer_Item{
 				surface_mask_index = u32(surface_mask_index),
@@ -280,8 +288,10 @@ skins_propagate :: proc(
 		regions:              slicing.Region_Result,
 		surfaces:             Surface_Result,
 		surface_inputs:       []polygon.Polygon_Set,
+		surface_bboxes:       [][4]i64,
 		layer_items:          [][dynamic]Skin_Layer_Item,
 		region_inputs:        []polygon.Polygon_Set,
+		region_bboxes:        [][4]i64,
 		accumulators:         []polygon.Polygon_Set,
 		outputs:              []polygon.Polygon_Set,
 		contribution_sources: [][dynamic]u32,
@@ -297,8 +307,10 @@ skins_propagate :: proc(
 		regions              = regions,
 		surfaces             = surfaces,
 		surface_inputs       = surface_inputs,
+		surface_bboxes       = surface_bboxes,
 		layer_items          = layer_items,
 		region_inputs        = region_inputs,
+		region_bboxes        = region_bboxes,
 		accumulators         = accumulators,
 		outputs              = outputs,
 		contribution_sources = contribution_sources,
@@ -319,7 +331,13 @@ skins_propagate :: proc(
 
 		for item in c.layer_items[target_layer] {
 			src_in := c.surface_inputs[item.surface_mask_index]
+			if len(src_in.paths) == 0 {continue}
+			sb := c.surface_bboxes[item.surface_mask_index]
 			for region_index in region_start ..< region_end {
+				rb := c.region_bboxes[region_index]
+				if sb[1] < rb[0] || rb[1] < sb[0] || sb[3] < rb[2] || rb[3] < sb[2] {
+					continue
+				}
 				contribution, provider_error := c.provider.boolean(
 					src_in,
 					c.region_inputs[region_index],
@@ -349,7 +367,9 @@ skins_propagate :: proc(
 					c.layer_errors[target_layer] = .Allocation_Failed if accumulate_error == .Allocation_Failed else .Provider
 					return
 				}
-				append(&c.contribution_sources[accumulator_index], item.surface_mask_index)
+				if !c.config.skip_source_filtering {
+					append(&c.contribution_sources[accumulator_index], item.surface_mask_index)
+				}
 			}
 		}
 
@@ -391,12 +411,8 @@ skins_propagate :: proc(
 					}
 					c.outputs[output_offset] = output
 				} else {
-					output, clone_ok := skin_polygon_clone(bottom, c.allocator)
-					if !clone_ok {
-						c.layer_errors[target_layer] = .Allocation_Failed
-						return
-					}
-					c.outputs[output_offset] = output
+					c.outputs[output_offset] = bottom
+					c.accumulators[region_index*2] = {}
 				}
 			}
 			if len(top.paths) > 0 {
@@ -416,12 +432,8 @@ skins_propagate :: proc(
 					}
 					c.outputs[output_offset+1] = output
 				} else {
-					output, clone_ok := skin_polygon_clone(top, c.allocator)
-					if !clone_ok {
-						c.layer_errors[target_layer] = .Allocation_Failed
-						return
-					}
-					c.outputs[output_offset+1] = output
+					c.outputs[output_offset+1] = top
+					c.accumulators[region_index*2+1] = {}
 				}
 			}
 			c.outputs[output_offset+2] = combined
@@ -687,6 +699,27 @@ skin_target_layer_range :: proc(
 		}
 	}
 	return u32(first), u32(last), true
+}
+
+@(private = "file")
+skin_polygon_bbox :: proc(s: polygon.Polygon_Set) -> [4]i64 {
+	if len(s.points) == 0 {
+		return {1, -1, 1, -1}
+	}
+	p0 := s.points[0]
+	min_x := i64(p0.x)
+	max_x := min_x
+	min_y := i64(p0.y)
+	max_y := min_y
+	for p in s.points[1:] {
+		px := i64(p.x)
+		py := i64(p.y)
+		if px < min_x {min_x = px}
+		if px > max_x {max_x = px}
+		if py < min_y {min_y = py}
+		if py > max_y {max_y = py}
+	}
+	return {min_x, max_x, min_y, max_y}
 }
 
 skin_polygon_accumulate :: proc(

@@ -525,7 +525,7 @@ stage_model :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		s.mesh_repair_stats = repair.mesh_auto_repair(&work, a)
 	}
 	if s.options.center_on_bed {center_decoded_on_bed(&work, s.profile.printer)}
-	mesh, err := geometry.mesh_normalize_units(work, a)
+	mesh, err := geometry.mesh_normalize_units_consume(&work)
 	if err != .None {return spine_error(.Normalize)}
 	s.mesh = mesh
 	s.slots[.Model].count_a = u64(len(s.mesh.triangle_ids))
