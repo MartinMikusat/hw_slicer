@@ -17,12 +17,18 @@ static NSString *const kWindowZoomedKey = @"HWSlicerWindowZoomed";
 static NSString *const kWindowRestoreFrameKey = @"HWSlicerWindowRestoreFrame";
 
 static void slicer_window_zoom(void);
+static NSScreen *slicer_screen_for_rect(NSRect r);
 
 @interface HWSlicerWindow : NSWindow
 @property(nonatomic) NSRect restoreFrame;
 @property(nonatomic) NSRect zoomFrame;
 @property(nonatomic) BOOL hasRestoreFrame;
+@property(nonatomic) BOOL inWindowDrag;
+@property(nonatomic) BOOL screenChangedDuringDrag;
+@property(nonatomic) BOOL adjustingFrame;
 @end
+
+static void slicer_fit_window_to_screen(HWSlicerWindow *window);
 
 @implementation HWSlicerWindow
 - (BOOL)canBecomeKeyWindow { return YES; }
@@ -132,7 +138,25 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
         if (event.clickCount == 2) {
             slicer_window_zoom();
         } else {
-            [self.window performWindowDragWithEvent:event];
+            HWSlicerWindow *window = (HWSlicerWindow *)self.window;
+            window.inWindowDrag = YES;
+            window.screenChangedDuringDrag = NO;
+            [window performWindowDragWithEvent:event];
+            window.inWindowDrag = NO;
+            NSScreen *screen = window.screen ?: slicer_screen_for_rect(window.frame);
+            if (screen) {
+                NSRect visible = screen.visibleFrame;
+                NSRect frame = window.frame;
+                BOOL needsFit = window.screenChangedDuringDrag ||
+                    frame.size.width > visible.size.width ||
+                    frame.size.height > visible.size.height ||
+                    NSMaxY(frame) > NSMaxY(visible) ||
+                    NSMaxY(frame) < visible.origin.y + 40.0;
+                if (needsFit) {
+                    slicer_fit_window_to_screen(window);
+                }
+            }
+            window.screenChangedDuringDrag = NO;
         }
         return;
     }
@@ -244,8 +268,54 @@ static void slicer_window_minimize(void) {
 static BOOL slicer_rect_is_valid(NSRect r) {
     return isfinite(r.origin.x) && isfinite(r.origin.y) &&
            isfinite(r.size.width) && isfinite(r.size.height) &&
-           r.size.width >= 900.0 && r.size.height >= 600.0 &&
+           r.size.width >= 320.0 && r.size.height >= 240.0 &&
            r.size.width <= 20000.0 && r.size.height <= 20000.0;
+}
+
+static NSRect slicer_clamp_rect_to_rect(NSRect frame, NSRect visible) {
+    if (frame.size.width > visible.size.width) {
+        frame.size.width = visible.size.width;
+    }
+    if (frame.size.height > visible.size.height) {
+        frame.size.height = visible.size.height;
+    }
+    if (frame.origin.x < visible.origin.x) {
+        frame.origin.x = visible.origin.x;
+    }
+    if (NSMaxX(frame) > NSMaxX(visible)) {
+        frame.origin.x = NSMaxX(visible) - frame.size.width;
+    }
+    if (frame.origin.y < visible.origin.y) {
+        frame.origin.y = visible.origin.y;
+    }
+    if (NSMaxY(frame) > NSMaxY(visible)) {
+        frame.origin.y = NSMaxY(visible) - frame.size.height;
+    }
+    return frame;
+}
+
+static void slicer_update_min_size(HWSlicerWindow *window, NSRect visible) {
+    if (!window || visible.size.width < 320.0 || visible.size.height < 240.0) { return; }
+    window.minSize = NSMakeSize(
+        fmin(900.0, visible.size.width),
+        fmin(600.0, visible.size.height)
+    );
+}
+
+static void slicer_sync_layer_for_window(HWSlicerWindow *window) {
+    if (!window) { return; }
+    NSView *view = window.contentView;
+    if (!view) { return; }
+    CAMetalLayer *layer = (CAMetalLayer *)view.layer;
+    double scale = window.backingScaleFactor;
+    if (scale > 0.0 && layer) {
+        layer.contentsScale = scale;
+        layer.drawableSize = CGSizeMake(
+            view.bounds.size.width * scale,
+            view.bounds.size.height * scale
+        );
+    }
+    [view setNeedsDisplay:YES];
 }
 
 static NSScreen *slicer_screen_for_rect(NSRect r) {
@@ -279,6 +349,37 @@ static void slicer_save_window_state(HWSlicerWindow *window) {
     }
 }
 
+static void slicer_fit_window_to_screen(HWSlicerWindow *window) {
+    if (!window || !g_window_ready || window.adjustingFrame) { return; }
+    if ((window.styleMask & NSWindowStyleMaskFullScreen) != 0 || window.isMiniaturized) {
+        return;
+    }
+    NSScreen *screen = window.screen ?: slicer_screen_for_rect(window.frame);
+    if (!screen) { return; }
+    NSRect visible = screen.visibleFrame;
+    if (visible.size.width < 320.0 || visible.size.height < 240.0) { return; }
+    slicer_update_min_size(window, visible);
+
+    BOOL wasZoomed = window.hasRestoreFrame &&
+        (NSEqualRects(window.frame, window.zoomFrame) ||
+         NSEqualSizes(window.frame.size, window.zoomFrame.size));
+    NSRect target;
+    if (wasZoomed) {
+        target = visible;
+        window.zoomFrame = visible;
+    } else {
+        target = slicer_clamp_rect_to_rect(window.frame, visible);
+    }
+
+    if (!NSEqualRects(window.frame, target)) {
+        window.adjustingFrame = YES;
+        [window setFrame:target display:YES];
+        window.adjustingFrame = NO;
+    }
+    slicer_sync_layer_for_window(window);
+    slicer_save_window_state(window);
+}
+
 static BOOL slicer_restore_window_state(HWSlicerWindow *window) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSString *frameStr = [defaults stringForKey:kWindowFrameKey];
@@ -293,6 +394,7 @@ static BOOL slicer_restore_window_state(HWSlicerWindow *window) {
             : ([NSScreen mainScreen] ?: NSScreen.screens.firstObject);
         if (!screen) { return NO; }
         NSRect visible = screen.visibleFrame;
+        slicer_update_min_size(window, visible);
         if (!slicer_rect_is_valid(restoreFrame)) {
             restoreFrame = NSMakeRect(
                 NSMidX(visible) - 640.0,
@@ -312,41 +414,31 @@ static BOOL slicer_restore_window_state(HWSlicerWindow *window) {
     NSScreen *screen = slicer_screen_for_rect(savedFrame);
     if (!screen) { return NO; }
     NSRect visible = screen.visibleFrame;
-    if (savedFrame.size.width > visible.size.width) {
-        savedFrame.size.width = visible.size.width;
-    }
-    if (savedFrame.size.height > visible.size.height) {
-        savedFrame.size.height = visible.size.height;
-    }
-    if (savedFrame.origin.x < visible.origin.x) {
-        savedFrame.origin.x = visible.origin.x;
-    }
-    if (NSMaxX(savedFrame) > NSMaxX(visible)) {
-        savedFrame.origin.x = NSMaxX(visible) - savedFrame.size.width;
-    }
-    if (savedFrame.origin.y < visible.origin.y) {
-        savedFrame.origin.y = visible.origin.y;
-    }
-    if (NSMaxY(savedFrame) > NSMaxY(visible)) {
-        savedFrame.origin.y = NSMaxY(visible) - savedFrame.size.height;
-    }
+    slicer_update_min_size(window, visible);
+    savedFrame = slicer_clamp_rect_to_rect(savedFrame, visible);
     [window setFrame:savedFrame display:NO];
     return YES;
 }
 
 static void slicer_window_zoom(void) {
     HWSlicerWindow *window = (__bridge HWSlicerWindow *)g_host.window;
-    NSScreen *screen = window.screen;
+    NSScreen *screen = window.screen ?: slicer_screen_for_rect(window.frame);
     if (!screen) { return; }
+    NSRect visible = screen.visibleFrame;
+    slicer_update_min_size(window, visible);
+    window.adjustingFrame = YES;
     if (window.hasRestoreFrame && NSEqualRects(window.frame, window.zoomFrame)) {
-        [window setFrame:window.restoreFrame display:YES];
+        NSRect target = slicer_clamp_rect_to_rect(window.restoreFrame, visible);
+        [window setFrame:target display:YES];
         window.hasRestoreFrame = NO;
     } else {
         window.restoreFrame = window.frame;
-        window.zoomFrame = screen.visibleFrame;
+        window.zoomFrame = visible;
         window.hasRestoreFrame = YES;
         [window setFrame:window.zoomFrame display:YES];
     }
+    window.adjustingFrame = NO;
+    slicer_sync_layer_for_window(window);
     slicer_save_window_state(window);
 }
 
@@ -416,6 +508,15 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
     window.contentView = view;
     if (!slicer_restore_window_state(window)) {
         [window center];
+        NSScreen *screen = window.screen ?: slicer_screen_for_rect(window.frame);
+        if (screen) {
+            NSRect visible = screen.visibleFrame;
+            slicer_update_min_size(window, visible);
+            NSRect clamped = slicer_clamp_rect_to_rect(window.frame, visible);
+            if (!NSEqualRects(window.frame, clamped)) {
+                [window setFrame:clamped display:NO];
+            }
+        }
     }
     view.frame = window.contentView.bounds;
     g_window_ready = true;
@@ -488,7 +589,9 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
 
 - (void)windowDidMove:(NSNotification *)notification {
     HWSlicerWindow *window = notification.object;
-    if (window.hasRestoreFrame && !NSEqualRects(window.frame, window.zoomFrame)) {
+    if (window.adjustingFrame) { return; }
+    if (window.hasRestoreFrame &&
+        (window.inWindowDrag || !NSEqualSizes(window.frame.size, window.zoomFrame.size))) {
         window.hasRestoreFrame = NO;
     }
     slicer_save_window_state(window);
@@ -496,10 +599,46 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
 
 - (void)windowDidResize:(NSNotification *)notification {
     HWSlicerWindow *window = notification.object;
+    if (window.adjustingFrame) { return; }
     if (window.hasRestoreFrame && !NSEqualRects(window.frame, window.zoomFrame)) {
         window.hasRestoreFrame = NO;
     }
     slicer_save_window_state(window);
+}
+
+- (void)windowDidChangeScreen:(NSNotification *)notification {
+    HWSlicerWindow *window = notification.object;
+    if (!window) { return; }
+    if (window.inWindowDrag) {
+        window.screenChangedDuringDrag = YES;
+        slicer_sync_layer_for_window(window);
+        return;
+    }
+    slicer_fit_window_to_screen(window);
+}
+
+- (void)windowDidChangeBackingProperties:(NSNotification *)notification {
+    HWSlicerWindow *window = notification.object;
+    if (!window) { return; }
+    slicer_sync_layer_for_window(window);
+}
+
+- (void)windowDidDeminiaturize:(NSNotification *)notification {
+    HWSlicerWindow *window = notification.object;
+    if (!window) { return; }
+    slicer_fit_window_to_screen(window);
+}
+
+- (void)applicationDidChangeScreenParameters:(NSNotification *)notification {
+    (void)notification;
+    HWSlicerWindow *window = (__bridge HWSlicerWindow *)g_host.window;
+    if (!window || !g_window_ready) { return; }
+    slicer_fit_window_to_screen(window);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_window_ready || !g_host.window) { return; }
+        HWSlicerWindow *current = (__bridge HWSlicerWindow *)g_host.window;
+        slicer_fit_window_to_screen(current);
+    });
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
@@ -517,6 +656,7 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
     if (g_host.window) {
         slicer_save_window_state((__bridge HWSlicerWindow *)g_host.window);
     }
+    g_window_ready = false;
     if (g_application_initialized) {
         g_application->shutdown();
         g_application_initialized = false;
