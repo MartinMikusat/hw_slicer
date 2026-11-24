@@ -152,7 +152,7 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 			{scope = "model", stage = "read"},
 		)
 		fmt.eprintf(
-			"HW Slicer could not load %s: %s\n",
+			"hw_slicer could not load %s: %s\n",
 			path,
 			mesh_error_text(error),
 		)
@@ -228,7 +228,7 @@ app_load_evidence :: proc(path: string) -> bool {
 			{scope = "evidence", stage = "read"},
 		)
 		fmt.eprintf(
-			"HW Slicer could not load evidence %s: %v\n",
+			"hw_slicer could not load evidence %s: %v\n",
 			path,
 			load_error,
 		)
@@ -470,7 +470,7 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 			},
 			{scope = "app", stage = "window"},
 		)
-		fmt.eprintln("HW Slicer failed before Objective-C initialization")
+		fmt.eprintln("hw_slicer failed before Objective-C initialization")
 		return false
 	}
 	app = {}
@@ -498,7 +498,7 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 			},
 			{scope = "app", stage = "renderer"},
 		)
-		fmt.eprintln("HW Slicer failed during Metal initialization")
+		fmt.eprintln("hw_slicer failed during Metal initialization")
 		renderer_shutdown(&app.renderer)
 		ui_destroy(&app.ui)
 		return false
@@ -509,7 +509,7 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 	if !app_load_model(app.ui.selected_model, true) {		if app.ui.selected_model != 0 && app_load_model(0, true) {
 			app_set_status("FALLBACK: LOADED 3DBENCHY")
 		} else {
-			fmt.eprintln("HW Slicer failed while loading its mesh")
+			fmt.eprintln("hw_slicer failed while loading its mesh")
 			renderer_shutdown(&app.renderer)
 			ui_destroy(&app.ui)
 			return false

@@ -131,6 +131,7 @@ mkdir -p \
   "$APP/Contents/Resources/Icons/Iconoir" \
   "$APP/Contents/Resources/Models/licenses"
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/resources/app-icon/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/resources/icons/iconoir/"*.svg \
   "$APP/Contents/Resources/Icons/Iconoir/"
 cp "$ROOT/resources/icons/iconoir/LICENSE" \

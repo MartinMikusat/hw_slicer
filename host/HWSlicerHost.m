@@ -63,7 +63,7 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
 - (BOOL)isOpaque { return YES; }
 - (BOOL)isAccessibilityElement { return YES; }
 - (NSString *)accessibilityRole { return NSAccessibilityGroupRole; }
-- (NSString *)accessibilityLabel { return @"HW Slicer"; }
+- (NSString *)accessibilityLabel { return @"hw_slicer"; }
 
 - (void)updateTrackingAreas {
     if (self.trackingArea) {
@@ -400,7 +400,7 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
         styleMask:NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered
         defer:NO];
-    window.title = @"HW Slicer";
+    window.title = @"hw_slicer";
     window.delegate = self;
     window.opaque = YES;
     window.hasShadow = NO;
@@ -445,7 +445,7 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
 
     if (!g_application->initialize(&g_host)) {
         NSAlert *alert = [NSAlert new];
-        alert.messageText = @"HW Slicer could not initialize its viewer.";
+        alert.messageText = @"hw_slicer could not initialize its viewer.";
         [alert runModal];
         [NSApp terminate:nil];
         return;

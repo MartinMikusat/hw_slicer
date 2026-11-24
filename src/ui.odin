@@ -1981,8 +1981,8 @@ ui_draw_labels :: proc(
 	theme := ui_theme(ui)
 	design_shown := ui.design_active && design_state != nil
 	title_width := max(0.0, ui.width-383)
-	title := fmt.tprintf("HW Slicer / %s", pipeline.stage_group_names[pipeline.Stage_Group(ui.stage_index)]) if title_width >= 230 else "Slicer"
-	if design_shown {title = fmt.tprintf("HW Slicer / %s", model_name) if title_width >= 230 else model_name}
+	title := fmt.tprintf("hw_slicer / %s", pipeline.stage_group_names[pipeline.Stage_Group(ui.stage_index)]) if title_width >= 230 else "Slicer"
+	if design_shown {title = fmt.tprintf("hw_slicer / %s", model_name) if title_width >= 230 else model_name}
 	ui_draw_text(painter, painter.font, ui, title, {12, 0, min(title_width, 310), 40}, theme.text, 0)
 	ui_draw_text(painter, painter.font, ui, "Toolpath design", ui_control_rect(ui, .Demo_Tab_Design), ui_control_ink(ui, .Demo_Tab_Design), 0, .Center)
 	ui_draw_text(painter, painter.font, ui, "Slicer stages", ui_control_rect(ui, .Demo_Tab_Slicer), ui_control_ink(ui, .Demo_Tab_Slicer), 0, .Center)

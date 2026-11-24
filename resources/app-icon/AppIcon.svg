@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+    <rect x="64" y="64" width="896" height="896" rx="200" fill="#1B2632"/>
+  <rect x="64.5" y="64.5" width="895" height="895" rx="199.5" fill="none" stroke="#38495D" stroke-width="3"/>
+  <!-- sliced layers, widest at the build plate -->
+  <rect x="232" y="700" width="560" height="64" rx="32" fill="#D2C0A3"/>
+  <rect x="262" y="610" width="500" height="64" rx="32" fill="#D2C0A3"/>
+  <rect x="302" y="520" width="420" height="64" rx="32" fill="#D2C0A3"/>
+  <rect x="352" y="430" width="320" height="64" rx="32" fill="#D2C0A3"/>
+  <rect x="412" y="340" width="200" height="64" rx="32" fill="#FFB162"/>
+  <!-- nozzle laying the top layer -->
+  <path d="M452 150 H572 L544 250 L512 300 L480 250 Z" fill="#EEE9DF"/>
+</svg>
