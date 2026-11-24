@@ -761,6 +761,7 @@ Design_Visual :: struct {
 	marker_active:        bool,
 	marker_pos:           Vec3,
 	marker_radius:        f32,
+	seam_markers:         [][3]f32,
 }
 
 design_current_move_info :: proc(s: ^Design_State) -> (arc: design.Arc_Kind, radius: f32) {

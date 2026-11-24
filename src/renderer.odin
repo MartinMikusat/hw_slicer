@@ -1172,6 +1172,21 @@ renderer_draw :: proc(
 		}
 	}
 
+	if len(visual.seam_markers) > 0 && renderer.marker_buffer != nil && renderer.marker_vertex_count > 0 {
+		msg_void_u(encoder, sel_registerName("setCullMode:"), 0)
+		msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
+		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.line_pipeline)
+		msg_void_id(encoder, sel_registerName("setDepthStencilState:"), renderer.ui_depth_state)
+		r_outer := clamp(camera.distance * 0.0085, f32(0.45), f32(1.8))
+		r_inner := r_outer * 0.68
+		id_model := mat4_identity()
+		for p in visual.seam_markers {
+			pos := Vec3{p[0], p[1], p[2]}
+			renderer_draw_marker(renderer, encoder, &mesh_uniforms, projection, view, id_model, pos, r_outer, {0.06, 0.08, 0.11, 1.0})
+			renderer_draw_marker(renderer, encoder, &mesh_uniforms, projection, view, id_model, pos, r_inner, theme.accent)
+		}
+	}
+
 	msg_void(encoder, sel_registerName("endEncoding"))
 	gpu.renderer_encode(
 		&renderer.ui_renderer,

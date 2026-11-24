@@ -47,6 +47,7 @@ App_State :: struct {
 	face_pressed: int,
 	section_vertices: [dynamic]Mesh_Vertex,
 	stage_segments:   [dynamic]pipeline.Result_Segment,
+	seam_markers:     [dynamic][3]f32,
 	section_dirty: bool,
 	first_frame_logged: bool,
 	evidence_replay: evidence.Evidence_Bundle_Replay,
@@ -593,6 +594,7 @@ app_destroy :: proc() {
 	printer_state_destroy(&app.printer)
 	delete(app.section_vertices)
 	delete(app.stage_segments)
+	delete(app.seam_markers)
 	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
 	renderer_shutdown(&app.renderer)
 	ui_destroy(&app.ui)
@@ -759,6 +761,7 @@ app_pick_stage_segment :: proc(px, py: f64) {
 
 app_rebuild_section :: proc() {
 	app.ui.workspace.result_shown = false
+	clear(&app.seam_markers)
 	if ui_printer_mode(&app.ui) {
 		if printer_config_shows_3d(&app.printer) {
 			printer_config_build_3d_lines(&app.printer, &app.section_vertices)
@@ -799,6 +802,7 @@ app_rebuild_section :: proc() {
 					b := Vec3{segment.b[0], segment.b[1], segment.b[2]}
 					append(&app.section_vertices, Mesh_Vertex{a, up}, Mesh_Vertex{b, up})
 				}
+				_ = pipeline.workspace_stage_seams(w, ui.view.selected, layer, &app.seam_markers)
 				app.ui.section_segments = len(app.stage_segments)
 				ui.result_shown = true
 				return
@@ -878,7 +882,12 @@ renderer_draw_application :: proc() -> Render_Result {
 	)
 	visual := Design_Visual{finished_vertices = app.renderer.mesh_vertex_count, highlight_start = -1}
 	if app.design.active {visual = design_visible(&app.design)}
-	if ui_graph_mode(&app.ui) && !app.ui.workspace.graph.show_mesh {visual.finished_vertices = 0}
+	if ui_graph_mode(&app.ui) {
+		if !app.ui.workspace.graph.show_mesh {visual.finished_vertices = 0}
+		if app.ui.workspace.graph.show_result && len(app.seam_markers) > 0 {
+			visual.seam_markers = app.seam_markers[:]
+		}
+	}
 	if ui_printer_mode(&app.ui) {
 		visual.finished_vertices = 0
 		s := &app.printer.client.state

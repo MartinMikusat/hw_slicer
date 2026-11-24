@@ -233,6 +233,39 @@ workspace_stage_segments :: proc(w: ^Workspace, id: Stage_Id, layer: int, out: ^
 	return len(out) > start
 }
 
+// Appends the seam start positions (in centered slice millimetres) for closed perimeter loops on
+// `layer` when `id == .Path_Plan` and the path plan is readable.
+workspace_stage_seams :: proc(w: ^Workspace, id: Stage_Id, layer: int, out: ^[dynamic][3]f32) -> bool {
+	if id != .Path_Plan {return false}
+	s := w.session
+	sync.mutex_lock(&s.lock)
+	defer sync.mutex_unlock(&s.lock)
+	if !session_readable(s, {.Model, .Layer_Schedule, .Path_Plan}) {return false}
+	r := s.unified_plan
+	if layer < 0 || layer >= len(s.schedule.print_z) || layer >= len(r.layers) {return false}
+	b := s.mesh.bounds
+	ox := f64(b.minimum.x+b.maximum.x)*0.5
+	oy := f64(b.minimum.y+b.maximum.y)*0.5
+	z := f32(f64(s.schedule.print_z[layer])/1000)
+	l := r.layers[layer]
+	start := len(out)
+	first_p := int(l.path_offset)
+	end_p := min(first_p+int(l.path_count), len(r.paths))
+	for p in first_p..<end_p {
+		path := r.paths[p]
+		if !path.closed || path.move_count == 0 || path.source_kind != .Perimeter {continue}
+		first_m := int(path.move_offset)
+		end_m := min(first_m+int(path.move_count), len(r.moves))
+		for m in first_m..<end_m {
+			move := r.moves[m]
+			if move.kind != .Extrude {continue}
+			append(out, [3]f32{f32(f64(move.point_a.x)/1000.0 - ox), f32(f64(move.point_a.y)/1000.0 - oy), z})
+			break
+		}
+	}
+	return len(out) > start
+}
+
 @(private = "file")
 Segment_Emitter :: struct {
 	out:         ^[dynamic]Result_Segment,
