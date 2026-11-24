@@ -960,7 +960,7 @@ unified_path_source_validate :: proc(
 		   i64(source.line_widths[point_index]) <= 0 ||
 		   i64(source.line_widths[point_index]) >
 			geometry.MAX_PLANAR_COORDINATE_UM ||
-		   point == previous {
+		   ((source.closed || point_index > 0) && point == previous) {
 			return 0, false
 		}
 		previous = point

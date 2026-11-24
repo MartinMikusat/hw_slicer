@@ -100,8 +100,8 @@ End-to-end release CLI wall clock (best of three, default 10 threads, byte-ident
 Added all **155 official Voron 2.4r2 printed parts** (`VoronDesign/Voron-2` commit `7b32e405`, GPL-3.0, in `resources/models/voron-2.4/`) and official Voron 2.4 ABS process profiles (`voron-2.4-standard`: 0.20 mm layer, 0.40 mm line width, 4 walls, 5 top/bottom layers, 40% gyroid, ABS; `voron-2.4-high-stress`: 5 walls, 8 top/bottom layers, 50% gyroid, ABS) to `./slice-benchmark.sh`.
 
 Baseline run (`./slice-benchmark.sh --suite=all --runs=1`, release CLI, 10 threads):
-- **Core 3-model suite (PLA / `0.20-standard`):** 3/3 passed, `1,765.1 ms` total (cold first run on Benchy).
-- **Voron 2.4 suite (ABS / `voron-2.4-standard` + `voron-2.4-high-stress`):** **147/155 passed**, `40,787.6 ms` total (**40.79 s**, **277.5 ms average per part**).
-- **8 failing parts (tracked for follow-up):**
-  - `contour_repair: Invalid_Input` (4 parts): `Panel_Mounting/corner_panel_clip_4mm_x8.stl`, `Panel_Mounting/midspan_panel_clip_4mm_x7.stl`, `Superceded_Parts/[a]_z_tensioner_x4_6mm.stl`, `Z_Idlers/[a]_z_tensioner_9mm_x4.stl`.
-  - `unified_path_plan: Invalid_Input` (4 parts): `Gantry/X_Axis/XY_Joints/xy_joint_right_lower_MGN12.stl`, `Skirts/300/side_skirt_b_300_x2.stl`, `Z_Drive/[a]_z_drive_baseplate_b_x2.stl`, `Z_Idlers/z_tensioner_bracket_a_x2.stl`.
+- **Core 3-model suite (PLA / `0.20-standard`):** 3/3 passed (`1,689.2 ms` cold single-run total; `1,468.2 ms` best of 3).
+- **Voron 2.4 suite (ABS / `voron-2.4-standard` + `voron-2.4-high-stress`):** **155/155 passed**, `45,104.1 ms` total (**45.10 s**, **291.0 ms average per part**).
+- **Root-cause fixes landed from the full-printer suite:**
+  - Added layer-wide contour union + progressive `-1 µm` / `-2k µm` pinch-vertex inset fallback (`repair.contour_layer_repair_for_regions`) so multi-contour pair intersections, boundary touches, and 0-width pinch vertices resolve cleanly instead of failing with `Invalid_Input` or looping to `max_contour_repairs`.
+  - Deduplicated consecutive boundary vertices in `infill_pat_connect`'s `arc_points` and restricted `unified_path_source_validate`'s closing-edge check (`points[0] != points[len-1]`) to closed loops only.

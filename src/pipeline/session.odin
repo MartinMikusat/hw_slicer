@@ -648,6 +648,8 @@ stage_topology :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 stage_regions :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	a := s.allocator
 	provider := session_provider(s)
+	last_repaired_layer := max(u32)
+	same_layer_attempts := 0
 	for {
 		active := session_active_topology(s)
 		failure: slicing.Region_Failure
@@ -655,19 +657,56 @@ stage_regions :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		s.regions, reg_err = slicing.regions_build(active, allocator = a, failure = &failure)
 		if reg_err == .None {break}
 		if reg_err == .Contour_Intersection && s.contour_repairs < s.options.max_contour_repairs {
-			rep, rep_err := repair.contour_path_repair(
-				active,
-				provider,
-				{failure = failure, fill_rule = .Non_Zero, lineage_tolerance = 50},
-				allocator = a,
-			)
-			if rep_err != .None {
-				return {stage = "contour_repair", detail = fmt.tprintf("repair error: %v (layer %d)", rep_err, failure.layer_index)}
+			if failure.layer_index == last_repaired_layer {
+				same_layer_attempts += 1
+			} else {
+				last_repaired_layer = failure.layer_index
+				same_layer_attempts = 0
 			}
-			next_topo, apply_err := repair.contour_repair_apply_for_regions(active, rep, a)
-			repair.contour_repair_result_destroy(&rep, a)
+			// Attempt 0: exact single-path or layer-wide union (0 µm geometric change).
+			// Subsequent attempts on the same layer break 0-width pinch vertices via -1 / -2 µm inset.
+			pinch_inset := contracts.Micrometres(0)
+			if same_layer_attempts == 1 {
+				pinch_inset = -1
+			} else if same_layer_attempts >= 2 {
+				pinch_inset = contracts.Micrometres(-2 * same_layer_attempts)
+			}
+			next_topo: slicing.Topology_Result
+			apply_err: repair.Contour_Repair_Error
+			if same_layer_attempts == 0 &&
+			   failure.path_index_a == failure.path_index_b &&
+			   failure.contour_index_a == failure.contour_index_b {
+				rep, rep_err := repair.contour_path_repair(
+					active,
+					provider,
+					{failure = failure, fill_rule = .Non_Zero, lineage_tolerance = 50},
+					allocator = a,
+				)
+				if rep_err == .None {
+					next_topo, apply_err = repair.contour_repair_apply_for_regions(active, rep, a)
+					repair.contour_repair_result_destroy(&rep, a)
+				} else {
+					next_topo, apply_err = repair.contour_layer_repair_for_regions(
+						active,
+						failure.layer_index,
+						provider,
+						.Non_Zero,
+						pinch_inset,
+						allocator = a,
+					)
+				}
+			} else {
+				next_topo, apply_err = repair.contour_layer_repair_for_regions(
+					active,
+					failure.layer_index,
+					provider,
+					.Non_Zero,
+					pinch_inset,
+					allocator = a,
+				)
+			}
 			if apply_err != .None {
-				return {stage = "contour_repair_apply", detail = fmt.tprintf("apply error: %v", apply_err)}
+				return {stage = "contour_repair_apply", detail = fmt.tprintf("apply error: %v (layer %d)", apply_err, failure.layer_index)}
 			}
 			if s.has_repaired {slicing.topology_result_destroy(&s.repaired, a)}
 			s.repaired = next_topo

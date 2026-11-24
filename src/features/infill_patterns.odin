@@ -407,14 +407,20 @@ infill_pat_connect :: proc(
 			for k in 0..<2 * cnt {
 				idx := k % cnt
 				s := cum[loop.offset + idx] + (loop.length if k >= cnt else 0)
-				if s > s0 && s < s_end {append(dst, boundary.points[path_offset + idx])}
+				if s > s0 && s < s_end {
+					pt := boundary.points[path_offset + idx]
+					if len(dst) == 0 || dst[len(dst) - 1] != pt {append(dst, pt)}
+				}
 			}
 		} else {
 			s_end := s1 if s1 <= s0 else s1 - loop.length
 			for k := 2 * cnt - 1; k >= 0; k -= 1 {
 				idx := k % cnt
 				s := cum[loop.offset + idx] - (loop.length if k < cnt else 0)
-				if s < s0 && s > s_end {append(dst, boundary.points[path_offset + idx])}
+				if s < s0 && s > s_end {
+					pt := boundary.points[path_offset + idx]
+					if len(dst) == 0 || dst[len(dst) - 1] != pt {append(dst, pt)}
+				}
 			}
 		}
 	}
