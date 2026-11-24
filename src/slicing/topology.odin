@@ -87,6 +87,10 @@ Topology_Local_Vertex :: struct {
 	global_index:      u32,
 }
 
+// Joins the snapped segments of every layer into loops and open chains. Layers are reconstructed
+// independently on the worker threads, each inside its own region of the output arrays (sized for
+// the most a layer can produce), and then compacted in layer order. The result does not depend on
+// the thread count, and errors are reported for the first failing layer, as a serial pass would.
 topology_reconstruct :: proc(
 	schedule: Fixed_Layer_Schedule,
 	segments: Snapped_Segment_Result,
@@ -146,7 +150,8 @@ topology_reconstruct :: proc(
 	segment_vertex_a := make([]u32, segment_count, allocator)
 	segment_vertex_b := make([]u32, segment_count, allocator)
 	visited := make([]bool, segment_count, allocator)
-	if result.layers == nil ||
+	outcomes := make([]Topology_Layer_Outcome, layer_count, allocator)
+	if result.layers == nil || outcomes == nil ||
 	   (maximum_vertex_count > 0 &&
 	    (result.vertices == nil || occurrences == nil ||
 	     local_vertices == nil)) ||
@@ -161,6 +166,7 @@ topology_reconstruct :: proc(
 		delete(segment_vertex_a, allocator)
 		delete(segment_vertex_b, allocator)
 		delete(visited, allocator)
+		delete(outcomes, allocator)
 		topology_result_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
@@ -169,198 +175,84 @@ topology_reconstruct :: proc(
 	defer delete(segment_vertex_a, allocator)
 	defer delete(segment_vertex_b, allocator)
 	defer delete(visited, allocator)
+	defer delete(outcomes, allocator)
 
-	vertex_write := 0
-	path_write := 0
-	path_vertex_write := 0
-	path_segment_write := 0
+	// The layers must tile the segment array in order; `tiled` layers do.
+	tiled := layer_count
 	expected_segment_offset: u64
 	for layer, layer_index in segments.layers {
 		if layer.offset != expected_segment_offset ||
 		   u64(layer.count) > u64(segment_count)-expected_segment_offset {
-			topology_result_destroy(&result, allocator)
-			return {}, .Invalid_Input
+			tiled = layer_index
+			break
 		}
 		expected_segment_offset += u64(layer.count)
-		layer_vertex_start := vertex_write
-		layer_path_start := path_write
-		occurrence_count := int(layer.count)*2
-		layer_occurrences := occurrences[:occurrence_count]
-		for local_segment in 0..<int(layer.count) {
-			segment_index := int(layer.offset)+local_segment
-			if segments.segments.layer_indices[segment_index] !=
-			   	u32(layer_index) ||
-			   segments.segments.segment_ids[segment_index] ==
-			   	contracts.INVALID_STABLE_ID ||
-			   segments.segments.triangle_ids[segment_index] ==
-			   	contracts.INVALID_STABLE_ID {
-				topology_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
-			}
-			point_a := Snapped_Point{
-				segments.segments.x0[segment_index],
-				segments.segments.y0[segment_index],
-			}
-			point_b := Snapped_Point{
-				segments.segments.x1[segment_index],
-				segments.segments.y1[segment_index],
-			}
-			if point_a == point_b {
-				topology_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
-			}
-			if geometry.point_2_validate({point_a.x, point_a.y}) != .None ||
-			   geometry.point_2_validate({point_b.x, point_b.y}) != .None {
-				topology_result_destroy(&result, allocator)
-				return {}, .Coordinate_Range
-			}
-			layer_occurrences[local_segment*2] = {
-				point = point_a,
-				segment_index = u32(segment_index),
-				segment_id = segments.segments.segment_ids[segment_index],
-				endpoint = 0,
-			}
-			layer_occurrences[local_segment*2+1] = {
-				point = point_b,
-				segment_index = u32(segment_index),
-				segment_id = segments.segments.segment_ids[segment_index],
-				endpoint = 1,
-			}
-		}
-		slice.sort_by(layer_occurrences, endpoint_occurrence_less)
-		local_vertex_count := topology_cluster_endpoints(
-			layer_occurrences,
-			local_vertices,
-			result.vertices,
-			&vertex_write,
-			segment_vertex_a,
-			segment_vertex_b,
-			u32(layer_index),
-			schedule.layer_ids[layer_index],
-			&result.non_manifold_vertex_count,
-		)
-		if local_vertex_count < 0 {
+	}
+
+	ctx := Topology_Reconstruct_Context{
+		schedule         = schedule,
+		segments         = segments,
+		result           = &result,
+		occurrences      = occurrences,
+		local_vertices   = local_vertices,
+		segment_vertex_a = segment_vertex_a,
+		segment_vertex_b = segment_vertex_b,
+		visited          = visited,
+		outcomes         = outcomes,
+	}
+	slicing_parallel_for(tiled, &ctx, topology_reconstruct_layer)
+
+	for outcome in outcomes[:tiled] {
+		if outcome.error != .None {
 			topology_result_destroy(&result, allocator)
-			return {}, .Arithmetic
-		}
-		layer_local_vertices := local_vertices[:local_vertex_count]
-		layer_loop_count: u64
-		layer_chain_count: u64
-		for {
-			start_vertex, start_ok := topology_find_start_vertex(
-				layer_local_vertices,
-				layer_occurrences,
-				segment_vertex_a,
-				segment_vertex_b,
-				visited,
-			)
-			if !start_ok {break}
-			if path_write >= len(result.paths) {
-				topology_result_destroy(&result, allocator)
-				return {}, .Path_Limit
-			}
-			path_vertex_start := path_vertex_write
-			path_segment_start := path_segment_write
-			current_vertex := start_vertex
-			closed := false
-			for traversal_count := 0;
-			    traversal_count <= int(layer.count);
-			    traversal_count += 1 {
-				if path_vertex_write >= len(result.path_vertex_indices) {
-					topology_result_destroy(&result, allocator)
-					return {}, .Path_Entry_Limit
-				}
-				result.path_vertex_indices[path_vertex_write] =
-					layer_local_vertices[current_vertex].global_index
-				path_vertex_write += 1
-				next_segment, next_vertex, next_ok :=
-					topology_choose_next_edge(
-						current_vertex,
-						layer_local_vertices,
-						layer_occurrences,
-						segment_vertex_a,
-						segment_vertex_b,
-						segments.segments,
-						visited,
-					)
-				if !next_ok {break}
-				if path_segment_write >=
-				   len(result.path_segment_indices) {
-					topology_result_destroy(&result, allocator)
-					return {}, .Path_Entry_Limit
-				}
-				visited[next_segment] = true
-				result.path_segment_indices[path_segment_write] =
-					u32(next_segment)
-				path_segment_write += 1
-				if next_vertex == start_vertex {
-					closed = true
-					break
-				}
-				current_vertex = next_vertex
-			}
-			path_vertex_count := path_vertex_write-path_vertex_start
-			path_segment_count := path_segment_write-path_segment_start
-			if path_segment_count == 0 {
-				topology_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			path := Topology_Path{
-				layer_index = u32(layer_index),
-				vertex_offset = u64(path_vertex_start),
-				vertex_count = u32(path_vertex_count),
-				segment_offset = u64(path_segment_start),
-				segment_count = u32(path_segment_count),
-			}
-			if closed {
-				path.signed_area_2, path.winding =
-					topology_path_area(
-						result.vertices,
-						result.path_vertex_indices[
-							path_vertex_start:path_vertex_write
-						],
-					)
-				if path.winding == .Zero {
-					path.kind = .Degenerate_Loop
-					path.id = contracts.stable_id_child(
-						schedule.layer_ids[layer_index],
-						.Loop,
-						layer_loop_count,
-					)
-					result.degenerate_loop_count += 1
-				} else {
-					path.kind = .Loop
-					path.id = contracts.stable_id_child(
-						schedule.layer_ids[layer_index],
-						.Loop,
-						layer_loop_count,
-					)
-				}
-				layer_loop_count += 1
-			} else {
-				path.kind = .Open_Chain
-				path.id = contracts.stable_id_child(
-					schedule.layer_ids[layer_index],
-					.Chain,
-					layer_chain_count,
-				)
-				layer_chain_count += 1
-				result.open_chain_count += 1
-			}
-			result.paths[path_write] = path
-			path_write += 1
-		}
-		result.layers[layer_index] = {
-			vertex_offset = u64(layer_vertex_start),
-			vertex_count = u32(vertex_write-layer_vertex_start),
-			path_offset = u64(layer_path_start),
-			path_count = u32(path_write-layer_path_start),
+			return {}, outcome.error
 		}
 	}
+	if tiled < layer_count {
+		topology_result_destroy(&result, allocator)
+		return {}, .Invalid_Input
+	}
+	total_path_segments := 0
+	for outcome in outcomes {total_path_segments += outcome.path_segment_count}
 	if expected_segment_offset != u64(segment_count) ||
-	   path_segment_write != segment_count {
+	   total_path_segments != segment_count {
 		topology_result_destroy(&result, allocator)
 		return {}, .Arithmetic
+	}
+
+	// Compact the layer regions in order. Each compacted start is at or before its region start,
+	// so copying forward layer by layer never overwrites data that is still to be moved.
+	vertex_write := 0
+	path_write := 0
+	path_vertex_write := 0
+	path_segment_write := 0
+	for layer, layer_index in segments.layers {
+		outcome := outcomes[layer_index]
+		region := int(layer.offset)
+		copy(result.vertices[vertex_write:], result.vertices[2*region:2*region+outcome.vertex_count])
+		copy(result.path_vertex_indices[path_vertex_write:], result.path_vertex_indices[2*region:2*region+outcome.path_vertex_count])
+		for &index in result.path_vertex_indices[path_vertex_write:path_vertex_write+outcome.path_vertex_count] {
+			index += u32(vertex_write)
+		}
+		copy(result.path_segment_indices[path_segment_write:], result.path_segment_indices[region:region+outcome.path_segment_count])
+		copy(result.paths[path_write:], result.paths[region:region+outcome.path_count])
+		for &path in result.paths[path_write:path_write+outcome.path_count] {
+			path.vertex_offset += u64(path_vertex_write)
+			path.segment_offset += u64(path_segment_write)
+		}
+		result.layers[layer_index] = {
+			vertex_offset = u64(vertex_write),
+			vertex_count = u32(outcome.vertex_count),
+			path_offset = u64(path_write),
+			path_count = u32(outcome.path_count),
+		}
+		result.open_chain_count += outcome.open_chain_count
+		result.degenerate_loop_count += outcome.degenerate_loop_count
+		result.non_manifold_vertex_count += outcome.non_manifold_vertex_count
+		vertex_write += outcome.vertex_count
+		path_write += outcome.path_count
+		path_vertex_write += outcome.path_vertex_count
+		path_segment_write += outcome.path_segment_count
 	}
 	result.vertices = result.vertices[:vertex_write]
 	result.paths = result.paths[:path_write]
@@ -369,6 +261,195 @@ topology_reconstruct :: proc(
 	result.path_segment_indices =
 		result.path_segment_indices[:path_segment_write]
 	return result, .None
+}
+
+// What one layer produced in its regions, and the first error it met.
+@(private = "file")
+Topology_Layer_Outcome :: struct {
+	error:                     Topology_Error,
+	vertex_count:              int,
+	path_count:                int,
+	path_vertex_count:         int,
+	path_segment_count:        int,
+	open_chain_count:          u64,
+	degenerate_loop_count:     u64,
+	non_manifold_vertex_count: u64,
+}
+
+@(private = "file")
+Topology_Reconstruct_Context :: struct {
+	schedule:         Fixed_Layer_Schedule,
+	segments:         Snapped_Segment_Result,
+	result:           ^Topology_Result,
+	occurrences:      []Endpoint_Occurrence,
+	local_vertices:   []Topology_Local_Vertex,
+	segment_vertex_a: []u32,
+	segment_vertex_b: []u32,
+	visited:          []bool,
+	outcomes:         []Topology_Layer_Outcome,
+}
+
+// Reconstructs one layer. A layer with segments [offset, offset+count) owns entries
+// [2*offset, 2*(offset+count)) of the occurrence, local vertex, vertex and path vertex arrays and
+// [offset, offset+count) of the path and path segment arrays. Vertex indices and path offsets it
+// writes are relative to its regions until the compaction pass.
+@(private = "file")
+topology_reconstruct_layer :: proc(c: ^Topology_Reconstruct_Context, layer_index: int) {
+	layer := c.segments.layers[layer_index]
+	segments := c.segments.segments
+	outcome := &c.outcomes[layer_index]
+	offset := int(layer.offset)
+	count := int(layer.count)
+	layer_occurrences := c.occurrences[2*offset:2*offset+2*count]
+	region_local_vertices := c.local_vertices[2*offset:2*offset+2*count]
+	region_vertices := c.result.vertices[2*offset:2*offset+2*count]
+	region_paths := c.result.paths[offset:offset+count]
+	region_path_vertices := c.result.path_vertex_indices[2*offset:2*offset+2*count]
+	region_path_segments := c.result.path_segment_indices[offset:offset+count]
+
+	for local_segment in 0..<count {
+		segment_index := offset+local_segment
+		if segments.layer_indices[segment_index] != u32(layer_index) ||
+		   segments.segment_ids[segment_index] == contracts.INVALID_STABLE_ID ||
+		   segments.triangle_ids[segment_index] == contracts.INVALID_STABLE_ID {
+			outcome.error = .Invalid_Input
+			return
+		}
+		point_a := Snapped_Point{segments.x0[segment_index], segments.y0[segment_index]}
+		point_b := Snapped_Point{segments.x1[segment_index], segments.y1[segment_index]}
+		if point_a == point_b {
+			outcome.error = .Invalid_Input
+			return
+		}
+		if geometry.point_2_validate({point_a.x, point_a.y}) != .None ||
+		   geometry.point_2_validate({point_b.x, point_b.y}) != .None {
+			outcome.error = .Coordinate_Range
+			return
+		}
+		layer_occurrences[local_segment*2] = {
+			point = point_a,
+			segment_index = u32(segment_index),
+			segment_id = segments.segment_ids[segment_index],
+			endpoint = 0,
+		}
+		layer_occurrences[local_segment*2+1] = {
+			point = point_b,
+			segment_index = u32(segment_index),
+			segment_id = segments.segment_ids[segment_index],
+			endpoint = 1,
+		}
+	}
+	slice.sort_by(layer_occurrences, endpoint_occurrence_less)
+	vertex_write := 0
+	local_vertex_count := topology_cluster_endpoints(
+		layer_occurrences,
+		region_local_vertices,
+		region_vertices,
+		&vertex_write,
+		c.segment_vertex_a,
+		c.segment_vertex_b,
+		u32(layer_index),
+		c.schedule.layer_ids[layer_index],
+		&outcome.non_manifold_vertex_count,
+	)
+	if local_vertex_count < 0 {
+		outcome.error = .Arithmetic
+		return
+	}
+	outcome.vertex_count = vertex_write
+	layer_local_vertices := region_local_vertices[:local_vertex_count]
+	path_write := 0
+	path_vertex_write := 0
+	path_segment_write := 0
+	layer_loop_count: u64
+	layer_chain_count: u64
+	search: Topology_Start_Search
+	for {
+		start_vertex, start_ok := topology_find_start_vertex(
+			layer_local_vertices,
+			layer_occurrences,
+			c.segment_vertex_a,
+			c.segment_vertex_b,
+			c.visited,
+			&search,
+		)
+		if !start_ok {break}
+		if path_write >= len(region_paths) {
+			outcome.error = .Path_Limit
+			return
+		}
+		path_vertex_start := path_vertex_write
+		path_segment_start := path_segment_write
+		current_vertex := start_vertex
+		closed := false
+		for traversal_count := 0; traversal_count <= count; traversal_count += 1 {
+			if path_vertex_write >= len(region_path_vertices) {
+				outcome.error = .Path_Entry_Limit
+				return
+			}
+			region_path_vertices[path_vertex_write] = layer_local_vertices[current_vertex].global_index
+			path_vertex_write += 1
+			next_segment, next_vertex, next_ok := topology_choose_next_edge(
+				current_vertex,
+				layer_local_vertices,
+				layer_occurrences,
+				c.segment_vertex_a,
+				c.segment_vertex_b,
+				segments,
+				c.visited,
+			)
+			if !next_ok {break}
+			if path_segment_write >= len(region_path_segments) {
+				outcome.error = .Path_Entry_Limit
+				return
+			}
+			c.visited[next_segment] = true
+			region_path_segments[path_segment_write] = u32(next_segment)
+			path_segment_write += 1
+			if next_vertex == start_vertex {
+				closed = true
+				break
+			}
+			current_vertex = next_vertex
+		}
+		path_vertex_count := path_vertex_write-path_vertex_start
+		path_segment_count := path_segment_write-path_segment_start
+		if path_segment_count == 0 {
+			outcome.error = .Arithmetic
+			return
+		}
+		path := Topology_Path{
+			layer_index = u32(layer_index),
+			vertex_offset = u64(path_vertex_start),
+			vertex_count = u32(path_vertex_count),
+			segment_offset = u64(path_segment_start),
+			segment_count = u32(path_segment_count),
+		}
+		if closed {
+			path.signed_area_2, path.winding = topology_path_area(
+				region_vertices,
+				region_path_vertices[path_vertex_start:path_vertex_write],
+			)
+			if path.winding == .Zero {
+				path.kind = .Degenerate_Loop
+				outcome.degenerate_loop_count += 1
+			} else {
+				path.kind = .Loop
+			}
+			path.id = contracts.stable_id_child(c.schedule.layer_ids[layer_index], .Loop, layer_loop_count)
+			layer_loop_count += 1
+		} else {
+			path.kind = .Open_Chain
+			path.id = contracts.stable_id_child(c.schedule.layer_ids[layer_index], .Chain, layer_chain_count)
+			layer_chain_count += 1
+			outcome.open_chain_count += 1
+		}
+		region_paths[path_write] = path
+		path_write += 1
+	}
+	outcome.path_count = path_write
+	outcome.path_vertex_count = path_vertex_write
+	outcome.path_segment_count = path_segment_write
 }
 
 endpoint_occurrence_less :: proc(a, b: Endpoint_Occurrence) -> bool {
@@ -438,25 +519,36 @@ topology_cluster_endpoints :: proc(
 	return local_vertex_count
 }
 
+// Where the two passes of topology_find_start_vertex resume. A vertex without an unvisited edge
+// never gains one, because `visited` only grows, so each pass can skip the vertices it has passed.
+Topology_Start_Search :: struct {
+	cursors: [2]int,
+}
+
+// The first vertex with an unvisited edge, preferring vertices of degree one (chain ends).
 topology_find_start_vertex :: proc(
 	vertices: []Topology_Local_Vertex,
 	occurrences: []Endpoint_Occurrence,
 	segment_vertex_a, segment_vertex_b: []u32,
 	visited: []bool,
+	search: ^Topology_Start_Search,
 ) -> (u32, bool) {
 	for pass_index in 0..<2 {
 		degree_one_only := pass_index == 0
-		for vertex, vertex_index in vertices {
-			if degree_one_only && vertex.occurrence_count != 1 {continue}
-			if topology_vertex_has_unvisited_edge(
-				vertex,
-				occurrences,
-				segment_vertex_a,
-				segment_vertex_b,
-				visited,
-			) {
+		for search.cursors[pass_index] < len(vertices) {
+			vertex_index := search.cursors[pass_index]
+			vertex := vertices[vertex_index]
+			if !(degree_one_only && vertex.occurrence_count != 1) &&
+			   topology_vertex_has_unvisited_edge(
+			   	vertex,
+			   	occurrences,
+			   	segment_vertex_a,
+			   	segment_vertex_b,
+			   	visited,
+			   ) {
 				return u32(vertex_index), true
 			}
+			search.cursors[pass_index] += 1
 		}
 	}
 	return 0, false
