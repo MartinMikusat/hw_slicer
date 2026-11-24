@@ -77,7 +77,7 @@ app_workspace_open :: proc(path: string) {
 	app.ui.workspace.active = true
 	app.ui.workspace.auto_run = true
 	graph := &app.ui.workspace.graph
-	graph^ = {show_mesh = true, show_result = true, zoom = 1, inspector_open = true}
+	graph^ = {show_mesh = true, show_result = true, zoom = 1}
 	workspace_clock_origin = time.tick_now()
 	app_workspace_refresh()
 	devlog.succeeded(devlog.global(), site, {scope = "workspace", stage = "open"})
@@ -146,34 +146,29 @@ app_workspace_refresh :: proc() {
 		ui.view.stages[id].failure = {}
 	}
 	app_workspace_clear_rows()
-	graph.hidden_advanced = 0
-	for setting in pipeline.workspace_settings(w, ui.view.selected) {
-		if setting.descriptor.advanced && !graph.advanced {
-			graph.hidden_advanced += 1
-			continue
-		}
+	for d in pipeline.setting_descriptors {
 		index := len(ui.rows)
+		value := pipeline.slice_configuration_value(w.config, d.key)
+		default_value := pipeline.slice_configuration_value(w.defaults, d.key)
 		row := UI_Setting_Row{
-			key = setting.descriptor.key,
-			label = setting.descriptor.label,
-			unit = setting.descriptor.unit,
-			value = strings.clone(setting.value),
-			default_value = strings.clone(setting.default_value),
-			changed = setting.value != setting.default_value,
-			kind = setting.descriptor.kind,
-			editable = setting.editable,
-			owner = setting.owner_name,
+			key           = d.key,
+			label         = d.label,
+			unit          = d.unit,
+			value         = strings.clone(value),
+			default_value = strings.clone(default_value),
+			changed       = value != default_value,
+			kind          = d.kind,
+			owner_stage   = d.owner,
+			advanced      = d.advanced,
 		}
-		if setting.editable {
-			if setting.descriptor.kind == .Toggle {
-				row.names[1] = strings.clone(fmt.tprintf("setting %d toggle", index))
-				row.labels[1] = strings.clone(fmt.tprintf("toggle %s", setting.descriptor.label))
-			} else {
-				row.names[0] = strings.clone(fmt.tprintf("setting %d decrease", index))
-				row.names[1] = strings.clone(fmt.tprintf("setting %d increase", index))
-				row.labels[0] = strings.clone(fmt.tprintf("decrease %s", setting.descriptor.label))
-				row.labels[1] = strings.clone(fmt.tprintf("increase %s", setting.descriptor.label))
-			}
+		if d.kind == .Toggle {
+			row.names[1] = strings.clone(fmt.tprintf("setting %d toggle", index))
+			row.labels[1] = strings.clone(fmt.tprintf("toggle %s", d.label))
+		} else {
+			row.names[0] = strings.clone(fmt.tprintf("setting %d decrease", index))
+			row.names[1] = strings.clone(fmt.tprintf("setting %d increase", index))
+			row.labels[0] = strings.clone(fmt.tprintf("decrease %s", d.label))
+			row.labels[1] = strings.clone(fmt.tprintf("increase %s", d.label))
 		}
 		append(&ui.rows, row)
 	}
@@ -272,6 +267,26 @@ app_workspace_activate :: proc(action: UI_Action) -> bool {
 		ui_build_controls(&app.ui)
 		return true
 	}
+	if id, is_collapse := ui_graph_node_collapse_index(action); is_collapse {
+		if id in graph.collapsed {
+			graph.collapsed -= {id}
+		} else {
+			graph.collapsed += {id}
+		}
+		ui_build_controls(&app.ui)
+		app.needs_redraw = true
+		return true
+	}
+	if id, is_adv := ui_graph_node_advanced_index(action); is_adv {
+		if id in graph.advanced_open {
+			graph.advanced_open -= {id}
+		} else {
+			graph.advanced_open += {id}
+		}
+		ui_build_controls(&app.ui)
+		app.needs_redraw = true
+		return true
+	}
 	if id, is_node := ui_graph_node_action_index(action); is_node {
 		pipeline.workspace_select(w, id)
 		ui.scroll = 0
@@ -291,9 +306,7 @@ app_workspace_activate :: proc(action: UI_Action) -> bool {
 		pipeline.workspace_set_auto_run(w, w.manual_only)
 	case .Graph_Fit:
 		ui_graph_fit(&app.ui)
-	case .Graph_Inspector_Toggle:
-		graph.inspector_open = !graph.inspector_open
-	case .Graph_Divider, .Graph_Minimap, .Graph_Inspector_Surface, .Graph_Menu_Surface:
+	case .Graph_Divider, .Graph_Minimap, .Graph_Menu_Surface:
 	case .Graph_Menu_Run_To:
 		graph.menu_open = false
 		_ = pipeline.workspace_run_to(w, menu_stage)
@@ -318,12 +331,6 @@ app_workspace_activate :: proc(action: UI_Action) -> bool {
 		} else {
 			app_set_status("The clipboard is not available.", true)
 		}
-	case .Attribute_Settings, .Attribute_Log, .Attribute_Docs:
-		graph.tab = .Settings if action == .Attribute_Settings else (.Log if action == .Attribute_Log else .Docs)
-		ui.scroll = 0
-	case .Attribute_Advanced:
-		graph.advanced = !graph.advanced
-		ui.scroll = 0
 	case .View_Mesh:
 		graph.show_mesh = !graph.show_mesh
 	case .View_Result:
@@ -442,18 +449,6 @@ app_copy_text :: proc(value: string) -> bool {
 	return set_string(pasteboard, sel_registerName("setString:forType:"), ns_text, ns_type)
 }
 
-// Scrolls the settings of the attribute editor when the pointer is over it.
-app_workspace_scroll :: proc(delta_y: f64) -> bool {
-	ui := &app.ui.workspace
-	if !ui_graph_mode(&app.ui) || !ui.graph.inspector_open || delta_y == 0 {return false}
-	if !ui_contains(ui_attribute_rect(&app.ui), app.ui.pointer_x, app.ui.pointer_y) {return false}
-	_, visible := ui_attribute_rows_area(&app.ui)
-	ui.scroll = clamp(ui.scroll+(-1 if delta_y > 0 else 1), 0, max(0, len(ui.rows)-visible))
-	ui_build_controls(&app.ui)
-	app.needs_redraw = true
-	return true
-}
-
 // Graph pointer handling that the generic control path does not cover: panning the canvas, the
 // divider and the overview, the context menu, and resetting a setting with a right-click.
 // Returns true when the event was used here.
@@ -475,15 +470,7 @@ app_graph_mouse :: proc(phase, button: i32, x, y, delta_x, delta_y: f64) -> bool
 			return true
 		}
 		if button == 1 {
-			if stage, is_node := ui_graph_node_action_index(UI_Action(id)); is_node {
-				graph.menu_open = true
-				graph.menu_stage = stage
-				graph.menu_at = {x, y}
-				ui_build_controls(ui)
-				app.needs_redraw = true
-				return true
-			}
-			if row, is_row := ui_attribute_row_at(ui, x, y); is_row && ui.workspace.rows[row].editable {
+			if row, is_row := ui_graph_setting_row_at(ui, x, y); is_row {
 				key := ui.workspace.rows[row].key
 				label := ui.workspace.rows[row].label
 				if detail, ok := pipeline.workspace_reset_setting(app.workspace, key); !ok {
@@ -493,6 +480,14 @@ app_graph_mouse :: proc(phase, button: i32, x, y, delta_x, delta_y: f64) -> bool
 				}
 				app_workspace_refresh()
 				ui_build_controls(ui)
+				return true
+			}
+			if stage, is_node := ui_graph_node_action_index(UI_Action(id)); is_node {
+				graph.menu_open = true
+				graph.menu_stage = stage
+				graph.menu_at = {x, y}
+				ui_build_controls(ui)
+				app.needs_redraw = true
 				return true
 			}
 			return false

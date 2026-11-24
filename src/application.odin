@@ -475,10 +475,10 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.needs_redraw = true
 	case .Slice, .Cancel, .Capture, .Compare, .Export:
 		return false
-	case .None, .Evidence_Stage_Base, .Graph_Node_Base, .Graph_Fit, .Graph_Divider, .Graph_Minimap,
-	     .Graph_Inspector_Toggle, .Graph_Inspector_Surface,
+	case .None, .Evidence_Stage_Base, .Graph_Node_Base, .Graph_Node_Collapse_Base, .Graph_Node_Advanced_Base,
+	     .Graph_Fit, .Graph_Divider, .Graph_Minimap,
 	     .Graph_Menu_Surface, .Graph_Menu_Run_To, .Graph_Menu_Run_Only, .Graph_Menu_Reset, .Graph_Menu_Evidence,
-	     .Graph_Menu_Copy, .Attribute_Settings, .Attribute_Log, .Attribute_Docs, .Attribute_Advanced, .View_Mesh,
+	     .Graph_Menu_Copy, .View_Mesh,
 	     .View_Result, .View_GCode_Prev, .View_GCode_Next, .View_GCode_Single_Layer,
 	     .Printer_Sub_Control, .Printer_Sub_Files, .Printer_Sub_Console, .Printer_Sub_Config,
 	     .Printer_Sub_Connection, .Printer_Emergency_Stop, .Printer_Restart, .Printer_Firmware_Restart,
@@ -745,8 +745,7 @@ app_pick_stage_segment :: proc(px, py: f64) {
 	if best_idx < 0 {return}
 	hit := app.stage_segments[best_idx]
 	pipeline.workspace_select(w, hit.owner_stage)
-	app.ui.workspace.graph.tab = .Settings
-	app.ui.workspace.graph.inspector_open = true
+	app.ui.workspace.graph.collapsed -= {hit.owner_stage}
 	app.ui.workspace.scroll = 0
 	app_workspace_refresh()
 	ui_build_controls(&app.ui)
@@ -1271,7 +1270,6 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 	if app.ui.settings_open || app.ui.help_open {return}
 	if app_printer_scroll(delta_y) {return}
 	if app_graph_scroll(delta_y) {return}
-	if app_workspace_scroll(delta_y) {return}
 	if app.design.editor.active {
 		profile_editor_zoom(delta_y)
 		return

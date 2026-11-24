@@ -119,18 +119,12 @@ UI_Action :: enum u64 {
 	Graph_Fit,
 	Graph_Divider,
 	Graph_Minimap,
-	Graph_Inspector_Toggle,
-	Graph_Inspector_Surface,
 	Graph_Menu_Surface,
 	Graph_Menu_Run_To,
 	Graph_Menu_Run_Only,
 	Graph_Menu_Reset,
 	Graph_Menu_Evidence,
 	Graph_Menu_Copy,
-	Attribute_Settings,
-	Attribute_Log,
-	Attribute_Docs,
-	Attribute_Advanced,
 	View_Mesh,
 	View_Result,
 	View_GCode_Prev,
@@ -194,6 +188,8 @@ UI_Action :: enum u64 {
 	Printer_Cfg_Drift,
 	Evidence_Stage_Base = 1000,
 	Graph_Node_Base = 2000,
+	Graph_Node_Collapse_Base = 2100,
+	Graph_Node_Advanced_Base = 2200,
 	Setting_Base = 3000,
 	Printer_Heater_Field_Base = 4000,
 	Printer_Heater_Set_Base = 4100,
@@ -283,20 +279,19 @@ COLOR_NOZZLE_MARKER :: Vec4{1.000000, 0.694118, 0.384314, 1}
 COLOR_ARC :: Vec4{0.360784, 0.431373, 0.305882, 1}
 
 UI_Setting_Row :: struct {
-	key:      string,
-	label:    string,
-	unit:     string,
+	key:           string,
+	label:         string,
+	unit:          string,
 	// Owned copies of the current value and the value the workspace opened with.
 	value:         string,
 	default_value: string,
 	changed:       bool,
-	kind:     pipeline.Setting_Kind,
-	editable: bool,
-	// Name of the stage that owns a read-only setting.
-	owner:    string,
+	kind:          pipeline.Setting_Kind,
+	owner_stage:   pipeline.Stage_Id,
+	advanced:      bool,
 	// Owned control names and labels for the two buttons of an editable row.
-	names:    [2]string,
-	labels:   [2]string,
+	names:         [2]string,
+	labels:        [2]string,
 }
 
 // What the slicing workspace shows, copied from the controller so drawing never reads memory that
@@ -2110,7 +2105,6 @@ ui_draw_labels :: proc(
 	ui_draw_text(painter, painter.font, ui, "Help", ui_control_rect(ui, .Show_Help), ui_control_ink(ui, .Show_Help), 0, .Center)
 	if ui_graph_mode(ui) {
 		ui_draw_stage_graph(painter, ui)
-		ui_draw_attribute_editor(painter, ui)
 		ui_draw_graph_view_labels(painter, ui)
 		ui_draw_graph_status(painter, ui, status, status_failed)
 		return
