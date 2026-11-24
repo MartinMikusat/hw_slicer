@@ -23,77 +23,6 @@ profile_revisions_bind_each_normalized_document_test :: proc(t: ^testing.T) {
 }
 
 @(test)
-profile_invalidation_starts_at_normalize_for_build_geometry_test :: proc(
-	t: ^testing.T,
-) {
-	previous := profile_test_resolved(t)
-	next := previous
-	next.printer.axis_maximum_x += 1
-	expect_invalidation_suffix(t, previous, next, .Normalize)
-}
-
-@(test)
-profile_invalidation_starts_at_schedule_for_layer_fields_test :: proc(
-	t: ^testing.T,
-) {
-	previous := profile_test_resolved(t)
-	next := previous
-	next.process.source.layer_height += 1
-	expect_invalidation_suffix(t, previous, next, .Schedule_Layers)
-}
-
-@(test)
-profile_invalidation_starts_at_features_for_shell_fields_test :: proc(
-	t: ^testing.T,
-) {
-	previous := profile_test_resolved(t)
-	printer := previous.printer
-	material := previous.material
-	process := previous.process.source
-	dialect := previous.dialect
-	process.top_skin.thickness += 1
-	next, error := profiles_resolve(printer, material, process, dialect)
-	testing.expect_value(t, error, Profile_Resolve_Error.None)
-	expect_invalidation_suffix(t, previous, next, .Generate_Features)
-}
-
-@(test)
-profile_invalidation_starts_at_paths_for_motion_and_extrusion_test :: proc(
-	t: ^testing.T,
-) {
-	previous := profile_test_resolved(t)
-	next := previous
-	next.process.source.perimeter.speed += 1
-	expect_invalidation_suffix(t, previous, next, .Plan_Paths)
-
-	next = previous
-	next.material.filament_diameter += 1
-	expect_invalidation_suffix(t, previous, next, .Plan_Paths)
-}
-
-@(test)
-profile_invalidation_starts_at_gcode_for_dialect_fields_test :: proc(
-	t: ^testing.T,
-) {
-	previous := profile_test_resolved(t)
-	next := previous
-	next.dialect.e_decimal_places += 1
-	expect_invalidation_suffix(t, previous, next, .Emit_GCode)
-}
-
-@(test)
-profile_invalidation_is_empty_for_equal_profiles_test :: proc(t: ^testing.T) {
-	profile := profile_test_resolved(t)
-	invalidation := profile_invalidation(profile, profile)
-	testing.expect_value(
-		t,
-		invalidation.first_stage,
-		contracts.Stage_Kind.Invalid,
-	)
-	testing.expect_value(t, invalidation.stage_mask, u16(0))
-}
-
-@(test)
 profile_field_contract_covers_every_selected_owner_group_test :: proc(
 	t: ^testing.T,
 ) {
@@ -134,36 +63,6 @@ profile_field_contract_covers_every_selected_owner_group_test :: proc(
 	}
 	_, invalid_ok := profile_field_contract(.Invalid)
 	testing.expect(t, !invalid_ok)
-}
-
-expect_invalidation_suffix :: proc(
-	t: ^testing.T,
-	previous: Resolved_Profiles,
-	next: Resolved_Profiles,
-	expected_first: contracts.Stage_Kind,
-) {
-	invalidation := profile_invalidation(previous, next)
-	testing.expect_value(t, invalidation.first_stage, expected_first)
-	testing.expect(
-		t,
-		profile_invalidation_contains(invalidation, expected_first),
-	)
-	testing.expect(
-		t,
-		profile_invalidation_contains(invalidation, .Emit_GCode),
-	)
-	if expected_first != .Normalize {
-		testing.expect(
-			t,
-			!profile_invalidation_contains(invalidation, .Normalize),
-		)
-	}
-	if expected_first == .Emit_GCode {
-		testing.expect(
-			t,
-			!profile_invalidation_contains(invalidation, .Plan_Paths),
-		)
-	}
 }
 
 profile_test_resolved :: proc(t: ^testing.T) -> Resolved_Profiles {

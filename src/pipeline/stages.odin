@@ -234,7 +234,7 @@ stage_settings_hash :: proc(
 	contracts.canonical_hash_append_u8(&h, u8(id))
 	p := profile.process.source
 	pr := profile.printer
-	stage_hashes := profiles.profile_stage_hashes(profile)
+	feature_hash := profiles.profile_feature_hash(profile)
 	revisions := profiles.profile_revisions(profile)
 	switch id {
 	case .Model:
@@ -273,10 +273,10 @@ stage_settings_hash :: proc(
 		hash_pod(&h, options.elephant_foot_compensation_um)
 		hash_pod(&h, options.use_native_polygon)
 	case .Bridges:
-		hash_content(&h, stage_hashes.generate_features)
+		hash_content(&h, feature_hash)
 		hash_pod(&h, options.use_native_polygon)
 	case .Solid_Skin:
-		hash_content(&h, stage_hashes.generate_features)
+		hash_content(&h, feature_hash)
 		hash_pod(&h, options.use_native_polygon)
 		hash_pod(&h, options.ensure_vertical_shells)
 		hash_pod(&h, options.monotonic_skin)
@@ -297,11 +297,11 @@ stage_settings_hash :: proc(
 		hash_pod(&h, p.perimeter_count)
 		hash_pod(&h, options.use_native_polygon)
 	case .Gap_Fill:
-		hash_content(&h, stage_hashes.generate_features)
+		hash_content(&h, feature_hash)
 		hash_pod(&h, p.nominal_line_width)
 		hash_pod(&h, options.use_native_polygon)
 	case .Supports:
-		hash_content(&h, stage_hashes.generate_features)
+		hash_content(&h, feature_hash)
 		hash_pod(&h, options.use_native_polygon)
 		hash_pod(&h, options.enable_supports)
 		hash_pod(&h, options.support_style_tree)
@@ -322,7 +322,7 @@ stage_settings_hash :: proc(
 		hash_pod(&h, options.brim_inner)
 		hash_pod(&h, options.elephant_foot_compensation_um)
 	case .Path_Plan:
-		hash_content(&h, stage_hashes.generate_features)
+		hash_content(&h, feature_hash)
 		hash_pod(&h, options.inner_perimeters_first)
 		hash_pod(&h, options.variable_walls_enabled)
 		hash_pod(&h, options.fuzzy_skin_enabled)

@@ -326,7 +326,7 @@ The profile resolver provides:
 - Exact gap-width allocation into unprinted evidence, one centered line, two
   partitioned lines, or a region that is too wide for gap fill.
 - Canonical profile revision hashes for each normalized document.
-- Earliest-stage cache invalidation with a complete downstream stage mask.
+- Per-stage settings hashes that mark only the affected stages stale (see [staged pipeline](docs/staged-pipeline.md)).
 - Explicit owner and invalidation metadata for every normalized field group.
 - Rejection before geometry execution when a document or resolved target is
   invalid.

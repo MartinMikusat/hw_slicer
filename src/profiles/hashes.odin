@@ -2,15 +2,7 @@ package profiles
 
 import contracts "../contracts"
 
-PROFILE_STAGE_HASH_SCHEMA_VERSION :: u32(2)
-
-Profile_Stage_Hashes :: struct {
-	normalize:         contracts.Content_Hash,
-	schedule_layers:   contracts.Content_Hash,
-	generate_features: contracts.Content_Hash,
-	plan_paths:        contracts.Content_Hash,
-	emit_gcode:        contracts.Content_Hash,
-}
+PROFILE_FEATURE_HASH_SCHEMA_VERSION :: u32(2)
 
 Profile_Field_Group :: enum u8 {
 	Invalid,
@@ -37,11 +29,6 @@ Profile_Field_Contract :: struct {
 	first_invalidated:   contracts.Stage_Kind,
 }
 
-Profile_Invalidation :: struct {
-	first_stage: contracts.Stage_Kind,
-	stage_mask:  u16,
-}
-
 profile_revisions :: proc(
 	profiles: Resolved_Profiles,
 ) -> contracts.Profile_Revisions {
@@ -53,129 +40,20 @@ profile_revisions :: proc(
 	}
 }
 
-profile_stage_hashes :: proc(
+// Hash of the printer and process fields that feature generation reads. Stages that take the
+// whole process document include it, so they never miss a change.
+profile_feature_hash :: proc(
 	profiles: Resolved_Profiles,
-) -> Profile_Stage_Hashes {
-	normalize: contracts.Canonical_Hash
-	contracts.canonical_hash_init(
-		&normalize,
-		"hw-slicer/profile-stage/normalize",
-		PROFILE_STAGE_HASH_SCHEMA_VERSION,
-	)
-	append_printer_build_geometry(&normalize, profiles.printer)
-
-	schedule: contracts.Canonical_Hash
-	contracts.canonical_hash_init(
-		&schedule,
-		"hw-slicer/profile-stage/schedule-layers",
-		PROFILE_STAGE_HASH_SCHEMA_VERSION,
-	)
-	append_printer_layer_limits(&schedule, profiles.printer)
-	append_process_layer_targets(&schedule, profiles.process.source)
-
+) -> contracts.Content_Hash {
 	features: contracts.Canonical_Hash
 	contracts.canonical_hash_init(
 		&features,
 		"hw-slicer/profile-stage/generate-features",
-		PROFILE_STAGE_HASH_SCHEMA_VERSION,
+		PROFILE_FEATURE_HASH_SCHEMA_VERSION,
 	)
 	append_printer_feature_geometry(&features, profiles.printer)
 	append_process_feature_targets(&features, profiles.process)
-
-	paths: contracts.Canonical_Hash
-	contracts.canonical_hash_init(
-		&paths,
-		"hw-slicer/profile-stage/plan-paths",
-		PROFILE_STAGE_HASH_SCHEMA_VERSION,
-	)
-	append_printer_motion_limits(&paths, profiles.printer)
-	append_material_path_limits(&paths, profiles.material)
-	append_process_path_targets(&paths, profiles.process.source)
-
-	gcode: contracts.Canonical_Hash
-	contracts.canonical_hash_init(
-		&gcode,
-		"hw-slicer/profile-stage/emit-gcode",
-		PROFILE_STAGE_HASH_SCHEMA_VERSION,
-	)
-	append_dialect_profile(&gcode, profiles.dialect)
-
-	return {
-		normalize = contracts.canonical_hash_final(&normalize),
-		schedule_layers = contracts.canonical_hash_final(&schedule),
-		generate_features = contracts.canonical_hash_final(&features),
-		plan_paths = contracts.canonical_hash_final(&paths),
-		emit_gcode = contracts.canonical_hash_final(&gcode),
-	}
-}
-
-profile_invalidation :: proc(
-	previous: Resolved_Profiles,
-	next: Resolved_Profiles,
-) -> Profile_Invalidation {
-	previous_hashes := profile_stage_hashes(previous)
-	next_hashes := profile_stage_hashes(next)
-	if previous_hashes.normalize != next_hashes.normalize {
-		return profile_invalidation_suffix(.Normalize)
-	}
-	if previous_hashes.schedule_layers != next_hashes.schedule_layers {
-		return profile_invalidation_suffix(.Schedule_Layers)
-	}
-	if previous_hashes.generate_features !=
-	   	next_hashes.generate_features {
-		return profile_invalidation_suffix(.Generate_Features)
-	}
-	if previous_hashes.plan_paths != next_hashes.plan_paths {
-		return profile_invalidation_suffix(.Plan_Paths)
-	}
-	if previous_hashes.emit_gcode != next_hashes.emit_gcode {
-		return profile_invalidation_suffix(.Emit_GCode)
-	}
-	return {}
-}
-
-profile_invalidation_suffix :: proc(
-	first: contracts.Stage_Kind,
-) -> Profile_Invalidation {
-	mask: u16
-	switch first {
-	case .Normalize:
-		mask |= profile_stage_bit(.Normalize)
-		fallthrough
-	case .Schedule_Layers:
-		mask |= profile_stage_bit(.Schedule_Layers)
-		fallthrough
-	case .Build_Acceleration:
-		mask |= profile_stage_bit(.Build_Acceleration)
-		fallthrough
-	case .Intersect:
-		mask |= profile_stage_bit(.Intersect)
-		fallthrough
-	case .Reconstruct_Topology:
-		mask |= profile_stage_bit(.Reconstruct_Topology)
-		fallthrough
-	case .Calculate_Regions:
-		mask |= profile_stage_bit(.Calculate_Regions)
-		fallthrough
-	case .Generate_Features:
-		mask |= profile_stage_bit(.Generate_Features)
-		fallthrough
-	case .Plan_Paths:
-		mask |= profile_stage_bit(.Plan_Paths)
-		fallthrough
-	case .Emit_GCode:
-		mask |= profile_stage_bit(.Emit_GCode)
-	case .Invalid, .Decode, .Resolve:
-		return {}
-	}
-	return {first_stage = first, stage_mask = mask}
-}
-
-profile_invalidation_contains :: proc(
-	invalidation: Profile_Invalidation,
-	stage: contracts.Stage_Kind,
-) -> bool {
-	return invalidation.stage_mask&profile_stage_bit(stage) != 0
+	return contracts.canonical_hash_final(&features)
 }
 
 profile_field_contract :: proc(
@@ -275,12 +153,6 @@ dialect_profile_hash :: proc(
 	)
 	append_dialect_profile(&hash, profile)
 	return contracts.canonical_hash_final(&hash)
-}
-
-profile_stage_bit :: proc(stage: contracts.Stage_Kind) -> u16 {
-	value := u8(stage)
-	if value >= 16 {return 0}
-	return u16(1)<<value
 }
 
 append_printer_build_geometry :: proc(

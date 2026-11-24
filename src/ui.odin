@@ -230,12 +230,6 @@ UI_Workspace :: struct {
 UI_Panel :: enum {Models, Section, Mesh}
 UI_Evidence_Pane :: enum {Stages, Details}
 
-ui_stage_names := [11]string{
-	"Model and placement", "Layer schedule", "Mesh intersections", "Contours and topology",
-	"Regions", "Surfaces and skin", "Perimeters", "Infill", "Supports and bridges",
-	"Path plan", "Motion and G-code",
-}
-
 UI_State :: struct {
 	controls: [dynamic]UI_Control,
 	flash_state: flash.State,
@@ -807,7 +801,7 @@ ui_build_controls :: proc(
 	if !ui.design_active {
 		bar := ui_action_bar_rect(ui)
 		ui_add_control(ui, "previous stage", "previous stage", {bar.x, bar.y+8, 112, 32}, .Previous_Stage, ui.stage_index > 0)
-		ui_add_control(ui, "next stage", "next stage", {bar.x+120, bar.y+8, 112, 32}, .Next_Stage, ui.workspace.view.can_next if ui.workspace.active else ui.stage_index < len(ui_stage_names)-1)
+		ui_add_control(ui, "next stage", "next stage", {bar.x+120, bar.y+8, 112, 32}, .Next_Stage, ui.workspace.view.can_next if ui.workspace.active else ui.stage_index < len(pipeline.Stage_Group)-1)
 		if ui.workspace.active {
 			ui_add_control(ui, "run stage", "cancel the run" if ui.workspace.view.running else "run the stages of this group", {bar.x+240, bar.y+8, 96, 32}, .Workspace_Run)
 			ui_add_control(ui, "auto run", "toggle automatic refresh of stale stages", {bar.x+344, bar.y+8, 96, 32}, .Workspace_Auto, true, 1, ui.workspace.auto_run)
@@ -1973,7 +1967,7 @@ ui_draw_labels :: proc(
 	theme := ui_theme(ui)
 	design_shown := ui.design_active && design_state != nil
 	title_width := max(0.0, ui.width-383)
-	title := fmt.tprintf("HW Slicer / %s", ui_stage_names[ui.stage_index]) if title_width >= 230 else "Slicer"
+	title := fmt.tprintf("HW Slicer / %s", pipeline.stage_group_names[pipeline.Stage_Group(ui.stage_index)]) if title_width >= 230 else "Slicer"
 	if design_shown {title = fmt.tprintf("HW Slicer / %s", model_name) if title_width >= 230 else model_name}
 	ui_draw_text(painter, painter.font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
 	window_labels := [3]string{"−", "+", "×"}
@@ -2208,7 +2202,7 @@ ui_draw_labels :: proc(
 			ui_draw_text(painter, painter.font, ui, "Cancel" if ui.workspace.view.running else "Run", ui_control_rect(ui, .Workspace_Run), ui_control_ink(ui, .Workspace_Run), 0, .Center)
 			ui_draw_text(painter, painter.font, ui, "Auto on" if ui.workspace.auto_run else "Auto off", ui_control_rect(ui, .Workspace_Auto), ui_control_ink(ui, .Workspace_Auto), 0, .Center)
 		}
-		ui_draw_text(painter, painter.font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(ui_stage_names), ui_stage_names[ui.stage_index]), {bar.x+title_x, bar.y+8, max(0, bar.w-title_x), 32}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(pipeline.Stage_Group), pipeline.stage_group_names[pipeline.Stage_Group(ui.stage_index)]), {bar.x+title_x, bar.y+8, max(0, bar.w-title_x), 32}, theme.text, 0)
 	}
 }
 
