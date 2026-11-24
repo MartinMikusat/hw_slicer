@@ -49,6 +49,7 @@ CLI_Options :: struct {
 	color_change_layers: [dynamic]u32,
 	overrides:           [dynamic]CLI_Override,
 	then_changes:        [dynamic]CLI_Override,
+	workspace_script:    string,
 }
 
 resolve_profile_path :: proc(dir, kind, name: string) -> string {
@@ -372,6 +373,8 @@ main :: proc() {
 				os.exit(2)
 			}
 			append(&opts.overrides, CLI_Override{key = pair[:eq], val = pair[eq+1:]})
+		} else if strings.has_prefix(arg, "--workspace-script=") {
+			opts.workspace_script = arg[len("--workspace-script="):]
 		} else if strings.has_prefix(arg, "--then=") {
 			pair := arg[len("--then="):]
 			eq := strings.index_byte(pair, '=')
@@ -442,6 +445,17 @@ main :: proc() {
 	has_plate_ops := len(opts.input_paths) > 1 || opts.clone_count > 1 ||
 		opts.scale != 1.0 || opts.rot_x != 0 || opts.rot_y != 0 || opts.rot_z != 0 || opts.lay_flat
 
+	if len(opts.workspace_script) > 0 {
+		mesh, units, dec_err := pipeline.decode_mesh_bytes(input_bytes, opts.input_path, run_opts.source_units)
+		if len(dec_err.stage) > 0 {
+			fmt.eprintf("SLICE FAILED at [%s]: %s\n", dec_err.stage, dec_err.detail)
+			os.exit(1)
+		}
+		defer formats.decoded_mesh_destroy(&mesh)
+		config.source_units = units
+		run_workspace_script(opts.workspace_script, config, mesh)
+		return
+	}
 	if len(opts.then_changes) > 0 && !has_plate_ops {
 		run_stage_reruns(opts, config, input_bytes)
 		return

@@ -1,0 +1,15 @@
+# A change made during a run waits until the run ends, then applies and refreshes stale stages.
+run G-code
+set infill_density 50
+view
+wait
+view
+check Infill complete
+check Motion complete
+# Cancelling stops before the next stage; finished stages keep their results.
+auto off
+set layer_height 0.24
+run G-code
+cancel
+wait
+view

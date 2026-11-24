@@ -5,6 +5,7 @@ import "core:math"
 import "core:mem"
 import "core:slice"
 import "core:strings"
+import "core:sync"
 import "core:time"
 
 import contracts "../contracts"
@@ -41,6 +42,8 @@ Slice_Session :: struct {
 	// session.
 	options:           Slice_Run_Options,
 	source:            formats.Decoded_Mesh,
+	// Guards the slots. A run holds it only while a stage changes state, never while it computes.
+	lock:              sync.Mutex,
 	slots:             [Stage_Id]Stage_Slot,
 
 	mesh_repair_stats: repair.Mesh_Repair_Stats,
@@ -121,11 +124,12 @@ slice_session_state :: proc(s: ^Slice_Session, id: Stage_Id) -> Stage_State {
 	return s.slots[id].state
 }
 
-// Stages that are not complete, in execution order, up to and including the target.
+// Stages that are not complete among the target and the stages it needs.
 slice_session_pending :: proc(s: ^Slice_Session, target: Stage_Id) -> Stage_Set {
 	set: Stage_Set
+	needed := stage_upstream(target)
 	for id in Stage_Id {
-		if id > target {break}
+		if id not_in needed {continue}
 		if s.slots[id].state != .Complete {set += {id}}
 	}
 	return set
@@ -135,19 +139,30 @@ slice_session_run_all :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	return slice_session_run_to(s, max(Stage_Id))
 }
 
-// Runs every incomplete stage up to and including the target. A stage that fails stops the run.
-slice_session_run_to :: proc(s: ^Slice_Session, target: Stage_Id) -> Slice_Run_Error {
+SLICE_RUN_CANCELLED :: "cancelled"
+
+// Runs every incomplete stage among the target and the stages it needs. A stage that fails stops
+// the run.
+// A set cancel flag stops the run before the next stage and returns a SLICE_RUN_CANCELLED error.
+slice_session_run_to :: proc(s: ^Slice_Session, target: Stage_Id, cancel: ^bool = nil) -> Slice_Run_Error {
 	features.set_worker_threads(s.options.worker_threads)
 	slicing.slicing_set_worker_threads(s.options.worker_threads)
+	needed := stage_upstream(target)
 	for id in Stage_Id {
-		if id > target {break}
+		if id not_in needed {continue}
 		slot := &s.slots[id]
 		if slot.state == .Complete {continue}
+		if cancel != nil && sync.atomic_load(cancel) {return {stage = SLICE_RUN_CANCELLED}}
+		sync.mutex_lock(&s.lock)
 		session_clear_stage(s, id)
 		slot.state = .Running
+		sync.mutex_unlock(&s.lock)
 		start := time.tick_now()
 		err := session_run_stage(s, id)
-		slot.duration_ms = time.duration_seconds(time.tick_since(start)) * 1000.0
+		elapsed := time.duration_seconds(time.tick_since(start)) * 1000.0
+		sync.mutex_lock(&s.lock)
+		defer sync.mutex_unlock(&s.lock)
+		slot.duration_ms = elapsed
 		if len(err.stage) > 0 {
 			session_clear_stage(s, id)
 			slot.state = .Failed

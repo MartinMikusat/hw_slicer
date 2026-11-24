@@ -182,6 +182,16 @@ stage_downstream :: proc(id: Stage_Id) -> Stage_Set {
 	return set
 }
 
+// The stage and every stage it needs, directly or through other stages.
+stage_upstream :: proc(id: Stage_Id) -> Stage_Set {
+	set := Stage_Set{id}
+	for i := int(id); i >= 0; i -= 1 {
+		earlier := Stage_Id(i)
+		if earlier in set {set += stage_descriptors[earlier].inputs}
+	}
+	return set
+}
+
 @(private = "file")
 hash_pod :: proc(h: ^contracts.Canonical_Hash, value: $T) {
 	v := value

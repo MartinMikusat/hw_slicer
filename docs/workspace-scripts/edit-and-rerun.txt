@@ -1,0 +1,40 @@
+# Open the workspace on a fresh model: nothing has run, and nothing starts by itself.
+view
+check Perimeters not_run
+# Run up to gap fill, which also runs every stage it needs.
+run Gap fill
+wait
+check Perimeters complete
+check Infill not_run
+# Next is enabled for a group with a result.
+select Perimeters
+next
+# Settings show the group's own and, read-only, the earlier-owned ones it uses.
+select Infill
+settings
+# Finish the slice.
+run G-code
+wait
+check Motion complete
+# Automatic mode: a quick setting change refreshes the stale stages by itself.
+auto on
+set infill_density 40
+wait
+check Perimeters complete
+check Infill complete
+# An invalid value is refused at once and changes nothing.
+set infill_pattern spiral
+# Manual mode: the change only marks stages stale and names the cause.
+auto off
+set layer_height 0.16
+view
+check Layer schedule stale
+check Model complete
+# Stale results stay visible, and Next is still enabled on them.
+select Layer
+next
+# One Run refreshes everything that is stale.
+run G-code
+wait
+view
+check Motion complete
