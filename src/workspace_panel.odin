@@ -427,7 +427,6 @@ evidence_stage_node_names :: proc(name: string) -> string {
 }
 
 // Puts plain text on the general pasteboard.
-@(private = "file")
 app_copy_text :: proc(value: string) -> bool {
 	pasteboard_class := objc_getClass("NSPasteboard")
 	if pasteboard_class == nil {return false}
@@ -628,19 +627,26 @@ app_workspace_startup :: proc() {
 	ui_build_controls(&app.ui)
 }
 
-// Switches between the development demos. The loaded design stays in memory while the slicer tab
-// is shown, so switching back is immediate.
-app_set_demo_tab :: proc(slicer: bool) {
-	app.ui.slicer_tab = slicer
-	if slicer {
+// Switches between the top-level workspace tabs. The loaded design stays in memory while another
+// tab is shown, so switching back is immediate.
+app_set_demo_tab :: proc(tab: App_Tab) {
+	app.ui.active_tab = tab
+	app.ui.focused_id = 0
+	printer_blur_field(&app.printer)
+	switch tab {
+	case .Slicer:
 		app.design.active = false
-		app.ui.focused_id = 0
 		// A loaded design replaces the model mesh; bring back the model the workspace slices.
 		if len(app.mesh.vertices) == 0 && app.workspace != nil {
 			_ = app_load_model(app.workspace_model, true, false)
 		}
 		app_workspace_refresh()
-	} else {
+	case .Printer:
+		app.design.active = false
+		app.ui.lay_on_face = false
+		app.section_dirty = true
+		app.needs_redraw = true
+	case .Design:
 		// The viewer holds the model mesh after the slicer tab, so the design is loaded again: the
 		// pinned or last design when there is one, otherwise the newest.
 		if len(app.design.layers) == 0 || len(app.mesh.vertices) > 0 {

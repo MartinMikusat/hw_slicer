@@ -20,6 +20,13 @@ elif [ -d "$ROOT/../odin_libraries/hw_odin_devlog" ]; then
 else
   DEVLOG_ROOT="$ROOT/../hw_odin_devlog"
 fi
+if [ -d "$ROOT/../hw_odin_ui_components" ]; then
+  COMPONENTS_ROOT="$ROOT/../hw_odin_ui_components"
+elif [ -d "$ROOT/../odin_libraries/hw_odin_ui_components" ]; then
+  COMPONENTS_ROOT="$ROOT/../odin_libraries/hw_odin_ui_components"
+else
+  COMPONENTS_ROOT="$ROOT/../hw_odin_ui_components"
+fi
 RUNE_ROOT="$ROOT/../hw_odin_rune"
 MODE=${1:-debug}
 
@@ -62,8 +69,10 @@ BUILD_DIR="$ROOT/build/application/$CLIPPER_MODE"
 EXECUTABLE="$APP/Contents/MacOS/hw_slicer"
 HOST_OBJECT="$BUILD_DIR/HWSlicerHost.o"
 METAL_COMPUTE_OBJECT="$BUILD_DIR/HWSlicerMetalCompute.o"
+MOONRAKER_OBJECT="$BUILD_DIR/HWSlicerMoonraker.o"
 FRAMEWORKS="-framework AppKit -framework Foundation -framework Metal -framework QuartzCore -framework UniformTypeIdentifiers -framework CoreText -framework CoreGraphics"
 CLI_FRAMEWORKS="-framework Foundation -framework Metal"
+MCP_FRAMEWORKS="-framework Foundation"
 ASAN_COMPAT_OBJECT=""
 
 mkdir -p "$BUILD_DIR"
@@ -74,6 +83,13 @@ mkdir -p "$BUILD_DIR"
   -isysroot "$SDK_ROOT" \
   -c "$ROOT/host/HWSlicerMetalCompute.m" \
   -o "$METAL_COMPUTE_OBJECT"
+
+# Compile Moonraker native transport (used by GUI and read-only printer MCP server).
+# shellcheck disable=SC2086
+"$CLANG" -fobjc-arc -Wall -Wextra -Werror $CLANG_FLAGS \
+  -isysroot "$SDK_ROOT" \
+  -c "$ROOT/host/HWSlicerMoonraker.m" \
+  -o "$MOONRAKER_OBJECT"
 
 if [ "$MODE" != "cli-release" ]; then
   mkdir -p "$APP/Contents/MacOS"
@@ -100,8 +116,9 @@ if [ "$MODE" != "cli-release" ]; then
       -collection:flash="$FLASH_ROOT" \
       -collection:devlog="$DEVLOG_ROOT" \
       -collection:rune="$RUNE_ROOT" \
+      -collection:components="$COMPONENTS_ROOT" \
       -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$CLIPPER_MODE/libhw_clipper2.a" \
-      -extra-linker-flags:"$HOST_OBJECT $METAL_COMPUTE_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
+      -extra-linker-flags:"$HOST_OBJECT $METAL_COMPUTE_OBJECT $MOONRAKER_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
   )
 fi
 
@@ -119,6 +136,20 @@ fi
     -collection:devlog="$DEVLOG_ROOT" \
     -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$CLIPPER_MODE/libhw_clipper2.a" \
     -extra-linker-flags:"$METAL_COMPUTE_OBJECT $ASAN_COMPAT_OBJECT -lc++ $CLI_FRAMEWORKS"
+)
+
+MCP_EXECUTABLE="$ROOT/build/hw-slicer-printer-mcp"
+if [ "$CLIPPER_MODE" != "debug" ]; then
+  MCP_EXECUTABLE="$ROOT/build/$CLIPPER_MODE/hw-slicer-printer-mcp"
+fi
+(
+  cd "$BUILD_DIR"
+  # shellcheck disable=SC2086
+  "$ODIN" build "$ROOT/src/printer_mcp" \
+    -out:"$MCP_EXECUTABLE" \
+    $ODIN_FLAGS \
+    -collection:devlog="$DEVLOG_ROOT" \
+    -extra-linker-flags:"$MOONRAKER_OBJECT $ASAN_COMPAT_OBJECT $MCP_FRAMEWORKS"
 )
 
 if [ "$MODE" = "cli-release" ]; then

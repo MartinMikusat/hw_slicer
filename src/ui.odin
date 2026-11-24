@@ -117,6 +117,7 @@ UI_Action :: enum u64 {
 	Workspace_Auto,
 	Demo_Tab_Design,
 	Demo_Tab_Slicer,
+	Demo_Tab_Printer,
 	Graph_Fit,
 	Graph_Divider,
 	Graph_Minimap,
@@ -137,9 +138,56 @@ UI_Action :: enum u64 {
 	View_GCode_Prev,
 	View_GCode_Next,
 	View_GCode_Single_Layer,
+	Printer_Sub_Control,
+	Printer_Sub_Files,
+	Printer_Sub_Console,
+	Printer_Sub_Config,
+	Printer_Sub_Connection,
+	Printer_Emergency_Stop,
+	Printer_Restart,
+	Printer_Firmware_Restart,
+	Printer_Home_All,
+	Printer_Home_X,
+	Printer_Home_Y,
+	Printer_Home_Z,
+	Printer_Disable_Motors,
+	Printer_Step_01,
+	Printer_Step_1,
+	Printer_Step_10,
+	Printer_Step_50,
+	Printer_Jog_X_Neg,
+	Printer_Jog_X_Pos,
+	Printer_Jog_Y_Neg,
+	Printer_Jog_Y_Pos,
+	Printer_Jog_Z_Neg,
+	Printer_Jog_Z_Pos,
+	Printer_Move_X_Field,
+	Printer_Move_Y_Field,
+	Printer_Move_Z_Field,
+	Printer_Move_X_Go,
+	Printer_Move_Y_Go,
+	Printer_Move_Z_Go,
+	Printer_History_1m,
+	Printer_History_5m,
+	Printer_History_20m,
+	Printer_History_Refresh,
+	Printer_Files_Refresh,
+	Printer_Files_Download,
+	Printer_Conn_Endpoint,
+	Printer_Conn_Api_Key,
+	Printer_Conn_Connect,
+	Printer_Conn_Disconnect,
+	Printer_Conn_Local,
+	Printer_Conn_Preview,
+	Printer_Control_Surface,
+	Printer_Chart_Surface,
 	Evidence_Stage_Base = 1000,
 	Graph_Node_Base = 2000,
 	Setting_Base = 3000,
+	Printer_Heater_Field_Base = 4000,
+	Printer_Heater_Set_Base = 4100,
+	Printer_Heater_Off_Base = 4200,
+	Printer_File_Row_Base = 4300,
 }
 
 UI_Control :: struct {
@@ -261,6 +309,12 @@ UI_Workspace :: struct {
 UI_Panel :: enum {Models, Section, Mesh}
 UI_Evidence_Pane :: enum {Stages, Details}
 
+App_Tab :: enum u8 {
+	Design,
+	Slicer,
+	Printer,
+}
+
 UI_State :: struct {
 	controls: [dynamic]UI_Control,
 	flash_state: flash.State,
@@ -275,8 +329,8 @@ UI_State :: struct {
 	scale: f64,
 	dark: bool,
 	selected_model: int,
-	// Development demo tabs: false shows the toolpath design, true the slicer stages.
-	slicer_tab: bool,
+	// Top-level workspace tab: Design, Slicer, or Printer.
+	active_tab: App_Tab,
 	workspace: UI_Workspace,
 	panel: UI_Panel,
 	wireframe: bool,
@@ -363,9 +417,9 @@ ui_character_width :: proc(ui: ^UI_State) -> f64 {
 	return ui_character_widths[size]
 }
 
-// Design focus and stage graph hide the bottom bar, so the workspace extends to the bottom edge.
+// Design focus, stage graph, and printer tab hide the bottom bar.
 ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	if ui.design_active || ui_graph_mode(ui) {return {12, ui.height, max(1.0, ui.width-24), 0}}
+	if ui.design_active || ui_graph_mode(ui) || ui_printer_mode(ui) {return {12, ui.height, max(1.0, ui.width-24), 0}}
 	return {12, ui.height-64, max(1.0, ui.width-24), 52}
 }
 
@@ -375,6 +429,7 @@ ui_compact :: proc(ui: ^UI_State) -> bool {
 
 ui_viewport_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	if ui_graph_mode(ui) {return ui_graph_viewport_rect(ui)}
+	if ui_printer_mode(ui) {return ui_printer_viewport_rect(ui)}
 	bar := ui_action_bar_rect(ui)
 	if ui_compact(ui) {return {196, 52, max(1, ui.width-208), max(1, bar.y-64)}}
 	return {
@@ -598,11 +653,15 @@ ui_evidence_stage_action_index :: proc(
 	return int(id-base), true
 }
 
-// Development tabs at the top of the window, one per demo under work.
+// Top-level workspace tabs at the top of the window.
 ui_demo_tab_rect :: proc(ui: ^UI_State, index: int) -> UI_Rect {
-	width := 150.0
-	x := max(330.0, ui.width/2-width) + f64(index)*(width+6)
-	return {x, 6, width, 28}
+	widths := [3]f64{134.0, 120.0, 90.0}
+	gap :: 6.0
+	total := widths[0] + widths[1] + widths[2] + 2*gap
+	start_x := max(240.0, ui.width/2 - total/2)
+	x := start_x
+	for i in 0..<index {x += widths[i] + gap}
+	return {x, 6, widths[index], 28}
 }
 
 ui_setting_action :: proc(row, side: int) -> UI_Action {
@@ -823,10 +882,15 @@ ui_build_controls :: proc(
 		)
 	}
 
-	ui_add_control(ui, "demo toolpath design", "show the toolpath design demo", ui_demo_tab_rect(ui, 0), .Demo_Tab_Design, true, 1, !ui.slicer_tab)
-	ui_add_control(ui, "demo slicer stages", "show the slicer stages demo", ui_demo_tab_rect(ui, 1), .Demo_Tab_Slicer, true, 1, ui.slicer_tab)
+	ui_add_control(ui, "demo toolpath design", "show the toolpath design demo", ui_demo_tab_rect(ui, 0), .Demo_Tab_Design, true, 1, ui.active_tab == .Design)
+	ui_add_control(ui, "demo slicer stages", "show the slicer stages demo", ui_demo_tab_rect(ui, 1), .Demo_Tab_Slicer, true, 1, ui.active_tab == .Slicer)
+	ui_add_control(ui, "demo printer", "show the printer control workspace", ui_demo_tab_rect(ui, 2), .Demo_Tab_Printer, true, 1, ui.active_tab == .Printer)
 	if ui_graph_mode(ui) {
 		ui_graph_controls(ui)
+		return
+	}
+	if ui_printer_mode(ui) {
+		ui_printer_controls(ui)
 		return
 	}
 
@@ -1195,6 +1259,10 @@ ui_draw_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		ui_draw_graph_panels(painter, ui)
 		return
 	}
+	if ui_printer_mode(ui) {
+		ui_draw_printer_panels(painter, ui)
+		return
+	}
 	theme := ui_theme(ui)
 	ui_add_rect(painter, {0, 0, ui.width, 40}, theme.header)
 	left := ui_left_rect(ui)
@@ -1237,7 +1305,7 @@ ui_draw_controls :: proc(
 			ui_add_border(painter, control.rect, accent_border)
 			continue
 		}
-		if ui_graph_custom_control(control.action) {continue}
+		if ui_graph_custom_control(control.action) || ui_printer_custom_control(control.action) || control.action == .Printer_Emergency_Stop {continue}
 		if control.action == .None || control.action == .Modal_Surface || control.action == .Dismiss_Settings || control.action == .Dismiss_Evidence || control.action == .Dismiss_Help {continue}
 		window_control := control.action == .Window_Close || control.action == .Window_Minimize || control.action == .Window_Zoom
 		if window_control && modal_open {continue}
@@ -1992,10 +2060,14 @@ ui_draw_labels :: proc(
 	if ui_graph_mode(ui) && title_width >= 230 {
 		title = fmt.tprintf("hw_slicer / %s", pipeline.stage_descriptors[ui.workspace.view.selected].name)
 	}
+	if ui_printer_mode(ui) && title_width >= 230 {
+		title = "hw_slicer / Printer"
+	}
 	if design_shown {title = fmt.tprintf("hw_slicer / %s", model_name) if title_width >= 230 else model_name}
-	ui_draw_text(painter, painter.font, ui, title, {12, 0, min(title_width, 310), 40}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, title, {12, 0, min(title_width, 220), 40}, theme.text, 0)
 	ui_draw_text(painter, painter.font, ui, "Toolpath design", ui_control_rect(ui, .Demo_Tab_Design), ui_control_ink(ui, .Demo_Tab_Design), 0, .Center)
 	ui_draw_text(painter, painter.font, ui, "Slicer stages", ui_control_rect(ui, .Demo_Tab_Slicer), ui_control_ink(ui, .Demo_Tab_Slicer), 0, .Center)
+	ui_draw_text(painter, painter.font, ui, "Printer", ui_control_rect(ui, .Demo_Tab_Printer), ui_control_ink(ui, .Demo_Tab_Printer), 0, .Center)
 	window_labels := [3]string{"−", "+", "×"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
 	for label, index in window_labels {
@@ -2028,6 +2100,10 @@ ui_draw_labels :: proc(
 		ui_draw_attribute_editor(painter, ui)
 		ui_draw_graph_view_labels(painter, ui)
 		ui_draw_graph_status(painter, ui, status, status_failed)
+		return
+	}
+	if ui_printer_mode(ui) {
+		ui_draw_printer_labels(painter, ui)
 		return
 	}
 

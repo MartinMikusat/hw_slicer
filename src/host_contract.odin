@@ -28,6 +28,7 @@ Host_Services :: struct {
 	window_minimize: proc "c" (),
 	window_zoom: proc "c" (),
 	open_document: proc "c" (path: [^]u8, capacity: uint) -> bool,
+	save_document: proc "c" (suggested_name: cstring, path: [^]u8, capacity: uint) -> bool,
 	preference_get_int: proc "c" (
 		key: cstring,
 		fallback: i32,

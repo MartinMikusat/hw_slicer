@@ -233,17 +233,20 @@ static NSPoint slicer_event_point(HWSlicerView *view, NSEvent *event) {
 }
 - (void)keyDown:(NSEvent *)event {
     if (!g_application) { return; }
-    NSString *text = event.charactersIgnoringModifiers ?: @"";
+    NSString *unmodified = event.charactersIgnoringModifiers ?: @"";
     if (event.modifierFlags & NSEventModifierFlagCommand) {
-        if ([text caseInsensitiveCompare:@"w"] == NSOrderedSame) {
+        if ([unmodified caseInsensitiveCompare:@"w"] == NSOrderedSame) {
             [self.window close];
             return;
         }
-        if ([text caseInsensitiveCompare:@"q"] == NSOrderedSame) {
+        if ([unmodified caseInsensitiveCompare:@"q"] == NSOrderedSame) {
             [NSApp terminate:nil];
             return;
         }
     }
+    NSString *text = (event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl))
+        ? unmodified
+        : (event.characters ?: unmodified);
     const char *characters = text.UTF8String ?: "";
     g_application->key(event.keyCode, characters, event.modifierFlags);
 }
@@ -465,6 +468,25 @@ static bool slicer_open_document(char *path, size_t capacity) {
     return true;
 }
 
+static bool slicer_save_document(const char *suggested_name, char *path, size_t capacity) {
+    NSWindow *window = (__bridge NSWindow *)g_host.window;
+    [NSApp activateIgnoringOtherApps:YES];
+    [window makeKeyAndOrderFront:nil];
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.canCreateDirectories = YES;
+    if (suggested_name && suggested_name[0] != '\0') {
+        panel.nameFieldStringValue = [NSString stringWithUTF8String:suggested_name];
+    }
+    NSModalResponse response = [panel runModal];
+    [window makeKeyAndOrderFront:nil];
+    [(__bridge NSView *)g_host.view setNeedsDisplay:YES];
+    if (response != NSModalResponseOK) { return false; }
+    const char *selected = panel.URL.path.fileSystemRepresentation;
+    if (!selected || strlen(selected) + 1 > capacity) { return false; }
+    strlcpy(path, selected, capacity);
+    return true;
+}
+
 static int32_t slicer_preference_get_int(
     const char *key,
     int32_t fallback
@@ -541,6 +563,7 @@ static void slicer_preference_set_int(const char *key, int32_t value) {
     g_host.window_minimize = slicer_window_minimize;
     g_host.window_zoom = slicer_window_zoom;
     g_host.open_document = slicer_open_document;
+    g_host.save_document = slicer_save_document;
     g_host.preference_get_int = slicer_preference_get_int;
     g_host.preference_set_int = slicer_preference_set_int;
 

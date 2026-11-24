@@ -247,7 +247,7 @@ app_install_design_preview :: proc(candidate: ^design.Design, keep_time: bool,
 	delete(app.design.layers)
 	app.design.selected_junction = -1
 	app.design.dirty = false
-	app.design.active = !app.ui.slicer_tab
+	app.design.active = app.ui.active_tab == .Design
 	app.design.evaluated = candidate^
 	candidate^ = {}
 	app.design.toolpath = toolpath
@@ -479,7 +479,7 @@ app_poll_design :: proc() {
 	if s.editor.dragging {return}
 	// While the slicer tab is shown the viewer holds the model mesh; a design load would replace
 	// it. Switching back to the design tab reloads the design.
-	if app.ui.slicer_tab {return}
+	if app.ui.active_tab != .Design {return}
 	if s.profile_dirty {
 		info, err := os.stat(s.path, context.temp_allocator)
 		if err == nil && info.modification_time == s.modified {return}

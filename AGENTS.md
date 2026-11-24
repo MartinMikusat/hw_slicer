@@ -46,6 +46,12 @@ Lay on face uses one placement transform for rendering, face selection, and laye
 
 While the backend is in development, the interface shows only the feature under work, and it shows it on launch without operator input. Update the interface with each change so that it stays in sync with that feature. Hide unrelated controls; do not build general interface features. Exception: the [stage graph](docs/stage-graph.md) is the workspace frame that the feature under work lives in.
 
+## Printer boundary
+
+- The operator authorizes automatic monitoring at `http://ratos.local/`, heater-target changes, homing (`G28`, all axes or one), motor disengagement (`M84`), single-axis jog/absolute moves, the `STOP` button (Moonraker emergency stop), Restart/Firmware restart, read-only configuration queries, and operator-submitted upload of `printer.cfg` user overrides through the UI.
+- Agents must not send heater, homing, motor disengagement, motion, emergency, restart, or configuration-upload commands to the real printer. Extrusion, arbitrary G-code, macros, print actions, G-code upload, and deletion remain blocked.
+- Agents read the live configuration of the real printer only through the `printer_config` tool of the read-only MCP server (`src/printer_mcp/`, built to `build/hw-slicer-printer-mcp`, registered in `.mcp.json`).
+
 ## Diagnostics
 
 Every run writes the shared dev log. `./dev.sh` exports

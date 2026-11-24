@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "ratos-printer": {
+      "command": "./build/hw-slicer-printer-mcp"
+    }
+  }
+}

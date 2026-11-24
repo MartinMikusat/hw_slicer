@@ -38,6 +38,7 @@ typedef struct HW_Slicer_Host {
     void (*window_minimize)(void);
     void (*window_zoom)(void);
     bool (*open_document)(char *path, size_t capacity);
+    bool (*save_document)(const char *suggested_name, char *path, size_t capacity);
     int32_t (*preference_get_int)(const char *key, int32_t fallback);
     void (*preference_set_int)(const char *key, int32_t value);
 } HW_Slicer_Host;

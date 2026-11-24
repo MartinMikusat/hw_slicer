@@ -31,6 +31,7 @@ App_State :: struct {
 	ui:            UI_State,
 	mesh:          Mesh,
 	design:        Design_State,
+	printer:       Printer_State,
 	workspace:     ^pipeline.Workspace,
 	// The model the workspace slices. A design load replaces the viewer mesh, so the slicer tab
 	// reloads this model when it is shown.
@@ -84,8 +85,8 @@ startup_stage := -1
 startup_stage_run: bool
 startup_gcode_view := -1
 startup_stage_edits: [dynamic][2]string
-// `--tabs=slicer,design,…`: demo tabs to switch to on the first frame, in order (true = slicer).
-startup_tabs: [dynamic]bool
+// `--tabs=slicer,design,printer,…`: tabs to switch to on the first frame, in order.
+startup_tabs: [dynamic]App_Tab
 bench_frames_target: int
 bench_frames_done: int
 bench_start_tick: time.Tick
@@ -300,7 +301,7 @@ app_open_document :: proc() {
 	selected := string(cstring(&path[0]))
 	app.design.pinned = true
 	if strings.equal_fold(filepath.ext(selected), DESIGN_EXTENSION) {
-		app.ui.slicer_tab = false
+		app.ui.active_tab = .Design
 		_ = app_load_design(selected)
 		ui_build_controls(&app.ui)
 		return
@@ -330,9 +331,16 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.ui.lay_on_face = false
 		return true
 	}
+	if app_printer_activate(action) {
+		return true
+	}
 	switch action {
-	case .Demo_Tab_Design, .Demo_Tab_Slicer:
-		app_set_demo_tab(action == .Demo_Tab_Slicer)
+	case .Demo_Tab_Design:
+		app_set_demo_tab(.Design)
+	case .Demo_Tab_Slicer:
+		app_set_demo_tab(.Slicer)
+	case .Demo_Tab_Printer:
+		app_set_demo_tab(.Printer)
 	case .Modal_Surface, .Workspace_Run, .Workspace_Auto, .Setting_Base:
 		return false
 	case .Evidence_Stages, .Evidence_Details:
@@ -471,7 +479,19 @@ app_activate :: proc(action: UI_Action) -> bool {
 	     .Graph_Inspector_Toggle, .Graph_Inspector_Surface,
 	     .Graph_Menu_Surface, .Graph_Menu_Run_To, .Graph_Menu_Run_Only, .Graph_Menu_Reset, .Graph_Menu_Evidence,
 	     .Graph_Menu_Copy, .Attribute_Settings, .Attribute_Log, .Attribute_Docs, .Attribute_Advanced, .View_Mesh,
-	     .View_Result, .View_GCode_Prev, .View_GCode_Next, .View_GCode_Single_Layer:
+	     .View_Result, .View_GCode_Prev, .View_GCode_Next, .View_GCode_Single_Layer,
+	     .Printer_Sub_Control, .Printer_Sub_Files, .Printer_Sub_Console, .Printer_Sub_Config,
+	     .Printer_Sub_Connection, .Printer_Emergency_Stop, .Printer_Restart, .Printer_Firmware_Restart,
+	     .Printer_Home_All, .Printer_Home_X, .Printer_Home_Y, .Printer_Home_Z, .Printer_Disable_Motors,
+	     .Printer_Step_01, .Printer_Step_1, .Printer_Step_10, .Printer_Step_50,
+	     .Printer_Jog_X_Neg, .Printer_Jog_X_Pos, .Printer_Jog_Y_Neg, .Printer_Jog_Y_Pos,
+	     .Printer_Jog_Z_Neg, .Printer_Jog_Z_Pos, .Printer_Move_X_Field, .Printer_Move_Y_Field,
+	     .Printer_Move_Z_Field, .Printer_Move_X_Go, .Printer_Move_Y_Go, .Printer_Move_Z_Go,
+	     .Printer_History_1m, .Printer_History_5m, .Printer_History_20m, .Printer_History_Refresh,
+	     .Printer_Files_Refresh, .Printer_Files_Download, .Printer_Conn_Endpoint, .Printer_Conn_Api_Key,
+	     .Printer_Conn_Connect, .Printer_Conn_Disconnect, .Printer_Conn_Local, .Printer_Conn_Preview,
+	     .Printer_Control_Surface, .Printer_Chart_Surface,
+	     .Printer_Heater_Field_Base, .Printer_Heater_Set_Base, .Printer_Heater_Off_Base, .Printer_File_Row_Base:
 		return false
 	}
 	return true
@@ -501,6 +521,7 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 	app.ui.selected_model = 0
 	ui_initialize(&app.ui)
 	design_state_init(&app.design)
+	printer_state_init(&app.printer)
 	settings := settings_defaults()
 	_ = settings_load(settings_path(context.temp_allocator), &settings)
 	if startup_font_size != 0 {
@@ -542,9 +563,9 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 		if app_load_design(startup) && startup_design_time >= 0 {
 			design_set_time_fraction(&app.design, startup_design_time)
 		}
-		if !app.design.active && app.workspace != nil {app.ui.slicer_tab = true}
+		if !app.design.active && app.workspace != nil {app.ui.active_tab = .Slicer}
 	} else if app.workspace != nil {
-		app.ui.slicer_tab = true
+		app.ui.active_tab = .Slicer
 		if startup_stage >= 0 {
 			app_workspace_startup()
 		}
@@ -563,6 +584,7 @@ app_destroy :: proc() {
 	delete(app.gcode_colored_beads)
 	mesh_destroy(&app.mesh)
 	design_state_clear(&app.design)
+	printer_state_destroy(&app.printer)
 	delete(app.section_vertices)
 	delete(app.stage_segments)
 	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
@@ -732,7 +754,7 @@ app_pick_stage_segment :: proc(px, py: f64) {
 
 app_rebuild_section :: proc() {
 	app.ui.workspace.result_shown = false
-	if !app.ui.section_enabled || len(app.mesh.vertices) == 0 || app.design.active {
+	if !app.ui.section_enabled || len(app.mesh.vertices) == 0 || app.design.active || ui_printer_mode(&app.ui) {
 		clear(&app.section_vertices)
 		app.ui.section_segments = 0
 		return
@@ -842,6 +864,18 @@ renderer_draw_application :: proc() -> Render_Result {
 	visual := Design_Visual{finished_vertices = app.renderer.mesh_vertex_count, highlight_start = -1}
 	if app.design.active {visual = design_visible(&app.design)}
 	if ui_graph_mode(&app.ui) && !app.ui.workspace.graph.show_mesh {visual.finished_vertices = 0}
+	if ui_printer_mode(&app.ui) {
+		visual.finished_vertices = 0
+		s := &app.printer.client.state
+		if app.printer.subtab == .Control && (s.live_position_available || s.position_available) {
+			pos := s.live_position if s.live_position_available else s.position
+			bx := s.axis_maximum[0] if (s.limits_available && s.axis_maximum[0] > 0) else 250.0
+			by := s.axis_maximum[1] if (s.limits_available && s.axis_maximum[1] > 0) else 250.0
+			visual.marker_active = true
+			visual.marker_pos = {f32(pos[0] - bx*0.5), f32(pos[1] - by*0.5), f32(pos[2])}
+			visual.marker_radius = 4.0
+		}
+	}
 	if ui_graph_mode(&app.ui) && ui_gcode_preview_visible(&app.ui) && len(app.gcode_preview.beads) > 0 {
 		bead_start := 0
 		bead_count := len(app.gcode_preview.beads)
@@ -907,11 +941,12 @@ application_shutdown :: proc "c" () {
 // the frames after a click would run it. A capture then shows the state after the last switch.
 app_run_startup_tabs :: proc() {
 	if len(startup_tabs) == 0 {return}
-	for slicer in startup_tabs {
-		app_set_demo_tab(slicer)
+	for tab in startup_tabs {
+		app_set_demo_tab(tab)
 		app.design.poll_tick = {}
 		app_poll_design()
 		app_workspace_poll()
+		app_printer_poll()
 	}
 	clear(&startup_tabs)
 	app.needs_redraw = true
@@ -946,6 +981,7 @@ application_frame :: proc "c" (width, height, scale: f64) {
 	app_run_startup_tabs()
 	app_poll_design()
 	app_workspace_poll()
+	app_printer_poll()
 	profile_update := profile_editor_update_drag(profile_timing_ptr)
 	if app.design.dirty {
 		app.design.dirty = false
@@ -1205,6 +1241,7 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 		return
 	}
 	if app.ui.settings_open || app.ui.help_open {return}
+	if app_printer_scroll(delta_y) {return}
 	if app_graph_scroll(delta_y) {return}
 	if app_workspace_scroll(delta_y) {return}
 	if app.design.editor.active {
@@ -1290,6 +1327,7 @@ application_key :: proc "c" (
 	modifiers: u64,
 ) {
 	context = app_context()
+	if app_printer_key(key_code, string(characters), modifiers) {return}
 	if profile_editor_key(key_code, modifiers) {return}
 	if key_code == 53 && app_graph_key(key_code, "") {return}
 	if key_code == 53 {
@@ -1619,8 +1657,9 @@ main :: proc() {
 		} else if strings.has_prefix(argument, "--tabs=") {
 			for name in strings.split(argument[len("--tabs="):], ",", context.temp_allocator) {
 				switch name {
-				case "slicer": append(&startup_tabs, true)
-				case "design": append(&startup_tabs, false)
+				case "slicer":  append(&startup_tabs, App_Tab.Slicer)
+				case "design":  append(&startup_tabs, App_Tab.Design)
+				case "printer": append(&startup_tabs, App_Tab.Printer)
 				case: fmt.eprintf("hw_slicer: ignoring unknown tab '%s' in --tabs\n", name)
 				}
 			}

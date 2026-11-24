@@ -20,6 +20,13 @@ elif [ -d "$ROOT/../odin_libraries/hw_odin_devlog" ]; then
 else
   DEVLOG_ROOT="$ROOT/../hw_odin_devlog"
 fi
+if [ -d "$ROOT/../hw_odin_ui_components" ]; then
+  COMPONENTS_ROOT="$ROOT/../hw_odin_ui_components"
+elif [ -d "$ROOT/../odin_libraries/hw_odin_ui_components" ]; then
+  COMPONENTS_ROOT="$ROOT/../odin_libraries/hw_odin_ui_components"
+else
+  COMPONENTS_ROOT="$ROOT/../hw_odin_ui_components"
+fi
 RUNE_ROOT="$ROOT/../hw_odin_rune"
 EXPECTED_FLASH_URL="https://github.com/MartinMikusat/hw_odin_ui_flash.git"
 EXPECTED_FLASH_COMMIT="f4744a6e76c04e99e54fa8e4205de416b612f1db"
@@ -27,6 +34,8 @@ EXPECTED_DEVLOG_URL="https://github.com/MartinMikusat/hw_odin_devlog.git"
 EXPECTED_DEVLOG_COMMIT="5f44e3bb81677901635f9ab828fcae73d0cbb009"
 EXPECTED_RUNE_URL="https://github.com/MartinMikusat/hw_odin_rune.git"
 EXPECTED_RUNE_COMMIT="38993e4c6f1b01f1f6565c5642b46943a0def675"
+EXPECTED_COMPONENTS_URL="https://github.com/MartinMikusat/hw_odin_ui_components.git"
+EXPECTED_COMPONENTS_COMMIT="7500d9602e8001259c57585dc2acdcc824788aa2"
 
 if [ "${1:-}" != "check" ]; then
   echo "usage: scripts/dependencies.sh check" >&2
@@ -62,6 +71,7 @@ check_pin() {
 check_pin "Flash" "$FLASH_ROOT" "$EXPECTED_FLASH_URL" "$EXPECTED_FLASH_COMMIT"
 check_pin "devlog" "$DEVLOG_ROOT" "$EXPECTED_DEVLOG_URL" "$EXPECTED_DEVLOG_COMMIT"
 check_pin "rune" "$RUNE_ROOT" "$EXPECTED_RUNE_URL" "$EXPECTED_RUNE_COMMIT"
+check_pin "components" "$COMPONENTS_ROOT" "$EXPECTED_COMPONENTS_URL" "$EXPECTED_COMPONENTS_COMMIT"
 
 (
   cd "$ROOT"

@@ -78,7 +78,7 @@ GRAPH_MENU_ITEMS := [5]struct {
 }
 
 ui_graph_mode :: proc(ui: ^UI_State) -> bool {
-	return ui.slicer_tab && ui.workspace.active && !ui.design_active
+	return ui.active_tab == .Slicer && ui.workspace.active && !ui.design_active
 }
 
 ui_graph_node_action :: proc(id: pipeline.Stage_Id) -> UI_Action {
