@@ -527,10 +527,14 @@ app_set_demo_tab :: proc(slicer: bool) {
 		}
 		app_workspace_refresh()
 	} else {
-		if len(app.design.layers) == 0 {
-			path := app.demo_design_path
-			if len(path) == 0 {path, _ = design_newest()}
-			if len(path) > 0 {_ = app_load_design(strings.clone(path, context.temp_allocator))}
+		// The viewer holds the model mesh after the slicer tab, so the design is loaded again: the
+		// pinned or last design when there is one, otherwise the newest.
+		if len(app.design.layers) == 0 || len(app.mesh.vertices) > 0 {
+			path := strings.clone(app.design.path, context.temp_allocator)
+			if len(path) == 0 || !app.design.pinned {
+				if newest, found := design_newest(); found {path = newest}
+			}
+			if len(path) > 0 {_ = app_load_design(path, true)}
 		}
 		app.design.active = len(app.design.layers) > 0
 	}

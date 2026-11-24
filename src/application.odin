@@ -31,10 +31,9 @@ App_State :: struct {
 	mesh:          Mesh,
 	design:        Design_State,
 	workspace:     ^pipeline.Workspace,
-	// The model the workspace slices, and the design the toolpath tab last showed. Loading a
-	// design replaces the model mesh, so switching tabs reloads whichever one is missing.
+	// The model the workspace slices. A design load replaces the viewer mesh, so the slicer tab
+	// reloads this model when it is shown.
 	workspace_model: int,
-	demo_design_path: string,
 	placement: Model_Placement,
 	face_hover: int,
 	face_pressed: int,
@@ -181,11 +180,8 @@ app_load_model :: proc(index: int, frame_camera := true, open_workspace := true)
 	}
 	mesh_destroy(&app.mesh)
 	app.mesh = next
-	if len(app.design.path) > 0 {
-		delete(app.demo_design_path)
-		app.demo_design_path = strings.clone(app.design.path)
-	}
-	design_state_clear(&app.design)
+	// Restoring the viewer mesh for the slicer tab keeps the design in memory; its tab reloads it.
+	if open_workspace {design_state_clear(&app.design)}
 	rotation := mat4_identity()
 	if index == 1 {rotation = {1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1}}
 	app.placement = placement_on_bed(&app.mesh, rotation)
@@ -293,7 +289,9 @@ app_open_document :: proc() {
 	selected := string(cstring(&path[0]))
 	app.design.pinned = true
 	if strings.equal_fold(filepath.ext(selected), DESIGN_EXTENSION) {
+		app.ui.slicer_tab = false
 		_ = app_load_design(selected)
+		ui_build_controls(&app.ui)
 		return
 	}
 	if !strings.equal_fold(filepath.ext(selected), ".stl") {
@@ -550,7 +548,6 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 
 app_destroy :: proc() {
 	mesh_destroy(&app.mesh)
-	delete(app.demo_design_path)
 	design_state_clear(&app.design)
 	delete(app.section_vertices)
 	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
