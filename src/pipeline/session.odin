@@ -159,6 +159,7 @@ SLICE_RUN_CANCELLED :: "cancelled"
 slice_session_run_to :: proc(s: ^Slice_Session, target: Stage_Id, cancel: ^bool = nil) -> Slice_Run_Error {
 	features.set_worker_threads(resolved_worker_threads(s.options.worker_threads))
 	slicing.slicing_set_worker_threads(resolved_worker_threads(s.options.worker_threads))
+	gcode.set_worker_threads(resolved_worker_threads(s.options.worker_threads))
 	needed := stage_upstream(target)
 
 	finished: sync.Cond

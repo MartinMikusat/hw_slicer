@@ -199,6 +199,137 @@ klipper_validate :: proc(
 	return report, .None
 }
 
+// Validates one layer's emitted G-code slice in isolation, starting from the precomputed entry
+// state. Callers verify state continuity across layer boundaries after parallel execution.
+@(private)
+klipper_validate_layer_slice :: proc(
+	bytes: []u8,
+	layer_index: u32,
+	init: Klipper_State,
+	profile: profiles.Resolved_Profiles,
+	motion: features.Motion_Plan_Result,
+) -> (
+	state: Klipper_Validation_State,
+	report: Klipper_Validation_Report,
+	err: Klipper_Validation_Error,
+) {
+	state = Klipper_Validation_State{
+		startup         = .Complete,
+		current_layer   = layer_index-1 if layer_index > 0 else max(u32),
+		layer_active    = false,
+		operation_index = motion.layers[layer_index].operation_offset,
+		positioned_xy   = init.positioned_xy,
+		x               = i64(init.x),
+		y               = i64(init.y),
+		z               = i64(init.z),
+		physical_z      = i64(init.physical_z),
+		acceleration    = init.acceleration,
+		fan_pwm         = init.fan_pwm,
+	}
+	report = Klipper_Validation_Report{
+		layer_count   = layer_index,
+		final_fan_pwm = init.fan_pwm,
+	}
+	line_start := 0
+	for b, byte_index in bytes {
+		if b == '\r' || b == 0 || (b < 0x20 && b != '\n') || b > 0x7e {
+			return {}, {}, .Invalid_Encoding
+		}
+		if b != '\n' {continue}
+		if byte_index == line_start {
+			return {}, {}, .Invalid_Encoding
+		}
+		line := string(bytes[line_start:byte_index])
+		command, parse_error := klipper_parse_command(line)
+		if parse_error != .None {return {}, {}, parse_error}
+		report.command_count += 1
+		print_error := klipper_validate_print_command(command, profile, motion, &state, &report)
+		if print_error != .None {return {}, {}, print_error}
+		line_start = byte_index+1
+	}
+	if line_start != len(bytes) ||
+	   state.current_layer != layer_index ||
+	   !klipper_current_layer_complete(state, motion) ||
+	   state.z_hop_stage != 0 {
+		return {}, {}, .Final_State
+	}
+	return state, report, .None
+}
+
+// Validates the startup header lines before layer 0 (and optional EXCLUDE_OBJECT_* lines).
+@(private)
+klipper_validate_header_slice :: proc(
+	bytes: []u8,
+	profile: profiles.Resolved_Profiles,
+	motion: features.Motion_Plan_Result,
+) -> (
+	state: Klipper_Validation_State,
+	report: Klipper_Validation_Report,
+	err: Klipper_Validation_Error,
+) {
+	state = Klipper_Validation_State{
+		startup       = .Header,
+		current_layer = max(u32),
+		acceleration  = -1,
+		fan_pwm       = -1,
+	}
+	line_start := 0
+	for b, byte_index in bytes {
+		if b == '\r' || b == 0 || (b < 0x20 && b != '\n') || b > 0x7e {
+			return {}, {}, .Invalid_Encoding
+		}
+		if b != '\n' {continue}
+		if byte_index == line_start {
+			return {}, {}, .Invalid_Encoding
+		}
+		line := string(bytes[line_start:byte_index])
+		command, parse_error := klipper_parse_command(line)
+		if parse_error != .None {return {}, {}, parse_error}
+		report.command_count += 1
+		if state.startup != .Complete {
+			startup_error := klipper_validate_startup(command, profile, motion, &state, &report)
+			if startup_error != .None {return {}, {}, startup_error}
+		} else {
+			print_error := klipper_validate_print_command(command, profile, motion, &state, &report)
+			if print_error != .None {return {}, {}, print_error}
+		}
+		line_start = byte_index+1
+	}
+	if line_start != len(bytes) || state.startup != .Complete {
+		return {}, {}, .Final_State
+	}
+	return state, report, .None
+}
+
+// Validates the shutdown footer lines after the last layer.
+@(private)
+klipper_validate_footer_slice :: proc(
+	bytes: []u8,
+	report: ^Klipper_Validation_Report,
+) -> Klipper_Validation_Error {
+	line_start := 0
+	for b, byte_index in bytes {
+		if b == '\r' || b == 0 || (b < 0x20 && b != '\n') || b > 0x7e {
+			return .Invalid_Encoding
+		}
+		if b != '\n' {continue}
+		if byte_index == line_start {
+			return .Invalid_Encoding
+		}
+		line := string(bytes[line_start:byte_index])
+		command, parse_error := klipper_parse_command(line)
+		if parse_error != .None {return parse_error}
+		report.command_count += 1
+		shutdown_error := klipper_validate_shutdown(command, report)
+		if shutdown_error != .None {return shutdown_error}
+		line_start = byte_index+1
+	}
+	if line_start != len(bytes) || !report.print_ended {
+		return .Final_State
+	}
+	return .None
+}
+
 klipper_validate_startup :: proc(
 	command: Klipper_Parsed_Command,
 	profile: profiles.Resolved_Profiles,
