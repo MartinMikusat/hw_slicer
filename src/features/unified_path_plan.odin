@@ -162,26 +162,63 @@ unified_path_plan_build :: proc(
 		delete(identities, allocator)
 	}
 	extrude_move_count: u64
-	for source, source_slice_index in sources {
-		priority, source_ok :=
-			unified_path_source_validate(source, layer_ids)
-		if !source_ok {return {}, .Invalid_Input}
-		edge_count := len(source.points)-1
-		if source.closed {edge_count = len(source.points)}
-		if extrude_move_count > limits.max_moves ||
-		   u64(edge_count) >
-			limits.max_moves-extrude_move_count {
-			return {}, .Move_Limit
+	if len(sources) > 0 {
+		chunk_count := 1
+		if get_worker_threads() > 1 && len(sources) >= 256 {
+			chunk_count = min(get_worker_threads()*2, (len(sources)+127)/128)
 		}
-		extrude_move_count += u64(edge_count)
-		orders[source_slice_index] = {
-			source_slice_index = u32(source_slice_index),
-			layer_index = source.layer_index,
-			priority = priority,
-			source_order = source.source_order,
-			stable_id = source.stable_id,
+		if chunk_count == 1 {
+			for source, source_slice_index in sources {
+				priority, source_ok := unified_path_source_validate(source, layer_ids)
+				if !source_ok {return {}, .Invalid_Input}
+				edge_count := len(source.points)-1
+				if source.closed {edge_count = len(source.points)}
+				if extrude_move_count > limits.max_moves ||
+				   u64(edge_count) > limits.max_moves-extrude_move_count {
+					return {}, .Move_Limit
+				}
+				extrude_move_count += u64(edge_count)
+				orders[source_slice_index] = {
+					source_slice_index = u32(source_slice_index),
+					layer_index        = source.layer_index,
+					priority           = priority,
+					source_order       = source.source_order,
+					stable_id          = source.stable_id,
+				}
+				identities[source_slice_index] = source.stable_id
+			}
+		} else {
+			chunk_size := (len(sources)+chunk_count-1)/chunk_count
+			chunk_counts := make([]u64, chunk_count, allocator)
+			chunk_ok := make([]bool, chunk_count, allocator)
+			if chunk_counts == nil || chunk_ok == nil {
+				delete(chunk_counts, allocator)
+				delete(chunk_ok, allocator)
+				return {}, .Allocation_Failed
+			}
+			defer {
+				delete(chunk_counts, allocator)
+				delete(chunk_ok, allocator)
+			}
+			val_ctx := Plan_Validate_Context{
+				layer_ids    = layer_ids,
+				sources      = sources,
+				orders       = orders,
+				identities   = identities,
+				chunk_counts = chunk_counts,
+				chunk_ok     = chunk_ok,
+				chunk_size   = chunk_size,
+			}
+			parallel_for(chunk_count, &val_ctx, unified_path_validate_chunk, min_count = 2)
+			for c in 0..<chunk_count {
+				if !chunk_ok[c] {return {}, .Invalid_Input}
+				if extrude_move_count > limits.max_moves ||
+				   chunk_counts[c] > limits.max_moves-extrude_move_count {
+					return {}, .Move_Limit
+				}
+				extrude_move_count += chunk_counts[c]
+			}
 		}
-		identities[source_slice_index] = source.stable_id
 	}
 	slice.sort_by(orders, unified_path_order_less)
 	slice.sort_by(identities, unified_path_stable_id_less)
@@ -201,6 +238,12 @@ unified_path_plan_build :: proc(
 		return {}, .Arithmetic
 	}
 
+	emit_items := make([]Plan_Emit_Item, len(sources), allocator)
+	if len(sources) > 0 && emit_items == nil {
+		return {}, .Allocation_Failed
+	}
+	defer delete(emit_items, allocator)
+
 	result := Unified_Path_Plan_Result{config = config}
 	result.layers = make(
 		[]Unified_Planned_Layer,
@@ -212,25 +255,20 @@ unified_path_plan_build :: proc(
 		len(sources),
 		allocator,
 	)
-	result.moves = make(
-		[]Unified_Planned_Move,
-		int(maximum_move_count),
-		allocator,
-	)
 	if len(layer_ids) > 0 && result.layers == nil ||
-	   len(sources) > 0 && result.paths == nil ||
-	   maximum_move_count > 0 && result.moves == nil {
+	   len(sources) > 0 && result.paths == nil {
 		unified_path_plan_result_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
 
+	// Pass 1 (serial): chain open-path runs, resolve per-path seam/direction and exact move offsets.
 	current := config.start
 	has_last_seam := false
 	last_seam: polygon.Polygon_Point
 	order_cursor := 0
 	path_write := 0
 	move_write := 0
-	for layer_id, layer_index in layer_ids {
+	for _, layer_index in layer_ids {
 		layer_path_start := path_write
 		layer_move_start := move_write
 		for order_cursor < len(orders) &&
@@ -254,22 +292,55 @@ unified_path_plan_build :: proc(
 			}
 			order := orders[order_cursor]
 			source := sources[order.source_slice_index]
-			emit_ok := unified_path_plan_emit_source(
-				source,
-				order.priority,
-				config.seam_strategy,
-				&has_last_seam,
-				&last_seam,
-				&current,
-				result.paths,
-				result.moves,
-				&path_write,
-				&move_write,
-				&result,
-			)
-			if !emit_ok {
+			start_index := 0
+			reversed := false
+			if source.closed {
+				start_index = unified_path_plan_seam_index(
+					source.points,
+					current,
+					config.seam_strategy,
+					has_last_seam,
+					last_seam,
+				)
+				if source.source_kind == .Perimeter {
+					has_last_seam = true
+					last_seam = source.points[start_index]
+				}
+			} else if path_plan_distance_2(
+				current,
+				source.points[len(source.points)-1],
+			) < path_plan_distance_2(current, source.points[0]) {
+				start_index = len(source.points)-1
+				reversed = true
+			}
+			start_point := source.points[start_index]
+			has_travel := current != start_point
+			edge_count := len(source.points)-1
+			if source.closed {edge_count = len(source.points)}
+			path_move_count := edge_count+(1 if has_travel else 0)
+			if path_move_count <= 0 || path_move_count > int(max(u32)) {
 				unified_path_plan_result_destroy(&result, allocator)
 				return {}, .Arithmetic
+			}
+			emit_items[path_write] = {
+				order       = order,
+				start_index = u32(start_index),
+				reversed    = reversed,
+				has_travel  = has_travel,
+				travel_from = current,
+				move_offset = u64(move_write),
+				move_count  = u32(path_move_count),
+			}
+			if has_travel {result.travel_move_count += 1}
+			result.extrude_move_count += u64(edge_count)
+			move_write += path_move_count
+			path_write += 1
+			if source.closed {
+				current = start_point
+			} else if reversed {
+				current = source.points[0]
+			} else {
+				current = source.points[len(source.points)-1]
 			}
 			order_cursor += 1
 		}
@@ -280,137 +351,188 @@ unified_path_plan_build :: proc(
 			unified_path_plan_result_destroy(&result, allocator)
 			return {}, .Arithmetic
 		}
-		_ = layer_id
 		result.layers[layer_index] = {
 			path_offset = u64(layer_path_start),
-			path_count = u32(layer_path_count),
+			path_count  = u32(layer_path_count),
 			move_offset = u64(layer_move_start),
-			move_count = u32(layer_move_count),
+			move_count  = u32(layer_move_count),
 		}
 	}
 	if order_cursor != len(orders) ||
-	   path_write != len(result.paths) {
+	   path_write != len(result.paths) ||
+	   u64(move_write) > maximum_move_count {
 		unified_path_plan_result_destroy(&result, allocator)
 		return {}, .Arithmetic
 	}
-	result.moves = result.moves[:move_write]
+
+	result.moves = make([]Unified_Planned_Move, move_write, allocator)
+	if move_write > 0 && result.moves == nil {
+		unified_path_plan_result_destroy(&result, allocator)
+		return {}, .Allocation_Failed
+	}
+
+	// Pass 2 (parallel per layer): emit planned paths and moves (including per-move stable IDs).
+	layer_ok := make([]bool, len(layer_ids), allocator)
+	if len(layer_ids) > 0 && layer_ok == nil {
+		unified_path_plan_result_destroy(&result, allocator)
+		return {}, .Allocation_Failed
+	}
+	defer delete(layer_ok, allocator)
+
+	emit_ctx := Plan_Emit_Context{
+		sources    = sources,
+		emit_items = emit_items,
+		layers     = result.layers,
+		paths      = result.paths,
+		moves      = result.moves,
+		layer_ok   = layer_ok,
+	}
+	parallel_for(len(layer_ids), &emit_ctx, unified_path_emit_layer)
+	for ok in layer_ok {
+		if !ok {
+			unified_path_plan_result_destroy(&result, allocator)
+			return {}, .Arithmetic
+		}
+	}
 	return result, .None
 }
 
-unified_path_plan_emit_source :: proc(
-	source: Unified_Path_Source,
-	priority: u8,
-	seam_strategy: Seam_Strategy,
-	has_last_seam: ^bool,
-	last_seam: ^polygon.Polygon_Point,
-	current: ^polygon.Polygon_Point,
-	paths: []Unified_Planned_Path,
-	moves: []Unified_Planned_Move,
-	path_write, move_write: ^int,
-	result: ^Unified_Path_Plan_Result,
-) -> bool {
-	if path_write^ >= len(paths) {return false}
-	start_index := 0
-	reversed := false
-	if source.closed {
-		start_index = unified_path_plan_seam_index(
-			source.points,
-			current^,
-			seam_strategy,
-			has_last_seam^,
-			last_seam^,
-		)
-		if source.source_kind == .Perimeter {
-			has_last_seam^ = true
-			last_seam^ = source.points[start_index]
+@(private = "file")
+Plan_Validate_Context :: struct {
+	layer_ids:    []contracts.Stable_ID,
+	sources:      []Unified_Path_Source,
+	orders:       []Unified_Path_Order,
+	identities:   []contracts.Stable_ID,
+	chunk_counts: []u64,
+	chunk_ok:     []bool,
+	chunk_size:   int,
+}
+
+@(private = "file")
+unified_path_validate_chunk :: proc(ctx: ^Plan_Validate_Context, chunk_index: int) {
+	start := chunk_index*ctx.chunk_size
+	end := min(start+ctx.chunk_size, len(ctx.sources))
+	total: u64
+	for source_slice_index in start..<end {
+		source := ctx.sources[source_slice_index]
+		priority, source_ok := unified_path_source_validate(source, ctx.layer_ids)
+		if !source_ok {
+			ctx.chunk_ok[chunk_index] = false
+			return
 		}
-	} else if path_plan_distance_2(
-		current^,
-		source.points[len(source.points)-1],
-	) < path_plan_distance_2(current^, source.points[0]) {
-		start_index = len(source.points)-1
-		reversed = true
-	}
-	path_set_id := contracts.stable_id_child(
-		source.stable_id,
-		.Feature,
-		0,
-	)
-	path_id := contracts.stable_id_child(path_set_id, .Path, 0)
-	path_move_start := move_write^
-	start_point := source.points[start_index]
-	if !unified_path_plan_emit_travel(
-		current^,
-		start_point,
-		path_id,
-		moves,
-		move_write,
-		result,
-	) {
-		return false
-	}
-	edge_count := len(source.points)-1
-	if source.closed {edge_count = len(source.points)}
-	for local_edge_index in 0..<edge_count {
-		point_a_index := local_edge_index
-		point_b_index := local_edge_index+1
-		source_edge_index := local_edge_index
-		if source.closed {
-			point_a_index =
-				(start_index+local_edge_index)%len(source.points)
-			point_b_index = (point_a_index+1)%len(source.points)
-			source_edge_index = point_a_index
-		} else if reversed {
-			point_a_index =
-				len(source.points)-1-local_edge_index
-			point_b_index = point_a_index-1
-			source_edge_index = point_b_index
+		edge_count := len(source.points)-1
+		if source.closed {edge_count = len(source.points)}
+		total += u64(edge_count)
+		ctx.orders[source_slice_index] = {
+			source_slice_index = u32(source_slice_index),
+			layer_index        = source.layer_index,
+			priority           = priority,
+			source_order       = source.source_order,
+			stable_id          = source.stable_id,
 		}
-		if !unified_path_plan_emit_extrude(
-			source.points[point_a_index],
-			source.points[point_b_index],
-			source.line_widths[point_a_index],
-			source.line_widths[point_b_index],
-			source.role,
-			path_id,
-			u32(source_edge_index),
-			moves,
-			move_write,
-			result,
-		) {
-			return false
+		ctx.identities[source_slice_index] = source.stable_id
+	}
+	ctx.chunk_counts[chunk_index] = total
+	ctx.chunk_ok[chunk_index] = true
+}
+
+@(private = "file")
+Plan_Emit_Item :: struct {
+	order:       Unified_Path_Order,
+	start_index: u32,
+	reversed:    bool,
+	has_travel:  bool,
+	travel_from: polygon.Polygon_Point,
+	move_offset: u64,
+	move_count:  u32,
+}
+
+@(private = "file")
+Plan_Emit_Context :: struct {
+	sources:    []Unified_Path_Source,
+	emit_items: []Plan_Emit_Item,
+	layers:     []Unified_Planned_Layer,
+	paths:      []Unified_Planned_Path,
+	moves:      []Unified_Planned_Move,
+	layer_ok:   []bool,
+}
+
+@(private = "file")
+unified_path_emit_layer :: proc(ctx: ^Plan_Emit_Context, layer_index: int) {
+	layer := ctx.layers[layer_index]
+	path_start := int(layer.path_offset)
+	path_end := path_start+int(layer.path_count)
+	for path_index in path_start..<path_end {
+		item := ctx.emit_items[path_index]
+		source := ctx.sources[item.order.source_slice_index]
+		path_set_id := contracts.stable_id_child(source.stable_id, .Feature, 0)
+		path_id := contracts.stable_id_child(path_set_id, .Path, 0)
+		move_write := int(item.move_offset)
+		start_index := int(item.start_index)
+		if item.has_travel {
+			ctx.moves[move_write] = {
+				stable_id         = contracts.stable_id_child(path_id, .Path, u64(1)<<63),
+				path_id           = path_id,
+				kind              = .Travel,
+				source_edge_index = max(u32),
+				point_a           = item.travel_from,
+				point_b           = source.points[start_index],
+			}
+			move_write += 1
+		}
+		edge_count := len(source.points)-1
+		if source.closed {edge_count = len(source.points)}
+		for local_edge_index in 0..<edge_count {
+			point_a_index := local_edge_index
+			point_b_index := local_edge_index+1
+			source_edge_index := local_edge_index
+			if source.closed {
+				point_a_index = (start_index+local_edge_index)%len(source.points)
+				point_b_index = (point_a_index+1)%len(source.points)
+				source_edge_index = point_a_index
+			} else if item.reversed {
+				point_a_index = len(source.points)-1-local_edge_index
+				point_b_index = point_a_index-1
+				source_edge_index = point_b_index
+			}
+			a := source.points[point_a_index]
+			b := source.points[point_b_index]
+			if a == b {
+				ctx.layer_ok[layer_index] = false
+				return
+			}
+			ctx.moves[move_write] = {
+				stable_id         = contracts.stable_id_child(path_id, .Path, u64(source_edge_index)),
+				path_id           = path_id,
+				kind              = .Extrude,
+				role              = source.role,
+				source_edge_index = u32(source_edge_index),
+				point_a           = a,
+				point_b           = b,
+				line_width_a      = source.line_widths[point_a_index],
+				line_width_b      = source.line_widths[point_b_index],
+			}
+			move_write += 1
+		}
+		ctx.paths[path_index] = {
+			stable_id    = path_id,
+			path_set_id  = path_set_id,
+			source_id    = source.stable_id,
+			source_kind  = source.source_kind,
+			source_index = source.source_index,
+			source_order = source.source_order,
+			layer_id     = source.layer_id,
+			layer_index  = source.layer_index,
+			role         = source.role,
+			priority     = item.order.priority,
+			start_index  = item.start_index,
+			reversed     = item.reversed,
+			closed       = source.closed,
+			move_offset  = item.move_offset,
+			move_count   = item.move_count,
 		}
 	}
-	if source.closed {
-		current^ = start_point
-	} else if reversed {
-		current^ = source.points[0]
-	} else {
-		current^ = source.points[len(source.points)-1]
-	}
-	path_move_count := move_write^-path_move_start
-	if path_move_count <= 0 || path_move_count > int(max(u32)) {
-		return false
-	}
-	paths[path_write^] = {
-		stable_id = path_id,
-		path_set_id = path_set_id,
-		source_id = source.stable_id,
-		source_kind = source.source_kind,
-		source_index = source.source_index,
-		source_order = source.source_order,
-		layer_id = source.layer_id,
-		layer_index = source.layer_index,
-		role = source.role,
-		priority = priority,
-		start_index = u32(start_index),
-		reversed = reversed,
-		closed = source.closed,
-		move_offset = u64(path_move_start),
-		move_count = u32(path_move_count),
-	}
-	path_write^ += 1
-	return true
+	ctx.layer_ok[layer_index] = true
 }
 
 unified_path_plan_seam_index :: proc(
@@ -421,50 +543,92 @@ unified_path_plan_seam_index :: proc(
 	last_seam := polygon.Polygon_Point{},
 ) -> int {
 	best_index := 0
-	best := unified_path_plan_seam_score(points, 0, current)
-	best_align := u128(0)
-	if has_last_seam {
-		best_align = path_plan_distance_2(last_seam, points[0])
-	}
-	for point_index in 1..<len(points) {
-		candidate :=
-			unified_path_plan_seam_score(points, point_index, current)
-		cand_align := u128(0)
+	switch strategy {
+	case .Rear:
+		best_y := i64(points[0].y)
+		best_computed := false
+		best: Unified_Seam_Score
+		for point_index in 1..<len(points) {
+			y := i64(points[point_index].y)
+			if y < best_y {continue}
+			if y > best_y {
+				best_index = point_index
+				best_y = y
+				best_computed = false
+				continue
+			}
+			if !best_computed {
+				best = unified_path_plan_seam_score(points, best_index, current)
+				best_computed = true
+			}
+			candidate := unified_path_plan_seam_score(points, point_index, current)
+			if unified_path_plan_seam_score_less(candidate, best) {
+				best_index = point_index
+				best = candidate
+			}
+		}
+		return best_index
+	case .Nearest:
+		best_d := path_plan_distance_2(current, points[0])
+		best_computed := false
+		best: Unified_Seam_Score
+		for point_index in 1..<len(points) {
+			d := path_plan_distance_2(current, points[point_index])
+			if d > best_d {continue}
+			if d < best_d {
+				best_index = point_index
+				best_d = d
+				best_computed = false
+				continue
+			}
+			if !best_computed {
+				best = unified_path_plan_seam_score(points, best_index, current)
+				best_computed = true
+			}
+			candidate := unified_path_plan_seam_score(points, point_index, current)
+			if unified_path_plan_seam_score_less(candidate, best) {
+				best_index = point_index
+				best = candidate
+			}
+		}
+		return best_index
+	case .Aligned:
 		if has_last_seam {
-			cand_align = path_plan_distance_2(last_seam, points[point_index])
-		}
-		better := false
-		switch strategy {
-		case .Rear:
-			if candidate.rear_coordinate != best.rear_coordinate {
-				better = candidate.rear_coordinate > best.rear_coordinate
-			} else {
-				better = unified_path_plan_seam_score_less(candidate, best)
-			}
-		case .Sharpest_Corner:
-			better = unified_path_plan_seam_score_less(candidate, best)
-		case .Nearest:
-			if candidate.travel_distance != best.travel_distance {
-				better = candidate.travel_distance < best.travel_distance
-			} else {
-				better = unified_path_plan_seam_score_less(candidate, best)
-			}
-		case .Aligned:
-			if has_last_seam {
-				if cand_align != best_align {
-					better = cand_align < best_align
-				} else {
-					better = unified_path_plan_seam_score_less(candidate, best)
+			best_align := path_plan_distance_2(last_seam, points[0])
+			best_computed := false
+			best: Unified_Seam_Score
+			for point_index in 1..<len(points) {
+				cand_align := path_plan_distance_2(last_seam, points[point_index])
+				if cand_align > best_align {continue}
+				if cand_align < best_align {
+					best_index = point_index
+					best_align = cand_align
+					best_computed = false
+					continue
 				}
-			} else {
-				better = unified_path_plan_seam_score_less(candidate, best)
+				if !best_computed {
+					best = unified_path_plan_seam_score(points, best_index, current)
+					best_computed = true
+				}
+				candidate := unified_path_plan_seam_score(points, point_index, current)
+				if unified_path_plan_seam_score_less(candidate, best) {
+					best_index = point_index
+					best = candidate
+				}
+			}
+			return best_index
+		}
+		fallthrough
+	case .Sharpest_Corner:
+		best := unified_path_plan_seam_score(points, 0, current)
+		for point_index in 1..<len(points) {
+			candidate := unified_path_plan_seam_score(points, point_index, current)
+			if unified_path_plan_seam_score_less(candidate, best) {
+				best_index = point_index
+				best = candidate
 			}
 		}
-		if better {
-			best_index = point_index
-			best = candidate
-			best_align = cand_align
-		}
+		return best_index
 	}
 	return best_index
 }
@@ -516,63 +680,6 @@ unified_path_plan_seam_score_less :: proc(
 		return candidate.travel_distance < current.travel_distance
 	}
 	return candidate.point_index < current.point_index
-}
-
-unified_path_plan_emit_travel :: proc(
-	a, b: polygon.Polygon_Point,
-	path_id: contracts.Stable_ID,
-	moves: []Unified_Planned_Move,
-	move_write: ^int,
-	result: ^Unified_Path_Plan_Result,
-) -> bool {
-	if a == b {return true}
-	if move_write^ >= len(moves) {return false}
-	moves[move_write^] = {
-		stable_id = contracts.stable_id_child(
-			path_id,
-			.Path,
-			u64(1)<<63,
-		),
-		path_id = path_id,
-		kind = .Travel,
-		source_edge_index = max(u32),
-		point_a = a,
-		point_b = b,
-	}
-	move_write^ += 1
-	result.travel_move_count += 1
-	return true
-}
-
-unified_path_plan_emit_extrude :: proc(
-	a, b: polygon.Polygon_Point,
-	width_a, width_b: contracts.Micrometres,
-	role: profiles.Printable_Role,
-	path_id: contracts.Stable_ID,
-	source_edge_index: u32,
-	moves: []Unified_Planned_Move,
-	move_write: ^int,
-	result: ^Unified_Path_Plan_Result,
-) -> bool {
-	if move_write^ >= len(moves) || a == b {return false}
-	moves[move_write^] = {
-		stable_id = contracts.stable_id_child(
-			path_id,
-			.Path,
-			u64(source_edge_index),
-		),
-		path_id = path_id,
-		kind = .Extrude,
-		role = role,
-		source_edge_index = source_edge_index,
-		point_a = a,
-		point_b = b,
-		line_width_a = width_a,
-		line_width_b = width_b,
-	}
-	move_write^ += 1
-	result.extrude_move_count += 1
-	return true
 }
 
 // Reorders `run` (open paths) greedily: each next path is the one with the endpoint nearest to

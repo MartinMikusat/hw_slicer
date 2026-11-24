@@ -20,13 +20,9 @@ mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.alloc
 
 	nverts := u32(min(len(mesh.vertex_x), min(len(mesh.vertex_y), len(mesh.vertex_z))))
 	nt := len(mesh.triangle_a)
-	keep_a := make([dynamic]u32, 0, nt, allocator)
-	keep_b := make([dynamic]u32, 0, nt, allocator)
-	keep_c := make([dynamic]u32, 0, nt, allocator)
-	keep_ids := make([dynamic]contracts.Stable_ID, 0, nt, allocator)
-	keep_off := make([dynamic]u64, 0, nt, allocator)
 
 	// Step 1: Drop out-of-bounds and degenerate / zero-area triangles.
+	// Fast path: scan first and allocate only when at least one triangle is dropped.
 	for i in 0..<nt {
 		ia, ib, ic := mesh.triangle_a[i], mesh.triangle_b[i], mesh.triangle_c[i]
 		if ia >= nverts || ib >= nverts || ic >= nverts || ia == ib || ib == ic || ic == ia {
@@ -44,32 +40,51 @@ mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.alloc
 		nz := ux*vy - uy*vx
 		if nx*nx + ny*ny + nz*nz < 1e-18 {
 			stats.degenerate_removed += 1
-			continue
 		}
-		append(&keep_a, ia)
-		append(&keep_b, ib)
-		append(&keep_c, ic)
-		append(&keep_ids, mesh.triangle_ids[i])
-		append(&keep_off, mesh.source_record_offsets[i])
 	}
 
-	if stats.degenerate_removed == 0 {
-		delete(keep_a)
-		delete(keep_b)
-		delete(keep_c)
-		delete(keep_ids)
-		delete(keep_off)
-	} else {
+	if stats.degenerate_removed > 0 {
+		kept := nt - int(stats.degenerate_removed)
+		keep_a := make([]u32, kept, allocator)
+		keep_b := make([]u32, kept, allocator)
+		keep_c := make([]u32, kept, allocator)
+		keep_ids := make([]contracts.Stable_ID, kept, allocator)
+		keep_off := make([]u64, kept, allocator)
+		w := 0
+		for i in 0..<nt {
+			ia, ib, ic := mesh.triangle_a[i], mesh.triangle_b[i], mesh.triangle_c[i]
+			if ia >= nverts || ib >= nverts || ic >= nverts || ia == ib || ib == ic || ic == ia {
+				continue
+			}
+			ux := mesh.vertex_x[ib] - mesh.vertex_x[ia]
+			uy := mesh.vertex_y[ib] - mesh.vertex_y[ia]
+			uz := mesh.vertex_z[ib] - mesh.vertex_z[ia]
+			vx := mesh.vertex_x[ic] - mesh.vertex_x[ia]
+			vy := mesh.vertex_y[ic] - mesh.vertex_y[ia]
+			vz := mesh.vertex_z[ic] - mesh.vertex_z[ia]
+			nx := uy*vz - uz*vy
+			ny := uz*vx - ux*vz
+			nz := ux*vy - uy*vx
+			if nx*nx + ny*ny + nz*nz < 1e-18 {
+				continue
+			}
+			keep_a[w] = ia
+			keep_b[w] = ib
+			keep_c[w] = ic
+			keep_ids[w] = mesh.triangle_ids[i]
+			keep_off[w] = mesh.source_record_offsets[i]
+			w += 1
+		}
 		delete(mesh.triangle_a, allocator)
 		delete(mesh.triangle_b, allocator)
 		delete(mesh.triangle_c, allocator)
 		delete(mesh.triangle_ids, allocator)
 		delete(mesh.source_record_offsets, allocator)
-		mesh.triangle_a = keep_a[:]
-		mesh.triangle_b = keep_b[:]
-		mesh.triangle_c = keep_c[:]
-		mesh.triangle_ids = keep_ids[:]
-		mesh.source_record_offsets = keep_off[:]
+		mesh.triangle_a = keep_a
+		mesh.triangle_b = keep_b
+		mesh.triangle_c = keep_c
+		mesh.triangle_ids = keep_ids
+		mesh.source_record_offsets = keep_off
 	}
 
 	// Step 2: Make face orientation consistent. Vertices are matched by exact coordinates (STL
@@ -78,23 +93,69 @@ mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.alloc
 	// components, the top face's normal otherwise).
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	face_count := len(mesh.triangle_a)
-	welded := make(map[[3]f64]u32, int(nverts), context.temp_allocator)
+	if face_count == 0 {return stats}
+
+	next_pow2 :: proc(n: int) -> int {
+		p := 16
+		for p < n {p <<= 1}
+		return p
+	}
+
+	vcap := next_pow2(int(nverts) * 2)
+	vmask := u64(vcap - 1)
+	vtable := make([]u32, vcap, context.temp_allocator) // 0 = empty, id+1 = occupied
+	vrep := make([]u32, int(nverts), context.temp_allocator)
 	weld := make([]u32, int(nverts), context.temp_allocator)
+	unique_verts := u32(0)
 	for v in 0..<int(nverts) {
-		key := [3]f64{mesh.vertex_x[v], mesh.vertex_y[v], mesh.vertex_z[v]}
-		id, found := welded[key]
-		if !found {
-			id = u32(len(welded))
-			welded[key] = id
+		x, y, z := mesh.vertex_x[v], mesh.vertex_y[v], mesh.vertex_z[v]
+		cx := 0.0 if x == 0 else x
+		cy := 0.0 if y == 0 else y
+		cz := 0.0 if z == 0 else z
+		h := transmute(u64)cx * 0x9e3779b97f4a7c15
+		h ~= transmute(u64)cy * 0xbf58476d1ce4e5b9
+		h ~= transmute(u64)cz * 0x94d049bb133111eb
+		h ~= h >> 30
+		h *= 0xbf58476d1ce4e5b9
+		slot := h & vmask
+		for {
+			entry := vtable[slot]
+			if entry == 0 {
+				id := unique_verts
+				unique_verts += 1
+				vtable[slot] = id + 1
+				vrep[id] = u32(v)
+				weld[v] = id
+				break
+			}
+			id := entry - 1
+			rep := vrep[id]
+			if mesh.vertex_x[rep] == x && mesh.vertex_y[rep] == y && mesh.vertex_z[rep] == z {
+				weld[v] = id
+				break
+			}
+			slot = (slot + 1) & vmask
 		}
-		weld[v] = id
 	}
-	Edge_Use :: struct {
-		faces: [2]u32,
-		count: u32,
-		dirs:  [2]bool, // true when the face runs the edge from its lower to its higher vertex
+
+	Edge_Slot :: struct {
+		key:   u64, // ((u64(lo) << 32) | u64(hi)) + 1; 0 = empty
+		face0: u32,
+		face1: u32,
+		meta:  u32, // low 30 bits = count, bit 30 = dir0, bit 31 = dir1
 	}
-	edges := make(map[u64]Edge_Use, face_count*2, context.temp_allocator)
+	DIR0_BIT :: u32(1) << 30
+	DIR1_BIT :: u32(1) << 31
+	COUNT_MASK :: u32(0x3fff_ffff)
+
+	ecap := next_pow2(face_count * 3)
+	emask := u64(ecap - 1)
+	edges := make([]Edge_Slot, ecap, context.temp_allocator)
+
+	edge_hash :: proc(key: u64) -> u64 {
+		h := key * 0x9e3779b97f4a7c15
+		return h ~ (h >> 32)
+	}
 	face_vertices :: proc(mesh: ^formats.Decoded_Mesh, weld: []u32, f: int) -> [3]u32 {
 		return {weld[mesh.triangle_a[f]], weld[mesh.triangle_b[f]], weld[mesh.triangle_c[f]]}
 	}
@@ -102,14 +163,27 @@ mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.alloc
 		v := face_vertices(mesh, weld, f)
 		for k in 0..<3 {
 			a, b := v[k], v[(k+1)%3]
-			key := (u64(min(a, b)) << 32) | u64(max(a, b))
-			use := edges[key]
-			if use.count < 2 {
-				use.faces[use.count] = u32(f)
-				use.dirs[use.count] = a < b
+			key := ((u64(min(a, b)) << 32) | u64(max(a, b))) + 1
+			slot := edge_hash(key) & emask
+			for {
+				e := &edges[slot]
+				if e.key == 0 {
+					e.key = key
+					e.face0 = u32(f)
+					e.meta = 1 | (DIR0_BIT if a < b else 0)
+					break
+				}
+				if e.key == key {
+					cnt := e.meta & COUNT_MASK
+					if cnt == 1 {
+						e.face1 = u32(f)
+						if a < b {e.meta |= DIR1_BIT}
+					}
+					if cnt < COUNT_MASK {e.meta += 1}
+					break
+				}
+				slot = (slot + 1) & emask
 			}
-			use.count += 1
-			edges[key] = use
 		}
 	}
 	flip := make([]bool, face_count, context.temp_allocator)
@@ -130,16 +204,23 @@ mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.alloc
 			v := face_vertices(mesh, weld, f)
 			for k in 0..<3 {
 				a, b := v[k], v[(k+1)%3]
-				use := edges[(u64(min(a, b)) << 32) | u64(max(a, b))]
+				key := ((u64(min(a, b)) << 32) | u64(max(a, b))) + 1
+				slot := edge_hash(key) & emask
+				for edges[slot].key != key {
+					slot = (slot + 1) & emask
+				}
+				e := edges[slot]
 				edge_total += 1
-				if use.count != 2 {
+				if (e.meta & COUNT_MASK) != 2 {
 					boundary_edges += 1
 					continue
 				}
-				side := 0 if int(use.faces[0]) == f else 1
-				g := int(use.faces[1-side])
+				is_face0 := int(e.face0) == f
+				g := int(e.face1 if is_face0 else e.face0)
+				dir_f := (e.meta & DIR0_BIT) != 0 if is_face0 else (e.meta & DIR1_BIT) != 0
+				dir_g := (e.meta & DIR1_BIT) != 0 if is_face0 else (e.meta & DIR0_BIT) != 0
 				// Consistent faces run a shared edge in opposite directions.
-				g_flip := (use.dirs[side] != flip[f]) == use.dirs[1-side]
+				g_flip := (dir_f != flip[f]) == dir_g
 				if !visited[g] {
 					visited[g] = true
 					flip[g] = g_flip
