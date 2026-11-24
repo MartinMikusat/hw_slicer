@@ -31,6 +31,10 @@ App_State :: struct {
 	mesh:          Mesh,
 	design:        Design_State,
 	workspace:     ^pipeline.Workspace,
+	// The model the workspace slices, and the design the toolpath tab last showed. Loading a
+	// design replaces the model mesh, so switching tabs reloads whichever one is missing.
+	workspace_model: int,
+	demo_design_path: string,
 	placement: Model_Placement,
 	face_hover: int,
 	face_pressed: int,
@@ -130,7 +134,9 @@ app_model_path :: proc(index: int) -> (string, string) {
 	}
 }
 
-app_load_model :: proc(index: int, frame_camera := true) -> bool {
+// Loads one of the bundled models (0–2) or the external file (3). With `open_workspace` false
+// only the viewer mesh is replaced and the slicing workspace keeps its results.
+app_load_model :: proc(index: int, frame_camera := true, open_workspace := true) -> bool {
 	path, name := app_model_path(index)
 	path_is_owned := index >= 0 && index < 3
 	defer {
@@ -175,6 +181,10 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 	}
 	mesh_destroy(&app.mesh)
 	app.mesh = next
+	if len(app.design.path) > 0 {
+		delete(app.demo_design_path)
+		app.demo_design_path = strings.clone(app.design.path)
+	}
 	design_state_clear(&app.design)
 	rotation := mat4_identity()
 	if index == 1 {rotation = {1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1}}
@@ -195,7 +205,10 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 		{scope = "model", stage = "loaded"},
 		{rows = i64(app.mesh.triangle_count)},
 	)
-	app_workspace_open(path)
+	if open_workspace {
+		app_workspace_open(path)
+		app.workspace_model = index
+	}
 	if frame_camera {app_frame_camera()}
 	return true
 }
@@ -537,6 +550,7 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 
 app_destroy :: proc() {
 	mesh_destroy(&app.mesh)
+	delete(app.demo_design_path)
 	design_state_clear(&app.design)
 	delete(app.section_vertices)
 	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
@@ -652,7 +666,7 @@ app_pick_design_junction :: proc(px, py: f64) {
 
 app_rebuild_section :: proc() {
 	app.ui.workspace.result_shown = false
-	if !app.ui.section_enabled || app.mesh.triangle_count == 0 || app.design.active {
+	if !app.ui.section_enabled || len(app.mesh.vertices) == 0 || app.design.active {
 		clear(&app.section_vertices)
 		app.ui.section_segments = 0
 		return

@@ -521,10 +521,16 @@ app_set_demo_tab :: proc(slicer: bool) {
 	if slicer {
 		app.design.active = false
 		app.ui.focused_id = 0
+		// A loaded design replaces the model mesh; bring back the model the workspace slices.
+		if len(app.mesh.vertices) == 0 && app.workspace != nil {
+			_ = app_load_model(app.workspace_model, true, false)
+		}
 		app_workspace_refresh()
 	} else {
 		if len(app.design.layers) == 0 {
-			if newest, found := design_newest(); found {_ = app_load_design(newest)}
+			path := app.demo_design_path
+			if len(path) == 0 {path, _ = design_newest()}
+			if len(path) > 0 {_ = app_load_design(strings.clone(path, context.temp_allocator))}
 		}
 		app.design.active = len(app.design.layers) > 0
 	}
