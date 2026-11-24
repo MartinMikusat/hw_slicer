@@ -77,7 +77,7 @@ app_workspace_open :: proc(path: string) {
 	app.ui.workspace.active = true
 	app.ui.workspace.auto_run = true
 	graph := &app.ui.workspace.graph
-	graph^ = {show_mesh = true, show_result = true, zoom = 1}
+	graph^ = {show_mesh = true, show_result = true, zoom = 1, inspector_open = true}
 	workspace_clock_origin = time.tick_now()
 	app_workspace_refresh()
 	devlog.succeeded(devlog.global(), site, {scope = "workspace", stage = "open"})
@@ -573,12 +573,6 @@ app_graph_key :: proc(key_code: u16, characters: string) -> bool {
 	graph := &ui.workspace.graph
 	if key_code == 53 && graph.menu_open {
 		graph.menu_open = false
-		ui_build_controls(ui)
-		app.needs_redraw = true
-		return true
-	}
-	if key_code == 53 && graph.inspector_open {
-		graph.inspector_open = false
 		ui_build_controls(ui)
 		app.needs_redraw = true
 		return true

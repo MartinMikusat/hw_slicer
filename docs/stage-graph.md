@@ -6,7 +6,7 @@ Code: `src/stage_graph.odin` (layout, drawing, attribute editor), `src/workspace
 
 ## Layout
 
-The graph sits on the left and the 3D view on the right in a 50/50 split separated by a draggable vertical divider. View actions (Frame, Wireframe, Mesh, Result, Lay on face), execution controls (Run, Auto), and the layer slider float inside the 3D view. An **Inspector** toggle in the 3D view opens the selected stage's Settings, Log, and Docs as an overlay drawer. A stage's column is one past its deepest input (`stage_columns`), and stages in one column stack vertically. Positions are computed and never saved.
+The graph sits on the left and the 3D view on the right in a 50/50 split separated by a draggable vertical divider. Inside the left stages pane, a collapsible docked sidebar (expanded by default) shows the selected stage's Settings, Log, and Docs; collapsing it returns the full stages pane to the graph canvas. View actions (Frame, Wireframe, Mesh, Result, Lay on face), execution controls (Run, Auto), and the layer slider float inside the 3D view. A stage's column is one past its deepest input (`stage_columns`), and stages in one column stack vertically. Positions are computed and never saved.
 
 ## Nodes and edges
 

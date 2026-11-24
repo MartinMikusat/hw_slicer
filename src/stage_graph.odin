@@ -18,6 +18,7 @@ GRAPH_ZOOM_MIN :: 0.25
 GRAPH_ZOOM_MAX :: 2.5
 GRAPH_SPLIT_DEFAULT :: 0.5
 GRAPH_DIVIDER_W :: 10.0
+GRAPH_SIDEBAR_W :: 300.0
 GRAPH_MENU_ROW :: 28.0
 ATTRIBUTE_ROW :: 44.0
 
@@ -98,7 +99,7 @@ ui_graph_content_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	return {12, 52, max(1, ui.width-24), max(1, ui.height-64)}
 }
 
-ui_graph_rect :: proc(ui: ^UI_State) -> UI_Rect {
+ui_stages_pane_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	c := ui_graph_content_rect(ui)
 	split := ui.workspace.graph.split if ui.workspace.graph.split > 0 else GRAPH_SPLIT_DEFAULT
 	avail := max(1.0, c.w-GRAPH_DIVIDER_W)
@@ -107,9 +108,22 @@ ui_graph_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	return {c.x, c.y, clamp(avail*split, lo, hi), c.h}
 }
 
+ui_attribute_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	p := ui_stages_pane_rect(ui)
+	w := min(GRAPH_SIDEBAR_W, p.w*0.45)
+	return {p.x, p.y, max(1.0, w), p.h}
+}
+
+ui_graph_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	p := ui_stages_pane_rect(ui)
+	if !ui.workspace.graph.inspector_open {return p}
+	a := ui_attribute_rect(ui)
+	return {a.x+a.w, p.y, max(1.0, p.w-a.w), p.h}
+}
+
 ui_graph_divider_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	g := ui_graph_rect(ui)
-	return {g.x+g.w, g.y, GRAPH_DIVIDER_W, g.h}
+	p := ui_stages_pane_rect(ui)
+	return {p.x+p.w, p.y, GRAPH_DIVIDER_W, p.h}
 }
 
 ui_graph_viewport_rect :: proc(ui: ^UI_State) -> UI_Rect {
@@ -117,15 +131,6 @@ ui_graph_viewport_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	d := ui_graph_divider_rect(ui)
 	left := d.x+d.w
 	return {left, c.y, max(1, c.x+c.w-left), c.h}
-}
-
-ui_attribute_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	vp := ui_viewport_rect(ui)
-	w := min(clamp(vp.w*0.44, 248, 320), max(180.0, vp.w-24))
-	top := vp.y+50
-	bottom := vp.y+vp.h-90
-	h := max(160.0, bottom-top)
-	return {vp.x+vp.w-w-12, top, w, h}
 }
 
 ui_graph_set_split :: proc(ui: ^UI_State, x: f64) {
@@ -405,12 +410,13 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 	if ui_graph_minimap_visible(ui) {
 		ui_add_control(ui, "graph overview", "move the graph view", ui_graph_minimap_rect(ui), .Graph_Minimap)
 	}
+	if !v.inspector_open {
+		ui_add_control(ui, "stage inspector", "show stage settings sidebar", {g.x+8, g.y+8, 92, 26}, .Graph_Inspector_Toggle)
+	}
 	ui_add_control(ui, "fit graph", "fit the stage graph in view", {g.x+g.w-60, g.y+8, 52, 26}, .Graph_Fit)
 	ui_add_control(ui, "graph divider", "resize the graph and the 3D view", ui_graph_divider_rect(ui), .Graph_Divider)
 
 	vp := ui_viewport_rect(ui)
-	insp_btn := UI_Rect{vp.x+vp.w-104, vp.y+12, 92, 30}
-	ui_add_control(ui, "stage inspector", "toggle stage settings, log, and docs", insp_btn, .Graph_Inspector_Toggle, true, 1, v.inspector_open)
 
 	// Floating viewport toolbar (wraps cleanly inside the 3D viewport when narrow).
 	Toolbar_Item :: struct {
@@ -429,7 +435,7 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 	}
 	tx := vp.x+12
 	ty := vp.y+12
-	max_x := max(vp.x+120, insp_btn.x-8)
+	max_x := max(vp.x+120, vp.x+vp.w-12)
 	for item in toolbar {
 		if tx > vp.x+12 && tx+item.width > max_x {
 			tx = vp.x+12
@@ -455,6 +461,7 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 	if v.inspector_open {
 		a := ui_attribute_rect(ui)
 		ui_add_control(ui, "inspector surface", "stage inspector", a, .Graph_Inspector_Surface)
+		ui_add_control(ui, "stage inspector", "collapse stage settings sidebar", {a.x+a.w-34, a.y+6, 26, 24}, .Graph_Inspector_Toggle)
 		tab_w := (a.w-16)/3
 		tab_names := [UI_Attribute_Tab]string{.Settings = "settings tab", .Log = "log tab", .Docs = "documentation tab"}
 		tab_labels := [UI_Attribute_Tab]string{.Settings = "stage settings", .Log = "stage log and timing", .Docs = "stage documentation"}
@@ -553,10 +560,7 @@ ui_draw_graph_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	ui_add_round_rect(painter, {d.x+d.w/2-2, d.y+d.h/2-24, 4, 48}, 2, grip)
 	if ui.workspace.graph.inspector_open {
 		a := ui_attribute_rect(ui)
-		ui_menu_shadow(painter, ui, a)
-		bg := theme.overlay
-		bg.w = 0.94
-		ui_add_round_rect(painter, a, 8, bg)
+		ui_add_rect(painter, a, theme.header)
 		ui_add_border(painter, a, theme.border)
 	}
 }
@@ -661,6 +665,9 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	}
 	gpu.pop_clip(painter.list)
 
+	if !v.inspector_open {
+		ui_draw_text(painter, painter.font, ui, "Settings ›", ui_control_rect(ui, .Graph_Inspector_Toggle), ui_control_ink(ui, .Graph_Inspector_Toggle), 0, .Center)
+	}
 	ui_draw_text(painter, painter.font, ui, "Fit", ui_control_rect(ui, .Graph_Fit), ui_control_ink(ui, .Graph_Fit), 0, .Center)
 	if ui_graph_minimap_visible(ui) {ui_draw_graph_minimap(painter, ui)}
 
@@ -754,7 +761,8 @@ ui_draw_attribute_editor :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	id := view.selected
 	stage := view.stages[id]
 	d := pipeline.stage_descriptors[id]
-	ui_draw_text(painter, painter.font, ui, d.name, {a.x+8, a.y+6, a.w-16, 24}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, d.name, {a.x+8, a.y+6, max(1.0, a.w-46), 24}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, "‹", ui_control_rect(ui, .Graph_Inspector_Toggle), ui_control_ink(ui, .Graph_Inspector_Toggle), 0, .Center)
 	status_color := theme.muted
 	if stage.state == .Stale || stage.state == .Failed {status_color = theme.accent}
 	ui_draw_text(painter, painter.font, ui, ui_stage_status(ui, stage), {a.x+8, a.y+30, a.w-16, 22}, status_color, 0)
@@ -923,9 +931,6 @@ ui_draw_gcode_legend :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	bg := theme.overlay
 	bg.w = 0.92
 	legend_right := vp.x + vp.w - 12
-	if v.inspector_open {
-		legend_right = ui_attribute_rect(ui).x - 12
-	}
 	if mode == .Line_Type {
 		swatches := pipeline.GCODE_LINE_SWATCHES
 		row_h := 18.0
@@ -991,13 +996,12 @@ ui_draw_gcode_legend :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 // The floating labels inside the 3D viewport of the graph workspace.
 ui_draw_graph_view_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	theme := ui_theme(ui)
-	labels := [6]struct {action: UI_Action, text: string}{
+	labels := [5]struct {action: UI_Action, text: string}{
 		{.Frame_Mesh, "Frame"},
 		{.Toggle_Wireframe, "Wireframe"},
 		{.View_Mesh, "Mesh"},
 		{.View_Result, "Result"},
 		{.Lay_On_Face, "Lay on face"},
-		{.Graph_Inspector_Toggle, "Inspector"},
 	}
 	for label in labels {
 		ui_draw_text(painter, painter.font, ui, label.text, ui_control_rect(ui, label.action), ui_control_ink(ui, label.action), 0, .Center)
