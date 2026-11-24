@@ -309,11 +309,6 @@ app_activate :: proc(action: UI_Action) -> bool {
 		return true
 	}
 	switch action {
-	case .Previous_Stage, .Next_Stage:
-		delta := -1 if action == .Previous_Stage else 1
-		app.ui.stage_index = clamp(app.ui.stage_index+delta, 0, len(pipeline.Stage_Group)-1)
-		app.ui.lay_on_face = false
-		app.needs_redraw = true
 	case .Demo_Tab_Design, .Demo_Tab_Slicer:
 		app_set_demo_tab(action == .Demo_Tab_Slicer)
 	case .Modal_Surface, .Workspace_Run, .Workspace_Auto, .Setting_Base:
@@ -450,7 +445,10 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.needs_redraw = true
 	case .Slice, .Cancel, .Capture, .Compare, .Export:
 		return false
-	case .None, .Evidence_Stage_Base:
+	case .None, .Evidence_Stage_Base, .Graph_Node_Base, .Graph_Fit, .Graph_Divider, .Graph_Minimap,
+	     .Graph_Menu_Surface, .Graph_Menu_Run_To, .Graph_Menu_Run_Only, .Graph_Menu_Reset, .Graph_Menu_Evidence,
+	     .Graph_Menu_Copy, .Attribute_Settings, .Attribute_Log, .Attribute_Docs, .Attribute_Advanced, .View_Mesh,
+	     .View_Result:
 		return false
 	}
 	return true
@@ -525,6 +523,8 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 		if startup != "" && app_load_design(startup) && startup_design_time >= 0 {
 			design_set_time_fraction(&app.design, startup_design_time)
 		}
+		// Without a design to show, the window opens on the slicer stages.
+		if !app.design.active && app.workspace != nil {app.ui.slicer_tab = true}
 	}
 	app.needs_redraw = true
 	devlog.succeeded(
@@ -651,10 +651,36 @@ app_pick_design_junction :: proc(px, py: f64) {
 }
 
 app_rebuild_section :: proc() {
+	app.ui.workspace.result_shown = false
 	if !app.ui.section_enabled || app.mesh.triangle_count == 0 || app.design.active {
 		clear(&app.section_vertices)
 		app.ui.section_segments = 0
 		return
+	}
+	// In the stage graph the layer view shows the selected stage's result on the layer nearest to
+	// the section height, and falls back to the mesh section where the stage has none.
+	if ui_graph_mode(&app.ui) && app.workspace != nil {
+		w := app.workspace
+		ui := &app.ui.workspace
+		ui.layer_count = pipeline.workspace_layer_count(w)
+		layer, print_z, has_layer := pipeline.workspace_layer_at(w, app.ui.section_z)
+		ui.layer = layer
+		ui.layer_z = print_z if has_layer else app.ui.section_z
+		if has_layer && ui.graph.show_result {
+			segments := make([dynamic]pipeline.Result_Segment, context.temp_allocator)
+			if pipeline.workspace_stage_segments(w, ui.view.selected, layer, &segments) {
+				clear(&app.section_vertices)
+				up := Vec3{0, 0, 1}
+				for segment in segments {
+					a := Vec3{segment.a[0], segment.a[1], segment.a[2]}
+					b := Vec3{segment.b[0], segment.b[1], segment.b[2]}
+					append(&app.section_vertices, Mesh_Vertex{a, up}, Mesh_Vertex{b, up})
+				}
+				app.ui.section_segments = len(segments)
+				ui.result_shown = true
+				return
+			}
+		}
 	}
 	stats := section_mesh_at_z(&app.mesh, app.ui.section_z, &app.section_vertices, app.placement.transform)
 	app.ui.section_segments = stats.segments
@@ -711,6 +737,7 @@ renderer_draw_application :: proc() -> Render_Result {
 	} else {
 		app.ui.junction_selected = false
 	}
+	if ui_graph_mode(&app.ui) && !app.ui.workspace.graph.fitted {ui_graph_fit(&app.ui)}
 	ui_build_controls(&app.ui, &evidence_view)
 	ui_scale := f32(app.ui.scale*app.ui.ui_scale)
 	text.begin_frame(&app.renderer.ui_text, ui_scale)
@@ -728,6 +755,7 @@ renderer_draw_application :: proc() -> Render_Result {
 	)
 	visual := Design_Visual{finished_vertices = app.renderer.mesh_vertex_count, highlight_start = -1}
 	if app.design.active {visual = design_visible(&app.design)}
+	if ui_graph_mode(&app.ui) && !app.ui.workspace.graph.show_mesh {visual.finished_vertices = 0}
 	viewport := ui_viewport_rect(&app.ui)
 	viewport.x *= app.ui.ui_scale
 	viewport.y *= app.ui.ui_scale
@@ -905,6 +933,7 @@ application_mouse :: proc "c" (
 	app.ui.pointer_y = point_y
 	if phase == 4 {return}
 	if profile_editor_mouse(phase, button, {point_x, point_y}) {return}
+	if !app.ui.lay_on_face && app_graph_mouse(phase, button, point_x, point_y, delta_x, delta_y) {return}
 	if app.ui.lay_on_face && !app.ui.settings_open && !app.ui.help_open && !app.ui.evidence_open &&
 	   ui_hit_test(&app.ui, point_x, point_y) == 0 && ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
 		if phase == 3 || (phase == 0 && button == 0) || (phase == 2 && button == 0) {
@@ -1046,6 +1075,7 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 		return
 	}
 	if app.ui.settings_open || app.ui.help_open {return}
+	if app_graph_scroll(delta_y) {return}
 	if app_workspace_scroll(delta_y) {return}
 	if app.design.editor.active {
 		profile_editor_zoom(delta_y)
@@ -1131,6 +1161,7 @@ application_key :: proc "c" (
 ) {
 	context = app_context()
 	if profile_editor_key(key_code, modifiers) {return}
+	if key_code == 53 && app_graph_key(key_code, "") {return}
 	if key_code == 53 {
 		if app.ui.lay_on_face && !app.ui.settings_open && !app.ui.help_open &&
 		   !app.ui.evidence_open && !flash.is_active(&app.ui.flash_state) {
@@ -1217,6 +1248,7 @@ application_key :: proc "c" (
 			return
 		}
 	}
+	if !flash.is_active(&app.ui.flash_state) && app_graph_key(key_code, text) {return}
 	if app.design.active && !app.ui.settings_open && !app.ui.help_open && !app.ui.evidence_open {
 		if key_code == 126 || key_code == 125 {
 			layer_idx, _, _, _ := design_layer_state(&app.design)

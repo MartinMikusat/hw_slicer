@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:thread"
+import "core:time"
 
 import formats "../formats"
 
@@ -29,35 +30,37 @@ Setting_Descriptor :: struct {
 	choices:   []string,
 	owner:     Stage_Id,
 	also_read: Stage_Set,
+	// Rarely changed or diagnostic settings, hidden until the operator shows advanced settings.
+	advanced:  bool,
 }
 
 setting_descriptors := [?]Setting_Descriptor {
 	{key = "layer_height", step = 0.04, label = "Layer height", unit = "mm", owner = .Layer_Schedule,
 		also_read = {.Solid_Skin, .Sparse_Infill, .Path_Plan, .Motion}},
 	{key = "first_layer_height", step = 0.04, label = "First layer height", unit = "mm", owner = .Layer_Schedule,
-		also_read = {.Solid_Skin, .Path_Plan, .Motion}},
+		also_read = {.Solid_Skin, .Path_Plan, .Motion}, advanced = true},
 	{key = "adaptive_layers", label = "Adaptive layers", kind = .Toggle, owner = .Layer_Schedule},
 	{key = "line_width", step = 0.02, label = "Line width", unit = "mm", owner = .Perimeters,
 		also_read = {.Solid_Skin, .Sparse_Infill, .Gap_Fill, .Supports, .Path_Plan, .Motion}},
 	{key = "perimeters", step = 1, label = "Perimeters", owner = .Perimeters, also_read = {.Solid_Skin, .Sparse_Infill}},
-	{key = "elephant_foot", step = 0.05, label = "Elephant foot compensation", unit = "mm", owner = .Perimeters, also_read = {.Supports}},
+	{key = "elephant_foot", step = 0.05, label = "Elephant foot compensation", unit = "mm", owner = .Perimeters, also_read = {.Supports}, advanced = true},
 	{key = "monotonic_skin", label = "Monotonic skin", kind = .Toggle, owner = .Solid_Skin},
 	{key = "ironing", label = "Ironing", kind = .Toggle, owner = .Solid_Skin},
-	{key = "ironing_spacing", step = 0.05, label = "Ironing spacing", unit = "mm", owner = .Solid_Skin},
-	{key = "ironing_flow", step = 5, label = "Ironing flow", unit = "%", owner = .Solid_Skin},
+	{key = "ironing_spacing", step = 0.05, label = "Ironing spacing", unit = "mm", owner = .Solid_Skin, advanced = true},
+	{key = "ironing_flow", step = 5, label = "Ironing flow", unit = "%", owner = .Solid_Skin, advanced = true},
 	{key = "infill_density", step = 5, label = "Infill density", unit = "%", owner = .Sparse_Infill},
 	{key = "infill_pattern", label = "Infill pattern", kind = .Choice, owner = .Sparse_Infill,
 		choices = {"rectilinear", "grid", "triangles", "gyroid", "cubic", "honeycomb", "lightning"}},
 	{key = "support_mode", label = "Support mode", kind = .Choice, owner = .Supports, choices = {"everywhere", "build_plate_only"}},
 	{key = "support_style", label = "Support style", kind = .Choice, owner = .Supports, choices = {"tree", "grid"}},
-	{key = "support_overhang_angle", step = 5, label = "Support overhang angle", unit = "°", owner = .Supports},
+	{key = "support_overhang_angle", step = 5, label = "Support overhang angle", unit = "°", owner = .Supports, advanced = true},
 	{key = "support_density", step = 5, label = "Support density", unit = "%", owner = .Supports},
 	{key = "skirt_loops", step = 1, label = "Skirt loops", owner = .Supports},
-	{key = "skirt_distance", step = 1, label = "Skirt distance", unit = "mm", owner = .Supports},
-	{key = "skirt_height", step = 1, label = "Skirt height", unit = "layers", owner = .Supports},
+	{key = "skirt_distance", step = 1, label = "Skirt distance", unit = "mm", owner = .Supports, advanced = true},
+	{key = "skirt_height", step = 1, label = "Skirt height", unit = "layers", owner = .Supports, advanced = true},
 	{key = "brim_width", step = 1, label = "Brim width", unit = "mm", owner = .Supports},
-	{key = "brim_gap", step = 0.05, label = "Brim gap", unit = "mm", owner = .Supports},
-	{key = "brim_inner", label = "Inner brim", kind = .Toggle, owner = .Supports},
+	{key = "brim_gap", step = 0.05, label = "Brim gap", unit = "mm", owner = .Supports, advanced = true},
+	{key = "brim_inner", label = "Inner brim", kind = .Toggle, owner = .Supports, advanced = true},
 	{key = "seam_position", label = "Seam position", kind = .Choice, owner = .Path_Plan,
 		choices = {"aligned", "rear", "sharpest", "nearest"}},
 	{key = "variable_walls", label = "Variable walls", kind = .Toggle, owner = .Path_Plan},
@@ -65,15 +68,15 @@ setting_descriptors := [?]Setting_Descriptor {
 	{key = "infill_speed", step = 5, label = "Infill speed", unit = "mm/s", owner = .Motion},
 	{key = "travel_speed", step = 10, label = "Travel speed", unit = "mm/s", owner = .Motion},
 	{key = "fan", step = 10, label = "Fan", unit = "%", owner = .Motion},
-	{key = "min_layer_time", step = 1, label = "Minimum layer time", unit = "s", owner = .Motion},
+	{key = "min_layer_time", step = 1, label = "Minimum layer time", unit = "s", owner = .Motion, advanced = true},
 	{key = "nozzle_temp", step = 5, label = "Nozzle temperature", unit = "°C", owner = .Motion},
 	{key = "bed_temp", step = 5, label = "Bed temperature", unit = "°C", owner = .Motion},
 	{key = "z_hop", step = 0.1, label = "Z hop", unit = "mm", owner = .Motion},
-	{key = "wipe_distance", step = 0.5, label = "Wipe distance", unit = "mm", owner = .Motion},
+	{key = "wipe_distance", step = 0.5, label = "Wipe distance", unit = "mm", owner = .Motion, advanced = true},
 	{key = "overhang_slowdown", label = "Overhang slowdown", kind = .Toggle, owner = .Motion},
-	{key = "overhang_speed", step = 5, label = "Overhang speed", unit = "%", owner = .Motion},
+	{key = "overhang_speed", step = 5, label = "Overhang speed", unit = "%", owner = .Motion, advanced = true},
 	{key = "arc_fitting", label = "Arc fitting", kind = .Toggle, owner = .Motion},
-	{key = "arc_tolerance", step = 0.01, label = "Arc tolerance", unit = "mm", owner = .Motion},
+	{key = "arc_tolerance", step = 0.01, label = "Arc tolerance", unit = "mm", owner = .Motion, advanced = true},
 }
 
 // The current value of a setting in the units of its descriptor, as text.
@@ -132,40 +135,75 @@ Stage_View :: struct {
 	// Set while the state is Stale: the earliest stage whose settings changed.
 	changed_by:  Stage_Id,
 	duration_ms: f64,
+	// Time since the stage started, while it is running.
+	elapsed_ms:  f64,
 	count_a:     u64,
 	count_b:     u64,
 	// True when a setting change starts this stage by itself.
 	auto_run:    bool,
+	// Waiting in the active run for the stages before it.
+	queued:      bool,
+	// Left without any result by the last run, which was cancelled.
+	cancelled:   bool,
 	failure:     Slice_Run_Error,
 }
 
-Group_View :: struct {
-	group:      Stage_Group,
-	name:       string,
-	state:      Stage_State,
-	stages:     Stage_Set,
-	// The first stale or failed stage of the group, for the status line.
-	stale_stage: Stage_Id,
-}
-
 Workspace_View :: struct {
-	stages:     [Stage_Id]Stage_View,
-	groups:     [Stage_Group]Group_View,
-	selected:   Stage_Group,
-	running:    bool,
-	// The stage being computed while `running`.
-	active:     Stage_Id,
-	can_previous: bool,
-	can_next:     bool,
+	stages:       [Stage_Id]Stage_View,
+	selected:     Stage_Id,
+	running:      bool,
+	// The target of the active run while `running`.
+	active:       Stage_Id,
 	queued_edits: int,
 }
 
 Setting_View :: struct {
-	descriptor: Setting_Descriptor,
-	value:      string,
+	descriptor:    Setting_Descriptor,
+	value:         string,
+	// The value the workspace opened with, from the profiles. Reset returns to it.
+	default_value: string,
 	// False for a setting owned by an earlier stage, shown as context only.
-	editable:   bool,
-	owner_name: string,
+	editable:      bool,
+	owner_name:    string,
+}
+
+Stage_Log_Kind :: enum u8 {
+	Ran,
+	Failed,
+	Cancelled,
+	Stale,
+}
+
+Stage_Log_Entry :: struct {
+	kind:        Stage_Log_Kind,
+	at:          time.Time,
+	duration_ms: f64,
+	// For Stale: the earliest stage whose settings changed.
+	cause:       Stage_Id,
+}
+
+STAGE_LOG_CAPACITY :: 16
+
+// The most recent events of one stage. Older entries are overwritten.
+Stage_Log :: struct {
+	entries: [STAGE_LOG_CAPACITY]Stage_Log_Entry,
+	// Number of entries ever appended.
+	count:   int,
+}
+
+stage_log_append :: proc(log: ^Stage_Log, entry: Stage_Log_Entry) {
+	log.entries[log.count%STAGE_LOG_CAPACITY] = entry
+	log.count += 1
+}
+
+stage_log_len :: proc(log: Stage_Log) -> int {
+	return min(log.count, STAGE_LOG_CAPACITY)
+}
+
+// Entry `index` counted from the newest, which is 0.
+stage_log_recent :: proc(log: Stage_Log, index: int) -> Stage_Log_Entry {
+	assert(index >= 0 && index < stage_log_len(log))
+	return log.entries[(log.count-1-index)%STAGE_LOG_CAPACITY]
 }
 
 @(private = "file")
@@ -179,17 +217,24 @@ Queued_Edit :: struct {
 // this and sends actions back; nothing here depends on the interface.
 Workspace :: struct {
 	config:         Slice_Configuration,
+	// The configuration the workspace opened with.
+	defaults:       Slice_Configuration,
 	session:        ^Slice_Session,
-	selected:       Stage_Group,
+	selected:       Stage_Id,
 	selected_layer: int,
 	// When false, a setting change only marks stages stale and the operator starts every run.
 	manual_only:    bool,
 	last_error:     Slice_Run_Error,
+	logs:           [Stage_Id]Stage_Log,
 
 	thread:         ^thread.Thread,
 	running:        bool,
 	cancel:         bool,
 	active_stage:   Stage_Id,
+	// The stages the active run computes.
+	run_set:        Stage_Set,
+	// The stages that the last run, when cancelled, left without a result.
+	cancelled:      Stage_Set,
 	queued:         [dynamic]Queued_Edit,
 }
 
@@ -203,6 +248,7 @@ workspace_create :: proc(
 	if !resolve_ok {return nil, resolve_detail, false}
 	w = new(Workspace)
 	w.config = config
+	w.defaults = config
 	w.session = slice_session_create(mesh, resolved, options)
 	w.queued = make([dynamic]Queued_Edit)
 	return w, "", true
@@ -223,20 +269,8 @@ workspace_destroy :: proc(w: ^Workspace) {
 	free(w)
 }
 
-workspace_select :: proc(w: ^Workspace, group: Stage_Group) {
-	w.selected = group
-}
-
-workspace_next :: proc(w: ^Workspace) -> bool {
-	if !workspace_view(w).can_next {return false}
-	w.selected = Stage_Group(int(w.selected) + 1)
-	return true
-}
-
-workspace_previous :: proc(w: ^Workspace) -> bool {
-	if w.selected == min(Stage_Group) {return false}
-	w.selected = Stage_Group(int(w.selected) - 1)
-	return true
+workspace_select :: proc(w: ^Workspace, id: Stage_Id) {
+	w.selected = id
 }
 
 workspace_running :: proc(w: ^Workspace) -> bool {
@@ -247,18 +281,58 @@ workspace_running :: proc(w: ^Workspace) -> bool {
 // ends. A change that the profile validation rejects is refused at once and leaves no trace.
 // Stages that become stale and are quick to run start automatically.
 workspace_edit :: proc(w: ^Workspace, key, value: string) -> (detail: string, ok: bool) {
+	pair := [1][2]string{{key, value}}
+	return workspace_edit_many(w, pair[:])
+}
+
+// Changes several settings as one edit, so that they mark stages stale and start runs once.
+workspace_edit_many :: proc(w: ^Workspace, edits: [][2]string) -> (detail: string, ok: bool) {
+	if len(edits) == 0 {return "", true}
 	trial := w.config
-	if detail, ok = slice_configuration_override(&trial, key, value); !ok {return}
+	for edit in edits {
+		if detail, ok = slice_configuration_override(&trial, edit[0], edit[1]); !ok {return}
+	}
 	if _, _, resolve_detail, resolve_ok := slice_configuration_resolve(trial); !resolve_ok {
 		return resolve_detail, false
 	}
 	if workspace_running(w) {
-		append(&w.queued, Queued_Edit{key = strings.clone(key), value = strings.clone(value)})
+		for edit in edits {
+			append(&w.queued, Queued_Edit{key = strings.clone(edit[0]), value = strings.clone(edit[1])})
+		}
 		return "", true
 	}
 	workspace_apply(w, trial)
 	workspace_autorun(w)
 	return "", true
+}
+
+// Returns one setting to the value the workspace opened with.
+workspace_reset_setting :: proc(w: ^Workspace, key: string) -> (detail: string, ok: bool) {
+	return workspace_edit(w, key, slice_configuration_value(w.defaults, key))
+}
+
+// Returns every setting that the stage owns to the value the workspace opened with.
+workspace_reset_stage :: proc(w: ^Workspace, id: Stage_Id) -> (detail: string, ok: bool) {
+	edits := make([dynamic][2]string, 0, 8, context.temp_allocator)
+	for d in setting_descriptors {
+		if d.owner != id {continue}
+		default_value := slice_configuration_value(w.defaults, d.key)
+		if slice_configuration_value(w.config, d.key) != default_value {
+			append(&edits, [2]string{d.key, default_value})
+		}
+	}
+	return workspace_edit_many(w, edits[:])
+}
+
+// The settings that the stage owns as `key=value` lines, in the form `--stage-set` and the
+// workspace script accept.
+workspace_settings_text :: proc(w: ^Workspace, id: Stage_Id, allocator := context.temp_allocator) -> string {
+	b := strings.builder_make(allocator)
+	for d in setting_descriptors {
+		if d.owner != id {continue}
+		fmt.sbprintf(&b, "%s=%s\n", d.key, slice_configuration_value(w.config, d.key))
+	}
+	return strings.to_string(b)
 }
 
 // Starts the stages that are stale or missing up to and including the target.
@@ -268,12 +342,27 @@ workspace_run_to :: proc(w: ^Workspace, target: Stage_Id) -> bool {
 	return true
 }
 
-// Starts everything that is stale or missing in the selected group and the stages it needs.
+// Starts everything that is stale or missing up to and including the selected stage.
 workspace_run_selected :: proc(w: ^Workspace) -> bool {
-	members := stage_group_members(w.selected)
-	target: Stage_Id
-	for id in Stage_Id {if id in members {target = id}}
-	return workspace_run_to(w, target)
+	return workspace_run_to(w, w.selected)
+}
+
+// True when the stage can be recomputed by itself: every stage it needs has a current result.
+workspace_can_run_only :: proc(w: ^Workspace, id: Stage_Id) -> bool {
+	if workspace_running(w) {return false}
+	for dep in Stage_Id {
+		if dep == id || dep not_in stage_upstream(id) {continue}
+		if w.session.slots[dep].state != .Complete {return false}
+	}
+	return true
+}
+
+// Recomputes only this stage from the current results of the stages it needs.
+workspace_run_only :: proc(w: ^Workspace, id: Stage_Id) -> bool {
+	if !workspace_can_run_only(w, id) {return false}
+	slice_session_forget(w.session, id)
+	workspace_start(w, id)
+	return true
 }
 
 workspace_set_auto_run :: proc(w: ^Workspace, enabled: bool) {
@@ -284,14 +373,33 @@ workspace_cancel :: proc(w: ^Workspace) {
 	sync.atomic_store(&w.cancel, true)
 }
 
-// Joins a finished run, applies queued edits and starts follow-up automatic runs. Returns true when
-// the visible state may have changed. The application calls this once per frame.
+// Joins a finished run, logs its outcome per stage, applies queued edits and starts follow-up
+// automatic runs. Returns true when the visible state may have changed. The application calls this
+// once per frame.
 workspace_poll :: proc(w: ^Workspace) -> (changed: bool) {
 	if w.thread == nil {return false}
 	if !thread.is_done(w.thread) {return false}
 	thread.join(w.thread)
 	thread.destroy(w.thread)
 	w.thread = nil
+	cancelled := sync.atomic_load(&w.cancel)
+	now := time.now()
+	for id in Stage_Id {
+		if id not_in w.run_set {continue}
+		slot := w.session.slots[id]
+		switch slot.state {
+		case .Complete:
+			stage_log_append(&w.logs[id], {kind = .Ran, at = now, duration_ms = slot.duration_ms})
+		case .Failed:
+			stage_log_append(&w.logs[id], {kind = .Failed, at = now, duration_ms = slot.duration_ms})
+		case .Not_Run, .Stale, .Running:
+			if cancelled {
+				stage_log_append(&w.logs[id], {kind = .Cancelled, at = now})
+				w.cancelled += {id}
+			}
+		}
+	}
+	w.run_set = {}
 	sync.atomic_store(&w.running, false)
 	sync.atomic_store(&w.cancel, false)
 	if len(w.queued) > 0 {
@@ -320,6 +428,7 @@ workspace_wait :: proc(w: ^Workspace) {
 workspace_view :: proc(w: ^Workspace) -> Workspace_View {
 	v: Workspace_View
 	s := w.session
+	running := workspace_running(w)
 	sync.mutex_lock(&s.lock)
 	for id in Stage_Id {
 		slot := s.slots[id]
@@ -329,60 +438,40 @@ workspace_view :: proc(w: ^Workspace) -> Workspace_View {
 			duration_ms = slot.duration_ms, count_a = slot.count_a, count_b = slot.count_b,
 			auto_run = slot.duration_ms < WORKSPACE_AUTO_RUN_LIMIT_MS, failure = slot.failure,
 		}
+		if slot.state == .Running {
+			v.stages[id].elapsed_ms = time.duration_milliseconds(time.tick_since(slot.started))
+		}
+		v.stages[id].queued = running && id in w.run_set && slot.state != .Running && slot.state != .Complete
+		v.stages[id].cancelled = !running && id in w.cancelled && slot.state == .Not_Run
 	}
 	sync.mutex_unlock(&s.lock)
-	for group in Stage_Group {
-		members := stage_group_members(group)
-		g := Group_View{group = group, name = stage_group_names[group], stages = members, state = .Complete}
-		first_pending := true
-		for id in Stage_Id {
-			if id not_in members {continue}
-			state := v.stages[id].state
-			switch {
-			case state == .Failed:
-				g.state = .Failed
-			case state == .Running && g.state != .Failed:
-				g.state = .Running
-			case state == .Stale && g.state != .Failed && g.state != .Running:
-				g.state = .Stale
-			case state == .Not_Run && g.state == .Complete:
-				g.state = .Not_Run
-			}
-			if state != .Complete && first_pending {
-				g.stale_stage = id
-				first_pending = false
-			}
-		}
-		v.groups[group] = g
-	}
 	v.selected = w.selected
-	v.running = workspace_running(w)
+	v.running = running
 	v.active = w.active_stage
-	selected_state := v.groups[w.selected].state
-	v.can_next = (selected_state == .Complete || selected_state == .Stale) && w.selected != max(Stage_Group)
-	v.can_previous = w.selected != min(Stage_Group)
 	v.queued_edits = len(w.queued)
 	return v
 }
 
-// Settings the selected group owns, followed by the earlier-owned settings its stages read.
-workspace_settings :: proc(w: ^Workspace, group: Stage_Group, allocator := context.temp_allocator) -> []Setting_View {
-	members := stage_group_members(group)
+// Settings the stage owns, followed by the earlier-owned settings it reads.
+workspace_settings :: proc(w: ^Workspace, id: Stage_Id, allocator := context.temp_allocator) -> []Setting_View {
 	out := make([dynamic]Setting_View, 0, 16, allocator)
 	for d in setting_descriptors {
-		if d.owner in members {
-			append(&out, Setting_View{descriptor = d, value = slice_configuration_value(w.config, d.key), editable = true})
-		}
+		if d.owner != id {continue}
+		append(&out, Setting_View{
+			descriptor = d,
+			value = slice_configuration_value(w.config, d.key),
+			default_value = slice_configuration_value(w.defaults, d.key),
+			editable = true,
+		})
 	}
 	for d in setting_descriptors {
-		if d.owner in members {continue}
-		if d.also_read & members != {} {
-			append(&out, Setting_View{
-				descriptor = d,
-				value = slice_configuration_value(w.config, d.key),
-				owner_name = stage_descriptors[d.owner].name,
-			})
-		}
+		if d.owner == id || id not_in d.also_read {continue}
+		append(&out, Setting_View{
+			descriptor = d,
+			value = slice_configuration_value(w.config, d.key),
+			default_value = slice_configuration_value(w.defaults, d.key),
+			owner_name = stage_descriptors[d.owner].name,
+		})
 	}
 	return out[:]
 }
@@ -391,8 +480,17 @@ workspace_settings :: proc(w: ^Workspace, group: Stage_Group, allocator := conte
 workspace_apply :: proc(w: ^Workspace, config: Slice_Configuration) {
 	resolved, options, _, ok := slice_configuration_resolve(config)
 	if !ok {return}
+	before: [Stage_Id]Stage_State
+	for id in Stage_Id {before[id] = w.session.slots[id].state}
 	w.config = config
 	slice_session_update(w.session, resolved, options)
+	now := time.now()
+	for id in Stage_Id {
+		slot := w.session.slots[id]
+		if slot.state == .Stale && before[id] != .Stale {
+			stage_log_append(&w.logs[id], {kind = .Stale, at = now, cause = slot.changed_by})
+		}
+	}
 }
 
 // Runs the stale stages that are quick, in order, up to the first one that is slow or has no result.
@@ -416,10 +514,13 @@ workspace_autorun :: proc(w: ^Workspace) {
 
 @(private = "file")
 workspace_start :: proc(w: ^Workspace, target: Stage_Id) {
-	if slice_session_pending(w.session, target) == {} {return}
+	pending := slice_session_pending(w.session, target)
+	if pending == {} {return}
 	sync.atomic_store(&w.running, true)
 	sync.atomic_store(&w.cancel, false)
 	w.active_stage = target
+	w.run_set = pending
+	w.cancelled = {}
 	Run_Job :: struct {
 		w:      ^Workspace,
 		target: Stage_Id,

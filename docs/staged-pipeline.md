@@ -1,6 +1,6 @@
 # Staged pipeline
 
-The slice runs as 15 engine stages over one `Slice_Session` (`src/pipeline/session.odin`). Each stage keeps its result. The stage table, group mapping and settings hashes are in `src/pipeline/stages.odin`. The CLI and the application slice through the same session.
+The slice runs as 15 engine stages over one `Slice_Session` (`src/pipeline/session.odin`). Each stage keeps its result. The stage table, graph columns and settings hashes are in `src/pipeline/stages.odin`. The CLI and the application slice through the same session.
 
 ## Stale tracking
 
@@ -8,7 +8,7 @@ Each stage hashes the settings it reads and the hashes of the stages it needs. A
 
 ## Workspace controller
 
-`src/pipeline/workspace.odin` owns the configuration and the session, runs stages on a worker thread, queues edits made during a run, and reports group state, stale causes, and per-stage settings. A setting belongs to the first stage it affects and appears read-only in later stages that read it. After a change, stale stages that last ran in under 750 ms start by themselves unless automatic refresh is off. A stage that has never run starts only on Run.
+`src/pipeline/workspace.odin` owns the configuration and the session, runs stages on a worker thread, queues edits made during a run, and reports stage state (including queued, cancelled and elapsed time), stale causes, per-stage settings with their defaults, and a short event log per stage. It also resets settings, recomputes a single stage (Run only), and extracts stage results per layer for the 3D view. A setting belongs to the first stage it affects and appears read-only in later stages that read it. After a change, stale stages that last ran in under 750 ms start by themselves unless automatic refresh is off. A stage that has never run starts only on Run.
 
 ## Headless use
 
@@ -17,8 +17,8 @@ build/release/hw-slicer-cli --input=resources/models/benchy.stl --then=infill_de
 build/release/hw-slicer-cli --input=resources/models/benchy.stl --workspace-script=docs/workspace-scripts/edit-and-rerun.txt
 ```
 
-`--then` lists the stages each change reruns and writes the G-code of each step. `--workspace-script` drives the controller the way the window does; its `check` lines exit 1 on a mismatch. The application opens on a group with `--stage=N`, runs it with `--stage-run`, and edits a setting with `--stage-set=key=value`.
+`--then` lists the stages each change reruns and writes the G-code of each step. `--workspace-script` drives the controller the way the window does; its `check` lines exit 1 on a mismatch. The application opens on stage N (0–14) with `--stage=N`, runs every stage with `--stage-run`, and edits a setting with `--stage-set=key=value`.
 
 ## Limits
 
-The slice uses the model as stored on disk; the lay-on-face placement of the viewer does not reach it. Stage results are not drawn in the 3D view yet.
+The slice uses the model as stored on disk; the lay-on-face placement of the viewer does not reach it. The 3D view draws stage results only as lines on one layer, not as extruded paths.

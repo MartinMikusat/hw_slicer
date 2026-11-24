@@ -4,7 +4,7 @@ set infill_density 50
 view
 wait
 view
-check Infill complete
+check Sparse infill complete
 check Motion complete
 # Cancelling stops before the next stage; finished stages keep their results.
 auto off

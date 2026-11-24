@@ -35,26 +35,10 @@ Stage_State :: enum u8 {
 	Failed,
 }
 
-// Workspace groups shown to the operator. Several engine stages can share one group.
-Stage_Group :: enum u8 {
-	Model_Placement,
-	Layer_Schedule,
-	Mesh_Intersections,
-	Contours_Topology,
-	Regions,
-	Surfaces_Skin,
-	Perimeters,
-	Infill,
-	Supports_Bridges,
-	Path_Plan,
-	Motion_Gcode,
-}
-
 Stage_Descriptor :: struct {
 	name:    string,
 	purpose: string,
 	inputs:  Stage_Set,
-	group:   Stage_Group,
 	// Names of the two counts that a stage reports in its slot.
 	counts:  [2]string,
 }
@@ -64,127 +48,109 @@ stage_descriptors := [Stage_Id]Stage_Descriptor {
 		name = "Model",
 		counts = {"Triangles", ""},
 		purpose = "Repairs the mesh, centres it on the bed and normalizes its units.",
-		group = .Model_Placement,
 	},
 	.Layer_Schedule = {
 		name = "Layer schedule",
 		counts = {"Layers", ""},
 		purpose = "Chooses the Z height of every layer, fixed or adaptive.",
 		inputs = {.Model},
-		group = .Layer_Schedule,
 	},
 	.Intersections = {
 		name = "Mesh intersections",
 		counts = {"Segments", ""},
 		purpose = "Intersects the mesh with each layer plane and snaps the segments.",
 		inputs = {.Layer_Schedule},
-		group = .Mesh_Intersections,
 	},
 	.Topology = {
 		name = "Contours and topology",
 		counts = {"Paths", ""},
 		purpose = "Joins segments into closed contours and simplifies them.",
 		inputs = {.Intersections},
-		group = .Contours_Topology,
 	},
 	.Regions = {
 		name = "Regions",
 		counts = {"Regions", "Contour repairs"},
 		purpose = "Builds nested outer and hole regions per layer and repairs crossing contours.",
 		inputs = {.Topology},
-		group = .Regions,
 	},
 	.Surfaces_Skin = {
 		name = "Surfaces and skin",
 		counts = {"Surface masks", "Skin masks"},
 		purpose = "Classifies top and bottom surfaces and propagates the skin depth.",
 		inputs = {.Layer_Schedule, .Regions},
-		group = .Surfaces_Skin,
 	},
 	.Perimeters = {
 		name = "Perimeters",
 		counts = {"Perimeter paths", ""},
 		purpose = "Offsets each region into perimeter loops.",
 		inputs = {.Regions},
-		group = .Perimeters,
 	},
 	.Bridges = {
 		name = "Bridges",
 		counts = {"Bridge masks", "Bridge paths"},
 		purpose = "Finds unsupported spans and chooses a bridge direction for each.",
 		inputs = {.Regions},
-		group = .Supports_Bridges,
 	},
 	.Solid_Skin = {
 		name = "Solid skin",
 		counts = {"Solid paths", "Ironing paths"},
 		purpose = "Resolves overlapping roles and fills skin areas, including ironing.",
 		inputs = {.Layer_Schedule, .Regions, .Surfaces_Skin, .Bridges},
-		group = .Surfaces_Skin,
 	},
 	.Sparse_Infill = {
 		name = "Sparse infill",
 		counts = {"Infill paths", "Line spacing µm"},
 		purpose = "Fills the interior outside the solid areas with the infill pattern.",
 		inputs = {.Layer_Schedule, .Regions, .Surfaces_Skin, .Solid_Skin},
-		group = .Infill,
 	},
 	.Gap_Fill = {
 		name = "Gap fill",
 		counts = {"Gap paths", "Gap vertices"},
 		purpose = "Fills thin gaps that the perimeters leave uncovered.",
 		inputs = {.Regions, .Perimeters},
-		group = .Perimeters,
 	},
 	.Supports = {
 		name = "Supports and adhesion",
 		counts = {"Support paths", ""},
 		purpose = "Generates supports, then the skirt and brim around them.",
 		inputs = {.Model, .Layer_Schedule, .Regions},
-		group = .Supports_Bridges,
 	},
 	.Path_Plan = {
 		name = "Path plan",
 		counts = {"Extrude moves", "Travel moves"},
 		purpose = "Merges all print roles into ordered paths with seams and travel moves.",
 		inputs = {.Layer_Schedule, .Perimeters, .Bridges, .Solid_Skin, .Sparse_Infill, .Gap_Fill, .Supports},
-		group = .Path_Plan,
 	},
 	.Motion = {
 		name = "Motion",
 		counts = {"Operations", "Arcs fitted"},
 		purpose = "Computes extrusion and speeds, then fits arcs and applies modifiers.",
 		inputs = {.Layer_Schedule, .Regions, .Path_Plan},
-		group = .Motion_Gcode,
 	},
 	.Gcode = {
 		name = "G-code",
 		counts = {"Bytes", "Commands"},
 		purpose = "Emits and validates Klipper G-code.",
 		inputs = {.Motion},
-		group = .Motion_Gcode,
 	},
 }
 
-stage_group_names := [Stage_Group]string {
-	.Model_Placement    = "Model and placement",
-	.Layer_Schedule     = "Layer schedule",
-	.Mesh_Intersections = "Mesh intersections",
-	.Contours_Topology  = "Contours and topology",
-	.Regions            = "Regions",
-	.Surfaces_Skin      = "Surfaces and skin",
-	.Perimeters         = "Perimeters",
-	.Infill             = "Infill",
-	.Supports_Bridges   = "Supports and bridges",
-	.Path_Plan          = "Path plan",
-	.Motion_Gcode       = "Motion and G-code",
+// Graph column of every stage: one past the deepest of its inputs, so every edge points to a
+// later column and stages with no dependency between them can share one.
+stage_columns :: proc() -> (columns: [Stage_Id]int) {
+	for id in Stage_Id {
+		for dep in Stage_Id {
+			if dep in stage_descriptors[id].inputs {columns[id] = max(columns[id], columns[dep]+1)}
+		}
+	}
+	return
 }
 
-// Stages that make up one workspace group, in execution order.
-stage_group_members :: proc(group: Stage_Group) -> Stage_Set {
+// The stages that read this stage's result directly.
+stage_dependents :: proc(id: Stage_Id) -> Stage_Set {
 	set: Stage_Set
-	for id in Stage_Id {
-		if stage_descriptors[id].group == group {set += {id}}
+	for later in Stage_Id {
+		if id in stage_descriptors[later].inputs {set += {later}}
 	}
 	return set
 }

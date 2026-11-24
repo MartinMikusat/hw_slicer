@@ -5,12 +5,9 @@ check Perimeters not_run
 run Gap fill
 wait
 check Perimeters complete
-check Infill not_run
-# Next is enabled for a group with a result.
-select Perimeters
-next
-# Settings show the group's own and, read-only, the earlier-owned ones it uses.
-select Infill
+check Sparse infill not_run
+# Settings show the stage's own and, read-only, the earlier-owned ones it uses.
+select Sparse infill
 settings
 # Finish the slice.
 run G-code
@@ -21,7 +18,7 @@ auto on
 set infill_density 40
 wait
 check Perimeters complete
-check Infill complete
+check Sparse infill complete
 # An invalid value is refused at once and changes nothing.
 set infill_pattern spiral
 # Manual mode: the change only marks stages stale and names the cause.
@@ -30,11 +27,19 @@ set layer_height 0.16
 view
 check Layer schedule stale
 check Model complete
-# Stale results stay visible, and Next is still enabled on them.
-select Layer
-next
+# Changed settings are marked with their default; Reset returns them.
+select Layer schedule
+settings
+# Run only recomputes one stage when its inputs are current.
+runonly Model
+wait
+check Model complete
 # One Run refreshes everything that is stale.
 run G-code
 wait
 view
 check Motion complete
+# Resetting the selected stage returns its settings to the profile values.
+select Layer schedule
+resetsel
+settings

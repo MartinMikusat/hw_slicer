@@ -12,15 +12,16 @@ import pipeline "../pipeline"
 // Drives the workspace controller from a text script and prints what the interface would show
 // after each action. This is the headless stand-in for the application window.
 //
-//   select <group>          group by index or name prefix
-//   next | prev             stage navigation
+//   select <stage>          stage by index or name prefix
 //   set <key> <value>       edit a setting
+//   reset <key> | resetsel  return a setting | the selected stage's settings to the defaults
 //   run <stage>             start the stage and what it needs (index or name prefix)
-//   runsel                  run the selected group
+//   runsel                  run the selected stage and what it needs
+//   runonly <stage>         recompute only the stage from the current results it needs
 //   auto on|off             let setting changes start quick stale stages by themselves
 //   cancel | wait           cancel the active run | wait for it to end
-//   view | settings         print the stage list | the selected group's settings
-//   check <group> <state>   print a mismatch and exit 1 when the group has another state
+//   view | settings         print the stage graph | the selected stage's settings
+//   check <stage> <state>   print a mismatch and exit 1 when the stage has another state
 run_workspace_script :: proc(script_path: string, config: pipeline.Slice_Configuration, mesh: formats.Decoded_Mesh) {
 	data, read_err := os.read_entire_file(script_path, context.allocator)
 	if read_err != nil {
@@ -43,15 +44,11 @@ run_workspace_script :: proc(script_path: string, config: pipeline.Slice_Configu
 		fmt.printf("> %s\n", line)
 		switch words[0] {
 		case "select":
-			if len(words) < 2 {fmt.println("  usage: select <group>"); continue}
+			if len(words) < 2 {fmt.println("  usage: select <stage>"); continue}
 			name := strings.join(words[1:], " ", context.temp_allocator)
-			if group, found := find_group(name); found {
-				pipeline.workspace_select(w, group)
-			} else {fmt.printf("  no group '%s'\n", name)}
-		case "next":
-			fmt.printf("  %s\n", "moved" if pipeline.workspace_next(w) else "Next is disabled")
-		case "prev":
-			fmt.printf("  %s\n", "moved" if pipeline.workspace_previous(w) else "Previous is disabled")
+			if id, found := find_stage(name); found {
+				pipeline.workspace_select(w, id)
+			} else {fmt.printf("  no stage '%s'\n", name)}
 		case "set":
 			if len(words) < 3 {fmt.println("  usage: set <key> <value>"); continue}
 			if detail, ok := pipeline.workspace_edit(w, words[1], words[2]); !ok {
@@ -69,6 +66,17 @@ run_workspace_script :: proc(script_path: string, config: pipeline.Slice_Configu
 			} else {fmt.printf("  no stage '%s'\n", name)}
 		case "runsel":
 			if !pipeline.workspace_run_selected(w) {fmt.println("  busy")}
+		case "runonly":
+			if len(words) < 2 {fmt.println("  usage: runonly <stage>"); continue}
+			name := strings.join(words[1:], " ", context.temp_allocator)
+			if id, found := find_stage(name); found {
+				if !pipeline.workspace_run_only(w, id) {fmt.println("  refused: busy, or an input has no current result")}
+			} else {fmt.printf("  no stage '%s'\n", name)}
+		case "reset":
+			if len(words) < 2 {fmt.println("  usage: reset <key>"); continue}
+			if detail, ok := pipeline.workspace_reset_setting(w, words[1]); !ok {fmt.printf("  rejected: %s\n", detail)}
+		case "resetsel":
+			if detail, ok := pipeline.workspace_reset_stage(w, w.selected); !ok {fmt.printf("  rejected: %s\n", detail)}
 		case "auto":
 			pipeline.workspace_set_auto_run(w, len(words) > 1 && words[1] == "on")
 		case "cancel":
@@ -85,16 +93,16 @@ run_workspace_script :: proc(script_path: string, config: pipeline.Slice_Configu
 		case "settings":
 			print_workspace_settings(w)
 		case "check":
-			if len(words) < 3 {fmt.println("  usage: check <group> <state>"); continue}
+			if len(words) < 3 {fmt.println("  usage: check <stage> <state>"); continue}
 			expected := words[len(words)-1]
-			group, found := find_group(strings.join(words[1:len(words)-1], " ", context.temp_allocator))
-			view := pipeline.workspace_view(w)
-			if !found {fmt.printf("  no group in '%s'\n", line); failed = true; continue}
-			state := fmt.tprintf("%v", view.groups[group].state)
+			id, found := find_stage(strings.join(words[1:len(words)-1], " ", context.temp_allocator))
+			if !found {fmt.printf("  no stage in '%s'\n", line); failed = true; continue}
+			stage := pipeline.workspace_view(w).stages[id]
+			state := fmt.tprintf("%v", stage.state)
 			if strings.equal_fold(state, expected) {
-				fmt.printf("  ok: %s is %s\n", view.groups[group].name, state)
+				fmt.printf("  ok: %s is %s\n", stage.name, state)
 			} else {
-				fmt.printf("  MISMATCH: %s is %s, expected %s\n", view.groups[group].name, state, expected)
+				fmt.printf("  MISMATCH: %s is %s, expected %s\n", stage.name, state, expected)
 				failed = true
 			}
 		case:
@@ -107,18 +115,6 @@ run_workspace_script :: proc(script_path: string, config: pipeline.Slice_Configu
 		failed = true
 	}
 	if failed {os.exit(1)}
-}
-
-find_group :: proc(text: string) -> (pipeline.Stage_Group, bool) {
-	if n, ok := strconv.parse_int(text); ok && n >= 0 && n < len(pipeline.Stage_Group) {
-		return pipeline.Stage_Group(n), true
-	}
-	for group in pipeline.Stage_Group {
-		if strings.has_prefix(strings.to_lower(pipeline.stage_group_names[group], context.temp_allocator), strings.to_lower(text, context.temp_allocator)) {
-			return group, true
-		}
-	}
-	return {}, false
 }
 
 find_stage :: proc(text: string) -> (pipeline.Stage_Id, bool) {
@@ -135,53 +131,40 @@ find_stage :: proc(text: string) -> (pipeline.Stage_Id, bool) {
 
 print_workspace_view :: proc(w: ^pipeline.Workspace) {
 	view := pipeline.workspace_view(w)
-	fmt.printf("  %s  Previous:%s Next:%s%s\n",
+	fmt.printf("  %s%s\n",
 		"RUNNING" if view.running else "idle",
-		"on" if view.can_previous else "off",
-		"on" if view.can_next else "off",
 		fmt.tprintf("  queued edits: %d", view.queued_edits) if view.queued_edits > 0 else "")
-	for group in pipeline.Stage_Group {
-		g := view.groups[group]
-		mark := ">" if group == view.selected else " "
+	columns := pipeline.stage_columns()
+	for id in pipeline.Stage_Id {
+		st := view.stages[id]
+		mark := ">" if id == view.selected else " "
+		state := fmt.tprintf("%v", st.state)
+		if st.queued {state = "Queued"}
+		if st.cancelled {state = "Cancelled"}
 		note := ""
-		if g.state == .Stale {
-			note = fmt.tprintf("  stale: %s changed", pipeline.stage_descriptors[view.stages[g.stale_stage].changed_by].name)
+		if st.state == .Stale {
+			note = fmt.tprintf("  stale: %s changed", pipeline.stage_descriptors[st.changed_by].name)
 		}
-		fmt.printf("  %s %2d %-24s %v%s\n", mark, int(group), g.name, g.state, note)
-		for id in pipeline.Stage_Id {
-			if id not_in g.stages {continue}
-			st := view.stages[id]
-			fmt.printf("        - %-22s %-8v %8.1f ms  a=%d b=%d%s\n", st.name, st.state, st.duration_ms, st.count_a, st.count_b,
-				"" if st.auto_run else "  (manual Run)")
-		}
+		fmt.printf("  %s %2d col %2d %-24s %-9s %8.1f ms  a=%d b=%d%s%s\n", mark, int(id), columns[id], st.name, state,
+			st.duration_ms, st.count_a, st.count_b, "" if st.auto_run else "  (manual Run)", note)
 	}
 }
 
 print_workspace_settings :: proc(w: ^pipeline.Workspace) {
 	view := pipeline.workspace_view(w)
-	fmt.printf("  settings for %s\n", pipeline.stage_group_names[view.selected])
+	fmt.printf("  settings for %s\n", pipeline.stage_descriptors[view.selected].name)
 	settings := pipeline.workspace_settings(w, view.selected)
 	if len(settings) == 0 {
-		fmt.printf("    (none) this group configures: %s\n", stage_group_purpose(view.selected))
+		fmt.printf("    (none) this stage: %s\n", pipeline.stage_descriptors[view.selected].purpose)
 		return
 	}
 	for sv in settings {
 		unit := sv.descriptor.unit
+		changed := fmt.tprintf("  (changed, default %s)", sv.default_value) if sv.value != sv.default_value else ""
 		if sv.editable {
-			fmt.printf("    %-28s %s %s\n", sv.descriptor.label, sv.value, unit)
+			fmt.printf("    %-28s %s %s%s\n", sv.descriptor.label, sv.value, unit, changed)
 		} else {
 			fmt.printf("    %-28s %s %s   (from %s, read-only)\n", sv.descriptor.label, sv.value, unit, sv.owner_name)
 		}
 	}
-}
-
-stage_group_purpose :: proc(group: pipeline.Stage_Group) -> string {
-	b := strings.builder_make(context.temp_allocator)
-	for id in pipeline.Stage_Id {
-		if pipeline.stage_descriptors[id].group == group {
-			strings.write_string(&b, pipeline.stage_descriptors[id].purpose)
-			strings.write_string(&b, " ")
-		}
-	}
-	return strings.to_string(b)
 }

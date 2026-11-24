@@ -34,7 +34,7 @@ Label unimplemented stages as placeholders. Do not imply that their results exis
 
 ## Workspace decisions
 
-- Use a full-window workspace with the stage graph and the 3D view split by a draggable divider, and the attribute editor of the selected stage on the right. See the [stage graph plan](docs/stage-graph-plan.md).
+- Use a full-window workspace with the stage graph and the 3D view split by a draggable divider, and the attribute editor of the selected stage on the right. See the [stage graph](docs/stage-graph.md).
 - Keep the attribute editor consistent across stages. For an empty attribute editor, state what the stage will configure or produce. Do not invent controls or measurements.
 - Show one graph node per engine stage. A click selects the stage and shows its result in the 3D view. Stale and failed stages stay selectable.
 - Preserve the selected layer across applicable stages. The layer selector belongs to the 3D view. Show the layer in model context and provide an isolated view for detailed inspection.
@@ -63,8 +63,7 @@ Open decisions:
 
 ## Work
 
-- [ ] Stage workspace: stage list, per-stage settings, stale tracking and background runs exist ([staged pipeline](docs/staged-pipeline.md)). Remaining: draw stage results in the 3D view, apply the lay-on-face placement to the slice, connect the evidence bundles to the stages.
-- [ ] Replace the stage list with a Meshroom-style node graph after Slicer completion step 3: [plan](docs/stage-graph-plan.md).
+- [ ] Stage workspace: the [stage graph](docs/stage-graph.md), per-stage settings, stale tracking, background runs, per-layer result lines and evidence mapping exist ([staged pipeline](docs/staged-pipeline.md)). Remaining: apply the lay-on-face placement to the slice.
 - [ ] Connect engine stages in subsequent bounded changes. Develop early stages in depth before committing to detailed later-stage designs.
 - [ ] Extend retained evidence through the remaining intermediate feature graphs. Add geometric rendering and cross-stage selection. Connect these stages to the production slice action before physical printer calibration. See [project details](README.md#project-details).
 - [ ] Add a settings sweep for tuning. Define ranges for relevant settings on a test model, such as a bridging test. Place several copies on the build plate, each with a different combination of the sampled settings, to compare configurations in one print.

@@ -28,6 +28,8 @@ Stage_Slot :: struct {
 	// The earliest stage whose settings changed since the result was built.
 	changed_by:      Stage_Id,
 	duration_ms:     f64,
+	// When the current run of this stage began, while the state is Running.
+	started:         time.Tick,
 	count_a:         u64,
 	count_b:         u64,
 	failure:         Slice_Run_Error,
@@ -156,6 +158,7 @@ slice_session_run_to :: proc(s: ^Slice_Session, target: Stage_Id, cancel: ^bool 
 		sync.mutex_lock(&s.lock)
 		session_clear_stage(s, id)
 		slot.state = .Running
+		slot.started = time.tick_now()
 		sync.mutex_unlock(&s.lock)
 		start := time.tick_now()
 		err := session_run_stage(s, id)
@@ -173,6 +176,14 @@ slice_session_run_to :: proc(s: ^Slice_Session, target: Stage_Id, cancel: ^bool 
 		slot.built_hash = slot.expected_hash
 	}
 	return {}
+}
+
+// Drops the result of one stage so that the next run recomputes it. The stages after it keep their
+// results: the pipeline is deterministic, so the same inputs rebuild the same result.
+slice_session_forget :: proc(s: ^Slice_Session, id: Stage_Id) {
+	sync.mutex_lock(&s.lock)
+	defer sync.mutex_unlock(&s.lock)
+	session_clear_stage(s, id)
 }
 
 // Moves the finished results out of a fully run session, leaving the rest in place.
