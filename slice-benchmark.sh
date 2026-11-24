@@ -288,7 +288,7 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
             orca_err = ""
             for _ in range(runs):
                 t0 = time.perf_counter()
-                op = subprocess.run(orca_cmd, capture_output=True, text=True)
+                op = subprocess.run(orca_cmd, cwd=orca_out_dir, capture_output=True, text=True)
                 odt = (time.perf_counter() - t0) * 1000.0
                 if op.returncode != 0:
                     orca_ok = False
