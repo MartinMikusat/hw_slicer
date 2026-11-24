@@ -20,6 +20,7 @@ Skin_Config :: struct {
 	top:                   profiles.Skin_Target,
 	bottom:                profiles.Skin_Target,
 	skip_source_filtering: bool,
+	omit_top_skin:         bool,
 }
 
 Skin_Limits :: struct {
@@ -242,6 +243,7 @@ skins_propagate :: proc(
 		delete(layer_items, allocator)
 	}
 	for surface_mask, surface_mask_index in surfaces.masks {
+		if config.omit_top_skin && surface_mask.kind == .Top_Exposed {continue}
 		target := config.bottom
 		accumulator_kind := 0
 		if surface_mask.kind == .Top_Exposed {

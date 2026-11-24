@@ -1126,14 +1126,25 @@ klipper_object_name :: proc(name: string, allocator := context.allocator) -> str
 	return string(out)
 }
 
-// The Z that a layer starts at: the layer Z plus the Z offset of its first travel or extrusion,
-// so a spiral vase layer or a scarf seam starts at its ramped height instead of lifting first.
+// The Z that a layer starts at: for a leading travel, the travel's ramped Z; for a leading
+// Z-ramped extrusion (spiral vase or scarf seam), the previous layer's Z when it is at or below
+// the first segment's endpoint so segment 0 ramps smoothly instead of jumping vertically first.
 klipper_layer_start_z :: proc(motion: features.Motion_Plan_Result, layer: features.Motion_Layer) -> contracts.Micrometres {
 	operation_start := int(layer.operation_offset)
 	operation_end := operation_start+int(layer.operation_count)
 	for operation in motion.operations[operation_start:operation_end] {
-		if operation.kind == .Travel || operation.kind == .Extrude {
+		if operation.kind == .Travel {
 			return contracts.Micrometres(max(i64(0), i64(layer.z)+i64(operation.z_offset_um)))
+		}
+		if operation.kind == .Extrude {
+			end_z := contracts.Micrometres(max(i64(0), i64(layer.z)+i64(operation.z_offset_um)))
+			if operation.z_offset_um < 0 && layer.layer_index > 0 && int(layer.layer_index)-1 < len(motion.layers) {
+				prev_z := motion.layers[layer.layer_index-1].z
+				if prev_z <= end_z {
+					return prev_z
+				}
+			}
+			return end_z
 		}
 	}
 	return layer.z

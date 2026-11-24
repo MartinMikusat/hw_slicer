@@ -296,3 +296,18 @@ Scope: newer slicing code (`adaptive_layers.odin`, `simplify.odin`, `layers.odin
   3. Past the miter limit, and for the Square join, corners use Clipper2's `DoSquare`.
 - **Verification:** The dual-provider wrapper over full slices of Benchy (plain, tree supports, grid supports, brim + scarf + fuzzy skin), the Stanford Bunny and the all-in-one model with supports, and the T-shape and framed box finds no boolean mismatch and no offset mismatch above 0.05 mm² except the +5.21 mm round-join skirt offsets (0.03 %, from a different arc approximation). Release timings against the engine before this fix: Benchy 0.63 → 0.87 s, Stanford Bunny 1.42 → 1.83 s, Benchy with grid supports 17.7 → 20.9 s (Clipper2: 0.43 s, 0.94 s, 3.9 s). The extra time comes from the three-point concave joins and snap rounding; sorting (Odin's smoothsort) remains the largest cost in both engines.
 - **Also fixed:** grid supports failed on Benchy with `Coordinate_Range` (on both engines, before this session too) when a downward face's XY projection quantized to zero area; such faces are now classified as needing no support.
+
+### [CR-44] Spiral Vase Mode Printed Top Solid Layers and Jumped Vertically Before Segment 0 — **RESOLVED**
+- **Locations:** `src/features/skin.odin`, `src/pipeline/session.odin`, `src/pipeline/stages.odin`, `src/gcode/klipper.odin`
+- **Issue:** In `--vase-mode`, `skins_propagate` still generated top-skin masks and `vertical_shells_build` still added solid bands on upper layers, sealing the top of the vase. In addition, when a spiral vase layer had no leading travel, `klipper_layer_start_z` jumped `G0 Z` to the endpoint (`layer.z + op.z_offset_um`) of segment 0 so segment 0 printed flat instead of ramping smoothly from the previous layer's Z.
+- **Resolution:** Added `omit_top_skin` to `Skin_Config` (enabled when `vase_mode` is true), skipped `vertical_shells_build` in vase mode, hashed `options.vase_mode` into `Surfaces_Skin` and `Solid_Areas`, and updated `klipper_layer_start_z` to start a leading Z-ramped extrusion at `prev_layer.z` when `prev_layer.z <= end_z`. Verified with closed-loop `sim-verify.sh` (`vase6.obj`: 59.65 mm vs 59.65 mm predicted, zero top solid infill, smooth continuous helical Z across layers 3–5).
+
+### [CR-45] Adaptive Layers With Ironing or Variable Walls Failed Extrusion Validation — **RESOLVED**
+- **Location:** `src/pipeline/session.odin` (`stage_solid_paths`, `stage_path_plan`)
+- **Issue:** `max_lh` was computed as `max(proc_src.first_layer_height, proc_src.layer_height)` instead of the maximum over `s.layer_heights`. When `--adaptive-layers` produced layers taller than the nominal layer height (e.g., 280 µm on `0.20-standard`), `ironing_paths_generate` and `variable_walls_adapt` could emit `line_width < layer_height`, failing `extrusion_calculate` with `.Invalid_Input`.
+- **Resolution:** Both stages now scan `s.layer_heights` for `max_lh`. Verified on `benchy.stl --adaptive-layers --set ironing=true --set variable_walls=true`.
+
+### [CR-46] Skirt Support Union Dropped Outer Footprint When All Union Loops Were Clockwise — **RESOLVED**
+- **Location:** `src/features/adhesion.odin` (`adhesion_build`)
+- **Issue:** Filtering `union_set.paths` to positive-area loops could leave `skirt_set` empty if `kept == 0` instead of falling back to `outer_set`.
+- **Resolution:** Guarded replacement of `skirt_set` with `if kept > 0`, destroying `union_set` otherwise.

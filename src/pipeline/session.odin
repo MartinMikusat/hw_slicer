@@ -689,7 +689,7 @@ stage_surfaces_skin :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		s.surfaces,
 		s.layer_heights,
 		provider,
-		{fill_rule = .Non_Zero, top = proc_src.top_skin, bottom = proc_src.bottom_skin, skip_source_filtering = true},
+		{fill_rule = .Non_Zero, top = proc_src.top_skin, bottom = proc_src.bottom_skin, skip_source_filtering = true, omit_top_skin = s.options.vase_mode},
 		allocator = a,
 	)
 	if skin_err != .None {return {stage = "skins", detail = fmt.tprintf("skins error: %v", skin_err)}}
@@ -775,7 +775,7 @@ stage_solid_areas :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	// resolution removes what the skins already cover.
 	vertical_shells: features.Vertical_Shell_Result
 	defer features.vertical_shell_result_destroy(&vertical_shells, a)
-	if s.options.ensure_vertical_shells {
+	if s.options.ensure_vertical_shells && !s.options.vase_mode {
 		shell_model_sets := build_model_polygon_sets(active, s.regions, a)
 		defer destroy_model_polygon_sets(shell_model_sets, a)
 		vertical_shells = features.vertical_shells_build(
@@ -834,6 +834,9 @@ stage_solid_paths :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		features.solid_paths_sort_monotonic(&s.solids)
 	}
 	max_lh := max(proc_src.first_layer_height, proc_src.layer_height)
+	for lh in s.layer_heights {
+		if lh > max_lh {max_lh = lh}
+	}
 	s.ironing = features.ironing_paths_generate(
 		s.overlap,
 		{
@@ -1065,6 +1068,9 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	options := s.options
 	layer_ids := s.schedule.layer_ids
 	max_lh := max(proc_src.first_layer_height, proc_src.layer_height)
+	for lh in s.layer_heights {
+		if lh > max_lh {max_lh = lh}
+	}
 
 	u_sources, us_err := features.unified_path_sources_build(
 		layer_ids,

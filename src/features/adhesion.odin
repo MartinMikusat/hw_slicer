@@ -97,9 +97,13 @@ adhesion_build :: proc(
 						kept += 1
 					}
 				}
-				union_set.paths = union_set.paths[:kept]
-				owned_skirt_set = union_set
-				skirt_set = owned_skirt_set
+				if kept > 0 {
+					union_set.paths = union_set.paths[:kept]
+					owned_skirt_set = union_set
+					skirt_set = owned_skirt_set
+				} else {
+					polygon.polygon_set_destroy(&union_set, allocator)
+				}
 			} else {
 				polygon.polygon_set_destroy(&union_set, allocator)
 			}

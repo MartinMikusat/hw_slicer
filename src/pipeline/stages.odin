@@ -239,6 +239,7 @@ stage_settings_hash :: proc(
 	case .Surfaces_Skin:
 		hash_pod(&h, p.top_skin)
 		hash_pod(&h, p.bottom_skin)
+		hash_pod(&h, options.vase_mode)
 		hash_pod(&h, options.use_native_polygon)
 	case .Perimeters:
 		hash_pod(&h, p.perimeter_count)
@@ -252,6 +253,7 @@ stage_settings_hash :: proc(
 		hash_content(&h, feature_hash)
 		hash_pod(&h, options.use_native_polygon)
 		hash_pod(&h, options.ensure_vertical_shells)
+		hash_pod(&h, options.vase_mode)
 		hash_pod(&h, p.perimeter_count)
 		hash_pod(&h, p.nominal_line_width)
 		hash_pod(&h, p.top_skin)
