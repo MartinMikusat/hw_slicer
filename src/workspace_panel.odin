@@ -3,11 +3,13 @@ package main
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:time"
 import devlog "devlog:."
 
+import contracts "./contracts"
 import formats "./formats"
 import pipeline "./pipeline"
 
@@ -17,8 +19,15 @@ WORKSPACE_PRINTER :: "vcore3"
 WORKSPACE_MATERIAL :: "pla"
 WORKSPACE_PROCESS :: "0.20-standard"
 
-// Opens the slicing workspace on the model file that was just loaded. The model is sliced as it
-// is on disk; the lay-on-face placement of the viewer does not reach the slice yet.
+@(private = "file")
+placement_rotation_is_identity :: proc(m: Mat4) -> bool {
+	return m[0] == 1 && m[1] == 0 && m[2] == 0 &&
+	       m[4] == 0 && m[5] == 1 && m[6] == 0 &&
+	       m[8] == 0 && m[9] == 0 && m[10] == 1
+}
+
+// Opens the slicing workspace on the model file that was just loaded, applying the viewer's
+// lay-on-face rotation when non-identity so the slice matches the placed orientation.
 app_workspace_open :: proc(path: string) {
 	site := devlog.Site{feature = "workspace", operation = "open"}
 	app_workspace_close()
@@ -43,13 +52,28 @@ app_workspace_open :: proc(path: string) {
 		return
 	}
 	defer formats.decoded_mesh_destroy(&mesh)
+	m := app.placement.transform
+	if !placement_rotation_is_identity(m) {
+		for vi in 0..<len(mesh.vertex_x) {
+			x := mesh.vertex_x[vi]
+			y := mesh.vertex_y[vi]
+			z := mesh.vertex_z[vi]
+			mesh.vertex_x[vi] = f64(m[0])*x + f64(m[4])*y + f64(m[8])*z
+			mesh.vertex_y[vi] = f64(m[1])*x + f64(m[5])*y + f64(m[9])*z
+			mesh.vertex_z[vi] = f64(m[2])*x + f64(m[6])*y + f64(m[10])*z
+		}
+	}
 	config.source_units = units
+	config.object_name = strings.clone(strings.trim_suffix(filepath.base(path), filepath.ext(path)), context.temp_allocator)
 	workspace, create_detail, create_ok := pipeline.workspace_create(config, mesh)
 	if !create_ok {
 		devlog.failed(devlog.global(), site, {reason = "workspace could not be created", detail = create_detail, severity = .Warning})
 		return
 	}
 	app.workspace = workspace
+	delete(app.workspace_path)
+	app.workspace_path = strings.clone(path)
+	app.workspace_exported_hash = {}
 	app.ui.workspace.active = true
 	app.ui.workspace.auto_run = true
 	graph := &app.ui.workspace.graph
@@ -154,7 +178,7 @@ app_workspace_refresh :: proc() {
 	app.needs_redraw = true
 }
 
-// Once per frame: joins a finished run, then refreshes the interface while anything is running.
+// Once per frame: joins a finished run, exports completed G-code to build/gcode/, and refreshes.
 app_workspace_poll :: proc() {
 	w := app.workspace
 	if w == nil {return}
@@ -162,6 +186,28 @@ app_workspace_poll :: proc() {
 	if changed || pipeline.workspace_running(w) {
 		app_workspace_refresh()
 		ui_build_controls(&app.ui)
+	}
+	if !pipeline.workspace_running(w) && app.ui.workspace.view.stages[.Gcode].state == .Complete {
+		app_workspace_maybe_export_gcode()
+	}
+}
+
+@(private = "file")
+app_workspace_maybe_export_gcode :: proc() {
+	w := app.workspace
+	if w == nil || len(app.workspace_path) == 0 {return}
+	built_hash := w.session.slots[.Gcode].built_hash
+	if built_hash == app.workspace_exported_hash {return}
+	gcode_bytes, ok := pipeline.workspace_gcode_bytes(w, context.allocator)
+	if !ok {return}
+	defer delete(gcode_bytes)
+	stem := strings.trim_suffix(filepath.base(app.workspace_path), filepath.ext(app.workspace_path))
+	out_dir := "build/gcode"
+	_ = os.make_directory_all(out_dir)
+	out_path := fmt.tprintf("%s/%s.gcode", out_dir, stem)
+	if os.write_entire_file(out_path, gcode_bytes) == nil {
+		app.workspace_exported_hash = built_hash
+		app_set_status(fmt.tprintf("EXPORTED %s (%d bytes)", out_path, len(gcode_bytes)))
 	}
 }
 

@@ -513,6 +513,19 @@ workspace_autorun :: proc(w: ^Workspace) {
 	if found {workspace_start(w, target)}
 }
 
+// Copies the completed Klipper G-code bytes into `allocator` when the G-code stage is readable.
+workspace_gcode_bytes :: proc(w: ^Workspace, allocator := context.allocator) -> ([]u8, bool) {
+	if w == nil || w.session == nil {return nil, false}
+	s := w.session
+	sync.mutex_lock(&s.lock)
+	defer sync.mutex_unlock(&s.lock)
+	st := s.slots[.Gcode].state
+	if (st != .Complete && st != .Stale) || len(s.klipper.bytes) == 0 {return nil, false}
+	out := make([]u8, len(s.klipper.bytes), allocator)
+	copy(out, s.klipper.bytes)
+	return out, true
+}
+
 @(private = "file")
 workspace_start :: proc(w: ^Workspace, target: Stage_Id) {
 	pending := slice_session_pending(w.session, target)

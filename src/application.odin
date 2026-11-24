@@ -13,6 +13,7 @@ import devlog "devlog:."
 import "rune:gpu"
 import "rune:text"
 
+import contracts "./contracts"
 import design "./design"
 import evidence "./evidence"
 import pipeline "./pipeline"
@@ -33,7 +34,9 @@ App_State :: struct {
 	workspace:     ^pipeline.Workspace,
 	// The model the workspace slices. A design load replaces the viewer mesh, so the slicer tab
 	// reloads this model when it is shown.
-	workspace_model: int,
+	workspace_model:         int,
+	workspace_path:          string,
+	workspace_exported_hash: contracts.Content_Hash,
 	placement: Model_Placement,
 	face_hover: int,
 	face_pressed: int,
@@ -528,16 +531,16 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 	}
 	startup := startup_design
 	app.design.pinned = startup != "" || startup_stage >= 0
-	if startup_stage >= 0 && app.workspace != nil {
-		app.ui.slicer_tab = true
-		app_workspace_startup()
-	} else {
-		if startup == "" {startup, _ = design_newest()}
-		if startup != "" && app_load_design(startup) && startup_design_time >= 0 {
+	if startup != "" && startup_stage < 0 {
+		if app_load_design(startup) && startup_design_time >= 0 {
 			design_set_time_fraction(&app.design, startup_design_time)
 		}
-		// Without a design to show, the window opens on the slicer stages.
 		if !app.design.active && app.workspace != nil {app.ui.slicer_tab = true}
+	} else if app.workspace != nil {
+		app.ui.slicer_tab = true
+		if startup_stage >= 0 {
+			app_workspace_startup()
+		}
 	}
 	app.needs_redraw = true
 	devlog.succeeded(
@@ -555,6 +558,7 @@ app_destroy :: proc() {
 	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
 	renderer_shutdown(&app.renderer)
 	ui_destroy(&app.ui)
+	delete(app.workspace_path)
 	delete(app.resource_root)
 	delete(app.external_path)
 	delete(app.evidence_path)
@@ -980,6 +984,10 @@ application_mouse :: proc "c" (
 				app.section_dirty = true
 				app.ui.lay_on_face = false
 				app.face_hover = -1
+				if app.workspace != nil && len(app.workspace_path) > 0 {
+					saved_path := strings.clone(app.workspace_path, context.temp_allocator)
+					app_workspace_open(saved_path)
+				}
 				app_frame_camera()
 				app_set_status("FACE PLACED ON BED")
 			}
