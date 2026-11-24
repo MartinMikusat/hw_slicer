@@ -291,7 +291,9 @@ app_workspace_activate :: proc(action: UI_Action) -> bool {
 		pipeline.workspace_set_auto_run(w, w.manual_only)
 	case .Graph_Fit:
 		ui_graph_fit(&app.ui)
-	case .Graph_Divider, .Graph_Minimap, .Graph_Menu_Surface:
+	case .Graph_Inspector_Toggle:
+		graph.inspector_open = !graph.inspector_open
+	case .Graph_Divider, .Graph_Minimap, .Graph_Inspector_Surface, .Graph_Menu_Surface:
 	case .Graph_Menu_Run_To:
 		graph.menu_open = false
 		_ = pipeline.workspace_run_to(w, menu_stage)
@@ -444,7 +446,7 @@ app_copy_text :: proc(value: string) -> bool {
 // Scrolls the settings of the attribute editor when the pointer is over it.
 app_workspace_scroll :: proc(delta_y: f64) -> bool {
 	ui := &app.ui.workspace
-	if !ui_graph_mode(&app.ui) || delta_y == 0 {return false}
+	if !ui_graph_mode(&app.ui) || !ui.graph.inspector_open || delta_y == 0 {return false}
 	if !ui_contains(ui_attribute_rect(&app.ui), app.ui.pointer_x, app.ui.pointer_y) {return false}
 	_, visible := ui_attribute_rows_area(&app.ui)
 	ui.scroll = clamp(ui.scroll+(-1 if delta_y > 0 else 1), 0, max(0, len(ui.rows)-visible))
@@ -519,7 +521,7 @@ app_graph_mouse :: proc(phase, button: i32, x, y, delta_x, delta_y: f64) -> bool
 			scale := ui.ui_scale if ui.ui_scale > 0 else 1
 			ui_graph_pan_by(ui, delta_x/scale, delta_y/scale)
 		case graph.split_dragging:
-			ui_graph_set_split(ui, y)
+			ui_graph_set_split(ui, x)
 		case graph.minimap_dragging:
 			ui_graph_minimap_move(ui, x, y)
 		case:
@@ -572,6 +574,12 @@ app_graph_key :: proc(key_code: u16, characters: string) -> bool {
 	graph := &ui.workspace.graph
 	if key_code == 53 && graph.menu_open {
 		graph.menu_open = false
+		ui_build_controls(ui)
+		app.needs_redraw = true
+		return true
+	}
+	if key_code == 53 && graph.inspector_open {
+		graph.inspector_open = false
 		ui_build_controls(ui)
 		app.needs_redraw = true
 		return true

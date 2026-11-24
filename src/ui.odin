@@ -120,6 +120,8 @@ UI_Action :: enum u64 {
 	Graph_Fit,
 	Graph_Divider,
 	Graph_Minimap,
+	Graph_Inspector_Toggle,
+	Graph_Inspector_Surface,
 	Graph_Menu_Surface,
 	Graph_Menu_Run_To,
 	Graph_Menu_Run_Only,
@@ -361,9 +363,9 @@ ui_character_width :: proc(ui: ^UI_State) -> f64 {
 	return ui_character_widths[size]
 }
 
-// Design focus hides the stage bar, so the workspace extends to the bottom edge.
+// Design focus and stage graph hide the bottom bar, so the workspace extends to the bottom edge.
 ui_action_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	if ui.design_active {return {12, ui.height, max(1.0, ui.width-24), 0}}
+	if ui.design_active || ui_graph_mode(ui) {return {12, ui.height, max(1.0, ui.width-24), 0}}
 	return {12, ui.height-64, max(1.0, ui.width-24), 52}
 }
 
@@ -398,7 +400,9 @@ ui_section_slider_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	if ui_graph_mode(ui) {
 		bar := ui_section_bar_rect(ui)
 		vp := ui_viewport_rect(ui)
-		return {bar.x+bar.w+8, bar.y+2, max(60, vp.x+vp.w-(bar.x+bar.w+8)-210), 26}
+		left := bar.x+bar.w+8
+		right := vp.x+vp.w-188
+		return {left, bar.y+1, max(60, right-left), 26}
 	}
 	if ui_compact(ui) {return {20, 116, 156, 20}}
 	return {20, 176, 204, 24}

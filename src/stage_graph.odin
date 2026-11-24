@@ -16,7 +16,8 @@ GRAPH_PITCH_Y :: 74.0
 GRAPH_MARGIN :: 24.0
 GRAPH_ZOOM_MIN :: 0.25
 GRAPH_ZOOM_MAX :: 2.5
-GRAPH_SPLIT_DEFAULT :: 0.42
+GRAPH_SPLIT_DEFAULT :: 0.5
+GRAPH_DIVIDER_W :: 10.0
 GRAPH_MENU_ROW :: 28.0
 ATTRIBUTE_ROW :: 44.0
 
@@ -34,9 +35,10 @@ UI_Graph :: struct {
 	fitted:           bool,
 	panning:          bool,
 	minimap_dragging: bool,
-	// Fraction of the content height that the graph takes above the 3D view.
+	// Fraction of the content width that the graph takes beside the 3D view.
 	split:            f64,
 	split_dragging:   bool,
+	inspector_open:   bool,
 	menu_open:        bool,
 	menu_stage:       pipeline.Stage_Id,
 	menu_at:          [2]f64,
@@ -93,46 +95,43 @@ ui_graph_node_action_index :: proc(action: UI_Action) -> (pipeline.Stage_Id, boo
 // Layout ------------------------------------------------------------------------------------------
 
 ui_graph_content_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	bar := ui_action_bar_rect(ui)
-	return {12, 52, max(1, ui.width-24), max(1, bar.y-64)}
-}
-
-ui_attribute_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	c := ui_graph_content_rect(ui)
-	w := clamp(ui.width*0.24, 240, 330)
-	return {c.x+c.w-w, c.y, w, c.h}
-}
-
-@(private = "file")
-ui_graph_area :: proc(ui: ^UI_State) -> UI_Rect {
-	c := ui_graph_content_rect(ui)
-	a := ui_attribute_rect(ui)
-	return {c.x, c.y, max(1, a.x-12-c.x), c.h}
+	return {12, 52, max(1, ui.width-24), max(1, ui.height-64)}
 }
 
 ui_graph_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	area := ui_graph_area(ui)
+	c := ui_graph_content_rect(ui)
 	split := ui.workspace.graph.split if ui.workspace.graph.split > 0 else GRAPH_SPLIT_DEFAULT
-	lo := min(120.0, area.h*0.4)
-	hi := max(lo, area.h-160)
-	return {area.x, area.y, area.w, clamp(area.h*split, lo, hi)}
+	avail := max(1.0, c.w-GRAPH_DIVIDER_W)
+	lo := min(220.0, avail*0.3)
+	hi := max(lo, avail-min(280.0, avail*0.3))
+	return {c.x, c.y, clamp(avail*split, lo, hi), c.h}
 }
 
 ui_graph_divider_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	g := ui_graph_rect(ui)
-	return {g.x, g.y+g.h, g.w, 10}
+	return {g.x+g.w, g.y, GRAPH_DIVIDER_W, g.h}
 }
 
 ui_graph_viewport_rect :: proc(ui: ^UI_State) -> UI_Rect {
-	area := ui_graph_area(ui)
+	c := ui_graph_content_rect(ui)
 	d := ui_graph_divider_rect(ui)
-	top := d.y+d.h
-	return {area.x, top, area.w, max(1, area.y+area.h-top)}
+	left := d.x+d.w
+	return {left, c.y, max(1, c.x+c.w-left), c.h}
 }
 
-ui_graph_set_split :: proc(ui: ^UI_State, y: f64) {
-	area := ui_graph_area(ui)
-	ui.workspace.graph.split = clamp((y-area.y)/max(1, area.h), 0.1, 0.9)
+ui_attribute_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	vp := ui_viewport_rect(ui)
+	w := min(clamp(vp.w*0.44, 248, 320), max(180.0, vp.w-24))
+	top := vp.y+50
+	bottom := vp.y+vp.h-90
+	h := max(160.0, bottom-top)
+	return {vp.x+vp.w-w-12, top, w, h}
+}
+
+ui_graph_set_split :: proc(ui: ^UI_State, x: f64) {
+	c := ui_graph_content_rect(ui)
+	avail := max(1.0, c.w-GRAPH_DIVIDER_W)
+	ui.workspace.graph.split = clamp((x-c.x-GRAPH_DIVIDER_W*0.5)/avail, 0.15, 0.85)
 }
 
 ui_rect_intersection :: proc(a, b: UI_Rect) -> UI_Rect {
@@ -362,7 +361,6 @@ ui_attribute_content_top :: proc(ui: ^UI_State) -> f64 {
 ui_attribute_advanced_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	a := ui_attribute_rect(ui)
 	top := ui_attribute_content_top(ui)
-	if ui.workspace.view.selected == .Model {top += 40}
 	return {a.x+a.w-116, top, 108, 26}
 }
 
@@ -377,7 +375,7 @@ ui_attribute_rows_area :: proc(ui: ^UI_State) -> (top: f64, rows: int) {
 
 // The setting row under (x, y) in the attribute editor.
 ui_attribute_row_at :: proc(ui: ^UI_State, x, y: f64) -> (int, bool) {
-	if ui.workspace.graph.tab != .Settings {return 0, false}
+	if !ui.workspace.graph.inspector_open || ui.workspace.graph.tab != .Settings {return 0, false}
 	a := ui_attribute_rect(ui)
 	top, visible := ui_attribute_rows_area(ui)
 	if x < a.x || x > a.x+a.w || y < top {return 0, false}
@@ -388,7 +386,7 @@ ui_attribute_row_at :: proc(ui: ^UI_State, x, y: f64) -> (int, bool) {
 
 ui_section_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
 	vp := ui_viewport_rect(ui)
-	return {vp.x+12, vp.y+vp.h-42, 112, 30}
+	return {vp.x+12, vp.y+vp.h-78, 106, 28}
 }
 
 // Controls ----------------------------------------------------------------------------------------
@@ -396,9 +394,6 @@ ui_section_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
 ui_graph_controls :: proc(ui: ^UI_State) {
 	view := ui.workspace.view
 	v := ui.workspace.graph
-	bar := ui_action_bar_rect(ui)
-	ui_add_control(ui, "run stage", "cancel the run" if view.running else "run the selected stage and the stages it needs", {bar.x, bar.y+8, 96, 32}, .Workspace_Run)
-	ui_add_control(ui, "auto run", "toggle automatic refresh of stale stages", {bar.x+104, bar.y+8, 96, 32}, .Workspace_Auto, true, 1, ui.workspace.auto_run)
 
 	g := ui_graph_rect(ui)
 	for id in pipeline.Stage_Id {
@@ -413,48 +408,78 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 	ui_add_control(ui, "fit graph", "fit the stage graph in view", {g.x+g.w-60, g.y+8, 52, 26}, .Graph_Fit)
 	ui_add_control(ui, "graph divider", "resize the graph and the 3D view", ui_graph_divider_rect(ui), .Graph_Divider)
 
-	a := ui_attribute_rect(ui)
-	tab_w := (a.w-16)/3
-	tab_names := [UI_Attribute_Tab]string{.Settings = "settings tab", .Log = "log tab", .Docs = "documentation tab"}
-	tab_labels := [UI_Attribute_Tab]string{.Settings = "stage settings", .Log = "stage log and timing", .Docs = "stage documentation"}
-	tab_actions := [UI_Attribute_Tab]UI_Action{.Settings = .Attribute_Settings, .Log = .Attribute_Log, .Docs = .Attribute_Docs}
-	for tab in UI_Attribute_Tab {
-		ui_add_control(ui, tab_names[tab], tab_labels[tab], {a.x+8+f64(tab)*tab_w, a.y+58, tab_w-4, 28}, tab_actions[tab], true, 1, v.tab == tab)
-	}
-	if v.tab == .Settings {
-		if view.selected == .Model {
-			ui_add_control(ui, "lay on face", "Lay on face", {a.x+12, ui_attribute_content_top(ui), 150, 30}, .Lay_On_Face, true, 1, ui.lay_on_face)
-		}
-		ui_add_control(ui, "advanced settings", "show advanced settings", ui_attribute_advanced_rect(ui), .Attribute_Advanced, true, 1, v.advanced)
-		top, visible := ui_attribute_rows_area(ui)
-		ui.workspace.scroll = clamp(ui.workspace.scroll, 0, max(0, len(ui.workspace.rows)-visible))
-		for row, index in ui.workspace.rows {
-			if !row.editable {continue}
-			if index < ui.workspace.scroll || index >= ui.workspace.scroll+visible {continue}
-			y := top+f64(index-ui.workspace.scroll)*ATTRIBUTE_ROW+18
-			right := a.x+a.w-8
-			if row.kind == .Toggle {
-				ui_add_control(ui, row.names[1], row.labels[1], {right-80, y, 80, 24}, ui_setting_action(index, 1))
-			} else {
-				ui_add_control(ui, row.names[0], row.labels[0], {right-80, y, 36, 24}, ui_setting_action(index, 0))
-				ui_add_control(ui, row.names[1], row.labels[1], {right-40, y, 36, 24}, ui_setting_action(index, 1))
-			}
-		}
-	}
-
 	vp := ui_viewport_rect(ui)
-	ui_add_control(ui, "frame mesh", "frame the complete mesh", {vp.x+12, vp.y+12, 78, 30}, .Frame_Mesh)
-	ui_add_control(ui, "wireframe", "toggle mesh wireframe", {vp.x+98, vp.y+12, 98, 30}, .Toggle_Wireframe, true, 1, ui.wireframe)
-	ui_add_control(ui, "show mesh", "toggle the model mesh", {vp.x+204, vp.y+12, 66, 30}, .View_Mesh, true, 1, v.show_mesh)
-	ui_add_control(ui, "show result", "toggle the stage result", {vp.x+278, vp.y+12, 72, 30}, .View_Result, true, 1, v.show_result)
+	insp_btn := UI_Rect{vp.x+vp.w-104, vp.y+12, 92, 30}
+	ui_add_control(ui, "stage inspector", "toggle stage settings, log, and docs", insp_btn, .Graph_Inspector_Toggle, true, 1, v.inspector_open)
+
+	// Floating viewport toolbar (wraps cleanly inside the 3D viewport when narrow).
+	Toolbar_Item :: struct {
+		name, label: string,
+		width:       f64,
+		action:      UI_Action,
+		role:        i32,
+		selected:    bool,
+	}
+	toolbar := [5]Toolbar_Item{
+		{"frame mesh", "frame the complete mesh", 68, .Frame_Mesh, 0, false},
+		{"wireframe", "toggle mesh wireframe", 90, .Toggle_Wireframe, 1, ui.wireframe},
+		{"show mesh", "toggle the model mesh", 60, .View_Mesh, 1, v.show_mesh},
+		{"show result", "toggle the stage result", 66, .View_Result, 1, v.show_result},
+		{"lay on face", "Lay on face", 98, .Lay_On_Face, 1, ui.lay_on_face},
+	}
+	tx := vp.x+12
+	ty := vp.y+12
+	max_x := max(vp.x+120, insp_btn.x-8)
+	for item in toolbar {
+		if tx > vp.x+12 && tx+item.width > max_x {
+			tx = vp.x+12
+			ty += 36
+		}
+		ui_add_control(ui, item.name, item.label, {tx, ty, item.width, 30}, item.action, true, item.role, item.selected)
+		tx += item.width+6
+	}
 	if ui_gcode_preview_visible(ui) {
-		gx, gy := ui_gcode_toolbar_origin(vp)
+		gx, gy := vp.x+12, ty+36
 		ui_add_control(ui, "previous gcode view", "previous G-code color scheme", {gx, gy, 28, 30}, .View_GCode_Prev)
 		ui_add_control(ui, "next gcode view", "cycle G-code color scheme", {gx+32, gy, 152, 30}, .View_GCode_Next)
 		ui_add_control(ui, "single layer toggle", "toggle single layer vs stacked layers", {gx+190, gy, 76, 30}, .View_GCode_Single_Layer, true, 1, v.gcode_single_layer)
 	}
+
 	ui_add_control(ui, "section enabled", "toggle the layer view", ui_section_bar_rect(ui), .Toggle_Section, ui.section_max > 0)
 	ui_add_control(ui, "section height", "layer height", ui_section_slider_rect(ui), .Section_Height, ui.section_max > 0)
+
+	run_y := vp.y+vp.h-42
+	ui_add_control(ui, "run stage", "cancel the run" if view.running else "run the selected stage and the stages it needs", {vp.x+12, run_y, 76, 30}, .Workspace_Run)
+	ui_add_control(ui, "auto run", "toggle automatic refresh of stale stages", {vp.x+94, run_y, 86, 30}, .Workspace_Auto, true, 1, ui.workspace.auto_run)
+
+	if v.inspector_open {
+		a := ui_attribute_rect(ui)
+		ui_add_control(ui, "inspector surface", "stage inspector", a, .Graph_Inspector_Surface)
+		tab_w := (a.w-16)/3
+		tab_names := [UI_Attribute_Tab]string{.Settings = "settings tab", .Log = "log tab", .Docs = "documentation tab"}
+		tab_labels := [UI_Attribute_Tab]string{.Settings = "stage settings", .Log = "stage log and timing", .Docs = "stage documentation"}
+		tab_actions := [UI_Attribute_Tab]UI_Action{.Settings = .Attribute_Settings, .Log = .Attribute_Log, .Docs = .Attribute_Docs}
+		for tab in UI_Attribute_Tab {
+			ui_add_control(ui, tab_names[tab], tab_labels[tab], {a.x+8+f64(tab)*tab_w, a.y+58, tab_w-4, 28}, tab_actions[tab], true, 1, v.tab == tab)
+		}
+		if v.tab == .Settings {
+			ui_add_control(ui, "advanced settings", "show advanced settings", ui_attribute_advanced_rect(ui), .Attribute_Advanced, true, 1, v.advanced)
+			top, visible := ui_attribute_rows_area(ui)
+			ui.workspace.scroll = clamp(ui.workspace.scroll, 0, max(0, len(ui.workspace.rows)-visible))
+			for row, index in ui.workspace.rows {
+				if !row.editable {continue}
+				if index < ui.workspace.scroll || index >= ui.workspace.scroll+visible {continue}
+				y := top+f64(index-ui.workspace.scroll)*ATTRIBUTE_ROW+18
+				right := a.x+a.w-8
+				if row.kind == .Toggle {
+					ui_add_control(ui, row.names[1], row.labels[1], {right-80, y, 80, 24}, ui_setting_action(index, 1))
+				} else {
+					ui_add_control(ui, row.names[0], row.labels[0], {right-80, y, 36, 24}, ui_setting_action(index, 0))
+					ui_add_control(ui, row.names[1], row.labels[1], {right-40, y, 36, 24}, ui_setting_action(index, 1))
+				}
+			}
+		}
+	}
 
 	if v.menu_open {
 		ui_add_control(ui, "stage menu", "stage actions", ui_graph_menu_rect(ui), .Graph_Menu_Surface)
@@ -468,8 +493,9 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 ui_graph_custom_control :: proc(action: UI_Action) -> bool {
 	if _, is_node := ui_graph_node_action_index(action); is_node {return true}
 	#partial switch action {
-	case .Graph_Divider, .Graph_Minimap, .Graph_Menu_Surface, .Graph_Menu_Run_To, .Graph_Menu_Run_Only,
-	     .Graph_Menu_Reset, .Graph_Menu_Evidence, .Graph_Menu_Copy:
+	case .Graph_Divider, .Graph_Minimap, .Graph_Inspector_Surface, .Graph_Menu_Surface,
+	     .Graph_Menu_Run_To, .Graph_Menu_Run_Only, .Graph_Menu_Reset, .Graph_Menu_Evidence,
+	     .Graph_Menu_Copy:
 		return true
 	}
 	return false
@@ -520,15 +546,19 @@ ui_draw_graph_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	ui_add_rect(painter, {0, 0, ui.width, 40}, theme.header)
 	ui_add_rect(painter, {0, 39, ui.width, 1}, theme.border)
 	g := ui_graph_rect(ui)
-	a := ui_attribute_rect(ui)
 	ui_add_rect(painter, g, theme.surface)
 	ui_add_border(painter, g, theme.border)
-	ui_add_rect(painter, a, theme.surface)
-	ui_add_rect(painter, {a.x, a.y, 1, a.h}, theme.border)
-	ui_add_rect(painter, ui_action_bar_rect(ui), theme.header)
 	d := ui_graph_divider_rect(ui)
 	grip := theme.accent if ui.workspace.graph.split_dragging || ui.hovered_id == u64(UI_Action.Graph_Divider) else theme.border
-	ui_add_round_rect(painter, {d.x+d.w/2-24, d.y+d.h/2-2, 48, 4}, 2, grip)
+	ui_add_round_rect(painter, {d.x+d.w/2-2, d.y+d.h/2-24, 4, 48}, 2, grip)
+	if ui.workspace.graph.inspector_open {
+		a := ui_attribute_rect(ui)
+		ui_menu_shadow(painter, ui, a)
+		bg := theme.overlay
+		bg.w = 0.94
+		ui_add_round_rect(painter, a, 8, bg)
+		ui_add_border(painter, a, theme.border)
+	}
 }
 
 @(private = "file")
@@ -716,6 +746,7 @@ ui_draw_wrapped :: proc(painter: ^UI_Painter, ui: ^UI_State, value: string, rect
 }
 
 ui_draw_attribute_editor :: proc(painter: ^UI_Painter, ui: ^UI_State) {
+	if !ui.workspace.graph.inspector_open {return}
 	theme := ui_theme(ui)
 	view := ui.workspace.view
 	v := ui.workspace.graph
@@ -736,9 +767,6 @@ ui_draw_attribute_editor :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	width := a.w-24
 	switch v.tab {
 	case .Settings:
-		if id == .Model {
-			ui_draw_text(painter, painter.font, ui, "Lay on face", ui_control_rect(ui, .Lay_On_Face), ui_control_ink(ui, .Lay_On_Face), 0, .Center)
-		}
 		adv := ui_attribute_advanced_rect(ui)
 		ui_draw_text(painter, painter.font, ui, "Advanced", adv, ui_control_ink(ui, .Attribute_Advanced), 0, .Center)
 		hidden := "" if v.hidden_advanced == 0 else fmt.tprintf("%d hidden", v.hidden_advanced)
@@ -868,13 +896,6 @@ ui_gcode_preview_visible :: proc(ui: ^UI_State) -> bool {
 	return (sel == .Motion || sel == .Gcode) && v.show_result && v.gcode_preview_ready
 }
 
-ui_gcode_toolbar_origin :: proc(vp: UI_Rect) -> (x, y: f64) {
-	if vp.w >= 820 {
-		return vp.x+362, vp.y+12
-	}
-	return vp.x+12, vp.y+48
-}
-
 @(private = "file")
 ui_gcode_legend_value :: proc(value: f32, mode: pipeline.GCode_View_Mode) -> string {
 	switch mode {
@@ -901,13 +922,17 @@ ui_draw_gcode_legend :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 
 	bg := theme.overlay
 	bg.w = 0.92
+	legend_right := vp.x + vp.w - 12
+	if v.inspector_open {
+		legend_right = ui_attribute_rect(ui).x - 12
+	}
 	if mode == .Line_Type {
 		swatches := pipeline.GCODE_LINE_SWATCHES
 		row_h := 18.0
 		card_w := 152.0
 		card_h := 32.0 + f64(len(swatches))*row_h + 8.0
-		if vp.h < card_h + 72 || vp.w < card_w + 24 {return}
-		card := UI_Rect{vp.x + vp.w - card_w - 12, vp.y + 12, card_w, card_h}
+		if vp.h < card_h + 150 || legend_right - card_w < vp.x + 12 {return}
+		card := UI_Rect{legend_right - card_w, vp.y + 50, card_w, card_h}
 		ui_add_rect(painter, card, bg)
 		ui_add_border(painter, card, theme.border)
 		ui_draw_text(painter, painter.font, ui, "Line type", {card.x+10, card.y+6, card.w-20, 20}, theme.muted, 0)
@@ -923,8 +948,8 @@ ui_draw_gcode_legend :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	card_w := 184.0
 	bar_h := 140.0
 	card_h := 38.0 + bar_h + 14.0
-	if vp.h < card_h + 72 || vp.w < card_w + 24 {return}
-	card := UI_Rect{vp.x + vp.w - card_w - 12, vp.y + 12, card_w, card_h}
+	if vp.h < card_h + 150 || legend_right - card_w < vp.x + 12 {return}
+	card := UI_Rect{legend_right - card_w, vp.y + 50, card_w, card_h}
 	ui_add_rect(painter, card, bg)
 	ui_add_border(painter, card, theme.border)
 
@@ -963,11 +988,16 @@ ui_draw_gcode_legend :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	}
 }
 
-// The labels of the 3D view in the graph workspace and the action bar.
+// The floating labels inside the 3D viewport of the graph workspace.
 ui_draw_graph_view_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	theme := ui_theme(ui)
-	labels := [4]struct {action: UI_Action, text: string}{
-		{.Frame_Mesh, "Frame"}, {.Toggle_Wireframe, "Wireframe"}, {.View_Mesh, "Mesh"}, {.View_Result, "Result"},
+	labels := [6]struct {action: UI_Action, text: string}{
+		{.Frame_Mesh, "Frame"},
+		{.Toggle_Wireframe, "Wireframe"},
+		{.View_Mesh, "Mesh"},
+		{.View_Result, "Result"},
+		{.Lay_On_Face, "Lay on face"},
+		{.Graph_Inspector_Toggle, "Inspector"},
 	}
 	for label in labels {
 		ui_draw_text(painter, painter.font, ui, label.text, ui_control_rect(ui, label.action), ui_control_ink(ui, label.action), 0, .Center)
@@ -980,24 +1010,25 @@ ui_draw_graph_view_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		ui_draw_text(painter, painter.font, ui, "1 layer" if v.gcode_single_layer else "Stack", ui_control_rect(ui, .View_GCode_Single_Layer), ui_control_ink(ui, .View_GCode_Single_Layer), 0, .Center)
 		ui_draw_gcode_legend(painter, ui)
 	}
+	vp := ui_viewport_rect(ui)
 	section := ui_section_bar_rect(ui)
-	ui_draw_text(painter, painter.font, ui, "Layer", {section.x+52, section.y, section.w-52, section.h}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, "Layer", {section.x+50, section.y, section.w-50, section.h}, theme.text, 0)
 	slider := ui_section_slider_rect(ui)
 	readout := fmt.tprintf("%.2f mm", ui.section_z)
 	if ui.workspace.layer_count > 0 {
 		readout = fmt.tprintf("Layer %d / %d · %.2f mm", ui.workspace.layer+1, ui.workspace.layer_count, ui.workspace.layer_z)
 	}
 	if !ui.section_enabled {readout = "Layer view off"}
-	ui_draw_text(painter, painter.mono, ui, readout, {slider.x+slider.w+8, slider.y, 190, slider.h}, theme.text, 0, tracked = true)
+	ui_draw_text(painter, painter.mono, ui, readout, {slider.x+slider.w+8, slider.y, max(0, vp.x+vp.w-12-(slider.x+slider.w+8)), slider.h}, theme.text, 0, tracked = true)
 	if ui.section_enabled && ui.workspace.graph.show_result && !ui.workspace.result_shown && ui.workspace.view.selected != .Model {
-		vp := ui_viewport_rect(ui)
-		ui_draw_text(painter, painter.font, ui, "No result on this layer; showing the mesh section.", {vp.x+12, slider.y-26, vp.w-24, 22}, theme.muted, 0)
+		ui_draw_text(painter, painter.font, ui, "No result on this layer; showing the mesh section.", {vp.x+12, slider.y-24, vp.w-24, 20}, theme.muted, 0)
 	}
 
-	bar := ui_action_bar_rect(ui)
 	view := ui.workspace.view
-	ui_draw_text(painter, painter.font, ui, "Cancel" if view.running else "Run", ui_control_rect(ui, .Workspace_Run), ui_control_ink(ui, .Workspace_Run), 0, .Center)
-	ui_draw_text(painter, painter.font, ui, "Auto on" if ui.workspace.auto_run else "Auto off", ui_control_rect(ui, .Workspace_Auto), ui_control_ink(ui, .Workspace_Auto), 0, .Center)
+	run_rect := ui_control_rect(ui, .Workspace_Run)
+	auto_rect := ui_control_rect(ui, .Workspace_Auto)
+	ui_draw_text(painter, painter.font, ui, "Cancel" if view.running else "Run", run_rect, ui_control_ink(ui, .Workspace_Run), 0, .Center)
+	ui_draw_text(painter, painter.font, ui, "Auto on" if ui.workspace.auto_run else "Auto off", auto_rect, ui_control_ink(ui, .Workspace_Auto), 0, .Center)
 	complete, stale, failed := 0, 0, 0
 	for stage in view.stages {
 		switch stage.state {
@@ -1012,14 +1043,16 @@ ui_draw_graph_view_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		summary = fmt.tprintf("%s · running to %s", summary, pipeline.stage_descriptors[view.active].name)
 	}
 	if view.queued_edits > 0 {summary = fmt.tprintf("%s · %d queued edit%s", summary, view.queued_edits, "" if view.queued_edits == 1 else "s")}
-	ui_draw_text(painter, painter.font, ui, summary, {bar.x+212, bar.y+8, max(0, bar.w*0.55-212), 32}, theme.text, 0)
+	summary_x := auto_rect.x+auto_rect.w+10
+	ui_draw_text(painter, painter.font, ui, summary, {summary_x, auto_rect.y, max(0, vp.x+vp.w-12-summary_x), auto_rect.h}, theme.muted, 0)
 }
 
-// The status line in the action bar of the graph workspace.
+// The status line at the bottom of the stage graph pane.
 ui_draw_graph_status :: proc(painter: ^UI_Painter, ui: ^UI_State, status: string, failed: bool) {
 	if status == "" {return}
-	bar := ui_action_bar_rect(ui)
+	g := ui_graph_rect(ui)
 	color := ui_theme(ui).muted
 	if failed {color = ui_error_color(ui)}
-	ui_draw_text(painter, painter.font, ui, status, {bar.x+bar.w*0.55, bar.y+8, bar.w*0.45-8, 32}, color, 0, .End)
+	right_pad := ui_graph_minimap_rect(ui).w+16 if ui_graph_minimap_visible(ui) else 12.0
+	ui_draw_text(painter, painter.font, ui, status, {g.x+10, g.y+g.h-28, max(0, g.w-10-right_pad), 22}, color, 0)
 }
