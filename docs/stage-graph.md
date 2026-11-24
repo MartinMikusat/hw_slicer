@@ -27,7 +27,7 @@ Edges are drawn as curves from an input to the stage that reads it. They are hig
 
 The layer toggle and slider are in the 3D view. They choose the layer whose section plane is nearest to the slider height. The view draws the selected stage's result on that layer as lines. If the stage has no planar result (Model) or no result on the layer, the view falls back to the mesh section. **Mesh** and **Result** toggle the model and the stage result.
 
-Results are drawn in the slice frame, shifted so that the footprint centre is at the origin. Lay-on-face placement forwards its rotation to the workspace slice. Motion and G-code stages render full 3D extruded beads with selectable preview color schemes and a color legend.
+Results are drawn in the slice frame, shifted so that the footprint centre is at the origin. Lay-on-face placement forwards its rotation to the workspace slice. Individual stages expose contextual 3D-view controls on the second toolbar row when relevant: **Path plan** renders perimeter seam markers with a `Seam` size control (`−`/`+`), and **Motion** / **G-code** render full 3D extruded beads with selectable preview color schemes, a single-layer toggle, and a color legend.
 
 ## Evidence
 

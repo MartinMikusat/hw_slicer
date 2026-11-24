@@ -1177,8 +1177,8 @@ renderer_draw :: proc(
 		msg_void_u(encoder, sel_registerName("setTriangleFillMode:"), 0)
 		msg_void_id(encoder, sel_registerName("setRenderPipelineState:"), renderer.line_pipeline)
 		msg_void_id(encoder, sel_registerName("setDepthStencilState:"), renderer.ui_depth_state)
-		r_outer := clamp(camera.distance * 0.0085, f32(0.45), f32(1.8))
-		r_inner := r_outer * 0.68
+		r_outer := visual.seam_marker_radius if visual.seam_marker_radius > 0 else f32(0.35)
+		r_inner := r_outer * 0.72
 		id_model := mat4_identity()
 		for p in visual.seam_markers {
 			pos := Vec3{p[0], p[1], p[2]}

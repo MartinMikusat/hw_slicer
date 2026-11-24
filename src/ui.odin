@@ -130,6 +130,8 @@ UI_Action :: enum u64 {
 	View_GCode_Prev,
 	View_GCode_Next,
 	View_GCode_Single_Layer,
+	View_Seam_Size_Dec,
+	View_Seam_Size_Inc,
 	Printer_Sub_Control,
 	Printer_Sub_Files,
 	Printer_Sub_Console,

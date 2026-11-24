@@ -115,6 +115,8 @@ UI_Graph :: struct {
 	gcode_preview_ready: bool,
 	gcode_min:           f32,
 	gcode_max:           f32,
+	seam_marker_radius:  f32,
+	seam_marker_count:   int,
 	hover_edge:          bool,
 	hover_from:          pipeline.Stage_Id,
 	hover_to:            pipeline.Stage_Id,
@@ -666,6 +668,10 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 		ui_add_control(ui, "previous gcode view", "previous G-code color scheme", {gx, gy, 28, 30}, .View_GCode_Prev)
 		ui_add_control(ui, "next gcode view", "cycle G-code color scheme", {gx+32, gy, 152, 30}, .View_GCode_Next)
 		ui_add_control(ui, "single layer toggle", "toggle single layer vs stacked layers", {gx+190, gy, 76, 30}, .View_GCode_Single_Layer, true, 1, v.gcode_single_layer)
+	} else if ui_seam_markers_visible(ui) {
+		sx, sy := vp.x+12, ty+36
+		ui_add_control(ui, "decrease seam size", "decrease seam marker size", {sx, sy, 28, 30}, .View_Seam_Size_Dec)
+		ui_add_control(ui, "increase seam size", "increase seam marker size", {sx+136, sy, 28, 30}, .View_Seam_Size_Inc)
 	}
 
 	ui_add_control(ui, "section enabled", "toggle the layer view", ui_section_bar_rect(ui), .Toggle_Section, ui.section_max > 0)
@@ -1018,6 +1024,11 @@ ui_gcode_preview_visible :: proc(ui: ^UI_State) -> bool {
 	return (sel == .Motion || sel == .Gcode) && v.show_result && v.gcode_preview_ready
 }
 
+ui_seam_markers_visible :: proc(ui: ^UI_State) -> bool {
+	v := ui.workspace.graph
+	return ui.workspace.view.selected == .Path_Plan && v.show_result && v.seam_marker_count > 0
+}
+
 @(private = "file")
 ui_gcode_legend_value :: proc(value: f32, mode: pipeline.GCode_View_Mode) -> string {
 	switch mode {
@@ -1127,6 +1138,18 @@ ui_draw_graph_view_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		ui_draw_text(painter, painter.font, ui, mode_label, ui_control_rect(ui, .View_GCode_Next), ui_control_ink(ui, .View_GCode_Next), 0, .Center)
 		ui_draw_text(painter, painter.font, ui, "1 layer" if v.gcode_single_layer else "Stack", ui_control_rect(ui, .View_GCode_Single_Layer), ui_control_ink(ui, .View_GCode_Single_Layer), 0, .Center)
 		ui_draw_gcode_legend(painter, ui)
+	} else if ui_seam_markers_visible(ui) {
+		dec_r := ui_control_rect(ui, .View_Seam_Size_Dec)
+		inc_r := ui_control_rect(ui, .View_Seam_Size_Inc)
+		pill := UI_Rect{dec_r.x+dec_r.w+4, dec_r.y, max(1.0, inc_r.x-(dec_r.x+dec_r.w+8)), dec_r.h}
+		bg := theme.overlay
+		bg.w = 0.9
+		ui_add_round_rect(painter, pill, 5, bg)
+		ui_add_border(painter, pill, theme.border)
+		r_mm := ui.workspace.graph.seam_marker_radius if ui.workspace.graph.seam_marker_radius > 0 else f32(0.35)
+		ui_draw_text(painter, painter.font, ui, "−", dec_r, ui_control_ink(ui, .View_Seam_Size_Dec), 0, .Center)
+		ui_draw_text(painter, painter.mono, ui, fmt.tprintf("Seam %.2f mm", r_mm), pill, theme.text, 0, .Center)
+		ui_draw_text(painter, painter.font, ui, "+", inc_r, ui_control_ink(ui, .View_Seam_Size_Inc), 0, .Center)
 	}
 	vp := ui_viewport_rect(ui)
 	section := ui_section_bar_rect(ui)

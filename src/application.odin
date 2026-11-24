@@ -481,6 +481,7 @@ app_activate :: proc(action: UI_Action) -> bool {
 	     .Graph_Menu_Surface, .Graph_Menu_Run_To, .Graph_Menu_Run_Only, .Graph_Menu_Reset, .Graph_Menu_Evidence,
 	     .Graph_Menu_Copy, .View_Mesh,
 	     .View_Result, .View_GCode_Prev, .View_GCode_Next, .View_GCode_Single_Layer,
+	     .View_Seam_Size_Dec, .View_Seam_Size_Inc,
 	     .Printer_Sub_Control, .Printer_Sub_Files, .Printer_Sub_Console, .Printer_Sub_Config,
 	     .Printer_Sub_Connection, .Printer_Emergency_Stop, .Printer_Restart, .Printer_Firmware_Restart,
 	     .Printer_Home_All, .Printer_Home_X, .Printer_Home_Y, .Printer_Home_Z, .Printer_Disable_Motors,
@@ -762,6 +763,7 @@ app_pick_stage_segment :: proc(px, py: f64) {
 app_rebuild_section :: proc() {
 	app.ui.workspace.result_shown = false
 	clear(&app.seam_markers)
+	app.ui.workspace.graph.seam_marker_count = 0
 	if ui_printer_mode(&app.ui) {
 		if printer_config_shows_3d(&app.printer) {
 			printer_config_build_3d_lines(&app.printer, &app.section_vertices)
@@ -803,6 +805,7 @@ app_rebuild_section :: proc() {
 					append(&app.section_vertices, Mesh_Vertex{a, up}, Mesh_Vertex{b, up})
 				}
 				_ = pipeline.workspace_stage_seams(w, ui.view.selected, layer, &app.seam_markers)
+				ui.graph.seam_marker_count = len(app.seam_markers)
 				app.ui.section_segments = len(app.stage_segments)
 				ui.result_shown = true
 				return
@@ -886,6 +889,7 @@ renderer_draw_application :: proc() -> Render_Result {
 		if !app.ui.workspace.graph.show_mesh {visual.finished_vertices = 0}
 		if app.ui.workspace.graph.show_result && len(app.seam_markers) > 0 {
 			visual.seam_markers = app.seam_markers[:]
+			visual.seam_marker_radius = app.ui.workspace.graph.seam_marker_radius
 		}
 	}
 	if ui_printer_mode(&app.ui) {

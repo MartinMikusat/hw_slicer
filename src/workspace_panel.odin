@@ -77,7 +77,7 @@ app_workspace_open :: proc(path: string) {
 	app.ui.workspace.active = true
 	app.ui.workspace.auto_run = true
 	graph := &app.ui.workspace.graph
-	graph^ = {show_mesh = true, show_result = true, zoom = 1}
+	graph^ = {show_mesh = true, show_result = true, zoom = 1, seam_marker_radius = 0.35}
 	workspace_clock_origin = time.tick_now()
 	app_workspace_refresh()
 	devlog.succeeded(devlog.global(), site, {scope = "workspace", stage = "open"})
@@ -343,6 +343,12 @@ app_workspace_activate :: proc(action: UI_Action) -> bool {
 		graph.gcode_mode = pipeline.GCode_View_Mode((int(graph.gcode_mode) + 1) % count)
 	case .View_GCode_Single_Layer:
 		graph.gcode_single_layer = !graph.gcode_single_layer
+	case .View_Seam_Size_Dec:
+		cur := graph.seam_marker_radius if graph.seam_marker_radius > 0 else f32(0.35)
+		graph.seam_marker_radius = clamp(f32(math.round(f64(cur - 0.10)*100)/100), 0.15, 2.00)
+	case .View_Seam_Size_Inc:
+		cur := graph.seam_marker_radius if graph.seam_marker_radius > 0 else f32(0.35)
+		graph.seam_marker_radius = clamp(f32(math.round(f64(cur + 0.10)*100)/100), 0.15, 2.00)
 	case:
 		return false
 	}
