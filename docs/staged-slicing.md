@@ -1,6 +1,6 @@
 # Odin slicer and computational geometry course
 
-This document records the agreed direction. It does not describe the current implementation.
+This document records the agreed direction. The implemented parts are in [staged-pipeline.md](staged-pipeline.md).
 
 ## Purpose and scope
 

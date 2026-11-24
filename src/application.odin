@@ -15,6 +15,7 @@ import "rune:text"
 
 import design "./design"
 import evidence "./evidence"
+import pipeline "./pipeline"
 
 Camera :: struct {
 	target:   Vec3,
@@ -29,6 +30,7 @@ App_State :: struct {
 	ui:            UI_State,
 	mesh:          Mesh,
 	design:        Design_State,
+	workspace:     ^pipeline.Workspace,
 	placement: Model_Placement,
 	face_hover: int,
 	face_pressed: int,
@@ -67,6 +69,9 @@ startup_font_size: int
 startup_settings_open: bool
 startup_design: string
 startup_design_time := -1.0
+startup_stage := -1
+startup_stage_run: bool
+startup_stage_edits: [dynamic][2]string
 bench_frames_target: int
 bench_frames_done: int
 bench_start_tick: time.Tick
@@ -190,6 +195,7 @@ app_load_model :: proc(index: int, frame_camera := true) -> bool {
 		{scope = "model", stage = "loaded"},
 		{rows = i64(app.mesh.triangle_count)},
 	)
+	app_workspace_open(path)
 	if frame_camera {app_frame_camera()}
 	return true
 }
@@ -298,13 +304,17 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.needs_redraw = true
 		return true
 	}
+	if app_workspace_activate(action) {
+		app.ui.lay_on_face = false
+		return true
+	}
 	switch action {
 	case .Previous_Stage, .Next_Stage:
 		delta := -1 if action == .Previous_Stage else 1
 		app.ui.stage_index = clamp(app.ui.stage_index+delta, 0, len(ui_stage_names)-1)
 		app.ui.lay_on_face = false
 		app.needs_redraw = true
-	case .Modal_Surface:
+	case .Modal_Surface, .Workspace_Run, .Workspace_Auto, .Setting_Base:
 		return false
 	case .Evidence_Stages, .Evidence_Details:
 		app.ui.evidence_pane = .Stages if action == .Evidence_Stages else .Details
@@ -504,10 +514,14 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 		}
 	}
 	startup := startup_design
-	app.design.pinned = startup != ""
-	if startup == "" {startup, _ = design_newest()}
-	if startup != "" && app_load_design(startup) && startup_design_time >= 0 {
-		design_set_time_fraction(&app.design, startup_design_time)
+	app.design.pinned = startup != "" || startup_stage >= 0
+	if startup_stage >= 0 && app.workspace != nil {
+		app_workspace_startup()
+	} else {
+		if startup == "" {startup, _ = design_newest()}
+		if startup != "" && app_load_design(startup) && startup_design_time >= 0 {
+			design_set_time_fraction(&app.design, startup_design_time)
+		}
 	}
 	app.needs_redraw = true
 	devlog.succeeded(
@@ -779,6 +793,7 @@ application_frame :: proc "c" (width, height, scale: f64) {
 	}
 	app_animate_camera()
 	app_poll_design()
+	app_workspace_poll()
 	profile_update := profile_editor_update_drag(profile_timing_ptr)
 	if app.design.dirty {
 		app.design.dirty = false
@@ -1028,6 +1043,7 @@ application_scroll :: proc "c" (delta_x, delta_y: f64) {
 		return
 	}
 	if app.ui.settings_open || app.ui.help_open {return}
+	if app_workspace_scroll(delta_y) {return}
 	if app.design.editor.active {
 		profile_editor_zoom(delta_y)
 		return
@@ -1421,6 +1437,15 @@ main :: proc() {
 		} else if strings.has_prefix(argument, "--design-time=") {
 			if parsed, ok := strconv.parse_f64(argument[len("--design-time="):]); ok {
 				startup_design_time = clamp(parsed, 0, 1)
+			}
+		} else if strings.has_prefix(argument, "--stage=") {
+			if parsed, ok := strconv.parse_int(argument[len("--stage="):], 10); ok {startup_stage = parsed}
+		} else if argument == "--stage-run" {
+			startup_stage_run = true
+		} else if strings.has_prefix(argument, "--stage-set=") {
+			pair := argument[len("--stage-set="):]
+			if eq := strings.index_byte(pair, '='); eq > 0 {
+				append(&startup_stage_edits, [2]string{pair[:eq], pair[eq+1:]})
 			}
 		} else if strings.has_prefix(argument, "--bench-frames=") {
 			if parsed, ok := strconv.parse_int(argument[len("--bench-frames="):], 10); ok && parsed > 0 {

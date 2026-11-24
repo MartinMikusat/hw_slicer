@@ -12,6 +12,7 @@ import "rune:text"
 
 import design "./design"
 import evidence "./evidence"
+import pipeline "./pipeline"
 
 foreign import core_graphics "system:CoreGraphics.framework"
 foreign core_graphics {
@@ -114,7 +115,10 @@ UI_Action :: enum u64 {
 	Profile_Save,
 	Profile_Discard,
 	Profile_Point,
+	Workspace_Run,
+	Workspace_Auto,
 	Evidence_Stage_Base = 1000,
+	Setting_Base = 3000,
 }
 
 UI_Control :: struct {
@@ -196,6 +200,33 @@ COLOR_SECTION :: Vec4{0.639216, 0.317647, 0.223529, 1}
 COLOR_NOZZLE_MARKER :: Vec4{1.000000, 0.694118, 0.384314, 1}
 COLOR_ARC :: Vec4{0.360784, 0.431373, 0.305882, 1}
 
+UI_Setting_Row :: struct {
+	key:      string,
+	label:    string,
+	unit:     string,
+	// Owned copy of the current value.
+	value:    string,
+	kind:     pipeline.Setting_Kind,
+	editable: bool,
+	// Name of the stage that owns a read-only setting.
+	owner:    string,
+	// Owned control names and labels for the two buttons of an editable row.
+	names:    [2]string,
+	labels:   [2]string,
+}
+
+// What the slicing workspace shows, copied from the controller so drawing never reads memory that
+// a background run can change.
+UI_Workspace :: struct {
+	active:   bool,
+	auto_run: bool,
+	view:     pipeline.Workspace_View,
+	rows:     [dynamic]UI_Setting_Row,
+	// Text of the first failed stage, owned.
+	failure:  string,
+	scroll:   int,
+}
+
 UI_Panel :: enum {Models, Section, Mesh}
 UI_Evidence_Pane :: enum {Stages, Details}
 
@@ -220,6 +251,7 @@ UI_State :: struct {
 	dark: bool,
 	selected_model: int,
 	stage_index: int,
+	workspace: UI_Workspace,
 	panel: UI_Panel,
 	wireframe: bool,
 	show_arcs: bool,
@@ -532,6 +564,42 @@ ui_evidence_stage_action_index :: proc(
 	return int(id-base), true
 }
 
+ui_setting_action :: proc(row, side: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Setting_Base)+u64(row*2+side))
+}
+
+// Row and side (0 decrease or previous, 1 increase, next or toggle) of a setting action.
+ui_setting_action_index :: proc(action: UI_Action, row_count: int) -> (row, side: int, ok: bool) {
+	id := u64(action)
+	base := u64(UI_Action.Setting_Base)
+	if id < base || id-base >= u64(row_count*2) {return 0, 0, false}
+	index := int(id-base)
+	return index/2, index%2, true
+}
+
+// First row y and visible row count of the settings list in the left panel.
+ui_workspace_settings_area :: proc(ui: ^UI_State) -> (top: f64, rows: int) {
+	left := ui_left_rect(ui)
+	members := 0
+	for id in pipeline.Stage_Id {
+		if id in ui.workspace.view.groups[ui.workspace.view.selected].stages {members += 1}
+	}
+	top = left.y+74+f64(members)*20+16
+	rows = max(1, int((left.y+left.h-top)/44))
+	return
+}
+
+ui_workspace_state_text :: proc(state: pipeline.Stage_State) -> string {
+	switch state {
+	case .Not_Run:  return "Not run"
+	case .Running:  return "Running"
+	case .Complete: return "Complete"
+	case .Stale:    return "Stale"
+	case .Failed:   return "Failed"
+	}
+	return ""
+}
+
 ui_add_control :: proc(
 	ui: ^UI_State,
 	name, label: string,
@@ -739,10 +807,31 @@ ui_build_controls :: proc(
 	if !ui.design_active {
 		bar := ui_action_bar_rect(ui)
 		ui_add_control(ui, "previous stage", "previous stage", {bar.x, bar.y+8, 112, 32}, .Previous_Stage, ui.stage_index > 0)
-		ui_add_control(ui, "next stage", "next stage", {bar.x+120, bar.y+8, 112, 32}, .Next_Stage, ui.stage_index < len(ui_stage_names)-1)
+		ui_add_control(ui, "next stage", "next stage", {bar.x+120, bar.y+8, 112, 32}, .Next_Stage, ui.workspace.view.can_next if ui.workspace.active else ui.stage_index < len(ui_stage_names)-1)
+		if ui.workspace.active {
+			ui_add_control(ui, "run stage", "cancel the run" if ui.workspace.view.running else "run the stages of this group", {bar.x+240, bar.y+8, 96, 32}, .Workspace_Run)
+			ui_add_control(ui, "auto run", "toggle automatic refresh of stale stages", {bar.x+344, bar.y+8, 96, 32}, .Workspace_Auto, true, 1, ui.workspace.auto_run)
+		}
 	}
 
 	viewport := ui_viewport_rect(ui)
+	if ui.workspace.active && !ui.design_active && ui.stage_index > 0 && (!compact || ui.panel == .Models) {
+		left := ui_left_rect(ui)
+		top, visible := ui_workspace_settings_area(ui)
+		ui.workspace.scroll = clamp(ui.workspace.scroll, 0, max(0, len(ui.workspace.rows)-visible))
+		for row, index in ui.workspace.rows {
+			if !row.editable {continue}
+			if index < ui.workspace.scroll || index >= ui.workspace.scroll+visible {continue}
+			y := top+f64(index-ui.workspace.scroll)*44+18
+			right := left.x+left.w-8
+			if row.kind == .Toggle {
+				ui_add_control(ui, row.names[1], row.labels[1], {right-80, y, 80, 24}, ui_setting_action(index, 1))
+			} else {
+				ui_add_control(ui, row.names[0], row.labels[0], {right-80, y, 36, 24}, ui_setting_action(index, 0))
+				ui_add_control(ui, row.names[1], row.labels[1], {right-40, y, 36, 24}, ui_setting_action(index, 1))
+			}
+		}
+	}
 	if ui.stage_index == 0 && (!compact || ui.panel == .Models) {
 		if ui.design_active {
 			layout := ui_design_layout(ui)
@@ -1923,7 +2012,9 @@ ui_draw_labels :: proc(
 			action := panels[index]
 			ui_draw_text(painter, painter.font, ui, label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
 		}
-		if ui.stage_index > 0 && ui.panel != .Mesh {
+		if ui.stage_index > 0 && ui.panel != .Mesh && ui.workspace.active {
+			ui_draw_workspace_settings(painter, ui)
+		} else if ui.stage_index > 0 && ui.panel != .Mesh {
 			ui_draw_text(painter, painter.font, ui, "Not implemented", {20, 88, 156, 24}, theme.text, 0)
 		} else if design_shown && ui.stage_index == 0 {
 			if ui.panel == .Models {
@@ -1952,6 +2043,8 @@ ui_draw_labels :: proc(
 		)
 		ui_draw_measurement(painter, ui, "Z", fmt.tprintf("%.2f mm", ui.section_z), {20, 204, 204, 22}, 90)
 		ui_draw_measurement(painter, ui, "Segments", fmt.tprintf("%d", ui.section_segments), {20, 228, 204, 22}, 90)
+	} else if ui.workspace.active {
+		ui_draw_workspace_settings(painter, ui)
 	} else {
 		ui_draw_text(painter, painter.font, ui, "Stage settings", {20, 58, 190, 24}, theme.text, 0)
 		ui_draw_text(painter, painter.font, ui, "Not implemented", {20, 92, 190, 24}, theme.text, 0)
@@ -2031,12 +2124,20 @@ ui_draw_labels :: proc(
 	)
 	if ui.stage_index > 0 && !compact {
 		right := ui_right_rect(ui)
-		ui_draw_text(painter, painter.font, ui, "Stage results", {right.x+12, right.y+8, 252, 28}, theme.text, 0)
-		ui_draw_text(painter, painter.font, ui, "Not implemented", {right.x+12, right.y+42, 252, 24}, theme.text, 0)
+		if ui.workspace.active {
+			ui_draw_workspace_results(painter, ui, right)
+		} else {
+			ui_draw_text(painter, painter.font, ui, "Stage results", {right.x+12, right.y+8, 252, 28}, theme.text, 0)
+			ui_draw_text(painter, painter.font, ui, "Not implemented", {right.x+12, right.y+42, 252, 24}, theme.text, 0)
+		}
 	} else if compact && ui.stage_index > 0 {
 		if ui.panel == .Mesh {
-			ui_draw_text(painter, painter.font, ui, "Stage results", {20, 82, 156, 20}, theme.text, 0)
-			ui_draw_text(painter, painter.font, ui, "Not implemented", {20, 106, 156, 20}, theme.text, 0)
+			if ui.workspace.active {
+				ui_draw_workspace_results(painter, ui, ui_left_rect(ui))
+			} else {
+				ui_draw_text(painter, painter.font, ui, "Stage results", {20, 82, 156, 20}, theme.text, 0)
+				ui_draw_text(painter, painter.font, ui, "Not implemented", {20, 106, 156, 20}, theme.text, 0)
+			}
 		}
 	} else if compact && design_shown {
 		if ui.panel == .Mesh {ui_draw_design_results(painter, ui, design_state, model_name)}
@@ -2100,7 +2201,114 @@ ui_draw_labels :: proc(
 	ui_draw_text(painter, painter.font, ui, "Previous", ui_control_rect(ui, .Previous_Stage), ui_control_ink(ui, .Previous_Stage), 0, .Center)
 	ui_draw_text(painter, painter.font, ui, "Next", ui_control_rect(ui, .Next_Stage), ui_control_ink(ui, .Next_Stage), 0, .Center)
 	bar := ui_action_bar_rect(ui)
-	if !ui.design_active do ui_draw_text(painter, painter.font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(ui_stage_names), ui_stage_names[ui.stage_index]), {bar.x+248, bar.y+8, max(0, bar.w-248), 32}, theme.text, 0)
+	if !ui.design_active {
+		title_x := 248.0
+		if ui.workspace.active {
+			title_x = 456
+			ui_draw_text(painter, painter.font, ui, "Cancel" if ui.workspace.view.running else "Run", ui_control_rect(ui, .Workspace_Run), ui_control_ink(ui, .Workspace_Run), 0, .Center)
+			ui_draw_text(painter, painter.font, ui, "Auto on" if ui.workspace.auto_run else "Auto off", ui_control_rect(ui, .Workspace_Auto), ui_control_ink(ui, .Workspace_Auto), 0, .Center)
+		}
+		ui_draw_text(painter, painter.font, ui, fmt.tprintf("%d / %d  %s", ui.stage_index+1, len(ui_stage_names), ui_stage_names[ui.stage_index]), {bar.x+title_x, bar.y+8, max(0, bar.w-title_x), 32}, theme.text, 0)
+	}
+}
+
+ui_workspace_group_status :: proc(ui: ^UI_State) -> string {
+	view := ui.workspace.view
+	group := view.groups[view.selected]
+	switch group.state {
+	case .Stale:
+		cause := view.stages[group.stale_stage].changed_by
+		return fmt.tprintf("Stale: %s changed", pipeline.stage_descriptors[cause].name)
+	case .Failed:
+		return ui.workspace.failure if len(ui.workspace.failure) > 0 else "Failed"
+	case .Not_Run, .Running, .Complete:
+		return ui_workspace_state_text(group.state)
+	}
+	return ""
+}
+
+ui_draw_workspace_settings :: proc(painter: ^UI_Painter, ui: ^UI_State) {
+	theme := ui_theme(ui)
+	left := ui_left_rect(ui)
+	view := ui.workspace.view
+	group := view.groups[view.selected]
+	ui_draw_text(painter, painter.font, ui, group.name, {left.x+8, left.y+6, left.w-16, 24}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, ui_workspace_group_status(ui), {left.x+8, left.y+30, left.w-16, 22}, theme.accent if group.state == .Stale || group.state == .Failed else theme.muted, 0)
+	y := left.y+58
+	for id in pipeline.Stage_Id {
+		if id not_in group.stages {continue}
+		stage := view.stages[id]
+		ui_draw_text(painter, painter.font, ui, stage.name, {left.x+8, y, left.w-96, 20}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, ui_workspace_state_text(stage.state), {left.x+left.w-88, y, 80, 20}, theme.muted, 0, .End)
+		y += 20
+	}
+	top, visible := ui_workspace_settings_area(ui)
+	if len(ui.workspace.rows) == 0 {
+		purpose := ""
+		for id in pipeline.Stage_Id {
+			if id in group.stages {purpose = pipeline.stage_descriptors[id].purpose; break}
+		}
+		ui_draw_text(painter, painter.font, ui, fmt.tprintf("No settings. %s", purpose), {left.x+8, top, left.w-16, 88}, theme.muted, 0)
+		return
+	}
+	for row, index in ui.workspace.rows {
+		if index < ui.workspace.scroll || index >= ui.workspace.scroll+visible {continue}
+		row_y := top+f64(index-ui.workspace.scroll)*44
+		label := row.label if len(row.unit) == 0 else fmt.tprintf("%s (%s)", row.label, row.unit)
+		ui_draw_text(painter, painter.font, ui, label, {left.x+8, row_y, left.w-16, 18}, theme.muted if !row.editable else theme.text, 0)
+		value_rect := UI_Rect{left.x+8, row_y+20, max(1.0, left.w-100), 22}
+		if row.editable {
+			ui_draw_text(painter, painter.mono, ui, row.value, value_rect, theme.text, 0, tracked = true)
+			if row.kind == .Toggle {
+				action := ui_setting_action(index, 1)
+				ui_draw_text(painter, painter.font, ui, "On" if row.value == "true" else "Off", ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
+			} else {
+				minus := ui_setting_action(index, 0)
+				plus := ui_setting_action(index, 1)
+				ui_draw_text(painter, painter.font, ui, "−", ui_control_rect(ui, minus), ui_control_ink(ui, minus), 0, .Center)
+				ui_draw_text(painter, painter.font, ui, "+", ui_control_rect(ui, plus), ui_control_ink(ui, plus), 0, .Center)
+			}
+		} else {
+			ui_draw_text(painter, painter.mono, ui, row.value, {left.x+8, row_y+20, 80, 22}, theme.muted, 0, tracked = true)
+			ui_draw_text(painter, painter.font, ui, fmt.tprintf("from %s", row.owner), {left.x+92, row_y+20, left.w-100, 22}, theme.muted, 0)
+		}
+	}
+	if len(ui.workspace.rows) > visible {
+		ui_draw_text(painter, painter.font, ui, fmt.tprintf("%d–%d of %d, scroll for more", ui.workspace.scroll+1, min(len(ui.workspace.rows), ui.workspace.scroll+visible), len(ui.workspace.rows)), {left.x+8, left.y+left.h-22, left.w-16, 20}, theme.muted, 0)
+	}
+}
+
+ui_draw_workspace_results :: proc(painter: ^UI_Painter, ui: ^UI_State, rect: UI_Rect) {
+	theme := ui_theme(ui)
+	view := ui.workspace.view
+	group := view.groups[view.selected]
+	ui_draw_text(painter, painter.font, ui, "Stage results", {rect.x+12, rect.y+8, rect.w-24, 28}, theme.text, 0)
+	y := rect.y+42
+	for id in pipeline.Stage_Id {
+		if id not_in group.stages {continue}
+		stage := view.stages[id]
+		d := pipeline.stage_descriptors[id]
+		ui_draw_text(painter, painter.font, ui, stage.name, {rect.x+12, y, rect.w-100, 22}, theme.text, 0)
+		ui_draw_text(painter, painter.font, ui, ui_workspace_state_text(stage.state), {rect.x+rect.w-92, y, 80, 22}, theme.accent if stage.state == .Stale || stage.state == .Failed else theme.muted, 0, .End)
+		y += 22
+		if stage.state == .Stale {
+			ui_draw_text(painter, painter.font, ui, fmt.tprintf("%s changed", pipeline.stage_descriptors[stage.changed_by].name), {rect.x+12, y, rect.w-24, 20}, theme.muted, 0)
+			y += 20
+		}
+		ui_draw_text(painter, painter.font, ui, d.purpose, {rect.x+12, y, rect.w-24, 40}, theme.muted, 0)
+		y += 44
+		if stage.state == .Complete || stage.state == .Stale {
+			ui_draw_measurement(painter, ui, "Time", fmt.tprintf("%.1f ms", stage.duration_ms), {rect.x+12, y, rect.w-24, 20}, 120)
+			y += 20
+			counts := [2]u64{stage.count_a, stage.count_b}
+			for label, index in d.counts {
+				if len(label) == 0 {continue}
+				ui_draw_measurement(painter, ui, label, fmt.tprintf("%d", counts[index]), {rect.x+12, y, rect.w-24, 20}, 120)
+				y += 20
+			}
+		}
+		y += 12
+	}
 }
 
 ui_draw_design_settings :: proc(painter: ^UI_Painter, ui: ^UI_State, s: ^Design_State) {
