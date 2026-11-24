@@ -11,7 +11,7 @@ import formats "../formats"
 
 // A run that last took longer than this no longer starts on its own after a setting change; the
 // operator starts it with Run. Stages that have not run yet count as fast.
-WORKSPACE_AUTO_RUN_LIMIT_MS :: 750.0
+WORKSPACE_AUTO_RUN_LIMIT_MS :: 5_000.0
 
 Setting_Kind :: enum u8 {
 	Number,
