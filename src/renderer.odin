@@ -1039,11 +1039,9 @@ renderer_draw :: proc(
 	}
 
 	if renderer.section_vertex_count > 0 {
-		section_uniforms := Scene_Uniforms{
-			mvp = mat4_mul(projection, view),
-			model = mat4_identity(),
-			color = {0.06, 0.08, 0.11, 1.0},
-		}
+		base_mvp := mat4_mul(projection, view)
+		px_x := f32(2.0 / max(1.0, mesh_viewport.width))
+		px_y := f32(2.0 / max(1.0, mesh_viewport.height))
 		msg_void_id(
 			encoder,
 			sel_registerName("setDepthStencilState:"),
@@ -1061,20 +1059,40 @@ renderer_draw :: proc(
 			0,
 			0,
 		)
-		msg_void_ptr_u_u(
-			encoder,
-			sel_registerName("setVertexBytes:length:atIndex:"),
-			&section_uniforms,
-			size_of(Scene_Uniforms),
-			1,
-		)
-		msg_void_u_u_u(
-			encoder,
-			sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
-			1,
-			0,
-			uint(renderer.section_vertex_count),
-		)
+		for oy in -1..=1 {
+			for ox in -1..=1 {
+				dx := f32(ox) * px_x
+				dy := f32(oy) * px_y
+				shifted := base_mvp
+				shifted[0]  += dx * base_mvp[3]
+				shifted[4]  += dx * base_mvp[7]
+				shifted[8]  += dx * base_mvp[11]
+				shifted[12] += dx * base_mvp[15]
+				shifted[1]  += dy * base_mvp[3]
+				shifted[5]  += dy * base_mvp[7]
+				shifted[9]  += dy * base_mvp[11]
+				shifted[13] += dy * base_mvp[15]
+				section_uniforms := Scene_Uniforms{
+					mvp   = shifted,
+					model = mat4_identity(),
+					color = {0.06, 0.08, 0.11, 1.0},
+				}
+				msg_void_ptr_u_u(
+					encoder,
+					sel_registerName("setVertexBytes:length:atIndex:"),
+					&section_uniforms,
+					size_of(Scene_Uniforms),
+					1,
+				)
+				msg_void_u_u_u(
+					encoder,
+					sel_registerName("drawPrimitives:vertexStart:vertexCount:"),
+					1,
+					0,
+					uint(renderer.section_vertex_count),
+				)
+			}
+		}
 	}
 
 	msg_void(encoder, sel_registerName("endEncoding"))
