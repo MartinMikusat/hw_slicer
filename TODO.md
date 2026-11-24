@@ -11,29 +11,33 @@ Preserve versioned stage contracts and debug-evidence protocols.
 
 Give each meaningful slicing operation a distinct stage when its output can be inspected.
 Group internal operations that have no useful independent result.
-Use this provisional sequence and refine it against the actual pipeline:
+The engine stages (`Stage_Id`) are, in execution order:
 
-1. Model loading and placement
+1. Model
 2. Layer schedule
 3. Mesh intersections
 4. Contours and topology
 5. Regions
 6. Surfaces and skin
 7. Perimeters
-8. Infill
-9. Supports and bridges
-10. Path plan
-11. Motion and G-code, including simulation when implemented
+8. Bridges
+9. Solid skin
+10. Sparse infill
+11. Gap fill
+12. Supports and adhesion
+13. Path plan
+14. Motion
+15. G-code, including simulation when implemented
 
 Show each stage's purpose, input, output, and implementation status in the workspace.
 Label unimplemented stages as placeholders. Do not imply that their results exist.
 
 ## Workspace decisions
 
-- Use a full-window workspace with stage settings on the left, a 3D view in the center, and stage results on the right.
-- Keep the sidebars consistent across stages. For an empty sidebar, state what the stage will configure or produce. Do not invent controls or measurements.
-- Provide a persistent stage list and Previous and Next controls. Allow direct navigation to placeholders and stale results. Enable Next when the current stage has a valid required result. Keep placeholders directly accessible.
-- Preserve the selected layer across applicable stages. Show the layer in model context and provide an isolated view for detailed inspection.
+- Use a full-window workspace with the stage graph and the 3D view split by a draggable divider, and the attribute editor of the selected stage on the right. See the [stage graph plan](docs/stage-graph-plan.md).
+- Keep the attribute editor consistent across stages. For an empty sidebar, state what the stage will configure or produce. Do not invent controls or measurements.
+- Show one graph node per engine stage. A click selects the stage and shows its result in the 3D view. Stale and failed stages stay selectable.
+- Preserve the selected layer across applicable stages. The layer selector belongs to the 3D view. Show the layer in model context and provide an isolated view for detailed inspection.
 - Put each setting at the first stage that it affects. Show inherited values as context in later stages without duplicate editable controls.
 - Run stages automatically when their operations are known to be fast. Provide a Run or Recompute action for operations that can take noticeably longer. Choose this behavior per stage until actual use justifies another approach.
 - When earlier inputs change, retain available later results and mark them stale. Identify the earlier change that invalidated them.
@@ -60,7 +64,7 @@ Open decisions:
 ## Work
 
 - [ ] Stage workspace: stage list, per-stage settings, stale tracking and background runs exist ([staged pipeline](docs/staged-pipeline.md)). Remaining: draw stage results in the 3D view, apply the lay-on-face placement to the slice, connect the evidence bundles to the stages.
-- [ ] Replace the stage list with a Meshroom-style node graph: [plan](docs/stage-graph-plan.md).
+- [ ] Replace the stage list with a Meshroom-style node graph after Slicer completion step 3: [plan](docs/stage-graph-plan.md).
 - [ ] Connect engine stages in subsequent bounded changes. Develop early stages in depth before committing to detailed later-stage designs.
 - [ ] Extend retained evidence through the remaining intermediate feature graphs. Add geometric rendering and cross-stage selection. Connect these stages to the production slice action before physical printer calibration. See [project details](README.md#project-details).
 - [ ] Add a settings sweep for tuning. Define ranges for relevant settings on a test model, such as a bridging test. Place several copies on the build plate, each with a different combination of the sampled settings, to compare configurations in one print.

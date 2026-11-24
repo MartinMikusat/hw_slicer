@@ -1,6 +1,6 @@
 # Stage graph workspace plan
 
-Plan for replacing the stage list with a node graph like the Meshroom graph editor. Status: proposal, nothing implemented.
+Plan for replacing the stage list with a node graph like the Meshroom graph editor. Status: decided, not implemented. Work starts after Slicer completion step 3 in `TODO.md` ("the app slices"), so the graph shows production pipeline states from the start.
 
 ## What Meshroom does
 
@@ -10,59 +10,73 @@ Sources: [Meshroom manual, graph editor](https://meshroom-manual.readthedocs.io/
 - **Node status.** A progress bar inside the node shows green for computed, orange for running, blue for submitted, red for error. Running a branch locks its nodes: attributes are read-only and edges cannot change.
 - **Attributes.** Selecting a node opens an attribute editor beside the graph. Changed values are bold and reset by right-click. Advanced and debug attributes are hidden behind a toggle. Further tabs show log, statistics, status and node documentation.
 - **Cache by hash.** Each node hashes its attributes and its inputs' hashes. Output goes to a folder named by the hash. A changed setting gives a new hash for the node and everything downstream. Reverting a setting reuses the old folder, so nothing is recomputed.
-- **Duplicates and branches.** The graph may hold several nodes of one kind with different settings, fed from the same upstream node. The screenshot compares four Meshing nodes with minimum observation angle 10 and 40 on two filtered inputs, each with its own result. A duplicate icon marks nodes whose attributes equal another node's.
-- **Results.** Double-click on a node shows its result in the 3D or image viewer, loaded when it becomes available. Ctrl-double-click shows only that result. Result visibility is a toggle per media item in the viewer.
+- **Duplicates and branches.** The graph may hold several nodes of one kind with different settings, fed from the same upstream node.
+- **Results.** Double-click on a node shows its result in the 3D or image viewer.
 - **Controls.** Right-click on empty space adds a node. Middle mouse or shift-drag pans, wheel zooms, `f` fits the view, delete removes the selection.
 
 ## Fit with hw_slicer
 
-Already present ([staged pipeline](staged-pipeline.md)): the stage dependency tables (`stage_upstream`, `stage_downstream`), per-stage settings hashes, stale tracking with a cause, background runs of the dependency closure, per-stage setting rows, and stage descriptors with inputs and counts. The graph needs a presentation of these, not new engine logic, except for the items marked below.
+Already present ([staged pipeline](staged-pipeline.md)): the stage dependency tables (`stage_upstream`, `stage_downstream`), per-stage settings hashes, stale tracking with a cause, background runs of the dependency closure, per-stage setting rows, and stage descriptors with inputs and counts. The graph is a presentation of these. The engine changes are listed below.
 
-Differences to decide:
+Differences from Meshroom:
 
-| Topic | Meshroom | hw_slicer proposal |
+| Topic | Meshroom | hw_slicer |
 |---|---|---|
-| Topology | User edits edges and adds nodes. | Fixed: the 15 stages and their dependencies. No user edge editing at first. |
-| Cache | Every hash kept on disk. | Latest result only, in memory. Keeping variants is phase 4. |
-| Branches | Duplicate any node. | Phase 4: a variant of a stage and everything downstream of it. |
-| Node unit | One per step. | One per engine stage (15), not per group (11). Groups become frames around their stages. |
+| Topology | User edits edges and adds nodes. | Fixed: the 15 engine stages (`Stage_Id`) and their descriptor inputs. Users do not edit edges or add stages. |
+| Cache | Every hash kept on disk. | Latest result only, in memory. |
+| Branches | Duplicate any node. | None. See open decisions. |
+| Node unit | One per step. | One per `Stage_Id`. `Stage_Group` is retired, and no group frames are drawn. |
+| Pins | Typed pins per input and output. | No pins. Edges attach to the node sides. |
+| Run lock | Running nodes are read-only. | No lock. Edits during a run go to the existing edit queue. |
 
-The existing workspace decisions in `TODO.md` (stage list, Previous and Next) are replaced by the graph. The settings-on-first-affecting-stage rule, stale retention with a named cause, auto-run of quick stages and the Run action for slow ones stay.
+The workspace decisions in `TODO.md` stay: settings on the first stage they affect, stale retention with a named cause, auto-run of stages below `WORKSPACE_AUTO_RUN_LIMIT_MS` and the Run action for slower ones.
 
 ## Design
 
-**Layout.** Full-window graph canvas. Right panel: attribute editor for the selected node (settings, purpose, inputs, counts, log, timing). The 3D view stays and shows the selected or double-clicked node's result; it can dock beside the graph or switch with it (open decision). Left-to-right columns follow the stage order; a stage sits in the column after its deepest upstream stage, so parallel stages stack vertically (Perimeters, Bridges, Gap fill and Supports).
+**Layout.** The window splits into the graph and the 3D view, with a draggable divider. The attribute editor for the selected node is on the right. Node positions are computed from the descriptor inputs, and the user cannot drag nodes. Nothing about the layout is saved. A stage sits in the column after its deepest input:
 
-**Node.** Title bar with the stage name and a state color. Body lists output pins named after the stage's result (for example Layers, Contours, Regions, Toolpaths) and input pins named after upstream results. Below the title: a thin progress bar, last run time, and a stale badge naming the changed upstream stage on hover. Placeholders (unimplemented stages) are drawn dimmed with a "placeholder" label and no output pin, as the current rule requires.
+| Column | Stages |
+|---|---|
+| 0 | Model |
+| 1 | Layer schedule |
+| 2 | Mesh intersections |
+| 3 | Contours and topology |
+| 4 | Regions |
+| 5 | Surfaces and skin, Perimeters, Bridges, Supports and adhesion |
+| 6 | Solid skin, Gap fill |
+| 7 | Sparse infill |
+| 8 | Path plan |
+| 9 | Motion |
+| 10 | G-code |
 
-**State colors.** Not run: grey. Complete: green. Stale: green with an orange outline and badge. Running: orange with progress. Queued: blue. Error: red. Cancelled: grey with a mark. This maps to `Stage_State` plus the run flag, so the UI needs a queued state exposed from the workspace.
+**Node.** A title bar with the stage name and a state color. Below it: the two stage counts, the last run time, and a stale badge. Hovering over the badge names the stage whose change made the result stale (`changed_by`).
 
-**Edges.** Bezier from output pin to input pin. An edge is highlighted when either end is selected. An edge whose upstream is stale is drawn dashed. Edges are not editable in phases 1 to 3.
+**State colors.** Not run: grey. Complete: green. Stale: green with an orange outline and badge. Running: orange with a busy indicator and elapsed time. Queued: blue. Failed: red. Cancelled: grey with a mark.
+
+**Edges.** Bezier curves from the right side of the input stage to the left side of the dependent stage. An edge is highlighted when either end is selected. An edge from a stale stage is dashed. Hovering over an edge names the input. The attribute editor lists all inputs of the selected stage.
 
 **Interaction.**
-- Click selects, double-click shows the result in the 3D view and selects it as the active result.
-- Right-click opens Run to here, Run only, Reset to default, Open evidence, Copy settings.
-- Pan with middle mouse or space-drag, zoom with the wheel, `f` fits, arrow keys move the selection along edges.
-- Changed settings are bold, with reset on right-click, as in Meshroom. An Advanced toggle hides debug and rarely used settings.
-- While a run is active, nodes in the running closure are locked read-only. The existing edit queue stays for edits to other nodes.
+- A click selects the node and shows its result in the 3D view. The selection and the shown result are one state. Double-click has no function yet.
+- Right-click opens Run to here, Run only, Reset to default, Open evidence, and Copy settings.
+- Pan with the middle mouse button or space-drag. Zoom with the wheel. `f` fits the graph. Arrow keys move the selection along edges.
+- Changed settings are bold and reset by right-click. An Advanced toggle hides debug and rarely used settings.
+- An edit to a stage that is running or queued is queued, as edits are today. The node shows its running state but stays editable.
 
-**Results.** Double-click maps to the existing per-stage result slots. The 3D drawing of stage results is already an open item in `TODO.md` and is a prerequisite for the double-click behavior; until it lands, the right panel shows the counts and evidence that exist today.
+**Layer.** The layer selector belongs to the 3D view. It applies to the result that is shown and does not change when the selection changes.
+
+**Results.** A click maps to the per-stage result slot. The 3D drawing of stage results is an open item in `TODO.md` and must land before the click shows geometry. Until then, the attribute editor shows the counts and the evidence that exist.
 
 ## Phases
 
-1. **Graph view of the existing stages.** Layout from `stage_upstream`, nodes with state colors, edges, selection, pan, zoom, fit, attribute editor reusing the current setting rows, run controls. Done when the graph shows all 15 stages live during an edit-and-rerun, matching the headless script states, and the old stage list is removed.
-2. **Result viewing.** Double-click shows the stage result in the 3D view (depends on stage result drawing). Visibility toggles per result. Evidence bundle records map to nodes.
-3. **Polish and inspection.** Per-node log and timing tab, bold changed values with reset, advanced toggle, node documentation tab from the stage descriptor, minimap if the graph outgrows the window.
-4. **Variants.** Duplicate a stage with different settings and carry it and its downstream chain as a branch, with its own session slots and hashes. Optionally keep results per hash so reverting a setting reuses the earlier result. This serves the settings sweep in `TODO.md` and needs an ADR: it changes the session from one result per stage to a keyed store and raises memory cost.
+1. **Graph view of the existing stages.** Re-key the workspace from `Stage_Group` to `Stage_Id` and remove `Stage_Group`, `stage_group_names`, and `Group_View`. Build the computed layout, the nodes with state colors, the edges, and selection, plus pan, zoom, and fit. Reuse the current setting rows in the attribute editor and keep the run controls. Done when the graph shows all 15 stages live during an edit-and-rerun, the states match the headless script, and the stage list with Previous and Next is removed.
+2. **Result viewing.** A click shows the stage result in the 3D view, which depends on stage result drawing. Add visibility toggles per result and map evidence bundle records to nodes.
+3. **Polish and inspection.** Add a per-node log and timing tab, bold changed values with reset, the Advanced toggle, a documentation tab from the stage descriptor, and a minimap if the graph outgrows the window.
 
 ## Engine changes needed
 
-- Expose a queued state and per-stage progress and duration through `Workspace_View`.
-- Phase 4 only: parameterize `Slice_Session` by variant id and key results by stage hash.
+- Re-key workspace selection, settings rows, and the first-affecting-stage rule from `Stage_Group` to `Stage_Id`.
+- Expose a queued state and the elapsed run time per stage through `Workspace_View`. Stages do not report progress within a run.
 
 ## Open decisions
 
-- Whether the 3D view docks beside the graph or alternates with it.
-- Whether the graph nodes are per stage (15) or per group (11) at the default zoom, with stages shown on expansion.
-- Whether phase 4 keeps every hash's result or only the latest per variant.
-- Whether users may eventually edit the topology (insert their own stages), which Meshroom allows and the fixed pipeline does not.
+- Variants (former phase 4): several results of one stage with different settings, kept per hash. It has no defined purpose yet. It is separate from the settings sweep in `TODO.md`, which places copies with different settings on one plate. Plan it, with an ADR for a keyed result store, when a concrete comparison need appears.

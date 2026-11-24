@@ -38,7 +38,7 @@ Lay on face uses one placement transform for rendering, face selection, and laye
 
 ## Development interface
 
-While the backend is in development, the interface shows only the feature under work, and it shows it on launch without operator input. Update the interface with each change so that it stays in sync with that feature. Hide unrelated controls; do not build general interface features.
+While the backend is in development, the interface shows only the feature under work, and it shows it on launch without operator input. Update the interface with each change so that it stays in sync with that feature. Hide unrelated controls; do not build general interface features. Exception: the stage graph ([plan](docs/stage-graph-plan.md)) is the workspace frame that the feature under work lives in.
 
 ## Diagnostics
 
