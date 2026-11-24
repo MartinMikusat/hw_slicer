@@ -77,6 +77,9 @@ Snapped_Segment_Record :: struct {
 	y1_error_um:    f64,
 }
 
+// Snaps every raw segment to the micrometre grid, drops the ones that collapse to a point, and
+// sorts each layer. Layers are independent, so they run on the worker threads; the result does not
+// depend on the thread count.
 snapped_segments_build :: proc(
 	raw: CPU_Intersection_Result,
 	allocator := context.allocator,
@@ -89,75 +92,89 @@ snapped_segments_build :: proc(
 	) {
 		return {}, .Invalid_Input
 	}
-	result: Snapped_Segment_Result
-	result.layers = make([]Snapped_Layer, layer_count, allocator)
-	layer_counts := make([]u64, layer_count, allocator)
-	if result.layers == nil || layer_counts == nil {
-		delete(layer_counts, allocator)
-		snapped_segments_destroy(&result, allocator)
-		return {}, .Allocation_Failed
-	}
-	defer delete(layer_counts, allocator)
-
+	// The layers must tile the segment array in order. `tiled` is the number of layers before the
+	// first one that does not, so that errors are reported in layer order as a serial pass would.
+	tiled := layer_count
 	expected_offset: u64
-	output_count: u64
 	for layer, layer_index in raw.layers {
 		if layer.segment_offset != expected_offset ||
 		   u64(layer.segment_count) > u64(segment_count)-expected_offset {
-			snapped_segments_destroy(&result, allocator)
-			return {}, .Invalid_Input
+			tiled = layer_index
+			break
 		}
 		expected_offset += u64(layer.segment_count)
-		for local_segment in 0..<int(layer.segment_count) {
-			segment_index := int(layer.segment_offset)+local_segment
-			if raw.segments.layer_indices[segment_index] != u32(layer_index) ||
-			   raw.segments.segment_ids[segment_index] ==
-			   	contracts.INVALID_STABLE_ID ||
-			   raw.segments.triangle_ids[segment_index] ==
-			   	contracts.INVALID_STABLE_ID {
-				snapped_segments_destroy(&result, allocator)
-				return {}, .Invalid_Input
-			}
-			evaluation, error := snapped_segment_evaluate(
-				raw.segments,
-				segment_index,
-			)
-			if error != .None {
-				snapped_segments_destroy(&result, allocator)
-				return {}, error
-			}
-			result.maximum_snap_error_um = max(
-				result.maximum_snap_error_um,
-				snapped_segment_maximum_error(evaluation),
-			)
-			if evaluation.collapsed {
-				result.collapsed_count += 1
-				continue
-			}
-			output_count += 1
-			layer_counts[layer_index] += 1
-		}
-	}
-	if expected_offset != u64(segment_count) {
-		snapped_segments_destroy(&result, allocator)
-		return {}, .Invalid_Input
-	}
-	if output_count > u64(max(int)) {
-		snapped_segments_destroy(&result, allocator)
-		return {}, .Allocation_Failed
 	}
 
+	Count_Context :: struct {
+		raw:       CPU_Intersection_Result,
+		kept:      []u64,
+		collapsed: []u64,
+		max_error: []f64,
+		errors:    []Snapped_Segment_Error,
+	}
+	count_ctx := Count_Context{
+		raw       = raw,
+		kept      = make([]u64, tiled, allocator),
+		collapsed = make([]u64, tiled, allocator),
+		max_error = make([]f64, tiled, allocator),
+		errors    = make([]Snapped_Segment_Error, tiled, allocator),
+	}
+	defer {
+		delete(count_ctx.kept, allocator)
+		delete(count_ctx.collapsed, allocator)
+		delete(count_ctx.max_error, allocator)
+		delete(count_ctx.errors, allocator)
+	}
+	if tiled > 0 && (count_ctx.kept == nil || count_ctx.collapsed == nil ||
+	   count_ctx.max_error == nil || count_ctx.errors == nil) {
+		return {}, .Allocation_Failed
+	}
+	slicing_parallel_for(tiled, &count_ctx, proc(c: ^Count_Context, layer_index: int) {
+		layer := c.raw.layers[layer_index]
+		segments := c.raw.segments
+		for local_segment in 0..<int(layer.segment_count) {
+			segment_index := int(layer.segment_offset)+local_segment
+			if segments.layer_indices[segment_index] != u32(layer_index) ||
+			   segments.segment_ids[segment_index] == contracts.INVALID_STABLE_ID ||
+			   segments.triangle_ids[segment_index] == contracts.INVALID_STABLE_ID {
+				c.errors[layer_index] = .Invalid_Input
+				return
+			}
+			evaluation, error := snapped_segment_evaluate(segments, segment_index)
+			if error != .None {
+				c.errors[layer_index] = error
+				return
+			}
+			c.max_error[layer_index] = max(c.max_error[layer_index], snapped_segment_maximum_error(evaluation))
+			if evaluation.collapsed {
+				c.collapsed[layer_index] += 1
+			} else {
+				c.kept[layer_index] += 1
+			}
+		}
+	})
+
+	result: Snapped_Segment_Result
+	output_count: u64
+	for layer_index in 0..<tiled {
+		if count_ctx.errors[layer_index] != .None {return {}, count_ctx.errors[layer_index]}
+		result.maximum_snap_error_um = max(result.maximum_snap_error_um, count_ctx.max_error[layer_index])
+		result.collapsed_count += count_ctx.collapsed[layer_index]
+		output_count += count_ctx.kept[layer_index]
+	}
+	if tiled < layer_count || expected_offset != u64(segment_count) {return {}, .Invalid_Input}
+	if output_count > u64(max(int)) {return {}, .Allocation_Failed}
+
+	result.layers = make([]Snapped_Layer, layer_count, allocator)
+	if result.layers == nil {return {}, .Allocation_Failed}
 	output_offset: u64
-	for layer_count_value, layer_index in layer_counts {
-		if layer_count_value > u64(max(u32)) {
+	for kept, layer_index in count_ctx.kept {
+		if kept > u64(max(u32)) {
 			snapped_segments_destroy(&result, allocator)
 			return {}, .Allocation_Failed
 		}
-		result.layers[layer_index] = {
-			offset = output_offset,
-			count = u32(layer_count_value),
-		}
-		output_offset += layer_count_value
+		result.layers[layer_index] = {offset = output_offset, count = u32(kept)}
+		output_offset += kept
 	}
 	records := make([]Snapped_Segment_Record, int(output_count), allocator)
 	if output_count > 0 && records == nil {
@@ -165,55 +182,39 @@ snapped_segments_build :: proc(
 		return {}, .Allocation_Failed
 	}
 	defer delete(records, allocator)
-	layer_cursors := make([]u64, layer_count, allocator)
-	if layer_cursors == nil {
+	if !snapped_segment_soa_allocate(&result.segments, int(output_count), allocator) {
 		snapped_segments_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
-	defer delete(layer_cursors, allocator)
-	for layer, layer_index in result.layers {
-		layer_cursors[layer_index] = layer.offset
+
+	Write_Context :: struct {
+		raw:     CPU_Intersection_Result,
+		layers:  []Snapped_Layer,
+		records: []Snapped_Segment_Record,
+		output:  ^Snapped_Segment_SoA,
 	}
-	for layer, layer_index in raw.layers {
+	write_ctx := Write_Context{raw = raw, layers = result.layers, records = records, output = &result.segments}
+	slicing_parallel_for(layer_count, &write_ctx, proc(c: ^Write_Context, layer_index: int) {
+		layer := c.raw.layers[layer_index]
+		start := int(c.layers[layer_index].offset)
+		end := start+int(c.layers[layer_index].count)
+		write_index := start
 		for local_segment in 0..<int(layer.segment_count) {
 			source_index := int(layer.segment_offset)+local_segment
-			evaluation, error := snapped_segment_evaluate(
-				raw.segments,
-				source_index,
-			)
-			if error != .None {
-				snapped_segments_destroy(&result, allocator)
-				return {}, error
-			}
+			evaluation, error := snapped_segment_evaluate(c.raw.segments, source_index)
+			assert(error == .None, "the counting pass accepted every segment")
 			if evaluation.collapsed {continue}
-			write_index := int(layer_cursors[layer_index])
-			records[write_index] = snapped_segment_record_make(
-				raw.segments,
-				source_index,
-				evaluation,
-			)
-			layer_cursors[layer_index] += 1
+			c.records[write_index] = snapped_segment_record_make(c.raw.segments, source_index, evaluation)
+			write_index += 1
 		}
-	}
-	for layer in result.layers {
-		start := int(layer.offset)
-		end := start+int(layer.count)
-		slice.sort_by(records[start:end], snapped_segment_record_less)
-	}
-	if !snapped_segment_soa_allocate(
-		&result.segments,
-		int(output_count),
-		allocator,
-	) {
-		snapped_segments_destroy(&result, allocator)
-		return {}, .Allocation_Failed
-	}
-	for record, write_index in records {
-		snapped_segment_record_write(&result.segments, write_index, record)
-	}
+		assert(write_index == end)
+		slice.sort_by(c.records[start:end], snapped_segment_record_less)
+		for index in start..<end {snapped_segment_record_write(c.output, index, c.records[index])}
+	})
 	return result, .None
 }
 
+// Joins two snapped results layer by layer and sorts each layer. Layers run on the worker threads.
 snapped_segments_merge :: proc(
 	left, right: Snapped_Segment_Result,
 	allocator := context.allocator,
@@ -244,54 +245,48 @@ snapped_segments_merge :: proc(
 		left.maximum_snap_error_um,
 		right.maximum_snap_error_um,
 	)
-	record_write := 0
+	record_write: u64
 	for layer_index in 0..<layer_count {
-		result.layers[layer_index].offset = u64(record_write)
-		left_layer := left.layers[layer_index]
-		right_layer := right.layers[layer_index]
-		combined_count := u64(left_layer.count)+u64(right_layer.count)
+		combined_count := u64(left.layers[layer_index].count)+u64(right.layers[layer_index].count)
 		if combined_count > u64(max(u32)) {
 			snapped_segments_destroy(&result, allocator)
 			return {}, .Allocation_Failed
 		}
-		result.layers[layer_index].count = u32(combined_count)
-		for local_segment in 0..<int(left_layer.count) {
-			source_index := int(left_layer.offset)+local_segment
-			records[record_write] = snapped_segment_record_from_soa(
-				left.segments,
-				source_index,
-			)
-			record_write += 1
-		}
-		for local_segment in 0..<int(right_layer.count) {
-			source_index := int(right_layer.offset)+local_segment
-			records[record_write] = snapped_segment_record_from_soa(
-				right.segments,
-				source_index,
-			)
-			record_write += 1
-		}
-		start := int(result.layers[layer_index].offset)
-		slice.sort_by(
-			records[start:record_write],
-			snapped_segment_record_less,
-		)
+		result.layers[layer_index] = {offset = record_write, count = u32(combined_count)}
+		record_write += combined_count
 	}
-	if record_write != total_count {
+	if record_write != u64(total_count) {
 		snapped_segments_destroy(&result, allocator)
 		return {}, .Invalid_Input
 	}
-	if !snapped_segment_soa_allocate(
-		&result.segments,
-		total_count,
-		allocator,
-	) {
+	if !snapped_segment_soa_allocate(&result.segments, total_count, allocator) {
 		snapped_segments_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
-	for record, write_index in records {
-		snapped_segment_record_write(&result.segments, write_index, record)
+
+	Merge_Context :: struct {
+		left, right: Snapped_Segment_Result,
+		layers:      []Snapped_Layer,
+		records:     []Snapped_Segment_Record,
+		output:      ^Snapped_Segment_SoA,
 	}
+	merge_ctx := Merge_Context{left = left, right = right, layers = result.layers, records = records, output = &result.segments}
+	slicing_parallel_for(layer_count, &merge_ctx, proc(c: ^Merge_Context, layer_index: int) {
+		start := int(c.layers[layer_index].offset)
+		end := start+int(c.layers[layer_index].count)
+		write_index := start
+		sources := [2]Snapped_Segment_Result{c.left, c.right}
+		for source in sources {
+			layer := source.layers[layer_index]
+			for local_segment in 0..<int(layer.count) {
+				c.records[write_index] = snapped_segment_record_from_soa(source.segments, int(layer.offset)+local_segment)
+				write_index += 1
+			}
+		}
+		assert(write_index == end)
+		slice.sort_by(c.records[start:end], snapped_segment_record_less)
+		for index in start..<end {snapped_segment_record_write(c.output, index, c.records[index])}
+	})
 	return result, .None
 }
 

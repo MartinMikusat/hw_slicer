@@ -14,7 +14,9 @@ slicing_set_worker_threads :: proc(n: int) {
 	g_slicing_worker_threads = clamp(n, 1, 16)
 }
 
-@(private = "file")
+// Runs `body(ctx, index)` for every index across the worker threads. Each index must write only
+// storage of its own.
+@(private)
 slicing_parallel_for :: proc(count: int, ctx: ^$T, body: proc(ctx: ^T, index: int)) {
 	if count <= 0 {return}
 	workers := min(g_slicing_worker_threads, count)
