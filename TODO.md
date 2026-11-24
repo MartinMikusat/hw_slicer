@@ -60,6 +60,7 @@ Open decisions:
 ## Work
 
 - [ ] Stage workspace: stage list, per-stage settings, stale tracking and background runs exist ([staged pipeline](docs/staged-pipeline.md)). Remaining: draw stage results in the 3D view, apply the lay-on-face placement to the slice, connect the evidence bundles to the stages.
+- [ ] Replace the stage list with a Meshroom-style node graph: [plan](docs/stage-graph-plan.md).
 - [ ] Connect engine stages in subsequent bounded changes. Develop early stages in depth before committing to detailed later-stage designs.
 - [ ] Extend retained evidence through the remaining intermediate feature graphs. Add geometric rendering and cross-stage selection. Connect these stages to the production slice action before physical printer calibration. See [project details](README.md#project-details).
 - [ ] Add a settings sweep for tuning. Define ranges for relevant settings on a test model, such as a bridging test. Place several copies on the build plate, each with a different combination of the sampled settings, to compare configurations in one print.
