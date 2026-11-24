@@ -13,6 +13,7 @@ import features "../features"
 import formats "../formats"
 import gcode "../gcode"
 import geometry "../geometry"
+import slicer_gpu "../gpu"
 import polygon "../polygon"
 import profiles "../profiles"
 import repair "../repair"
@@ -99,6 +100,8 @@ slice_session_create :: proc(
 	s.profile = profile
 	s.options = options
 	session_refresh(s)
+	// Metal device creation takes ~29 ms; start it now so it overlaps the CPU stages before Motion.
+	if options.use_gpu {slicer_gpu.metal_warm_up()}
 	return s
 }
 

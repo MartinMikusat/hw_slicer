@@ -43,20 +43,49 @@ motion_plan_fit_arcs :: proc(
 	max_err := config.max_chord_error_um
 	if max_err <= 0 {max_err = 20.0}
 
-	new_ops := make([dynamic]Motion_Operation, 0, len(motion.operations), allocator)
-	stats := Arc_Fit_Stats{}
-
-	for &layer in motion.layers {
+	// Layers are fitted independently on the worker threads. Fitting only merges operations, so
+	// each layer writes its result into its own input range of `scratch`; the ranges are then
+	// compacted in layer order. The result does not depend on the thread count.
+	Fit_Context :: struct {
+		motion:   ^Motion_Plan_Result,
+		printer:  profiles.Printer_Profile,
+		config:   Arc_Fit_Config,
+		min_segs: int,
+		max_err:  f64,
+		scratch:  []Motion_Operation,
+		produced: []int,
+		stats:    []Arc_Fit_Stats,
+	}
+	fit_ctx := Fit_Context{
+		motion   = motion,
+		printer  = printer,
+		config   = config,
+		min_segs = min_segs,
+		max_err  = max_err,
+		scratch  = make([]Motion_Operation, len(motion.operations), allocator),
+		produced = make([]int, len(motion.layers), allocator),
+		stats    = make([]Arc_Fit_Stats, len(motion.layers), allocator),
+	}
+	defer {
+		delete(fit_ctx.scratch, allocator)
+		delete(fit_ctx.produced, allocator)
+		delete(fit_ctx.stats, allocator)
+	}
+	parallel_for(len(motion.layers), &fit_ctx, proc(c: ^Fit_Context, layer_index: int) {
+		operations := c.motion.operations
+		layer := c.motion.layers[layer_index]
 		op_start := int(layer.operation_offset)
 		op_end := op_start + int(layer.operation_count)
-		new_layer_start := len(new_ops)
+		write := op_start
+		stats := &c.stats[layer_index]
 
 		i := op_start
 		for i < op_end {
-			op0 := motion.operations[i]
+			op0 := operations[i]
 			if op0.kind != .Extrude || op0.arc != .None || op0.z_offset_um != 0 ||
 			   op0.role == .Sparse_Infill || op0.role == .Support || op0.role == .Support_Interface {
-				append(&new_ops, op0)
+				c.scratch[write] = op0
+				write += 1
 				i += 1
 				continue
 			}
@@ -64,8 +93,8 @@ motion_plan_fit_arcs :: proc(
 			// Find maximal contiguous run of compatible linear Extrude operations.
 			run_end := i + 1
 			for run_end < op_end {
-				prev := motion.operations[run_end - 1]
-				cur := motion.operations[run_end]
+				prev := operations[run_end - 1]
+				cur := operations[run_end]
 				if cur.kind != .Extrude || cur.arc != .None || cur.z_offset_um != 0 ||
 				   cur.path_id != op0.path_id ||
 				   cur.role != op0.role ||
@@ -79,9 +108,10 @@ motion_plan_fit_arcs :: proc(
 			}
 
 			run_len := run_end - i
-			if run_len < min_segs {
+			if run_len < c.min_segs {
 				for k in i..<run_end {
-					append(&new_ops, motion.operations[k])
+					c.scratch[write] = operations[k]
+					write += 1
 				}
 				i = run_end
 				continue
@@ -95,15 +125,15 @@ motion_plan_fit_arcs :: proc(
 				best_kind: Motion_Arc_Kind
 
 				// Try expanding arc from cursor with at least min_segs segments.
-				if cursor + min_segs <= run_end {
+				if cursor + c.min_segs <= run_end {
 					max_try := min(run_end, cursor + 64)
-					for cand_end := cursor + min_segs; cand_end <= max_try; cand_end += 1 {
+					for cand_end := cursor + c.min_segs; cand_end <= max_try; cand_end += 1 {
 						center, arc_kind, fit_ok := arc_fit_slice(
-							motion.operations[cursor:cand_end],
-							max_err,
-							config.min_radius_um,
-							config.max_radius_um,
-							printer,
+							operations[cursor:cand_end],
+							c.max_err,
+							c.config.min_radius_um,
+							c.config.max_radius_um,
+							c.printer,
 						)
 						if fit_ok {
 							best_end = cand_end
@@ -116,46 +146,62 @@ motion_plan_fit_arcs :: proc(
 				}
 
 				if best_end > 0 {
-					merged := motion.operations[cursor]
-					merged.point_b = motion.operations[best_end - 1].point_b
+					merged := operations[cursor]
+					merged.point_b = operations[best_end - 1].point_b
 					merged.arc = best_kind
 					merged.arc_center = best_center
 					total_e: i128
 					total_dur: u64
 					for k in cursor..<best_end {
-						total_e += motion.operations[k].filament_delta_nm
-						total_dur += motion.operations[k].duration_us
+						total_e += operations[k].filament_delta_nm
+						total_dur += operations[k].duration_us
 					}
 					merged.filament_delta_nm = total_e
 					merged.duration_us = total_dur
-					append(&new_ops, merged)
+					c.scratch[write] = merged
+					write += 1
 					stats.arcs_fitted += 1
 					stats.segments_replaced += u64(best_end - cursor)
 					cursor = best_end
 				} else {
-					append(&new_ops, motion.operations[cursor])
+					c.scratch[write] = operations[cursor]
+					write += 1
 					cursor += 1
 				}
 			}
 			i = run_end
 		}
+		c.produced[layer_index] = write - op_start
+	})
 
-		layer.operation_offset = u64(new_layer_start)
-		layer.operation_count = u32(len(new_ops) - new_layer_start)
+	stats := Arc_Fit_Stats{}
+	for layer_stats in fit_ctx.stats {
+		stats.arcs_fitted += layer_stats.arcs_fitted
+		stats.segments_replaced += layer_stats.segments_replaced
 	}
+	if stats.arcs_fitted == 0 {return stats}
 
-	if stats.arcs_fitted > 0 {
-		delete(motion.operations, allocator)
-		motion.operations = new_ops[:]
-		// Recompute extrusion_count accurately.
-		ext_count: u64
-		for op in motion.operations {
-			if op.kind == .Extrude {ext_count += 1}
-		}
-		motion.extrusion_count = ext_count
-	} else {
-		delete(new_ops)
+	total := 0
+	for count in fit_ctx.produced {total += count}
+	new_ops := make([]Motion_Operation, total, allocator)
+	write := 0
+	for &layer, layer_index in motion.layers {
+		start := int(layer.operation_offset)
+		count := fit_ctx.produced[layer_index]
+		copy(new_ops[write:], fit_ctx.scratch[start:start + count])
+		layer.operation_offset = u64(write)
+		layer.operation_count = u32(count)
+		write += count
 	}
+	assert(write == len(new_ops))
+	delete(motion.operations, allocator)
+	motion.operations = new_ops
+	// Recompute extrusion_count accurately.
+	ext_count: u64
+	for op in motion.operations {
+		if op.kind == .Extrude {ext_count += 1}
+	}
+	motion.extrusion_count = ext_count
 	return stats
 }
 

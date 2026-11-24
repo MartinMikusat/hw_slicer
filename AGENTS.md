@@ -12,7 +12,7 @@ An Apple Silicon macOS slicer that converts 3D models into deterministic FFF too
 
 ## Development & Toolchain Rules
 
-1. **Odin Toolchain:** Always invoke the compiler via `scripts/odin.sh` (or `hw-odin`). Do not invoke raw Homebrew/system Odin compilers directly.
+1. **Odin Toolchain:** Always invoke the compiler via `scripts/odin.sh` (or `hw-odin`). Do not invoke raw Homebrew/system Odin compilers directly. `scripts/odin.sh` first compiles the Metal compute kernels into `build/compute/slicer_compute.metallib`, which `src/gpu` embeds; a direct `hw-odin` build needs `scripts/compute-metallib.sh` run first.
 2. **Dependencies:** `dependencies.lock` locks sibling dependencies (`hw_odin_ui_flash`, `hw_odin_devlog`, `hw_odin_rune`). Verify dependencies with `./scripts/dependencies.sh check`.
 3. **Clipper2 Library:** Rebuild the native Clipper2 static library with `./scripts/clipper2-build.sh [debug|asan|release]`.
 4. **Validation & Autonomous Acceptance:** Run `./scripts/accept.sh` to execute full autonomous acceptance verification (debug + release builds, `dependencies.lock`, CLI feature matrix, pure-Odin Vatti parity, 4-way CPU/Metal determinism and speedup, and closed-loop `hw-printer-sim` execution). Pass `--skip-sim` for fast iteration without the ~65 s simulator print. Run `./scripts/sim-verify.sh [model]` for standalone closed-loop simulator verification. `./test.sh` runs unit tests, feature probes, artifact codecs, and verification gates.

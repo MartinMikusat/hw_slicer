@@ -37,12 +37,13 @@ This document records the measured release-mode (`-o:speed`) CPU profiling basel
 
 ### Headless Metal Compute (`shaders/slicer_compute.metal`, `host/HWSlicerMetalCompute.m`, `src/gpu/metal_compute.odin`)
 - Initializes `MTLCreateSystemDefaultDevice()` without AppKit or any window server dependency (`-framework Foundation -framework Metal` only).
+- The kernels are compiled at build time: `scripts/compute-metallib.sh`, which `scripts/odin.sh` runs before every build, writes `build/compute/slicer_compute.metallib`, and `src/gpu` embeds it with `#load` and loads it with `newLibraryWithData`. Device creation still costs about 29 ms per process, so `slice_session_create` starts it on a background queue (`gpu.metal_warm_up`) when the GPU is enabled.
 - **`batch_point_in_polygon` kernel:** Flattens all `model_layers` into shared-memory `PolyEdge` and `LayerEdgeRange` buffers once per print, gathers all 3-sample overhang queries across all layers into one `PointQuery` buffer, and dispatches a single Metal compute grid (`256` threads/threadgroup). Uses exact 64-bit integer cross products (`int64_t`) matching CPU `bridge_polygon_contains_twice`.
 - **`batch_travel_crosses_exterior` kernel:** Reuses the exact same flattened `PolyEdge`/`LayerEdgeRange` buffers to test all travel move endpoints, midpoints, and polygon-edge intersections on the GPU in one batch (`256` threads/threadgroup).
 - **`batch_triangle_plane_intersect` kernel:** Compiled alongside the polygon kernels in `shaders/slicer_compute.metal` and exposed via `gpu.metal_batch_triangle_plane_intersect`.
 
 ### Multi-Core CPU Parallelism (`src/features/parallel.odin`)
-- Dispatches up to `--threads=N` (default: every logical core, at most 16) worker threads (`core:thread` + `sync.atomic_add` dynamic work-stealing) across `perimeters_generate`, `surfaces_classify`, `gap_evidence_build`, `infill_pattern_generate`, and CPU-mode `motion_cpu_mt_compute_overhangs`.
+- Dispatches up to `--threads=N` (default: every logical core, at most 16) worker threads (`core:thread` + `sync.atomic_add` dynamic work-stealing) across `perimeters_generate`, `surfaces_classify`, `gap_evidence_build`, `infill_pattern_generate`, and CPU-mode `motion_cpu_mt_compute_overhangs`, and `motion_plan_fit_arcs`.
 - Every stage writes into disjoint per-region/per-layer slots and merges in strict index order for 100% deterministic output.
 
 ## 4. Measured 4-Way Comparison (`(a)` vs `(b)` vs `(c)` vs `(d)`)

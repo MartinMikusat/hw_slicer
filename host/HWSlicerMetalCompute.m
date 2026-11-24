@@ -52,7 +52,7 @@ static id<MTLComputePipelineState> g_tri_pso = nil;
 static id<MTLComputePipelineState> g_trv_pso = nil;
 static dispatch_once_t g_init_once = 0;
 
-bool hw_metal_compute_init(const char *shader_source) {
+bool hw_metal_compute_init(const void *library, size_t library_length) {
     dispatch_once(&g_init_once, ^{
         @autoreleasepool {
             g_device = MTLCreateSystemDefaultDevice();
@@ -60,11 +60,13 @@ bool hw_metal_compute_init(const char *shader_source) {
             g_queue = [g_device newCommandQueue];
             if (!g_queue) return;
 
-            NSString *src = [NSString stringWithUTF8String:shader_source];
+            if (!library || library_length == 0) return;
+            dispatch_data_t data = dispatch_data_create(library, library_length, NULL,
+                                                        DISPATCH_DATA_DESTRUCTOR_DEFAULT);
             NSError *err = nil;
-            id<MTLLibrary> lib = [g_device newLibraryWithSource:src options:nil error:&err];
+            id<MTLLibrary> lib = [g_device newLibraryWithData:data error:&err];
             if (!lib) {
-                fprintf(stderr, "[metal] shader compile failed: %s\n",
+                fprintf(stderr, "[metal] shader library load failed: %s\n",
                         err ? err.localizedDescription.UTF8String : "unknown error");
                 return;
             }
@@ -96,6 +98,15 @@ bool hw_metal_compute_init(const char *shader_source) {
     });
     return (g_device != nil && g_queue != nil &&
             g_pip_pso != nil && g_tri_pso != nil && g_trv_pso != nil);
+}
+
+// Starts hw_metal_compute_init on a background queue and returns at once. Creating the Metal
+// device takes ~29 ms per process; a later init call waits on the same dispatch_once instead of
+// paying it again. The library bytes must stay valid for the process (they are embedded).
+void hw_metal_compute_warm_up(const void *library, size_t library_length) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        (void)hw_metal_compute_init(library, library_length);
+    });
 }
 
 bool hw_metal_batch_point_in_polygon(

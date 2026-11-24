@@ -45,11 +45,15 @@ Travel_Query :: struct {
 	_pad:      u32,
 }
 
-SHADER_SOURCE :: #load("../../shaders/slicer_compute.metal", cstring)
+// Compiled from shaders/slicer_compute.metal by scripts/compute-metallib.sh, which scripts/odin.sh
+// runs before every build. Loading a compiled library avoids ~45 ms of shader compilation on the
+// first GPU call of a process (optimization ledger OPT-14).
+SHADER_LIBRARY :: #load("../../build/compute/slicer_compute.metallib")
 
 @(default_calling_convention = "c")
 foreign {
-	hw_metal_compute_init :: proc(shader_source: cstring) -> bool ---
+	hw_metal_compute_init :: proc(library: rawptr, library_length: c.size_t) -> bool ---
+	hw_metal_compute_warm_up :: proc(library: rawptr, library_length: c.size_t) ---
 	hw_metal_batch_point_in_polygon :: proc(
 		edges: [^]Poly_Edge,
 		edge_count: u32,
@@ -79,8 +83,16 @@ foreign {
 	) -> bool ---
 }
 
+// Starts the Metal compute setup in the background so that the first GPU stage does not pay for
+// it. Safe to call more than once and concurrently with metal_init.
+metal_warm_up :: proc() {
+	library := SHADER_LIBRARY
+	hw_metal_compute_warm_up(raw_data(library), c.size_t(len(library)))
+}
+
 metal_init :: proc() -> bool {
-	return hw_metal_compute_init(SHADER_SOURCE)
+	library := SHADER_LIBRARY
+	return hw_metal_compute_init(raw_data(library), c.size_t(len(library)))
 }
 
 metal_batch_point_in_polygon :: proc(

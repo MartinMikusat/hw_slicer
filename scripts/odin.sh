@@ -7,6 +7,8 @@ fi
 
 case "${1:-}" in
   build|bundle|check|run|test)
+    # src/gpu embeds the precompiled compute kernels; make sure the library exists and is current.
+    "$(dirname -- "$0")/compute-metallib.sh"
     COMMAND=$1
     shift
     TARGET=${1:-}
