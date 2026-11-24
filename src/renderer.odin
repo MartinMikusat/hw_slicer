@@ -1042,7 +1042,7 @@ renderer_draw :: proc(
 		section_uniforms := Scene_Uniforms{
 			mvp = mat4_mul(projection, view),
 			model = mat4_identity(),
-			color = theme.accent,
+			color = {0.06, 0.08, 0.11, 1.0},
 		}
 		msg_void_id(
 			encoder,
