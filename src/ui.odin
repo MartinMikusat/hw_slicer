@@ -6,6 +6,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import CF "core:sys/darwin/CoreFoundation"
+import CT "core:sys/darwin/CoreText"
 import flash "flash:."
 import "rune:gpu"
 import "rune:text"
@@ -31,9 +32,6 @@ foreign core_text {
 	) -> f64 ---
 	CTFontManagerRegisterGraphicsFont :: proc "c" (font: rawptr, error: ^rawptr) -> bool ---
 	CTFontCreateWithName :: proc "c" (name: rawptr, size: f64, transform: rawptr) -> rawptr ---
-	kCTKernAttributeName: rawptr
-	kCTFontAttributeName: rawptr
-	kCTForegroundColorFromContextAttributeName: rawptr
 }
 
 foreign import slicer_core_foundation "system:CoreFoundation.framework"
@@ -1480,20 +1478,20 @@ ui_text_run :: proc(font: rawptr, text: string, tracking := f64(0)) -> Text_Run 
 	CFAttributedStringSetAttribute(
 		attributed,
 		range,
-		kCTFontAttributeName,
+		CT.kFontAttributeName,
 		font,
 	)
 	CFAttributedStringSetAttribute(
 		attributed,
 		range,
-		kCTForegroundColorFromContextAttributeName,
+		CT.kForegroundColorFromContextAttributeName,
 		kCFBooleanTrue,
 	)
 	if tracking != 0 {
 		value := tracking
 		number := CF.NumberCreate(nil, .Float64Type, &value)
 		assert(number != nil)
-		CFAttributedStringSetAttribute(attributed, range, kCTKernAttributeName, number)
+		CFAttributedStringSetAttribute(attributed, range, CT.kKernAttributeName, number)
 		CFRelease(number)
 	}
 	result: Text_Run

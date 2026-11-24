@@ -20,7 +20,7 @@ case "$MODE" in
   debug) APP="$ROOT/build/hw_slicer.app" ;;
   asan) APP="$ROOT/build/asan/hw_slicer.app" ;;
   release)
-    "$ROOT/build.sh" release
+    "$ROOT/build.sh" release || exit 1
     exec "$ROOT/build/release/hw_slicer.app/Contents/MacOS/hw_slicer"
     ;;
 esac
