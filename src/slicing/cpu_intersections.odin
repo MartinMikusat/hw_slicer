@@ -13,6 +13,11 @@ slicing_set_worker_threads :: proc(n: int) {
 	g_slicing_worker_threads = clamp(n, 1, workers.MAX_WORKERS)
 }
 
+@(private)
+slicing_worker_threads :: proc() -> int {
+	return g_slicing_worker_threads
+}
+
 // Runs `body(ctx, index)` for every index on the shared worker pool. Each index must write only
 // storage of its own.
 @(private)

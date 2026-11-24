@@ -1,7 +1,5 @@
 package features
 
-import "core:sync"
-
 import contracts "../contracts"
 import geometry "../geometry"
 import gpu "../gpu"
@@ -145,236 +143,109 @@ motion_plan_build :: proc(
 	if u64(len(plan.moves)) > u64(max(u32)) {
 		return {}, .Arithmetic
 	}
+	expected_ext: u64
+	for ext_layer in extrusion.layers {
+		if ext_layer.move_offset != expected_ext ||
+		   ext_layer.move_offset+u64(ext_layer.move_count) > u64(len(extrusion.moves)) {
+			return {}, .Extrusion_Mismatch
+		}
+		expected_ext += u64(ext_layer.move_count)
+	}
+	if expected_ext != u64(len(extrusion.moves)) ||
+	   expected_ext != plan.extrude_move_count {
+		return {}, .Extrusion_Mismatch
+	}
+
 	sources := make([]Motion_Source_Move, len(plan.moves), allocator)
-	layer_scales := make([]u32, len(plan.layers), allocator)
-	layer_base_durations := make([]u64, len(plan.layers), allocator)
-	layer_motion_durations := make([]u64, len(plan.layers), allocator)
-	layer_dwells := make([]u64, len(plan.layers), allocator)
-	layer_allocation_ok :=
-		len(plan.layers) == 0 ||
-		layer_scales != nil &&
-		layer_base_durations != nil &&
-		layer_motion_durations != nil &&
-		layer_dwells != nil
-	if len(plan.moves) > 0 && sources == nil || !layer_allocation_ok {
+	layer_states := make([]Motion_Layer_Build_State, len(plan.layers), allocator)
+	if len(plan.moves) > 0 && sources == nil ||
+	   len(plan.layers) > 0 && layer_states == nil {
 		delete(sources, allocator)
-		delete(layer_scales, allocator)
-		delete(layer_base_durations, allocator)
-		delete(layer_motion_durations, allocator)
-		delete(layer_dwells, allocator)
+		delete(layer_states, allocator)
 		return {}, .Allocation_Failed
 	}
 	defer {
 		delete(sources, allocator)
-		delete(layer_scales, allocator)
-		delete(layer_base_durations, allocator)
-		delete(layer_motion_durations, allocator)
-		delete(layer_dwells, allocator)
+		delete(layer_states, allocator)
 	}
 
-	// Precompute per-move overhang and travel-exterior-crossing flags via Metal GPU or multi-core CPU.
+	// Precompute per-move overhang and travel-exterior-crossing flags via Metal GPU when enabled.
+	// On the CPU path, Pass 1 below evaluates both per layer on the shared worker pool.
 	precomputed_overhangs: []bool
 	precomputed_overhangs_ready := false
 	precomputed_travels: []bool
 	precomputed_travels_ready := false
-	if len(plan.moves) > 0 && len(model_layers) > 0 {
-		if options.use_gpu {
-			precomputed_overhangs, precomputed_overhangs_ready, precomputed_travels, precomputed_travels_ready =
-				motion_gpu_compute_queries(
-					model_layers,
-					plan,
-					options.overhang_slowdown_enabled,
-					allocator,
-				)
-		} else if options.worker_threads > 1 && options.overhang_slowdown_enabled && len(model_layers) > 1 {
-			precomputed_overhangs, precomputed_overhangs_ready = motion_cpu_mt_compute_overhangs(
+	if len(plan.moves) > 0 && len(model_layers) > 0 && options.use_gpu {
+		precomputed_overhangs, precomputed_overhangs_ready, precomputed_travels, precomputed_travels_ready =
+			motion_gpu_compute_queries(
 				model_layers,
 				plan,
-				options.worker_threads,
+				options.overhang_slowdown_enabled,
 				allocator,
 			)
-		}
 	}
 	defer delete(precomputed_overhangs, allocator)
 	defer delete(precomputed_travels, allocator)
 
-	extrusion_cursor := 0
-	has_extruded := false
-	retraction_count: u64
-	wipe_count: u64
-	for layer, layer_index in plan.layers {
-		z := i64(layer_z[layer_index])
-		if layer_ids[layer_index] == contracts.INVALID_STABLE_ID ||
-		   z < i64(profile.printer.axis_minimum_z) ||
-		   z > i64(profile.printer.axis_maximum_z) {
-			return {}, .Invalid_Layer
-		}
-		if polygon.polygon_set_validate(model_layers[layer_index], polygon.DEFAULT_POLYGON_LIMITS) != .None {
-			return {}, .Invalid_Model
-		}
-		move_start := int(layer.move_offset)
-		move_end := move_start+int(layer.move_count)
-		if move_start < 0 || move_end < move_start ||
-		   move_end > len(plan.moves) {
-			return {}, .Invalid_Input
-		}
-		for move_index in move_start..<move_end {
-			move := plan.moves[move_index]
-			if !motion_point_in_machine(move.point_a, profile.printer) ||
-			   !motion_point_in_machine(move.point_b, profile.printer) {
-				return {}, .Machine_Bounds
-			}
-			source: Motion_Source_Move
-			length_nm: u64
-			switch move.kind {
-			case .Travel:
-				length_ok: bool
-				length_nm, length_ok = motion_move_length_nm(move.point_a, move.point_b)
-				if !length_ok || length_nm == 0 {
-					return {}, .Arithmetic
-				}
-				source.length_nm = length_nm
-				source.travel_length_nm = length_nm
-				source.base_speed = profile.process.source.travel.speed
-				source.acceleration =
-					profile.process.source.travel.acceleration
-				if precomputed_travels_ready {
-					source.crosses_exterior = precomputed_travels[move_index]
-				} else {
-					source.crosses_exterior =
-						motion_travel_crosses_exterior(
-							move.point_a,
-							move.point_b,
-							model_layers[layer_index],
-						)
-				}
-				retraction_threshold_nm :=
-					u128(i64(profile.process.source.minimum_retraction_travel))*1_000
-				source.retract_before =
-					has_extruded &&
-					i64(profile.process.source.retraction_distance) > 0 &&
-					u128(length_nm) >= retraction_threshold_nm &&
-					source.crosses_exterior
-				if source.retract_before {
-					retraction_count += 1
-					if process.z_hop_enabled && i64(process.z_hop_height) > 0 {
-						max_hop := i64(profile.printer.axis_maximum_z) - z
-						if max_hop > 0 {
-							source.z_hop_um = contracts.Micrometres(min(i64(process.z_hop_height), max_hop))
-						}
-					}
-					if i64(options.wipe_distance_um) > 0 && move_index > move_start {
-						prev_move := plan.moves[move_index - 1]
-						if prev_move.kind == .Extrude && prev_move.point_b == move.point_a {
-							if wp, w_len, t_len, w_ok := motion_compute_wipe(
-								prev_move.point_a,
-								move.point_a,
-								move.point_b,
-								options.wipe_distance_um,
-								profile.printer,
-							); w_ok {
-								source.has_wipe = true
-								source.wipe_point = wp
-								source.wipe_length_nm = w_len
-								source.travel_length_nm = t_len
-								wipe_count += 1
-							}
-						}
-					}
-				}
-			case .Extrude:
-				if extrusion_cursor >= len(extrusion.moves) {
-					return {}, .Extrusion_Mismatch
-				}
-				extrusion_move := extrusion.moves[extrusion_cursor]
-				length_nm = extrusion_move.path_length_nm
-				if length_nm == 0 {
-					return {}, .Arithmetic
-				}
-				source.length_nm = length_nm
-				source.travel_length_nm = length_nm
-				if extrusion_move.planned_move_id != move.stable_id ||
-				   extrusion_move.planned_move_index != u32(move_index) ||
-				   extrusion_move.path_id != move.path_id ||
-				   extrusion_move.layer_index != u32(layer_index) ||
-				   extrusion_move.role != move.role {
-					return {}, .Extrusion_Mismatch
-				}
-				target, target_ok :=
-					motion_role_target(profile.process, move.role)
-				if !target_ok {
-					return {}, .Invalid_Config
-				}
-				source.base_speed = target.speed
-				source.acceleration = target.acceleration
-				source.fan_ratio = target.fan_ratio
-				is_ov := false
-				if options.overhang_slowdown_enabled &&
-				   layer_index > 0 &&
-				   (move.role == .Perimeter || move.role == .Thin_Wall) {
-					if precomputed_overhangs_ready {
-						is_ov = precomputed_overhangs[move_index]
-					} else {
-						is_ov = motion_segment_is_overhang(move.point_a, move.point_b, model_layers[layer_index - 1])
-					}
-				}
-				if is_ov {
-					pct := options.overhang_speed_percent
-					if pct == 0 || pct > 100 {pct = 50}
-					ov_scale := u32((u64(pct) * u64(profiles.RATIO_SCALE)) / 100)
-					source.base_speed = motion_scaled_speed(
-						source.base_speed,
-						process.minimum_print_speed,
-						ov_scale,
-					)
-					boost_fan := max(source.fan_ratio, process.bridge.fan_ratio)
-					source.fan_ratio = clamp(
-						boost_fan,
-						profile.material.minimum_fan_ratio,
-						profile.material.maximum_fan_ratio,
-					)
-				}
-				source.extrusion_index = u32(extrusion_cursor)
-				source.is_extrusion = true
-				extrusion_cursor += 1
-				has_extruded = true
-			case .Invalid:
-				return {}, .Invalid_Input
-			}
-			sources[move_index] = source
-		}
-	}
-	if extrusion_cursor != len(extrusion.moves) ||
-	   u64(extrusion_cursor) != plan.extrude_move_count {
-		return {}, .Extrusion_Mismatch
+	worker_limit := options.worker_threads
+	if worker_limit <= 0 {
+		worker_limit = get_worker_threads()
 	}
 
-	operation_count :=
-		u64(len(plan.moves))+retraction_count*2+wipe_count
-	if operation_count < u64(len(plan.moves)) ||
-	   operation_count > limits.max_operations {
+	build_ctx := Motion_Build_Context{
+		layer_ids                   = layer_ids,
+		layer_z                     = layer_z,
+		model_layers                = model_layers,
+		plan                        = plan,
+		extrusion                   = extrusion,
+		profile                     = profile,
+		options                     = options,
+		sources                     = sources,
+		layer_states                = layer_states,
+		precomputed_overhangs       = precomputed_overhangs,
+		precomputed_overhangs_ready = precomputed_overhangs_ready,
+		precomputed_travels         = precomputed_travels,
+		precomputed_travels_ready   = precomputed_travels_ready,
+	}
+	workers.parallel_for(len(plan.layers), &build_ctx, motion_build_layer_sources, worker_limit)
+
+	retraction_count: u64
+	wipe_count: u64
+	for st in layer_states {
+		if st.source_error != .None {
+			return {}, st.source_error
+		}
+		retraction_count += st.retraction_count
+		wipe_count += st.wipe_count
+	}
+
+	base_operation_count := u64(len(plan.moves))+retraction_count*2+wipe_count
+	if base_operation_count < u64(len(plan.moves)) ||
+	   base_operation_count > limits.max_operations {
 		return {}, .Operation_Limit
 	}
-	for layer, layer_index in plan.layers {
-		scale, base_duration, motion_duration, dwell, timing_ok :=
-			motion_layer_timing(
-				layer,
-				sources,
-				profile.process.source,
-			)
-		if !timing_ok {
-			return {}, .Arithmetic
+	operation_count: u64
+	for &st, layer_index in layer_states {
+		if st.timing_error != .None {
+			return {}, st.timing_error
 		}
-		layer_scales[layer_index] = scale
-		layer_base_durations[layer_index] = base_duration
-		layer_motion_durations[layer_index] = motion_duration
-		layer_dwells[layer_index] = dwell
-		if dwell > 0 {
-			if operation_count == max(u64) {
+		layer_ops := u64(plan.layers[layer_index].move_count)+st.retraction_count*2+st.wipe_count
+		if st.dwell > 0 {
+			if layer_ops == max(u64) {
 				return {}, .Arithmetic
 			}
-			operation_count += 1
+			layer_ops += 1
 		}
+		if layer_ops > u64(max(u32)) {
+			return {}, .Arithmetic
+		}
+		if operation_count > limits.max_operations ||
+		   layer_ops > limits.max_operations-operation_count {
+			return {}, .Operation_Limit
+		}
+		st.op_offset = operation_count
+		st.op_count = u32(layer_ops)
+		operation_count += layer_ops
 	}
 	if operation_count > limits.max_operations ||
 	   operation_count > u64(max(int)) {
@@ -391,254 +262,466 @@ motion_plan_build :: proc(
 		return {}, .Allocation_Failed
 	}
 
-	operation_write := 0
-	for layer, layer_index in plan.layers {
-		operation_start := operation_write
-		move_start := int(layer.move_offset)
-		move_end := move_start+int(layer.move_count)
-		scale := layer_scales[layer_index]
-		current_point: polygon.Polygon_Point
-		for move_index in move_start..<move_end {
-			move := plan.moves[move_index]
-			source := sources[move_index]
-			current_point = move.point_b
-			if source.retract_before {
-				duration, duration_ok := motion_duration_for_distance_um(
-					profile.process.source.retraction_distance,
-					profile.process.source.retraction_speed,
-				)
-				if !duration_ok {
-					motion_plan_result_destroy(&result, allocator)
-					return {}, .Arithmetic
-				}
-				result.operations[operation_write] = {
-					stable_id = contracts.stable_id_child(
-						move.stable_id,
-						.Motion,
-						0,
-					),
-					source_move_id = move.stable_id,
-					source_move_index = u32(move_index),
-					path_id = move.path_id,
-					layer_index = u32(layer_index),
-					kind = .Retract,
-					point_a = move.point_a,
-					point_b = move.point_a,
-					speed = profile.process.source.retraction_speed,
-					acceleration =
-						profile.process.source.retraction_acceleration,
-					filament_delta_nm =
-						-i128(i64(profile.process.source.retraction_distance))*1_000,
-					duration_us = duration,
-					crosses_exterior = true,
-				}
-				operation_write += 1
-				result.retraction_count += 1
-			}
+	build_ctx.result_layers = result.layers
+	build_ctx.result_operations = result.operations
+	workers.parallel_for(len(plan.layers), &build_ctx, motion_emit_layer_operations, worker_limit)
 
-			if source.has_wipe {
-				wipe_dur, wipe_dur_ok := motion_duration_for_length(source.wipe_length_nm, source.base_speed)
-				if !wipe_dur_ok {
-					motion_plan_result_destroy(&result, allocator)
-					return {}, .Arithmetic
-				}
-				result.operations[operation_write] = {
-					stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 4),
-					source_move_id    = move.stable_id,
-					source_move_index = u32(move_index),
-					path_id           = move.path_id,
-					layer_index       = u32(layer_index),
-					kind              = .Travel,
-					point_a           = move.point_a,
-					point_b           = source.wipe_point,
-					speed             = source.base_speed,
-					acceleration      = source.acceleration,
-					duration_us       = wipe_dur,
-					crosses_exterior  = false,
-				}
-				operation_write += 1
-				result.travel_count += 1
-			}
-
-			operation_kind := Motion_Operation_Kind.Travel
-			speed := source.base_speed
-			filament_delta_nm: i128
-			move_point_a := move.point_a
-			move_len_nm := source.length_nm
-			if move.kind == .Extrude {
-				operation_kind = .Extrude
-				speed = motion_scaled_speed(
-					source.base_speed,
-					profile.process.source.minimum_print_speed,
-					scale,
-				)
-				filament_delta_nm =
-					i128(extrusion.moves[source.extrusion_index].incremental_filament_nm)
-				if filament_delta_nm <= 0 {
-					filament_delta_nm = i128(max(u32(10), profile.process.source.extrusion_length_quantum_nm))
-				}
-			} else if source.has_wipe {
-				move_point_a = source.wipe_point
-				move_len_nm = source.travel_length_nm
-			}
-			duration, duration_ok :=
-				motion_duration_for_length(move_len_nm, speed)
-			if !duration_ok {
-				motion_plan_result_destroy(&result, allocator)
-				return {}, .Arithmetic
-			}
-			if move.kind == .Travel && i64(source.z_hop_um) > 0 {
-				hop_dur, hop_ok := motion_duration_for_distance_um(source.z_hop_um, speed)
-				if !hop_ok {
-					motion_plan_result_destroy(&result, allocator)
-					return {}, .Arithmetic
-				}
-				duration, duration_ok = motion_checked_add_u64(duration, hop_dur)
-				if duration_ok {
-					duration, duration_ok = motion_checked_add_u64(duration, hop_dur)
-				}
-				if !duration_ok {
-					motion_plan_result_destroy(&result, allocator)
-					return {}, .Arithmetic
-				}
-			}
-			result.operations[operation_write] = {
-				stable_id = contracts.stable_id_child(
-					move.stable_id,
-					.Motion,
-					1,
-				),
-				source_move_id = move.stable_id,
-				source_move_index = u32(move_index),
-				path_id = move.path_id,
-				layer_index = u32(layer_index),
-				kind = operation_kind,
-				role = move.role,
-				point_a = move_point_a,
-				point_b = move.point_b,
-				z_hop_um = source.z_hop_um if move.kind == .Travel else 0,
-				speed = speed,
-				acceleration = source.acceleration,
-				fan_ratio = source.fan_ratio,
-				filament_delta_nm = filament_delta_nm,
-				duration_us = duration,
-				crosses_exterior = source.crosses_exterior,
-			}
-			operation_write += 1
-			if move.kind == .Travel {
-				result.travel_count += 1
-			} else {
-				result.extrusion_count += 1
-			}
-
-			if source.retract_before {
-				duration, duration_ok = motion_duration_for_distance_um(
-					profile.process.source.retraction_distance,
-					profile.process.source.recovery_speed,
-				)
-				if !duration_ok {
-					motion_plan_result_destroy(&result, allocator)
-					return {}, .Arithmetic
-				}
-				result.operations[operation_write] = {
-					stable_id = contracts.stable_id_child(
-						move.stable_id,
-						.Motion,
-						2,
-					),
-					source_move_id = move.stable_id,
-					source_move_index = u32(move_index),
-					path_id = move.path_id,
-					layer_index = u32(layer_index),
-					kind = .Recover,
-					point_a = move.point_b,
-					point_b = move.point_b,
-					speed = profile.process.source.recovery_speed,
-					acceleration =
-						profile.process.source.retraction_acceleration,
-					filament_delta_nm =
-						i128(i64(profile.process.source.retraction_distance))*1_000,
-					duration_us = duration,
-					crosses_exterior = true,
-				}
-				operation_write += 1
-			}
-		}
-		dwell := layer_dwells[layer_index]
-		if dwell > 0 {
-			result.operations[operation_write] = {
-				stable_id = contracts.stable_id_child(
-					layer_ids[layer_index],
-					.Motion,
-					3,
-				),
-				layer_index = u32(layer_index),
-				kind = .Dwell,
-				point_a = current_point,
-				point_b = current_point,
-				duration_us = dwell,
-			}
-			operation_write += 1
-			result.dwell_count += 1
-		}
-		layer_operation_count := operation_write-operation_start
-		if layer_operation_count > int(max(u32)) {
+	for st, layer_index in layer_states {
+		if st.emit_error != .None {
 			motion_plan_result_destroy(&result, allocator)
-			return {}, .Arithmetic
+			return {}, st.emit_error
 		}
-		planned_duration, planned_ok := motion_checked_add_u64(
-			layer_motion_durations[layer_index],
-			dwell,
-		)
-		if !planned_ok {
-			motion_plan_result_destroy(&result, allocator)
-			return {}, .Arithmetic
-		}
-		result.layers[layer_index] = {
-			stable_id = layer_ids[layer_index],
-			layer_index = u32(layer_index),
-			z = layer_z[layer_index],
-			operation_offset = u64(operation_start),
-			operation_count = u32(layer_operation_count),
-			speed_scale_ppm = layer_scales[layer_index],
-			base_duration_us = layer_base_durations[layer_index],
-			motion_duration_us = layer_motion_durations[layer_index],
-			dwell_duration_us = dwell,
-			planned_duration_us = planned_duration,
-		}
+		result.retraction_count += st.retraction_count
+		result.travel_count += st.travel_count
+		result.extrusion_count += st.extrusion_count
+		result.dwell_count += st.dwell_count
 		total_ok: bool
-		result.total_motion_duration_us, total_ok =
-			motion_checked_add_u64(
-				result.total_motion_duration_us,
-				layer_motion_durations[layer_index],
-			)
+		result.total_motion_duration_us, total_ok = motion_checked_add_u64(
+			result.total_motion_duration_us,
+			st.motion_duration,
+		)
 		if total_ok {
-			result.total_dwell_duration_us, total_ok =
-				motion_checked_add_u64(
-					result.total_dwell_duration_us,
-					dwell,
-				)
+			result.total_dwell_duration_us, total_ok = motion_checked_add_u64(
+				result.total_dwell_duration_us,
+				st.dwell,
+			)
 		}
 		if total_ok {
-			result.total_planned_duration_us, total_ok =
-				motion_checked_add_u64(
-					result.total_planned_duration_us,
-					planned_duration,
-				)
+			result.total_planned_duration_us, total_ok = motion_checked_add_u64(
+				result.total_planned_duration_us,
+				result.layers[layer_index].planned_duration_us,
+			)
 		}
 		if !total_ok {
 			motion_plan_result_destroy(&result, allocator)
 			return {}, .Arithmetic
 		}
 	}
-	if operation_write != len(result.operations) ||
-	   result.retraction_count != retraction_count ||
-	   result.travel_count != plan.travel_move_count + wipe_count ||
+	if result.retraction_count != retraction_count ||
+	   result.travel_count != plan.travel_move_count+wipe_count ||
 	   result.extrusion_count != plan.extrude_move_count {
 		motion_plan_result_destroy(&result, allocator)
 		return {}, .Arithmetic
 	}
 	return result, .None
+}
+
+@(private = "file")
+Motion_Layer_Build_State :: struct {
+	scale:            u32,
+	base_duration:    u64,
+	motion_duration:  u64,
+	dwell:            u64,
+	retraction_count: u64,
+	wipe_count:       u64,
+	travel_count:     u64,
+	extrusion_count:  u64,
+	dwell_count:      u64,
+	op_offset:        u64,
+	op_count:         u32,
+	source_error:     Motion_Plan_Error,
+	timing_error:     Motion_Plan_Error,
+	emit_error:       Motion_Plan_Error,
+}
+
+@(private = "file")
+Motion_Build_Context :: struct {
+	layer_ids:                   []contracts.Stable_ID,
+	layer_z:                     []contracts.Micrometres,
+	model_layers:                []polygon.Polygon_Set,
+	plan:                        Unified_Path_Plan_Result,
+	extrusion:                   Extrusion_Result,
+	profile:                     profiles.Resolved_Profiles,
+	options:                     Motion_Plan_Options,
+	sources:                     []Motion_Source_Move,
+	layer_states:                []Motion_Layer_Build_State,
+	precomputed_overhangs:       []bool,
+	precomputed_overhangs_ready: bool,
+	precomputed_travels:         []bool,
+	precomputed_travels_ready:   bool,
+	result_layers:               []Motion_Layer,
+	result_operations:           []Motion_Operation,
+}
+
+@(private = "file")
+motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int) {
+	st := &ctx.layer_states[layer_index]
+	process := ctx.profile.process.source
+	layer := ctx.plan.layers[layer_index]
+	z := i64(ctx.layer_z[layer_index])
+	if ctx.layer_ids[layer_index] == contracts.INVALID_STABLE_ID ||
+	   z < i64(ctx.profile.printer.axis_minimum_z) ||
+	   z > i64(ctx.profile.printer.axis_maximum_z) {
+		st.source_error = .Invalid_Layer
+		return
+	}
+	if polygon.polygon_set_validate(ctx.model_layers[layer_index], polygon.DEFAULT_POLYGON_LIMITS) != .None {
+		st.source_error = .Invalid_Model
+		return
+	}
+	move_start := int(layer.move_offset)
+	move_end := move_start+int(layer.move_count)
+	if move_start < 0 || move_end < move_start ||
+	   move_end > len(ctx.plan.moves) {
+		st.source_error = .Invalid_Input
+		return
+	}
+
+	ext_layer := ctx.extrusion.layers[layer_index]
+	extrusion_cursor := int(ext_layer.move_offset)
+	ext_end := extrusion_cursor+int(ext_layer.move_count)
+	has_extruded := ext_layer.move_offset > 0
+
+	for move_index in move_start..<move_end {
+		move := ctx.plan.moves[move_index]
+		if !motion_point_in_machine(move.point_a, ctx.profile.printer) ||
+		   !motion_point_in_machine(move.point_b, ctx.profile.printer) {
+			st.source_error = .Machine_Bounds
+			return
+		}
+		source: Motion_Source_Move
+		length_nm: u64
+		switch move.kind {
+		case .Travel:
+			length_ok: bool
+			length_nm, length_ok = motion_move_length_nm(move.point_a, move.point_b)
+			if !length_ok || length_nm == 0 {
+				st.source_error = .Arithmetic
+				return
+			}
+			source.length_nm = length_nm
+			source.travel_length_nm = length_nm
+			source.base_speed = process.travel.speed
+			source.acceleration = process.travel.acceleration
+			if ctx.precomputed_travels_ready {
+				source.crosses_exterior = ctx.precomputed_travels[move_index]
+			} else {
+				source.crosses_exterior = motion_travel_crosses_exterior(
+					move.point_a,
+					move.point_b,
+					ctx.model_layers[layer_index],
+				)
+			}
+			retraction_threshold_nm := u128(i64(process.minimum_retraction_travel))*1_000
+			source.retract_before =
+				has_extruded &&
+				i64(process.retraction_distance) > 0 &&
+				u128(length_nm) >= retraction_threshold_nm &&
+				source.crosses_exterior
+			if source.retract_before {
+				st.retraction_count += 1
+				if process.z_hop_enabled && i64(process.z_hop_height) > 0 {
+					max_hop := i64(ctx.profile.printer.axis_maximum_z)-z
+					if max_hop > 0 {
+						source.z_hop_um = contracts.Micrometres(min(i64(process.z_hop_height), max_hop))
+					}
+				}
+				if i64(ctx.options.wipe_distance_um) > 0 && move_index > move_start {
+					prev_move := ctx.plan.moves[move_index-1]
+					if prev_move.kind == .Extrude && prev_move.point_b == move.point_a {
+						if wp, w_len, t_len, w_ok := motion_compute_wipe(
+							prev_move.point_a,
+							move.point_a,
+							move.point_b,
+							ctx.options.wipe_distance_um,
+							ctx.profile.printer,
+						); w_ok {
+							source.has_wipe = true
+							source.wipe_point = wp
+							source.wipe_length_nm = w_len
+							source.travel_length_nm = t_len
+							st.wipe_count += 1
+						}
+					}
+				}
+			}
+		case .Extrude:
+			if extrusion_cursor >= ext_end {
+				st.source_error = .Extrusion_Mismatch
+				return
+			}
+			extrusion_move := ctx.extrusion.moves[extrusion_cursor]
+			length_nm = extrusion_move.path_length_nm
+			if length_nm == 0 {
+				st.source_error = .Arithmetic
+				return
+			}
+			source.length_nm = length_nm
+			source.travel_length_nm = length_nm
+			if extrusion_move.planned_move_id != move.stable_id ||
+			   extrusion_move.planned_move_index != u32(move_index) ||
+			   extrusion_move.path_id != move.path_id ||
+			   extrusion_move.layer_index != u32(layer_index) ||
+			   extrusion_move.role != move.role {
+				st.source_error = .Extrusion_Mismatch
+				return
+			}
+			target, target_ok := motion_role_target(ctx.profile.process, move.role)
+			if !target_ok {
+				st.source_error = .Invalid_Config
+				return
+			}
+			source.base_speed = target.speed
+			source.acceleration = target.acceleration
+			source.fan_ratio = target.fan_ratio
+			is_ov := false
+			if ctx.options.overhang_slowdown_enabled &&
+			   layer_index > 0 &&
+			   (move.role == .Perimeter || move.role == .Thin_Wall) {
+				if ctx.precomputed_overhangs_ready {
+					is_ov = ctx.precomputed_overhangs[move_index]
+				} else {
+					is_ov = motion_segment_is_overhang(
+						move.point_a,
+						move.point_b,
+						ctx.model_layers[layer_index-1],
+					)
+				}
+			}
+			if is_ov {
+				pct := ctx.options.overhang_speed_percent
+				if pct == 0 || pct > 100 {pct = 50}
+				ov_scale := u32((u64(pct)*u64(profiles.RATIO_SCALE))/100)
+				source.base_speed = motion_scaled_speed(
+					source.base_speed,
+					process.minimum_print_speed,
+					ov_scale,
+				)
+				boost_fan := max(source.fan_ratio, process.bridge.fan_ratio)
+				source.fan_ratio = clamp(
+					boost_fan,
+					ctx.profile.material.minimum_fan_ratio,
+					ctx.profile.material.maximum_fan_ratio,
+				)
+			}
+			source.extrusion_index = u32(extrusion_cursor)
+			source.is_extrusion = true
+			extrusion_cursor += 1
+			has_extruded = true
+		case .Invalid:
+			st.source_error = .Invalid_Input
+			return
+		}
+		ctx.sources[move_index] = source
+	}
+	if extrusion_cursor != ext_end {
+		st.source_error = .Extrusion_Mismatch
+		return
+	}
+
+	scale, base_duration, motion_duration, dwell, timing_ok := motion_layer_timing(
+		layer,
+		ctx.sources,
+		process,
+	)
+	if !timing_ok {
+		st.timing_error = .Arithmetic
+		return
+	}
+	st.scale = scale
+	st.base_duration = base_duration
+	st.motion_duration = motion_duration
+	st.dwell = dwell
+}
+
+@(private = "file")
+motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: int) {
+	st := &ctx.layer_states[layer_index]
+	process := ctx.profile.process.source
+	layer := ctx.plan.layers[layer_index]
+	operation_start := int(st.op_offset)
+	operation_write := operation_start
+	move_start := int(layer.move_offset)
+	move_end := move_start+int(layer.move_count)
+	scale := st.scale
+	current_point: polygon.Polygon_Point
+	travel_count: u64
+	extrusion_count: u64
+	dwell_count: u64
+
+	for move_index in move_start..<move_end {
+		move := ctx.plan.moves[move_index]
+		source := ctx.sources[move_index]
+		current_point = move.point_b
+		if source.retract_before {
+			duration, duration_ok := motion_duration_for_distance_um(
+				process.retraction_distance,
+				process.retraction_speed,
+			)
+			if !duration_ok {
+				st.emit_error = .Arithmetic
+				return
+			}
+			ctx.result_operations[operation_write] = {
+				stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 0),
+				source_move_id    = move.stable_id,
+				source_move_index = u32(move_index),
+				path_id           = move.path_id,
+				layer_index       = u32(layer_index),
+				kind              = .Retract,
+				point_a           = move.point_a,
+				point_b           = move.point_a,
+				speed             = process.retraction_speed,
+				acceleration      = process.retraction_acceleration,
+				filament_delta_nm = -i128(i64(process.retraction_distance))*1_000,
+				duration_us       = duration,
+				crosses_exterior  = true,
+			}
+			operation_write += 1
+		}
+
+		if source.has_wipe {
+			wipe_dur, wipe_dur_ok := motion_duration_for_length(source.wipe_length_nm, source.base_speed)
+			if !wipe_dur_ok {
+				st.emit_error = .Arithmetic
+				return
+			}
+			ctx.result_operations[operation_write] = {
+				stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 4),
+				source_move_id    = move.stable_id,
+				source_move_index = u32(move_index),
+				path_id           = move.path_id,
+				layer_index       = u32(layer_index),
+				kind              = .Travel,
+				point_a           = move.point_a,
+				point_b           = source.wipe_point,
+				speed             = source.base_speed,
+				acceleration      = source.acceleration,
+				duration_us       = wipe_dur,
+				crosses_exterior  = false,
+			}
+			operation_write += 1
+			travel_count += 1
+		}
+
+		operation_kind := Motion_Operation_Kind.Travel
+		speed := source.base_speed
+		filament_delta_nm: i128
+		move_point_a := move.point_a
+		move_len_nm := source.length_nm
+		if move.kind == .Extrude {
+			operation_kind = .Extrude
+			speed = motion_scaled_speed(source.base_speed, process.minimum_print_speed, scale)
+			filament_delta_nm = i128(ctx.extrusion.moves[source.extrusion_index].incremental_filament_nm)
+			if filament_delta_nm <= 0 {
+				filament_delta_nm = i128(max(u32(10), process.extrusion_length_quantum_nm))
+			}
+		} else if source.has_wipe {
+			move_point_a = source.wipe_point
+			move_len_nm = source.travel_length_nm
+		}
+		duration, duration_ok := motion_duration_for_length(move_len_nm, speed)
+		if !duration_ok {
+			st.emit_error = .Arithmetic
+			return
+		}
+		if move.kind == .Travel && i64(source.z_hop_um) > 0 {
+			hop_dur, hop_ok := motion_duration_for_distance_um(source.z_hop_um, speed)
+			if !hop_ok {
+				st.emit_error = .Arithmetic
+				return
+			}
+			duration, duration_ok = motion_checked_add_u64(duration, hop_dur)
+			if duration_ok {
+				duration, duration_ok = motion_checked_add_u64(duration, hop_dur)
+			}
+			if !duration_ok {
+				st.emit_error = .Arithmetic
+				return
+			}
+		}
+		ctx.result_operations[operation_write] = {
+			stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 1),
+			source_move_id    = move.stable_id,
+			source_move_index = u32(move_index),
+			path_id           = move.path_id,
+			layer_index       = u32(layer_index),
+			kind              = operation_kind,
+			role              = move.role,
+			point_a           = move_point_a,
+			point_b           = move.point_b,
+			z_hop_um          = source.z_hop_um if move.kind == .Travel else 0,
+			speed             = speed,
+			acceleration      = source.acceleration,
+			fan_ratio         = source.fan_ratio,
+			filament_delta_nm = filament_delta_nm,
+			duration_us       = duration,
+			crosses_exterior  = source.crosses_exterior,
+		}
+		operation_write += 1
+		if move.kind == .Travel {
+			travel_count += 1
+		} else {
+			extrusion_count += 1
+		}
+
+		if source.retract_before {
+			duration, duration_ok = motion_duration_for_distance_um(
+				process.retraction_distance,
+				process.recovery_speed,
+			)
+			if !duration_ok {
+				st.emit_error = .Arithmetic
+				return
+			}
+			ctx.result_operations[operation_write] = {
+				stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 2),
+				source_move_id    = move.stable_id,
+				source_move_index = u32(move_index),
+				path_id           = move.path_id,
+				layer_index       = u32(layer_index),
+				kind              = .Recover,
+				point_a           = move.point_b,
+				point_b           = move.point_b,
+				speed             = process.recovery_speed,
+				acceleration      = process.retraction_acceleration,
+				filament_delta_nm = i128(i64(process.retraction_distance))*1_000,
+				duration_us       = duration,
+				crosses_exterior  = true,
+			}
+			operation_write += 1
+		}
+	}
+
+	dwell := st.dwell
+	if dwell > 0 {
+		ctx.result_operations[operation_write] = {
+			stable_id   = contracts.stable_id_child(ctx.layer_ids[layer_index], .Motion, 3),
+			layer_index = u32(layer_index),
+			kind        = .Dwell,
+			point_a     = current_point,
+			point_b     = current_point,
+			duration_us = dwell,
+		}
+		operation_write += 1
+		dwell_count = 1
+	}
+
+	layer_operation_count := operation_write-operation_start
+	if layer_operation_count != int(st.op_count) {
+		st.emit_error = .Arithmetic
+		return
+	}
+	planned_duration, planned_ok := motion_checked_add_u64(st.motion_duration, dwell)
+	if !planned_ok {
+		st.emit_error = .Arithmetic
+		return
+	}
+	ctx.result_layers[layer_index] = {
+		stable_id           = ctx.layer_ids[layer_index],
+		layer_index         = u32(layer_index),
+		z                   = ctx.layer_z[layer_index],
+		operation_offset    = u64(operation_start),
+		operation_count     = u32(layer_operation_count),
+		speed_scale_ppm     = scale,
+		base_duration_us    = st.base_duration,
+		motion_duration_us  = st.motion_duration,
+		dwell_duration_us   = dwell,
+		planned_duration_us = planned_duration,
+	}
+	st.travel_count = travel_count
+	st.extrusion_count = extrusion_count
+	st.dwell_count = dwell_count
 }
 
 motion_layer_timing :: proc(
@@ -982,57 +1065,6 @@ motion_compute_wipe :: proc(
 		return {}, 0, 0, false
 	}
 	return wipe_pt, w_len, t_len, true
-}
-
-@(private = "file")
-motion_cpu_mt_compute_overhangs :: proc(
-	model_layers: []polygon.Polygon_Set,
-	plan: Unified_Path_Plan_Result,
-	worker_threads: int,
-	allocator := context.allocator,
-) -> (flags: []bool, ok: bool) {
-	flags = make([]bool, len(plan.moves), allocator)
-	if flags == nil {return nil, false}
-
-	Ov_Worker_Ctx :: struct {
-		model_layers: []polygon.Polygon_Set,
-		plan:         Unified_Path_Plan_Result,
-		flags:        []bool,
-		next_layer:   int,
-		layer_count:  int,
-	}
-	wctx := Ov_Worker_Ctx{
-		model_layers = model_layers,
-		plan         = plan,
-		flags        = flags,
-		next_layer   = 1,
-		layer_count  = len(plan.layers),
-	}
-	worker_proc :: proc(c: ^Ov_Worker_Ctx) {
-		for {
-			li := sync.atomic_add(&c.next_layer, 1)
-			if li >= c.layer_count {break}
-			prev := c.model_layers[li - 1]
-			if len(prev.paths) == 0 {continue}
-			layer := c.plan.layers[li]
-			ms := int(layer.move_offset)
-			me := ms + int(layer.move_count)
-			for mi in ms..<me {
-				m := c.plan.moves[mi]
-				if m.kind != .Extrude || (m.role != .Perimeter && m.role != .Thin_Wall) {continue}
-				c.flags[mi] = motion_segment_is_overhang(m.point_a, m.point_b, prev)
-			}
-		}
-	}
-
-	num_workers := clamp(worker_threads, 1, 16)
-	if len(plan.layers) < 8 || num_workers <= 1 {
-		worker_proc(&wctx)
-	} else {
-		// Each pool task drains the shared layer counter, as each spawned thread used to.
-		workers.parallel_for(num_workers, &wctx, proc(c: ^Ov_Worker_Ctx, _: int) {worker_proc(c)}, num_workers, min_count = 1)
-	}
-	return flags, true
 }
 
 @(private = "file")

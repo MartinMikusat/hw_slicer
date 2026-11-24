@@ -146,34 +146,6 @@ regions_build_internal :: proc(
 		for path_index in int(layer.path_offset)..<path_end {
 			path := topology.paths[path_index]
 			if path.kind != .Loop {continue}
-			bounds, bounds_ok := region_path_bounds(topology, path)
-			if !bounds_ok {
-				region_failure_locate(
-					failure,
-					u32(layer_index),
-					u32(contour_write),
-					REGION_INVALID_INDEX,
-					u32(path_index),
-					REGION_INVALID_INDEX,
-				)
-				region_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
-			}
-			area, area_error := region_path_area(topology, path)
-			if area_error != .None || area != path.signed_area_2 ||
-			   area == 0 {
-				region_failure_locate(
-					failure,
-					u32(layer_index),
-					u32(contour_write),
-					REGION_INVALID_INDEX,
-					u32(path_index),
-					REGION_INVALID_INDEX,
-				)
-				region_result_destroy(&result, allocator)
-				if area_error != .None {return {}, area_error}
-				return {}, .Invalid_Input
-			}
 			result.contours[contour_write] = {
 				stable_id = contracts.stable_id_child(
 					path.id,
@@ -183,7 +155,6 @@ regions_build_internal :: proc(
 				path_index = u32(path_index),
 				parent_contour = REGION_INVALID_INDEX,
 				region_index = REGION_INVALID_INDEX,
-				bounds = bounds,
 			}
 			contour_write += 1
 		}
@@ -197,8 +168,34 @@ regions_build_internal :: proc(
 		return {}, .Invalid_Input
 	}
 
+	layer_failures := make([]Region_Layer_Failure, len(result.layers), allocator)
+	if len(result.layers) > 0 && layer_failures == nil {
+		region_result_destroy(&result, allocator)
+		return {}, .Allocation_Failed
+	}
+	defer delete(layer_failures, allocator)
+
+	bounds_ctx := Region_Bounds_Context{
+		topology = topology,
+		layers   = result.layers,
+		contours = result.contours,
+		failures = layer_failures,
+	}
+	slicing_parallel_for(len(result.layers), &bounds_ctx, region_layer_bounds_and_area)
+	for lf in layer_failures {
+		if lf.error != .None {
+			if failure != nil {failure^ = lf.failure}
+			region_result_destroy(&result, allocator)
+			return {}, lf.error
+		}
+	}
+
+	// Pre-check edge/contour pair limits in exact sequential order so error precedence matches
+	// single-threaded execution while the geometric intersection and containment work runs per layer.
 	pair_tests: u64
 	edge_pair_tests: u64
+	self_limit_contour := len(result.contours)
+	self_limit_failure: Region_Failure
 	for contour, contour_index in result.contours {
 		path := topology.paths[contour.path_index]
 		vertex_count := u64(path.vertex_count)
@@ -207,185 +204,121 @@ regions_build_internal :: proc(
 			added_tests = vertex_count*(vertex_count-3)/2
 		}
 		if added_tests > limits.max_edge_pair_tests ||
-		   edge_pair_tests >
-		   	limits.max_edge_pair_tests-added_tests {
+		   edge_pair_tests > limits.max_edge_pair_tests-added_tests {
+			self_limit_contour = contour_index
+			region_failure_reset(&self_limit_failure)
 			region_failure_locate(
-				failure,
+				&self_limit_failure,
 				path.layer_index,
 				u32(contour_index),
 				REGION_INVALID_INDEX,
 				contour.path_index,
 				REGION_INVALID_INDEX,
 			)
-			region_result_destroy(&result, allocator)
-			return {}, .Pair_Test_Limit
+			break
 		}
 		edge_pair_tests += added_tests
-		self_intersects, left_edge, right_edge, self_error :=
-			region_path_self_intersects(topology, path)
-		if self_error != .None {
-			region_failure_locate_edges(
-				failure,
-				path.layer_index,
-				u32(contour_index),
-				u32(contour_index),
-				contour.path_index,
-				contour.path_index,
-				left_edge,
-				right_edge,
-			)
-			region_result_destroy(&result, allocator)
-			return {}, self_error
-		}
-		if self_intersects {
-			region_failure_locate_edges(
-				failure,
-				path.layer_index,
-				u32(contour_index),
-				u32(contour_index),
-				contour.path_index,
-				contour.path_index,
-				left_edge,
-				right_edge,
-			)
-			region_result_destroy(&result, allocator)
-			return {}, .Contour_Intersection
-		}
 	}
-	for layer in result.layers {
-		start := int(layer.contour_offset)
-		end := start+int(layer.contour_count)
-		for left_index in start..<end {
-			for right_index in left_index+1..<end {
-				if pair_tests >= limits.max_contour_pairs {
-					region_failure_locate(
-						failure,
-						topology.paths[
-							result.contours[left_index].path_index
-						].layer_index,
-						u32(left_index),
-						u32(right_index),
-						result.contours[left_index].path_index,
-						result.contours[right_index].path_index,
-					)
-					region_result_destroy(&result, allocator)
-					return {}, .Pair_Test_Limit
-				}
-				pair_tests += 1
-				left := result.contours[left_index]
-				right := result.contours[right_index]
-				if !region_bounds_overlap(left.bounds, right.bounds) {
-					continue
-				}
-				left_path := topology.paths[left.path_index]
-				right_path := topology.paths[right.path_index]
-				added_tests :=
-					u64(left_path.vertex_count)*
-					u64(right_path.vertex_count)
-				if added_tests > limits.max_edge_pair_tests ||
-				   edge_pair_tests >
-				   	limits.max_edge_pair_tests-added_tests {
-					region_failure_locate(
-						failure,
-						left_path.layer_index,
-						u32(left_index),
-						u32(right_index),
-						left.path_index,
-						right.path_index,
-					)
-					region_result_destroy(&result, allocator)
-					return {}, .Pair_Test_Limit
-				}
-				edge_pair_tests += added_tests
-				intersects, left_edge, right_edge,
-				intersection_error :=
-					region_paths_intersect(
-						topology,
-						left_path,
-						right_path,
-					)
-				if intersection_error != .None {
-					region_failure_locate_edges(
-						failure,
-						left_path.layer_index,
-						u32(left_index),
-						u32(right_index),
-						left.path_index,
-						right.path_index,
-						left_edge,
-						right_edge,
-					)
-					region_result_destroy(&result, allocator)
-					return {}, intersection_error
-				}
-				if intersects {
-					region_failure_locate_edges(
-						failure,
-						left_path.layer_index,
-						u32(left_index),
-						u32(right_index),
-						left.path_index,
-						right.path_index,
-						left_edge,
-						right_edge,
-					)
-					region_result_destroy(&result, allocator)
-					return {}, .Contour_Intersection
+
+	pair_limit_layer := len(result.layers)
+	pair_limit_left := 0
+	pair_limit_right := 0
+	pair_limit_failure: Region_Failure
+	if self_limit_contour == len(result.contours) {
+		pair_limit_loop: for layer, layer_index in result.layers {
+			start := int(layer.contour_offset)
+			end := start+int(layer.contour_count)
+			for left_index in start..<end {
+				for right_index in left_index+1..<end {
+					if pair_tests >= limits.max_contour_pairs {
+						pair_limit_layer = layer_index
+						pair_limit_left = left_index
+						pair_limit_right = right_index
+						region_failure_reset(&pair_limit_failure)
+						region_failure_locate(
+							&pair_limit_failure,
+							topology.paths[result.contours[left_index].path_index].layer_index,
+							u32(left_index),
+							u32(right_index),
+							result.contours[left_index].path_index,
+							result.contours[right_index].path_index,
+						)
+						break pair_limit_loop
+					}
+					pair_tests += 1
+					left := result.contours[left_index]
+					right := result.contours[right_index]
+					if !region_bounds_overlap(left.bounds, right.bounds) {
+						continue
+					}
+					left_path := topology.paths[left.path_index]
+					right_path := topology.paths[right.path_index]
+					added_tests := u64(left_path.vertex_count)*u64(right_path.vertex_count)
+					if added_tests > limits.max_edge_pair_tests ||
+					   edge_pair_tests > limits.max_edge_pair_tests-added_tests {
+						pair_limit_layer = layer_index
+						pair_limit_left = left_index
+						pair_limit_right = right_index
+						region_failure_reset(&pair_limit_failure)
+						region_failure_locate(
+							&pair_limit_failure,
+							left_path.layer_index,
+							u32(left_index),
+							u32(right_index),
+							left.path_index,
+							right.path_index,
+						)
+						break pair_limit_loop
+					}
+					edge_pair_tests += added_tests
 				}
 			}
 		}
 	}
 
-	for layer in result.layers {
-		start := int(layer.contour_offset)
-		end := start+int(layer.contour_count)
-		for child_index in start..<end {
-			child := &result.contours[child_index]
-			child_path := topology.paths[child.path_index]
-			child_area := region_area_magnitude(child_path.signed_area_2)
-			parent_area := max(u128)
-			for candidate_index in start..<end {
-				if candidate_index == child_index {continue}
-				candidate := result.contours[candidate_index]
-				candidate_path := topology.paths[candidate.path_index]
-				candidate_area :=
-					region_area_magnitude(candidate_path.signed_area_2)
-				if candidate_area <= child_area ||
-				   candidate_area >= parent_area ||
-				   !region_bounds_contains(
-						candidate.bounds,
-						child.bounds,
-					) {
-					continue
-				}
-				point := region_path_point(topology, child_path, 0)
-				location, location_error :=
-					region_point_in_path(
-						topology,
-						candidate_path,
-						point,
-					)
-				if location_error != .None {
-					region_result_destroy(&result, allocator)
-					return {}, location_error
-				}
-				if location == .Boundary {
-					region_failure_locate(
-						failure,
-						child_path.layer_index,
-						u32(child_index),
-						u32(candidate_index),
-						child.path_index,
-						candidate.path_index,
-					)
-					region_result_destroy(&result, allocator)
-					return {}, .Contour_Intersection
-				}
-				if location == .Inside {
-					child.parent_contour = u32(candidate_index)
-					parent_area = candidate_area
-				}
-			}
+	geom_ctx := Region_Geometry_Context{
+		topology           = topology,
+		layers             = result.layers,
+		contours           = result.contours,
+		failures           = layer_failures,
+		self_limit_contour = self_limit_contour,
+		pair_limit_layer   = pair_limit_layer,
+		pair_limit_left    = pair_limit_left,
+		pair_limit_right   = pair_limit_right,
+	}
+	slicing_parallel_for(len(result.layers), &geom_ctx, region_layer_intersect_and_nest)
+
+	// Report the earliest failure matching sequential phase order: self-intersections, then
+	// pair-intersections, then parent containment.
+	for lf in layer_failures {
+		if lf.error != .None && lf.phase == .Self_Intersect {
+			if failure != nil {failure^ = lf.failure}
+			region_result_destroy(&result, allocator)
+			return {}, lf.error
+		}
+	}
+	if self_limit_contour < len(result.contours) {
+		if failure != nil {failure^ = self_limit_failure}
+		region_result_destroy(&result, allocator)
+		return {}, .Pair_Test_Limit
+	}
+	for lf in layer_failures {
+		if lf.error != .None && lf.phase == .Pair_Intersect {
+			if failure != nil {failure^ = lf.failure}
+			region_result_destroy(&result, allocator)
+			return {}, lf.error
+		}
+	}
+	if pair_limit_layer < len(result.layers) {
+		if failure != nil {failure^ = pair_limit_failure}
+		region_result_destroy(&result, allocator)
+		return {}, .Pair_Test_Limit
+	}
+	for lf in layer_failures {
+		if lf.error != .None && lf.phase == .Parent_Find {
+			if failure != nil {failure^ = lf.failure}
+			region_result_destroy(&result, allocator)
+			return {}, lf.error
 		}
 	}
 
@@ -528,6 +461,199 @@ regions_build_internal :: proc(
 		return {}, .Invalid_Input
 	}
 	return result, .None
+}
+
+@(private = "file")
+Region_Failure_Phase :: enum u8 {
+	None,
+	Self_Intersect,
+	Pair_Intersect,
+	Parent_Find,
+}
+
+@(private = "file")
+Region_Layer_Failure :: struct {
+	error:   Region_Error,
+	phase:   Region_Failure_Phase,
+	failure: Region_Failure,
+}
+
+@(private = "file")
+Region_Bounds_Context :: struct {
+	topology: Topology_Result,
+	layers:   []Region_Layer,
+	contours: []Region_Contour,
+	failures: []Region_Layer_Failure,
+}
+
+@(private = "file")
+Region_Geometry_Context :: struct {
+	topology:           Topology_Result,
+	layers:             []Region_Layer,
+	contours:           []Region_Contour,
+	failures:           []Region_Layer_Failure,
+	self_limit_contour: int,
+	pair_limit_layer:   int,
+	pair_limit_left:    int,
+	pair_limit_right:   int,
+}
+
+@(private = "file")
+region_layer_bounds_and_area :: proc(ctx: ^Region_Bounds_Context, layer_index: int) {
+	layer := ctx.layers[layer_index]
+	start := int(layer.contour_offset)
+	end := start+int(layer.contour_count)
+	lf := &ctx.failures[layer_index]
+	for contour_index in start..<end {
+		contour := &ctx.contours[contour_index]
+		path := ctx.topology.paths[contour.path_index]
+		bounds, bounds_ok := region_path_bounds(ctx.topology, path)
+		if !bounds_ok {
+			region_failure_reset(&lf.failure)
+			region_failure_locate(
+				&lf.failure,
+				u32(layer_index),
+				u32(contour_index),
+				REGION_INVALID_INDEX,
+				contour.path_index,
+				REGION_INVALID_INDEX,
+			)
+			lf.error = .Invalid_Input
+			return
+		}
+		area, area_error := region_path_area(ctx.topology, path)
+		if area_error != .None || area != path.signed_area_2 || area == 0 {
+			region_failure_reset(&lf.failure)
+			region_failure_locate(
+				&lf.failure,
+				u32(layer_index),
+				u32(contour_index),
+				REGION_INVALID_INDEX,
+				contour.path_index,
+				REGION_INVALID_INDEX,
+			)
+			lf.error = area_error if area_error != .None else .Invalid_Input
+			return
+		}
+		contour.bounds = bounds
+	}
+}
+
+@(private = "file")
+region_layer_intersect_and_nest :: proc(ctx: ^Region_Geometry_Context, layer_index: int) {
+	layer := ctx.layers[layer_index]
+	start := int(layer.contour_offset)
+	end := start+int(layer.contour_count)
+	lf := &ctx.failures[layer_index]
+
+	self_end := min(end, ctx.self_limit_contour)
+	for contour_index in start..<self_end {
+		contour := ctx.contours[contour_index]
+		path := ctx.topology.paths[contour.path_index]
+		self_intersects, left_edge, right_edge, self_error :=
+			region_path_self_intersects(ctx.topology, path)
+		if self_error != .None || self_intersects {
+			region_failure_reset(&lf.failure)
+			region_failure_locate_edges(
+				&lf.failure,
+				path.layer_index,
+				u32(contour_index),
+				u32(contour_index),
+				contour.path_index,
+				contour.path_index,
+				left_edge,
+				right_edge,
+			)
+			lf.phase = .Self_Intersect
+			lf.error = self_error if self_error != .None else .Contour_Intersection
+			return
+		}
+	}
+	if ctx.self_limit_contour < len(ctx.contours) || layer_index > ctx.pair_limit_layer {
+		return
+	}
+
+	for left_index in start..<end {
+		for right_index in left_index+1..<end {
+			if layer_index == ctx.pair_limit_layer &&
+			   (left_index > ctx.pair_limit_left ||
+			    (left_index == ctx.pair_limit_left && right_index >= ctx.pair_limit_right)) {
+				return
+			}
+			left := ctx.contours[left_index]
+			right := ctx.contours[right_index]
+			if !region_bounds_overlap(left.bounds, right.bounds) {
+				continue
+			}
+			left_path := ctx.topology.paths[left.path_index]
+			right_path := ctx.topology.paths[right.path_index]
+			intersects, left_edge, right_edge, intersection_error :=
+				region_paths_intersect(ctx.topology, left_path, right_path)
+			if intersection_error != .None || intersects {
+				region_failure_reset(&lf.failure)
+				region_failure_locate_edges(
+					&lf.failure,
+					left_path.layer_index,
+					u32(left_index),
+					u32(right_index),
+					left.path_index,
+					right.path_index,
+					left_edge,
+					right_edge,
+				)
+				lf.phase = .Pair_Intersect
+				lf.error = intersection_error if intersection_error != .None else .Contour_Intersection
+				return
+			}
+		}
+	}
+	if ctx.pair_limit_layer < len(ctx.layers) {
+		return
+	}
+
+	for child_index in start..<end {
+		child := &ctx.contours[child_index]
+		child_path := ctx.topology.paths[child.path_index]
+		child_area := region_area_magnitude(child_path.signed_area_2)
+		parent_area := max(u128)
+		for candidate_index in start..<end {
+			if candidate_index == child_index {continue}
+			candidate := ctx.contours[candidate_index]
+			candidate_path := ctx.topology.paths[candidate.path_index]
+			candidate_area := region_area_magnitude(candidate_path.signed_area_2)
+			if candidate_area <= child_area ||
+			   candidate_area >= parent_area ||
+			   !region_bounds_contains(candidate.bounds, child.bounds) {
+				continue
+			}
+			point := region_path_point(ctx.topology, child_path, 0)
+			location, location_error := region_point_in_path(ctx.topology, candidate_path, point)
+			if location_error != .None {
+				region_failure_reset(&lf.failure)
+				lf.phase = .Parent_Find
+				lf.error = location_error
+				return
+			}
+			if location == .Boundary {
+				region_failure_reset(&lf.failure)
+				region_failure_locate(
+					&lf.failure,
+					child_path.layer_index,
+					u32(child_index),
+					u32(candidate_index),
+					child.path_index,
+					candidate.path_index,
+				)
+				lf.phase = .Parent_Find
+				lf.error = .Contour_Intersection
+				return
+			}
+			if location == .Inside {
+				child.parent_contour = u32(candidate_index)
+				parent_area = candidate_area
+			}
+		}
+	}
 }
 
 region_point_locate :: proc(
