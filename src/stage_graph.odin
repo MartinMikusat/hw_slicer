@@ -466,6 +466,44 @@ ui_section_bar_rect :: proc(ui: ^UI_State) -> UI_Rect {
 
 // Controls ----------------------------------------------------------------------------------------
 
+GRAPH_COLLAPSE_NAMES := [pipeline.Stage_Id]string{
+	.Model          = "stage model collapse",
+	.Layer_Schedule = "stage layer schedule collapse",
+	.Intersections  = "stage intersections collapse",
+	.Topology       = "stage topology collapse",
+	.Regions        = "stage regions collapse",
+	.Surfaces_Skin  = "stage surfaces collapse",
+	.Perimeters     = "stage perimeters collapse",
+	.Bridges        = "stage bridges collapse",
+	.Solid_Areas    = "stage solid areas collapse",
+	.Solid_Paths    = "stage solid paths collapse",
+	.Sparse_Infill  = "stage sparse infill collapse",
+	.Gap_Fill       = "stage gap fill collapse",
+	.Supports       = "stage supports collapse",
+	.Path_Plan      = "stage path plan collapse",
+	.Motion         = "stage motion collapse",
+	.Gcode          = "stage gcode collapse",
+}
+
+GRAPH_ADVANCED_NAMES := [pipeline.Stage_Id]string{
+	.Model          = "stage model advanced",
+	.Layer_Schedule = "stage layer schedule advanced",
+	.Intersections  = "stage intersections advanced",
+	.Topology       = "stage topology advanced",
+	.Regions        = "stage regions advanced",
+	.Surfaces_Skin  = "stage surfaces advanced",
+	.Perimeters     = "stage perimeters advanced",
+	.Bridges        = "stage bridges advanced",
+	.Solid_Areas    = "stage solid areas advanced",
+	.Solid_Paths    = "stage solid paths advanced",
+	.Sparse_Infill  = "stage sparse infill advanced",
+	.Gap_Fill       = "stage gap fill advanced",
+	.Supports       = "stage supports advanced",
+	.Path_Plan      = "stage path plan advanced",
+	.Motion         = "stage motion advanced",
+	.Gcode          = "stage gcode advanced",
+}
+
 ui_graph_controls :: proc(ui: ^UI_State) {
 	view := ui.workspace.view
 	v := ui.workspace.graph
@@ -485,7 +523,7 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 		// Collapse/expand chevron in the node title bar.
 		col_r := ui_rect_intersection({r.x, r.y, 22*z, GRAPH_NODE_TITLE_H*z}, g)
 		if col_r.w >= 1 && col_r.h >= 1 {
-			ui_add_control(ui, d.name, "collapse or expand node settings", col_r, ui_graph_node_collapse_action(id))
+			ui_add_control(ui, GRAPH_COLLAPSE_NAMES[id], "collapse or expand node settings", col_r, ui_graph_node_collapse_action(id))
 		}
 		if id in v.collapsed {continue}
 
@@ -517,7 +555,7 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 		if adv_total > 0 {
 			adv_r := ui_rect_intersection(ui_graph_advanced_row_rect(r, z, visible), g)
 			if adv_r.w >= 1 && adv_r.h >= 1 {
-				ui_add_control(ui, d.name, "toggle advanced stage settings", adv_r, ui_graph_node_advanced_action(id))
+				ui_add_control(ui, GRAPH_ADVANCED_NAMES[id], "toggle advanced stage settings", adv_r, ui_graph_node_advanced_action(id))
 			}
 		}
 	}
