@@ -41,6 +41,7 @@ App_State :: struct {
 	face_hover: int,
 	face_pressed: int,
 	section_vertices: [dynamic]Mesh_Vertex,
+	stage_segments:   [dynamic]pipeline.Result_Segment,
 	section_dirty: bool,
 	first_frame_logged: bool,
 	evidence_replay: evidence.Evidence_Bundle_Replay,
@@ -555,6 +556,7 @@ app_destroy :: proc() {
 	mesh_destroy(&app.mesh)
 	design_state_clear(&app.design)
 	delete(app.section_vertices)
+	delete(app.stage_segments)
 	evidence.evidence_bundle_replay_destroy(&app.evidence_replay)
 	renderer_shutdown(&app.renderer)
 	ui_destroy(&app.ui)
@@ -667,6 +669,58 @@ app_pick_design_junction :: proc(px, py: f64) {
 	}
 }
 
+app_pick_stage_segment :: proc(px, py: f64) {
+	w := app.workspace
+	if w == nil || len(app.stage_segments) == 0 {return}
+	viewport := ui_viewport_rect(&app.ui)
+	if viewport.w <= 0 || viewport.h <= 0 {return}
+	eye := app_camera_eye(app.camera)
+	forward := vec3_normalize(vec3_sub(app.camera.target, eye))
+	right := vec3_normalize(vec3_cross(forward, {0, 0, 1}))
+	up := vec3_cross(right, forward)
+	h := f32(math.tan(0.78/2.0))
+	nx := f32(2*(px-viewport.x)/viewport.w-1)*h*f32(viewport.w/viewport.h)
+	ny := f32(1-2*(py-viewport.y)/viewport.h)*h
+	dir := vec3_normalize(vec3_add(forward, vec3_add(vec3_mul(right, nx), vec3_mul(up, ny))))
+	if abs(dir.z) < 1e-6 {return}
+	layer_z := app.stage_segments[0].a[2]
+	t := (layer_z - eye.z) / dir.z
+	if t <= 0 {return}
+	hx := eye.x + dir.x*t
+	hy := eye.y + dir.y*t
+	tol := max(f32(0.8), app.camera.distance * 0.015)
+	best_d2 := tol * tol
+	best_idx := -1
+	for seg, i in app.stage_segments {
+		ax, ay := seg.a[0], seg.a[1]
+		bx, by := seg.b[0], seg.b[1]
+		dx, dy := bx - ax, by - ay
+		l2 := dx*dx + dy*dy
+		u := f32(0)
+		if l2 > 1e-8 {u = clamp(((hx-ax)*dx + (hy-ay)*dy) / l2, 0, 1)}
+		ex := hx - (ax + dx*u)
+		ey := hy - (ay + dy*u)
+		d2 := ex*ex + ey*ey
+		if d2 < best_d2 {
+			best_d2 = d2
+			best_idx = i
+		}
+	}
+	if best_idx < 0 {return}
+	hit := app.stage_segments[best_idx]
+	pipeline.workspace_select(w, hit.owner_stage)
+	app.ui.workspace.graph.tab = .Settings
+	app.ui.workspace.scroll = 0
+	app_workspace_refresh()
+	ui_build_controls(&app.ui)
+	stage_name := pipeline.stage_descriptors[hit.owner_stage].name
+	if hit.role != .Invalid {
+		app_set_status(fmt.tprintf("SELECTED %v → %s (SETTINGS OPEN)", hit.role, stage_name))
+	} else {
+		app_set_status(fmt.tprintf("SELECTED %s (SETTINGS OPEN)", stage_name))
+	}
+}
+
 app_rebuild_section :: proc() {
 	app.ui.workspace.result_shown = false
 	if !app.ui.section_enabled || len(app.mesh.vertices) == 0 || app.design.active {
@@ -684,16 +738,16 @@ app_rebuild_section :: proc() {
 		ui.layer = layer
 		ui.layer_z = print_z if has_layer else app.ui.section_z
 		if has_layer && ui.graph.show_result {
-			segments := make([dynamic]pipeline.Result_Segment, context.temp_allocator)
-			if pipeline.workspace_stage_segments(w, ui.view.selected, layer, &segments) {
+			clear(&app.stage_segments)
+			if pipeline.workspace_stage_segments(w, ui.view.selected, layer, &app.stage_segments) {
 				clear(&app.section_vertices)
 				up := Vec3{0, 0, 1}
-				for segment in segments {
+				for segment in app.stage_segments {
 					a := Vec3{segment.a[0], segment.a[1], segment.a[2]}
 					b := Vec3{segment.b[0], segment.b[1], segment.b[2]}
 					append(&app.section_vertices, Mesh_Vertex{a, up}, Mesh_Vertex{b, up})
 				}
-				app.ui.section_segments = len(segments)
+				app.ui.section_segments = len(app.stage_segments)
 				ui.result_shown = true
 				return
 			}
@@ -1070,6 +1124,11 @@ application_mouse :: proc "c" (
 			   math.hypot(point_x-app.drag_start_x, point_y-app.drag_start_y) < 4.0 &&
 			   ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
 				app_pick_design_junction(point_x, point_y)
+			} else if app.dragging && app.drag_button == 0 && ui_graph_mode(&app.ui) &&
+			   app.ui.workspace.result_shown && id == 0 &&
+			   math.hypot(point_x-app.drag_start_x, point_y-app.drag_start_y) < 4.0 &&
+			   ui_contains(ui_viewport_rect(&app.ui), point_x, point_y) {
+				app_pick_stage_segment(point_x, point_y)
 			} else if !app.dragging && id != 0 && id == app.ui.pressed_id {
 				_ = app_activate(UI_Action(id))
 			}

@@ -2,14 +2,33 @@ package pipeline
 
 import "core:sync"
 
+import contracts "../contracts"
 import polygon "../polygon"
+import profiles "../profiles"
 import slicing "../slicing"
 
 // One straight piece of a stage result, in millimetres. The frame is the slice frame moved so that
 // the centre of the model footprint is at the origin and the bed at z = 0, which is the frame the
 // viewer draws the model in.
 Result_Segment :: struct {
-	a, b: [3]f32,
+	a, b:        [3]f32,
+	owner_stage: Stage_Id,
+	feature_id:  contracts.Stable_ID,
+	role:        profiles.Printable_Role,
+}
+
+@(private = "file")
+role_owner_stage :: proc(role: profiles.Printable_Role, fallback: Stage_Id) -> Stage_Id {
+	switch role {
+	case .Perimeter:                                 return .Perimeters
+	case .Bridge:                                    return .Bridges
+	case .Top_Skin, .Bottom_Skin, .Top_Bottom_Skin:  return .Solid_Paths
+	case .Sparse_Infill:                             return .Sparse_Infill
+	case .Gap, .Thin_Wall:                           return .Gap_Fill
+	case .Support, .Support_Interface:               return .Supports
+	case .Invalid:                                   return fallback
+	}
+	return fallback
 }
 
 // Number of layers in the current layer schedule, or 0 when the schedule has no result.
@@ -50,9 +69,10 @@ workspace_stage_segments :: proc(w: ^Workspace, id: Stage_Id, layer: int, out: ^
 	if layer < 0 || layer >= len(s.schedule.print_z) {return false}
 	b := s.mesh.bounds
 	e := Segment_Emitter{
-		out = out,
-		origin = {f64(b.minimum.x+b.maximum.x)*0.5, f64(b.minimum.y+b.maximum.y)*0.5},
-		z = f32(f64(s.schedule.print_z[layer])/1000),
+		out         = out,
+		origin      = {f64(b.minimum.x+b.maximum.x)*0.5, f64(b.minimum.y+b.maximum.y)*0.5},
+		z           = f32(f64(s.schedule.print_z[layer])/1000),
+		owner_stage = id,
 	}
 	start := len(out)
 	switch id {
@@ -126,10 +146,21 @@ workspace_stage_segments :: proc(w: ^Workspace, id: Stage_Id, layer: int, out: ^
 		}
 	case .Solid_Paths:
 		r := s.solids
-		if layer >= len(r.layers) {return false}
-		l := r.layers[layer]
-		for p in int(l.path_offset)..<min(int(l.path_offset)+int(l.path_count), len(r.paths)) {
-			emit_point_pair(&e, r.paths[p].point_a, r.paths[p].point_b)
+		if layer < len(r.layers) {
+			l := r.layers[layer]
+			for p in int(l.path_offset)..<min(int(l.path_offset)+int(l.path_count), len(r.paths)) {
+				sp := r.paths[p]
+				e.feature_id = sp.stable_id
+				e.role = sp.role
+				emit_point_pair(&e, sp.point_a, sp.point_b)
+			}
+		}
+		for ir in s.ironing.paths {
+			if int(ir.layer_index) == layer {
+				e.feature_id = {}
+				e.role = .Top_Skin
+				emit_points(&e, ir.points, 0, len(ir.points), false)
+			}
 		}
 	case .Sparse_Infill:
 		if layer < len(s.infill.layers) {
@@ -159,10 +190,16 @@ workspace_stage_segments :: proc(w: ^Workspace, id: Stage_Id, layer: int, out: ^
 			}
 		}
 		for path in s.tree_supports.paths {
-			if int(path.layer_index) == layer {emit_points(&e, path.points, 0, len(path.points), false)}
+			if int(path.layer_index) == layer {
+				e.role = .Support_Interface if path.is_interface else .Support
+				emit_points(&e, path.points, 0, len(path.points), true)
+			}
 		}
 		for loop in s.adhesion.loops {
-			if int(loop.layer_index) == layer {emit_points(&e, loop.points, 0, len(loop.points), true)}
+			if int(loop.layer_index) == layer {
+				e.role = .Perimeter
+				emit_points(&e, loop.points, 0, len(loop.points), true)
+			}
 		}
 	case .Path_Plan:
 		r := s.unified_plan
@@ -170,7 +207,12 @@ workspace_stage_segments :: proc(w: ^Workspace, id: Stage_Id, layer: int, out: ^
 		l := r.layers[layer]
 		for m in int(l.move_offset)..<min(int(l.move_offset)+int(l.move_count), len(r.moves)) {
 			move := r.moves[m]
-			if move.kind == .Extrude {emit_point_pair(&e, move.point_a, move.point_b)}
+			if move.kind == .Extrude {
+				e.owner_stage = role_owner_stage(move.role, .Path_Plan)
+				e.feature_id = move.stable_id
+				e.role = move.role
+				emit_point_pair(&e, move.point_a, move.point_b)
+			}
 		}
 	case .Motion, .Gcode:
 		if !session_readable(s, {.Motion}) {return false}
@@ -179,7 +221,12 @@ workspace_stage_segments :: proc(w: ^Workspace, id: Stage_Id, layer: int, out: ^
 			first := int(l.operation_offset)
 			for o in first..<min(first+int(l.operation_count), len(s.motion.operations)) {
 				op := s.motion.operations[o]
-				if op.kind == .Extrude {emit_point_pair(&e, op.point_a, op.point_b)}
+				if op.kind == .Extrude {
+					e.owner_stage = role_owner_stage(op.role, id)
+					e.feature_id = op.stable_id
+					e.role = op.role
+					emit_point_pair(&e, op.point_a, op.point_b)
+				}
 			}
 		}
 	}
@@ -188,16 +235,22 @@ workspace_stage_segments :: proc(w: ^Workspace, id: Stage_Id, layer: int, out: ^
 
 @(private = "file")
 Segment_Emitter :: struct {
-	out:    ^[dynamic]Result_Segment,
-	origin: [2]f64,
-	z:      f32,
+	out:         ^[dynamic]Result_Segment,
+	origin:      [2]f64,
+	z:           f32,
+	owner_stage: Stage_Id,
+	feature_id:  contracts.Stable_ID,
+	role:        profiles.Printable_Role,
 }
 
 @(private = "file")
 emit_mm :: proc(e: ^Segment_Emitter, a, b: [2]f64) {
 	append(e.out, Result_Segment{
-		a = {f32(a.x-e.origin.x), f32(a.y-e.origin.y), e.z},
-		b = {f32(b.x-e.origin.x), f32(b.y-e.origin.y), e.z},
+		a           = {f32(a.x-e.origin.x), f32(a.y-e.origin.y), e.z},
+		b           = {f32(b.x-e.origin.x), f32(b.y-e.origin.y), e.z},
+		owner_stage = e.owner_stage,
+		feature_id  = e.feature_id,
+		role        = e.role,
 	})
 }
 
