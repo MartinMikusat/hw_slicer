@@ -577,6 +577,9 @@ int32_t hw_slicer_host_run(const HW_Slicer_Application_API *applicationAPI) {
         }
         NSApplication *application = [NSApplication sharedApplication];
         application.activationPolicy = NSApplicationActivationPolicyRegular;
+        NSString *iconPath = [[NSBundle mainBundle] pathForResource:@"AppIcon" ofType:@"icns"];
+        NSImage *icon = iconPath != nil ? [[NSImage alloc] initWithContentsOfFile:iconPath] : nil;
+        if (icon != nil) { application.applicationIconImage = icon; }
         HWSlicerDelegate *delegate = [HWSlicerDelegate new];
         application.delegate = delegate;
         [application run];
