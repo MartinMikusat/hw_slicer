@@ -174,9 +174,6 @@ motion_plan_build :: proc(
 		worker_limit = get_worker_threads()
 	}
 
-	// Precompute per-move overhang and travel-exterior-crossing flags via Metal GPU when enabled
-	// and the move count is large enough to beat the multi-threaded CPU pass (OPT-21).
-	// On smaller models (or --no-gpu), Pass 1 evaluates both per layer on the shared worker pool.
 	GPU_QUERY_MIN_MOVES :: 300_000
 	precomputed_overhangs: []bool
 	precomputed_overhangs_ready := false

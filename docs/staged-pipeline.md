@@ -1,6 +1,6 @@
 # Staged pipeline
 
-The slice runs as 15 engine stages over one `Slice_Session` (`src/pipeline/session.odin`). Each stage keeps its result. The stage table, graph columns and settings hashes are in `src/pipeline/stages.odin`. The CLI and the application slice through the same session.
+The slice runs as 16 engine stages over one `Slice_Session` (`src/pipeline/session.odin`). Each stage keeps its result. The stage table, graph columns and settings hashes are in `src/pipeline/stages.odin`. The CLI and the application slice through the same session.
 
 ## Stale tracking
 
@@ -21,8 +21,8 @@ build/release/hw-slicer-cli --input=resources/models/benchy.stl --then=infill_de
 build/release/hw-slicer-cli --input=resources/models/benchy.stl --workspace-script=docs/workspace-scripts/edit-and-rerun.txt
 ```
 
-`--then` lists the stages each change reruns and writes the G-code of each step. `--workspace-script` drives the controller the way the window does; its `check` lines exit 1 on a mismatch. The application opens on stage N (0–14) with `--stage=N`, runs every stage with `--stage-run`, and edits a setting with `--stage-set=key=value`.
+`--then` lists the stages each change reruns and writes the G-code of each step. `--workspace-script` drives the controller the way the window does; its `check` lines exit 1 on a mismatch. The application opens on stage N (0–15) with `--stage=N`, runs every stage with `--stage-run`, selects a G-code preview view with `--gcode-view=N`, and edits a setting with `--stage-set=key=value`.
 
 ## Limits
 
-The slice uses the model as stored on disk; the lay-on-face placement of the viewer does not reach it. The 3D view draws stage results only as lines on one layer, not as extruded paths.
+Intermediate stages (Model through Path plan) draw stage results as planar lines on one layer; Motion and G-code render full 3D shaded extruded beads with per-move color schemes.

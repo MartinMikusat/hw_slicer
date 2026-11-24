@@ -148,7 +148,7 @@ mesh_auto_repair :: proc(mesh: ^formats.Decoded_Mesh, allocator := context.alloc
 	DIR1_BIT :: u32(1) << 31
 	COUNT_MASK :: u32(0x3fff_ffff)
 
-	ecap := next_pow2(face_count * 3)
+	ecap := next_pow2(max(face_count * 6, 16))
 	emask := u64(ecap - 1)
 	edges := make([]Edge_Slot, ecap, context.temp_allocator)
 

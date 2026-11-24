@@ -351,9 +351,6 @@ solid_paths_generate :: proc(
 	return result, .None
 }
 
-// Single-pass active-edge sweep for solid-skin scanline hatching: precomputes normal projections
-// once per edge, sorts by proj_lo, and intersects only active edges per scanline. Bit-identical
-// to solid_path_scan_boundary while eliminating the second scan pass and O(scanlines * edges) scans.
 @(private = "file")
 solid_path_scan_boundary_sweep :: proc(
 	boundary: polygon.Polygon_Set,
@@ -537,116 +534,6 @@ solid_path_scan_boundary_sweep :: proc(
 		line += step
 	}
 	return paths_dyn[:], hits_dyn[:], scanline_count, .None
-}
-
-solid_path_scan_boundary :: proc(
-	boundary: polygon.Polygon_Set,
-	angle: profiles.Angle_Millidegrees,
-	direction_x, direction_y: i64,
-	spacing, line_width: contracts.Micrometres,
-	scratch_hits: []Bridge_Path_Rational_Hit,
-	paths: []Solid_Path,
-	output_hits: []Bridge_Path_Hit,
-	mask: Role_Overlap_Mask,
-	mask_index: u32,
-	path_offset: u64,
-	limits: Solid_Path_Limits,
-) -> (
-	path_count: u64,
-	scanline_count: u64,
-	error: Solid_Path_Error,
-) {
-	if len(boundary.points) == 0 {return}
-	normal_x := -direction_y
-	normal_y := direction_x
-	minimum, maximum := bridge_path_projection_bounds(
-		boundary,
-		normal_x,
-		normal_y,
-	)
-	step := i128(i64(spacing))*i128(BRIDGE_DIRECTION_SCALE)
-	if step <= 0 {error = .Invalid_Config; return}
-	line, line_ok := bridge_path_first_scanline(minimum, 0, step)
-	if !line_ok {error = .Arithmetic; return}
-	mask_path_index: u64
-	for line < maximum {
-		if scanline_count >= limits.max_scanlines {
-			error = .Scanline_Limit
-			return
-		}
-		scanline_index := scanline_count
-		scanline_count += 1
-		hit_count, hit_error := bridge_path_collect_hits(
-			boundary,
-			direction_x,
-			direction_y,
-			normal_x,
-			normal_y,
-			line,
-			scratch_hits,
-		)
-		if hit_error != .None {
-			error = solid_path_bridge_error(hit_error)
-			return
-		}
-		if hit_count&1 != 0 {
-			error = .Odd_Intersection_Count
-			return
-		}
-		for hit_index := 0; hit_index < hit_count; hit_index += 2 {
-			first := scratch_hits[hit_index]
-			second := scratch_hits[hit_index+1]
-			if first.point == second.point {continue}
-			if path_count >= limits.max_paths {
-				error = .Path_Limit
-				return
-			}
-			if paths != nil {
-				write_index := path_offset+path_count
-				if write_index >= u64(len(paths)) ||
-				   write_index*2+1 >= u64(len(output_hits)) {
-					error = .Arithmetic
-					return
-				}
-				path_set_id := contracts.stable_id_child(
-					mask.stable_id,
-					.Feature,
-					0,
-				)
-				paths[write_index] = {
-					stable_id = contracts.stable_id_child(
-						path_set_id,
-						.Path,
-						mask_path_index,
-					),
-					path_set_id = path_set_id,
-					overlap_mask_id = mask.stable_id,
-					overlap_mask_index = mask_index,
-					layer_index = mask.layer_index,
-					role = mask.role,
-					angle = angle,
-					direction_x = direction_x,
-					direction_y = direction_y,
-					mask_path_index = mask_path_index,
-					scanline_index = scanline_index,
-					line_coordinate_scaled = line,
-					line_width = line_width,
-					point_a = first.point,
-					point_b = second.point,
-					hit_offset = write_index*2,
-				}
-				output_hits[write_index*2] =
-					bridge_path_output_hit(first)
-				output_hits[write_index*2+1] =
-					bridge_path_output_hit(second)
-			}
-			path_count += 1
-			mask_path_index += 1
-		}
-		if line > max(i128)-step {break}
-		line += step
-	}
-	return
 }
 
 solid_path_layer_angle :: proc(

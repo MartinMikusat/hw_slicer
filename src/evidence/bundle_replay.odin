@@ -404,6 +404,9 @@ evidence_bundle_archive_replay :: proc(
 			delete(artifact_bytes, allocator)
 			if stage_error != .None {return {}, stage_error}
 		}
+		if supported_primitive_count == 0 && stage_supported {
+			return {}, .Invalid_Content
+		}
 		if !evidence_bundle_replay_dependencies_valid(replay) {
 			return {}, .Invalid_Content
 		}
@@ -593,6 +596,9 @@ evidence_bundle_directory_replay :: proc(
 				}
 				return {}, .Invalid_Content
 			}
+		}
+		if supported_primitive_count == 0 && stage_supported {
+			return {}, .Invalid_Content
 		}
 		if !evidence_bundle_replay_dependencies_valid(replay) {
 			return {}, .Invalid_Content

@@ -208,8 +208,6 @@ odin_vatti_boolean :: proc(
 	num_y := len(ys)
 	if num_y < 2 {return {}, .None}
 
-	// Sweep slabs s = 0 ..< num_y maintaining a single self-contained Active Edge Table (AET)
-	// so the inner loop never chases verts[idx] except when emitting a finished run (OPT-10).
 	Active_Entry :: struct {
 		x_mid:       f64,
 		slope:       f64,

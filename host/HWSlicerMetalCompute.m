@@ -53,8 +53,7 @@ static id<MTLComputePipelineState> g_tri_pso = nil;
 static id<MTLComputePipelineState> g_trv_pso = nil;
 static dispatch_once_t g_init_once = 0;
 
-// Persistent shared buffers reused across dispatches so repeated slices avoid per-call allocation
-// churn (optimization ledger OPT-21). Guarded by g_compute_lock.
+// Guarded by g_compute_lock.
 static os_unfair_lock g_compute_lock = OS_UNFAIR_LOCK_INIT;
 static id<MTLBuffer> g_buf_edges = nil;
 static id<MTLBuffer> g_buf_ranges = nil;

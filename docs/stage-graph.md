@@ -1,6 +1,6 @@
 # Stage graph
 
-The slicer tab shows the 15 engine stages as a node graph, after the Meshroom graph editor ([manual](https://meshroom-manual.readthedocs.io/en/latest/feature-documentation/gui/graph-editor.html)). The graph presents the [staged pipeline](staged-pipeline.md). The topology is fixed: users do not add stages or edit edges.
+The slicer tab shows the 16 engine stages as a node graph, after the Meshroom graph editor ([manual](https://meshroom-manual.readthedocs.io/en/latest/feature-documentation/gui/graph-editor.html)). The graph presents the [staged pipeline](staged-pipeline.md). The topology is fixed: users do not add stages or edit edges.
 
 Code: `src/stage_graph.odin` (layout, drawing, attribute editor), `src/workspace_panel.odin` (actions, input, evidence mapping), `src/pipeline/stage_geometry.odin` (stage results for the 3D view).
 
@@ -32,7 +32,7 @@ Edges are drawn as curves from an input to the stage that reads it. They are hig
 
 The layer toggle and slider are in the 3D view. They choose the layer whose section plane is nearest to the slider height. The view draws the selected stage's result on that layer as lines. If the stage has no planar result (Model) or no result on the layer, the view falls back to the mesh section. **Mesh** and **Result** toggle the model and the stage result.
 
-Results are drawn in the slice frame, shifted so that the footprint centre is at the origin. The lay-on-face placement does not reach the slice, so a placed model does not line up with its results.
+Results are drawn in the slice frame, shifted so that the footprint centre is at the origin. Lay-on-face placement forwards its rotation to the workspace slice. Motion and G-code stages render full 3D extruded beads with selectable preview color schemes and a color legend.
 
 ## Evidence
 

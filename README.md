@@ -134,13 +134,7 @@ The G0 foundation provides:
 - A checked benchmark harness with raw samples and canonical output hashes.
 - Compiler, ARM64 ABI, ASan, dSYM, and application build checks.
 
-Run the complete foundation gate:
-
-```sh
-./scripts/foundation-check.sh
-```
-
-Run the first scalar benchmark:
+Run the scalar benchmark:
 
 ```sh
 ./benchmark.sh
@@ -337,22 +331,15 @@ The main test command runs these package tests with the viewer tests:
 ./test.sh
 ```
 
-Run the headless STL or OBJ slice spine:
+Slice a model and optionally emit a `.hwsdebug` evidence bundle with the unified CLI:
 
 ```sh
-./spine.sh resources/models/benchy.stl mm 200 200
-./spine.sh testdata/obj/tetrahedron.obj mm 1000 1000
+./build.sh cli-release
+build/release/hw-slicer-cli \
+  --input=resources/models/benchy.stl \
+  --out=build/gcode/benchy.gcode \
+  --evidence-bundle=build/benchy.hwsdebug
 ```
-
-Pass a source unit for STL and OBJ. The command detects their encoding from the
-file structure. Use `auto` for 3MF because its model part supplies the unit:
-
-```sh
-./spine.sh model.3mf auto 200 200
-```
-
-The command emits source data, mesh defects, stage counts, topology issues, and
-canonical hashes as JSON. The two height arguments use micrometres.
 
 Run the validated G1 vertical-spine benchmark:
 
@@ -375,124 +362,17 @@ every stage hash during two warmup runs and 20 measured runs. It reports total
 and per-stage p50 and p95 timings. It also reports Boolean and offset call
 counts. The release gate requires a total p95 below three seconds.
 
-Probe the complete strict feature path for another binary STL:
+Validate and inspect `.hwsdebug` evidence bundles or directories without the source model:
 
 ```sh
-./strict-feature-probe.sh resources/models/stanford-bunny.stl
+./evidence-bundle-validate.sh build/benchy.hwsdebug
+./evidence-directory-validate.sh build/benchy.hwsdebug-dir
+./evidence-inspect.sh build/benchy.hwsdebug
 ```
 
-The probe rejects non-printable topology. It emits counts and validated hashes
-for regions, exposed surfaces, perimeters, infill, and the planar path plan.
-The foundation gate compares the Stanford Bunny output with
-`testdata/feature-probes/stanford-bunny-v1.json`. It also pins 3DBenchy's
-strict rejection and topology issue counts. The fixed feature values are
-regression inputs. They are not a printer, material, or process profile. The
-probe encodes and replays a 35,504,552-byte path-plan evidence artifact. The
-foundation gate pins its SHA-256 and its valid stage manifest. It runs the
-complete replay with AddressSanitizer.
-
-Pass a second path to persist the replay artifact. Inspect it without the source
-model through the replay command:
-
-```sh
-./strict-feature-probe.sh \
-  resources/models/stanford-bunny.stl \
-  build/path-plan.bin
-./path-plan-replay.sh \
-  --manifest build/path-plan.bin.manifest.json \
-  build/path-plan.bin
-```
-
-The probe writes `build/path-plan.bin.manifest.json` beside the artifact. The
-manifest-gated replay verifies its path, format, schema, byte count, and
-SHA-256 before it decodes the artifact. It compares the decoded counters,
-result hash, and planar bounds with the manifest afterward. A replay without
-`--manifest` validates only the artifact's internal framing, graph, and result
-hash.
-
-Pass a third path to write a deterministic transfer bundle:
-
-```sh
-./strict-feature-probe.sh \
-  resources/models/stanford-bunny.stl \
-  build/path-plan.bin \
-  build/path-plan.hwsdebug
-./evidence-bundle-validate.sh build/path-plan.hwsdebug
-```
-
-The bundle validator applies the ZIP limits, verifies the root and stage
-manifests, verifies every content descriptor, and replays the topology, region,
-and path-plan graphs. It does not read the source model.
-
-Pass a fourth path to publish the same records as a development directory:
-
-```sh
-./strict-feature-probe.sh \
-  resources/models/stanford-bunny.stl \
-  build/path-plan.bin \
-  build/path-plan.hwsdebug \
-  build/path-plan.hwsdebug-dir
-./evidence-directory-validate.sh build/path-plan.hwsdebug-dir
-```
-
-The publisher writes files with exclusive creation beneath a private sibling
-directory. It validates the complete staged tree, synchronizes it, and renames
-it with `RENAME_EXCL`. It does not replace an existing destination. The probe
-rejects empty, aliased, invalid file outputs, and existing directory outputs
-before it reads the source.
-
-Inspect all retained bundle records from either container:
-
-```sh
-./evidence-inspect.sh build/path-plan.hwsdebug
-./evidence-inspect.sh build/path-plan.hwsdebug-dir
-```
-
-The inspector validates each descriptor once, retains the stage manifests, and
-decodes each supported graph, including declared layer schedules, span indexes,
-CPU intersections, planar ownership, snapped segments, exposed surfaces, and
-skin propagation. It emits retained schedule, intersection, feature, and
-provenance counters without reading the source model.
-
-Replay topology and rebuild regions without the source model:
-
-```sh
-./topology-replay.sh \
-  --manifest \
-  build/path-plan.hwsdebug-dir/stages/07-reconstruct-topology/manifest.json \
-  build/path-plan.hwsdebug-dir/stages/07-reconstruct-topology/primitives/topology.bin
-```
-
-Use `--topology-only` for a diagnostic graph that cannot enter region
-reconstruction before repair.
-
-Render one canonical layer without the source model:
-
-```sh
-./path-plan-replay.sh \
-  --manifest build/path-plan.bin.manifest.json \
-  --render-layer 538 \
-  build/path-plan.bin > build/path-plan-layer-000538.svg
-```
-
-The renderer emits raw micrometre coordinates, stable move and path IDs, and
-separate travel and extrusion styles. It caps one layer at 250,000 moves and
-64 MiB of SVG data.
-
-Measure complete capture encoding and source-independent replay:
-
-```sh
-./path-plan-replay.sh --benchmark build/path-plan.bin
-./topology-replay.sh \
-  --benchmark \
-  build/path-plan.hwsdebug-dir/stages/07-reconstruct-topology/primitives/topology.bin
-./topology-replay.sh \
-  --benchmark-regions \
-  build/path-plan.hwsdebug-dir/stages/07-reconstruct-topology/primitives/topology.bin
-```
-
-Each benchmark performs two warmups and 20 alternating capture and replay
-samples. Every release lane requires a p95 below three seconds.
+The validator applies the ZIP limits, verifies the root and stage manifests,
+verifies every content descriptor, and replays supported stage graphs without
+reading the source model.
 
 The [path-plan evidence artifact contract](notes/hw-slicer-path-plan-evidence-artifact.md)
 defines the binary layout, validation sequence, production fixture, and
@@ -519,24 +399,6 @@ Run the Clipper2 conformance and performance gates:
 The release benchmark unions 4,096 disjoint paths. It pins the canonical
 output hash and requires at least one million input edges per second.
 
-Run the strict region probe:
-
-```sh
-./region-probe.sh
-```
-
-The probe pins the same source and topology hashes. It records one degree-four
-topology vertex with four source-segment references. It verifies one
-self-intersection at layer 104, path 104, between edges 215 and 219. It then
-pins the explicit even-odd repair and all 321 output-edge lineage records. The
-provider changes no repaired point on this fixture. A separate region view then
-classifies 1,360 regions and 500 holes while the G1 pipeline keeps the raw
-topology independent from this G2 repair. The probe also pins two 450-micrometre
-perimeters with 2,879 paths and 72,949 points. Adjacent-layer differences emit
-1,673 exposed-surface masks with 9,577 paths. A 5-millimetre infill grid emits
-5,845 segments and 11,690 boundary-hit records. The path planner produces 8,724
-extrusion paths and 87,518 travel or extrusion moves.
-
 The bundled all-in-one model has no open chains or degenerate loops. Its raw
 topology retains one degree-four slice vertex. The explicit contour repair
 replaces the affected path, compacts its orphaned vertices, and produces strict
@@ -549,16 +411,6 @@ process profile must select skin depth and resolve role overlap before path
 generation. Region inputs use positive outer contours and negative holes, so
 the surface stage rejects the negative-winding fill rule instead of emitting an
 empty result.
-
-Emit the complete topology issue report:
-
-```sh
-./topology-issues.sh > build/topology-issues.json
-```
-
-The report maps each open chain or non-manifold vertex to stable source segment,
-triangle, and triangle-edge identifiers. Its pinned hash detects changes in
-issue order, endpoints, or provenance.
 
 The official Core examples, selected archived verifier cases, and pinned Assimp
 OBJ fixtures cover package decode, OBJ edge cases, and deterministic

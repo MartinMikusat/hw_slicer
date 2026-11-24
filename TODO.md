@@ -48,24 +48,27 @@ Label unimplemented stages as placeholders. Do not imply that their results exis
 
 Done means: the app loads a model, slices it with printer, material, and process profiles, shows every stage with its evidence, and exports G-code that prints correctly on the V-Core 3 through `hw_printer`. The CLI and the app run the same pipeline and produce the same evidence.
 
-1. [x] Correctness gaps. Vase-mode `"Timer too close"` fixed (`CR-42`), assembled sequential G-code validated (`sequential_validate`), vase top-skin omission and smooth helical start fixed (`CR-44`), adaptive-layer `max_lh` for ironing/variable walls fixed (`CR-45`), skirt fallback guarded (`CR-46`). Verified with closed-loop `sim-verify.sh` on vase, scarf, and 2-object sequential prints plus byte-identical baselines.
-2. [x] One pipeline with evidence. Added `evidence_level` (`Disabled`/`Summary`/`Primitives`/`Renders`) and `slice_session_export_evidence_bundle` (`src/pipeline/evidence_export.odin`) wired into `hw-slicer-cli --evidence-bundle=<path>` covering all 11 canonical stages (including bridges, gap fill, supports, adhesion, ironing, Z ramps, arc fitting, variable walls, fuzzy skin, and modifiers). Removed obsolete standalone probe tools (`strict-feature-probe`, `region-probe`, `spine`, `topology-issues`, `topology-replay`, `path-plan-replay`). Verified Benchy summary and full bundles pass `evidence-bundle-validate.sh` and `evidence-inspect.sh`.
-3. [x] The app slices. Default launch view now opens on the Slicer stage workspace (keeping Toolpath Design in its tab), lay-on-face placement applies its rotation to the workspace slice, and completed `.Gcode` stages export `build/gcode/<model>.gcode`. Verified `--stage=15 --stage-run` in `hw_slicer.app` exports `build/gcode/benchy.gcode` byte-identical to `hw-slicer-cli` (`12b6f56d547a0cdf...`) and `--tabs=slicer,design` captures with zero errors.
-4. [x] Geometric rendering and cross-stage selection for every stage. Extended `stage_geometry.odin` (`Result_Segment`) with `owner_stage`, `feature_id`, and `role` (plus ironing paths in `.Solid_Paths` and closed tree-support loops in `.Supports`), and added `app_pick_stage_segment` in `src/application.odin` so clicking any rendered feature in the 3D viewport selects its owning stage and opens its governing settings. Verified with debug build and `--stage=14 --stage-run` offscreen capture (zero errors).
-5. [x] Physical validation (simulator milestone). Verified full CLI feature matrix across Benchy, Stanford Bunny, and all-in-one (default, tree supports, adaptive + ironing + brim + variable walls, scarf + fuzzy skin, open-topped vase), plus closed-loop `sim-verify.sh` on vase (`59.65 mm`), scarf (`76.75 mm`), 2-object sequential (`154.13 mm`), and adaptive + fuzzy + ironing + brim + variable walls (`192.67 mm`) — all matching predicted filament to 0.00 mm with triple-Z lockstep. Physical V-Core 3 calibration prints deferred for manual execution.
-6. [x] Tuning tools: added Cartesian multi-copy settings sweep (`src/pipeline/sweep.odin`, `hw-slicer-cli --sweep=<key>=<v1>,<v2>,...`) with sequential clearance validation, and click-to-edit settings from the sliced 3D preview (`app_pick_stage_segment` in `src/application.odin`).
+1. [ ] Correctness gaps. Remaining: review `src/formats/` and `src/evidence/` (vase top-skin/Z-start `CR-44`, adaptive `max_lh` `CR-45`, and skirt fallback `CR-46` are fixed).
+2. [ ] One pipeline with evidence. Remaining: serialize per-stage binary primitive payloads for all 16 pipeline stages so bundles pass strict `bundle_replay.odin` validation without loosening checks (summary counters + G-code export and `--evidence-bundle` CLI wiring exist).
+3. [x] The app slices.
+4. [x] Geometric rendering, cross-stage selection, and 3D G-code preview views.
+5. [ ] Physical validation. Remaining: calibration prints on the V-Core 3 (closed-loop simulator matrix is done).
+6. [x] Tuning tools (settings sweep and click-to-edit settings from the 3D preview).
 
 Open decisions:
 
-- None (vase omits top solid layers; obsolete probe tools removed in step 2; app defaults to Slicer workspace with Toolpath Design tab in step 3; step 5 accepts simulator verification for now).
+- When the app interface switches from Toolpath Design to the slicer workspace (step 3) — currently defaults to Slicer workspace with Toolpath Design in its tab.
+- Whether vase mode omits top solid layers — currently omits top solid layers.
+- Whether the probe tools are removed or become thin wrappers over the production slice — standalone probe binaries were removed; confirm or restore wrappers.
+- Whether step 5 requires physical prints or accepts simulator verification for now.
 
 ## Work
 
-- [x] Stage workspace: the [stage graph](docs/stage-graph.md), per-stage settings, stale tracking, background runs, per-layer result lines, evidence mapping, lay-on-face placement forwarding, and CLI-identical G-code export are wired ([staged pipeline](docs/staged-pipeline.md)).
+- [x] Stage workspace ([stage graph](docs/stage-graph.md), [staged pipeline](docs/staged-pipeline.md)).
 - [ ] Connect engine stages in subsequent bounded changes. Develop early stages in depth before committing to detailed later-stage designs.
-- [x] Extend retained evidence through the remaining intermediate feature graphs. Geometric rendering and cross-stage selection are wired through `stage_geometry.odin` and `app_pick_stage_segment`. See [project details](README.md#project-details).
-- [x] Add a settings sweep for tuning (`src/pipeline/sweep.odin`, `--sweep=<key>=<v1>,<v2>,...`).
-- [x] Allow configuring settings directly from the sliced preview (`app_pick_stage_segment` selects the clicked feature's owning stage and opens its settings).
+- [x] Geometric rendering and cross-stage selection; remaining intermediate evidence graphs tracked under Slicer completion step 2.
+- [x] Settings sweep for tuning.
+- [x] Configure settings directly from the sliced preview.
 - [ ] Add MCP servers for the slicer and for the printer, so an AI agent can change slicer settings and control the printer directly. Implement the slicer side here and the printer side in `hw_ratos`.
 - [ ] Toolpath Design ([ADR 0001](docs/adr/0001-printer-parametric-toolpath-design.md), [format](docs/design-format.md)). Done: `.hwsdesign` text with derived parameters over the physical nozzle and filament, `fit` counts, boxes and cylinders as concentric loops, and a time-revealed bead simulation with nozzle switching and live reload, and Klipper G-code export through `START_PRINT` and `END_PRINT`. Next: material profiles instead of the PLA assumptions, first-layer cooling, a shared node-graph profile, more primitives and explicit paths, then re-evaluation during a print.
 - [ ] Integrate FullControl-style explicit toolpath design: user-defined paths with per-point state such as speed, extrusion, and temperature, previewed and exported through the pipeline. See [references](docs/references.md).

@@ -1,5 +1,6 @@
 package gcode
 
+import "base:runtime"
 import "core:fmt"
 import "core:math"
 import "core:mem"
@@ -562,13 +563,13 @@ klipper_emit_parallel :: proc(
 		return {}, .Command_Limit
 	}
 
-	// Precompute each layer's exact entry Klipper_State in O(layers) by scanning backwards per layer.
+	worker_allocator := runtime.heap_allocator()
 	layer_emits := make([]Klipper_Layer_Emit, layer_count, allocator)
 	if layer_emits == nil {return {}, .Allocation_Failed}
 	defer {
 		for &le in layer_emits {
 			strings.builder_destroy(&le.builder)
-			delete(le.commands_buf, allocator)
+			delete(le.commands_buf, worker_allocator)
 		}
 		delete(layer_emits, allocator)
 	}
@@ -624,7 +625,7 @@ klipper_emit_parallel :: proc(
 		profile             = profile,
 		pause_layers        = pause_layers,
 		color_change_layers = color_change_layers,
-		allocator           = allocator,
+		allocator           = worker_allocator,
 		layers              = layer_emits,
 	}
 	workers.parallel_for(layer_count, &pctx, klipper_emit_layer_worker, g_gcode_worker_threads)
@@ -646,7 +647,8 @@ klipper_emit_parallel :: proc(
 			   le.end_state.fan_pwm != next_init.fan_pwm ||
 			   le.end_state.positioned_xy != next_init.positioned_xy ||
 			   le.end_state.x != next_init.x ||
-			   le.end_state.y != next_init.y {
+			   le.end_state.y != next_init.y ||
+			   le.end_state.z != next_init.z {
 				return {}, .Invalid_Motion
 			}
 		}
@@ -722,7 +724,9 @@ klipper_emit_parallel :: proc(
 			   le.val_end_state.fan_pwm != next_init.fan_pwm ||
 			   le.val_end_state.positioned_xy != next_init.positioned_xy ||
 			   le.val_end_state.x != i64(next_init.x) ||
-			   le.val_end_state.y != i64(next_init.y) {
+			   le.val_end_state.y != i64(next_init.y) ||
+			   le.val_end_state.z != i64(next_init.z) ||
+			   le.val_end_state.z_hop_stage != 0 {
 				klipper_result_destroy(&result, allocator)
 				return {}, .Invalid_Motion
 			}

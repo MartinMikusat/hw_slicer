@@ -797,9 +797,6 @@ infill_pat_gyroid :: proc(
 				x0 += period
 			}
 		}
-		// Exact clip: split each segment where it crosses a band edge, keep inside pieces.
-		// Track inside state across segments that do not cross any band edge (eliminates ~99% of
-		// full point-in-polygon scans while preserving exact results).
 		clear(&run)
 		piece_length := 0.0
 		flush :: proc(out: ^[dynamic]Infill_Pattern_Path, layer_index: u32, run: ^[dynamic]polygon.Polygon_Point, length: ^f64, min_piece: f64, line_width: contracts.Micrometres, allocator: mem.Allocator) {
