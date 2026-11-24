@@ -189,10 +189,81 @@ bridge_evidence_build :: proc(
 	)
 	if layer_error != .None {return {}, layer_error}
 
-	layer_errs := make([]Bridge_Evidence_Error, len(layer_inputs), allocator)
+	// Any region whose 2D geometry matches a region on layer_index - 1 is guaranteed to be
+	// completely supported by offset(layer_inputs[layer_index - 1], +anchor_margin) (since
+	// anchor_margin >= 0), so its bridge Difference is empty. If every region on a layer matches
+	// the previous layer, skip expanding that layer's previous support altogether. Also deduplicate
+	// previous-layer shapes across layers that do need expansion.
+	layer_count := len(layer_inputs)
+	region_supported := make([]bool, len(regions.regions), allocator)
+	layer_needs_expand := make([]bool, layer_count, allocator)
+	expand_canon := make([]int, layer_count, allocator)
+	unique_expands := make([dynamic]int, 0, layer_count, allocator)
+	defer {
+		delete(region_supported, allocator)
+		delete(layer_needs_expand, allocator)
+		delete(expand_canon, allocator)
+		delete(unique_expands)
+	}
+	for li in 1..<layer_count {
+		layer := regions.layers[li]
+		prev_layer := regions.layers[li - 1]
+		rs := int(layer.region_offset)
+		re := rs + int(layer.region_count)
+		if len(layer_inputs[li - 1].paths) == 0 {
+			continue
+		}
+		if features_polygon_sets_equal(layer_inputs[li], layer_inputs[li - 1]) {
+			for ri in rs..<re {region_supported[ri] = true}
+			continue
+		}
+		any_unsupported := false
+		for ri in rs..<re {
+			if surface_region_matches_layer(region_inputs[ri], prev_layer, region_inputs) {
+				region_supported[ri] = true
+			} else {
+				any_unsupported = true
+			}
+		}
+		layer_needs_expand[li] = any_unsupported
+	}
+	if layer_count > 1 {
+		cap_pow2 := 16
+		for cap_pow2 < layer_count * 2 {cap_pow2 <<= 1}
+		ht_mask := u64(cap_pow2 - 1)
+		ht := make([]int, cap_pow2, allocator)
+		defer delete(ht, allocator)
+		for li in 1..<layer_count {
+			if !layer_needs_expand[li] {continue}
+			prev := layer_inputs[li - 1]
+			h := features_polygon_set_hash64(prev)
+			slot := h & ht_mask
+			found := -1
+			for {
+				entry := ht[slot]
+				if entry == 0 {break}
+				cand := entry - 1
+				if features_polygon_sets_equal(layer_inputs[cand - 1], prev) {
+					found = cand
+					break
+				}
+				slot = (slot + 1) & ht_mask
+			}
+			if found >= 0 {
+				expand_canon[li] = found
+			} else {
+				ht[slot] = li + 1
+				expand_canon[li] = li
+				append(&unique_expands, li)
+			}
+		}
+	}
+
+	layer_errs := make([]Bridge_Evidence_Error, layer_count, allocator)
 	defer delete(layer_errs, allocator)
 	Bridge_Support_Par_Ctx :: struct {
 		layer_inputs:      []polygon.Polygon_Set,
+		unique_expands:    []int,
 		expanded_supports: []polygon.Polygon_Set,
 		layer_errs:        []Bridge_Evidence_Error,
 		anchor_margin:     contracts.Micrometres,
@@ -203,6 +274,7 @@ bridge_evidence_build :: proc(
 	}
 	bsctx := Bridge_Support_Par_Ctx{
 		layer_inputs      = layer_inputs,
+		unique_expands    = unique_expands[:],
 		expanded_supports = expanded_supports,
 		layer_errs        = layer_errs,
 		anchor_margin     = process.source.bridge_anchor_margin,
@@ -211,8 +283,8 @@ bridge_evidence_build :: proc(
 		limits            = limits,
 		allocator         = allocator,
 	}
-	parallel_for(len(layer_inputs), &bsctx, proc(c: ^Bridge_Support_Par_Ctx, layer_index: int) {
-		if layer_index == 0 {return}
+	parallel_for(len(unique_expands), &bsctx, proc(c: ^Bridge_Support_Par_Ctx, ui: int) {
+		layer_index := c.unique_expands[ui]
 		previous := c.layer_inputs[layer_index - 1]
 		if len(previous.paths) == 0 {return}
 		if c.anchor_margin == 0 {
@@ -236,8 +308,8 @@ bridge_evidence_build :: proc(
 		c.expanded_supports[layer_index] = expanded
 		if expand_error != .None {c.layer_errs[layer_index] = .Provider}
 	})
-	for err in layer_errs {
-		if err != .None {return {}, err}
+	for ui in unique_expands {
+		if layer_errs[ui] != .None {return {}, layer_errs[ui]}
 	}
 
 	reg_errs := make([]Bridge_Evidence_Error, len(regions.regions), allocator)
@@ -245,6 +317,8 @@ bridge_evidence_build :: proc(
 	Bridge_Diff_Par_Ctx :: struct {
 		regions:           slicing.Region_Result,
 		region_inputs:     []polygon.Polygon_Set,
+		region_supported:  []bool,
+		expand_canon:      []int,
 		expanded_supports: []polygon.Polygon_Set,
 		outputs:           []polygon.Polygon_Set,
 		output_areas_2:    []i128,
@@ -257,6 +331,8 @@ bridge_evidence_build :: proc(
 	bdctx := Bridge_Diff_Par_Ctx{
 		regions           = regions,
 		region_inputs     = region_inputs,
+		region_supported  = region_supported,
+		expand_canon      = expand_canon,
 		expanded_supports = expanded_supports,
 		outputs           = outputs,
 		output_areas_2    = output_areas_2,
@@ -268,10 +344,12 @@ bridge_evidence_build :: proc(
 	}
 	parallel_for(len(regions.regions), &bdctx, proc(c: ^Bridge_Diff_Par_Ctx, region_index: int) {
 		region := c.regions.regions[region_index]
-		if region.layer_index == 0 {return}
+		if region.layer_index == 0 || c.region_supported[region_index] {return}
+		sup_idx := c.expand_canon[region.layer_index]
+		support := c.expanded_supports[sup_idx] if sup_idx > 0 else polygon.Polygon_Set{}
 		unsupported, unsupported_error := c.provider.boolean(
 			c.region_inputs[region_index],
-			c.expanded_supports[region.layer_index],
+			support,
 			.Difference,
 			c.config.fill_rule,
 			c.limits.polygon,

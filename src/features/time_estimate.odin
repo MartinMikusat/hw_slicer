@@ -19,133 +19,161 @@ motion_plan_estimate_klipper_time :: proc(
 	square_corner_velocity_mm_s := 5.0,
 ) -> Print_Time_Estimate {
 	est := Print_Time_Estimate{}
+	n_layers := len(motion.layers)
+	if n_layers == 0 || len(motion.operations) == 0 {return est}
 	scv := max(1.0, square_corner_velocity_mm_s)
 
 	Estimate_Move :: struct {
-		operation:   int,
 		dist:        f64,
 		v_cruise:    f64,
 		accel:       f64,
 		v_entry:     f64, // junction speed limit, then the planned entry speed
+		z_hop_um:    i32,
 		stop_before: bool,
+		is_extrude:  bool,
+	}
+
+	Time_Est_Ctx :: struct {
+		motion:    Motion_Plan_Result,
+		scv:       f64,
+		layer_est: []Print_Time_Estimate,
 	}
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
-	moves := make([dynamic]Estimate_Move, 0, len(motion.operations), context.temp_allocator)
+	layer_est := make([]Print_Time_Estimate, n_layers, context.temp_allocator)
+	ctx := Time_Est_Ctx{
+		motion    = motion,
+		scv       = scv,
+		layer_est = layer_est,
+	}
+	parallel_for(n_layers, &ctx, proc(c: ^Time_Est_Ctx, li: int) {
+		layer := c.motion.layers[li]
+		op_start := int(layer.operation_offset)
+		op_end := op_start + int(layer.operation_count)
+		if op_start >= op_end {return}
 
-	// Pass 1: per-move geometry and the junction speed limit with the previous move.
-	stop_pending := true
-	prev_ux, prev_uy: f64
-	for op, oi in motion.operations {
-		est.constant_vel_seconds += f64(op.duration_us) / 1_000_000.0
-		switch op.kind {
-		case .Dwell:
-			dt := f64(op.duration_us) / 1_000_000.0
-			est.dwell_seconds += dt
-			est.total_seconds += dt
-			stop_pending = true
-		case .Retract, .Recover:
-			dt := f64(op.duration_us) / 1_000_000.0
-			est.retract_seconds += dt
-			est.total_seconds += dt
-			stop_pending = true
-		case .Travel, .Extrude:
-			dx := f64(i64(op.point_b.x) - i64(op.point_a.x)) / 1000.0
-			dy := f64(i64(op.point_b.y) - i64(op.point_a.y)) / 1000.0
-			dist := math.hypot(dx, dy)
-			ux, uy: f64
-			exit_ux, exit_uy: f64
-			r := 0.0
-			if op.kind == .Extrude && op.arc != .None {
-				rx0 := f64(i64(op.point_a.x) - i64(op.arc_center.x)) / 1000.0
-				ry0 := f64(i64(op.point_a.y) - i64(op.arc_center.y)) / 1000.0
-				rx1 := f64(i64(op.point_b.x) - i64(op.arc_center.x)) / 1000.0
-				ry1 := f64(i64(op.point_b.y) - i64(op.arc_center.y)) / 1000.0
-				r = math.hypot(rx0, ry0)
-				if r > 1e-6 {
-					a0 := math.atan2(ry0, rx0)
-					a1 := math.atan2(ry1, rx1)
-					sweep := a1 - a0
-					r1 := max(1e-6, math.hypot(rx1, ry1))
-					if op.arc == .CCW {
-						if sweep <= 0 {sweep += 2.0 * math.PI}
-						ux, uy = -ry0 / r, rx0 / r
-						exit_ux, exit_uy = -ry1 / r1, rx1 / r1
-					} else {
-						if sweep >= 0 {sweep -= 2.0 * math.PI}
-						sweep = -sweep
-						ux, uy = ry0 / r, -rx0 / r
-						exit_ux, exit_uy = ry1 / r1, -rx1 / r1
+		local_est := Print_Time_Estimate{}
+		scv := c.scv
+		moves := make([dynamic]Estimate_Move, 0, op_end - op_start, context.temp_allocator)
+		defer delete(moves)
+
+		stop_pending := true
+		prev_ux, prev_uy: f64
+		for oi in op_start..<op_end {
+			op := c.motion.operations[oi]
+			local_est.constant_vel_seconds += f64(op.duration_us) / 1_000_000.0
+			switch op.kind {
+			case .Dwell:
+				dt := f64(op.duration_us) / 1_000_000.0
+				local_est.dwell_seconds += dt
+				local_est.total_seconds += dt
+				stop_pending = true
+			case .Retract, .Recover:
+				dt := f64(op.duration_us) / 1_000_000.0
+				local_est.retract_seconds += dt
+				local_est.total_seconds += dt
+				stop_pending = true
+			case .Travel, .Extrude:
+				dx := f64(i64(op.point_b.x) - i64(op.point_a.x)) * 0.001
+				dy := f64(i64(op.point_b.y) - i64(op.point_a.y)) * 0.001
+				dist := math.sqrt(dx*dx + dy*dy)
+				ux, uy: f64
+				exit_ux, exit_uy: f64
+				r := 0.0
+				if op.kind == .Extrude && op.arc != .None {
+					rx0 := f64(i64(op.point_a.x) - i64(op.arc_center.x)) * 0.001
+					ry0 := f64(i64(op.point_a.y) - i64(op.arc_center.y)) * 0.001
+					rx1 := f64(i64(op.point_b.x) - i64(op.arc_center.x)) * 0.001
+					ry1 := f64(i64(op.point_b.y) - i64(op.arc_center.y)) * 0.001
+					r = math.sqrt(rx0*rx0 + ry0*ry0)
+					if r > 1e-6 {
+						a0 := math.atan2(ry0, rx0)
+						a1 := math.atan2(ry1, rx1)
+						sweep := a1 - a0
+						r1 := max(1e-6, math.sqrt(rx1*rx1 + ry1*ry1))
+						if op.arc == .CCW {
+							if sweep <= 0 {sweep += 2.0 * math.PI}
+							ux, uy = -ry0 / r, rx0 / r
+							exit_ux, exit_uy = -ry1 / r1, rx1 / r1
+						} else {
+							if sweep >= 0 {sweep -= 2.0 * math.PI}
+							sweep = -sweep
+							ux, uy = ry0 / r, -rx0 / r
+							exit_ux, exit_uy = ry1 / r1, -rx1 / r1
+						}
+						dist = r * sweep
 					}
-					dist = r * sweep
 				}
-			}
-			if r <= 1e-6 {
-				if dist < 1e-6 {continue}
-				ux, uy = dx / dist, dy / dist
-				exit_ux, exit_uy = ux, uy
-			}
-			v_cruise := max(0.1, f64(i64(op.speed)) / 1000.0)
-			accel := max(10.0, f64(i64(op.acceleration)) / 1000.0)
-
-			// Klipper junction speed from square_corner_velocity and turning angle.
-			v_junction := 0.0
-			if !stop_pending && len(moves) > 0 {
-				prev := moves[len(moves)-1]
-				cos_t := clamp(prev_ux*ux + prev_uy*uy, -1.0, 1.0)
-				v_junction = min(prev.v_cruise, v_cruise)
-				if 0.5 * (1.0 - cos_t) >= 1e-8 {
-					// Centripetal junction approximation: v_j = scv * sqrt((1 + cos_t) / (1 - cos_t))
-					v_junction = min(v_junction, scv * math.sqrt(max(0.0, (1.0 + cos_t) / max(1e-6, 1.0 - cos_t))))
+				if r <= 1e-6 {
+					if dist < 1e-6 {continue}
+					inv_d := 1.0 / dist
+					ux, uy = dx * inv_d, dy * inv_d
+					exit_ux, exit_uy = ux, uy
 				}
+				v_cruise := max(0.1, f64(i64(op.speed)) * 0.001)
+				accel := max(10.0, f64(i64(op.acceleration)) * 0.001)
+
+				v_junction := 0.0
+				if !stop_pending && len(moves) > 0 {
+					prev := moves[len(moves)-1]
+					cos_t := clamp(prev_ux*ux + prev_uy*uy, -1.0, 1.0)
+					v_junction = min(prev.v_cruise, v_cruise)
+					if 0.5 * (1.0 - cos_t) >= 1e-8 {
+						v_junction = min(v_junction, scv * math.sqrt(max(0.0, (1.0 + cos_t) / max(1e-6, 1.0 - cos_t))))
+					}
+				}
+				hop_um := i32(i64(op.z_hop_um)) if op.kind == .Travel && i64(op.z_hop_um) > 0 else 0
+				hop := hop_um > 0
+				if hop {v_junction = 0}
+				append(&moves, Estimate_Move{
+					dist        = dist,
+					v_cruise    = v_cruise,
+					accel       = accel,
+					v_entry     = v_junction,
+					z_hop_um    = hop_um,
+					stop_before = stop_pending || hop,
+					is_extrude  = op.kind == .Extrude,
+				})
+				stop_pending = hop
+				prev_ux, prev_uy = exit_ux, exit_uy
+			case .Invalid:
 			}
-			// A z-hop travel lifts before and lowers after its XY move, so it stops at both ends.
-			hop := op.kind == .Travel && i64(op.z_hop_um) > 0
-			if hop {v_junction = 0}
-			append(&moves, Estimate_Move{
-				operation = oi,
-				dist = dist,
-				v_cruise = v_cruise,
-				accel = accel,
-				v_entry = v_junction,
-				stop_before = stop_pending || hop,
-			})
-			stop_pending = hop
-			prev_ux, prev_uy = exit_ux, exit_uy
-		case .Invalid:
 		}
-	}
 
-	// Pass 2 (backward): each move must be able to decelerate to the next move's entry speed,
-	// and the toolhead stops after the last move and before every dwell, retraction or recovery.
-	next_entry := 0.0
-	for i := len(moves) - 1; i >= 0; i -= 1 {
-		m := &moves[i]
-		m.v_entry = min(m.v_entry, math.sqrt(next_entry*next_entry + 2.0*m.accel*m.dist))
-		next_entry = 0.0 if m.stop_before else m.v_entry
-	}
-	// Pass 3 (forward): each move must be able to accelerate from its entry speed to the next
-	// move's entry speed.
-	for i in 0..<len(moves) - 1 {
-		if moves[i+1].stop_before {continue}
-		m := moves[i]
-		moves[i+1].v_entry = min(moves[i+1].v_entry, math.sqrt(m.v_entry*m.v_entry + 2.0*m.accel*m.dist))
-	}
-
-	for m, i in moves {
-		v_exit := 0.0
-		if i + 1 < len(moves) && !moves[i+1].stop_before {v_exit = moves[i+1].v_entry}
-		dt := trap_move_time(m.dist, m.v_entry, m.v_cruise, v_exit, m.accel)
-		op := motion.operations[m.operation]
-		if op.kind == .Travel && i64(op.z_hop_um) > 0 {
-			hop_mm := f64(i64(op.z_hop_um)) / 1000.0
-			dt += 2.0 * trap_move_time(hop_mm, 0.0, min(m.v_cruise, 25.0), 0.0, min(m.accel, 500.0))
+		next_entry := 0.0
+		for i := len(moves) - 1; i >= 0; i -= 1 {
+			m := &moves[i]
+			m.v_entry = min(m.v_entry, math.sqrt(next_entry*next_entry + 2.0*m.accel*m.dist))
+			next_entry = 0.0 if m.stop_before else m.v_entry
 		}
-		if op.kind == .Extrude {
-			est.extrude_seconds += dt
-		} else {
-			est.travel_seconds += dt
+		for i in 0..<len(moves) - 1 {
+			if moves[i+1].stop_before {continue}
+			m := moves[i]
+			moves[i+1].v_entry = min(moves[i+1].v_entry, math.sqrt(m.v_entry*m.v_entry + 2.0*m.accel*m.dist))
 		}
-		est.total_seconds += dt
+		for m, i in moves {
+			v_exit := 0.0
+			if i + 1 < len(moves) && !moves[i+1].stop_before {v_exit = moves[i+1].v_entry}
+			dt := trap_move_time(m.dist, m.v_entry, m.v_cruise, v_exit, m.accel)
+			if m.z_hop_um > 0 {
+				hop_mm := f64(m.z_hop_um) * 0.001
+				dt += 2.0 * trap_move_time(hop_mm, 0.0, min(m.v_cruise, 25.0), 0.0, min(m.accel, 500.0))
+			}
+			if m.is_extrude {
+				local_est.extrude_seconds += dt
+			} else {
+				local_est.travel_seconds += dt
+			}
+			local_est.total_seconds += dt
+		}
+		c.layer_est[li] = local_est
+	})
+	for le in layer_est {
+		est.total_seconds += le.total_seconds
+		est.extrude_seconds += le.extrude_seconds
+		est.travel_seconds += le.travel_seconds
+		est.retract_seconds += le.retract_seconds
+		est.dwell_seconds += le.dwell_seconds
+		est.constant_vel_seconds += le.constant_vel_seconds
 	}
 	return est
 }

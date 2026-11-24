@@ -1,5 +1,16 @@
 package polygon
 
+import "core:mem"
+
+// Allocates a non-zeroed slice on `context.temp_allocator` for buffers overwritten before read.
+@(private)
+make_temp_non_zeroed :: proc($T: typeid, n: int) -> []T {
+	if n <= 0 {return nil}
+	raw, err := mem.alloc_bytes_non_zeroed(n * size_of(T), align_of(T), context.temp_allocator)
+	if err != .None || len(raw) == 0 {return nil}
+	return ([^]T)(raw_data(raw))[:n]
+}
+
 // Deterministic in-place sort for the polygon engine's hot paths: quicksort with a
 // median-of-three pivot, insertion sort below 16 elements, and recursion into the smaller side
 // only. `$less` is compile-time specialized so the comparator inlines with zero indirect calls.
@@ -65,7 +76,7 @@ radix_sort_i64 :: proc(data: []i64) {
 	RADIX_BITS :: 11
 	RADIX_SIZE :: 1 << RADIX_BITS
 	RADIX_MASK :: RADIX_SIZE - 1
-	tmp := make([]i64, n, context.temp_allocator)
+	tmp := make_temp_non_zeroed(i64, n)
 	if span < RADIX_SIZE {
 		counts: [RADIX_SIZE]int
 		for v in data {counts[u64(v - min_v)] += 1}
@@ -127,7 +138,7 @@ radix_sort_by_i64 :: proc(data: []$T, $key_fn: proc(v: T) -> i64) -> bool {
 	RADIX_BITS :: 11
 	RADIX_SIZE :: 1 << RADIX_BITS
 	RADIX_MASK :: RADIX_SIZE - 1
-	tmp := make([]T, n, context.temp_allocator)
+	tmp := make_temp_non_zeroed(T, n)
 	if span < RADIX_SIZE {
 		counts: [RADIX_SIZE]int
 		for v in data {counts[u64(key_fn(v) - min_v)] += 1}

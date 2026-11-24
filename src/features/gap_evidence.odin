@@ -621,6 +621,97 @@ gap_evidence_process_region :: proc(
 			}
 		}
 	}
+	if config.uncovered_only {
+		// Sequential shrinking subtraction: residual = (((region_input \ b0) \ b1) ... \ b_{N-1}).
+		// Avoids growing multi-ring coverage unions and exits immediately once residual is empty.
+		residual := region_input
+		for group_index in group_start..<group_end {
+			group := perimeters.groups[group_index]
+			if group.region_index != u32(region_index) ||
+			   group.region_id != region.stable_id {
+				polygon.polygon_set_destroy(&residual, allocator)
+				return .Invalid_Input
+			}
+			if group.path_count == 0 || len(residual.paths) == 0 {continue}
+			centerlines, centerline_error := gap_perimeter_group_input(
+				perimeters,
+				u32(group_index),
+				allocator,
+			)
+			if centerline_error != .None {
+				polygon.polygon_set_destroy(&residual, allocator)
+				return centerline_error
+			}
+			outer, outer_error := provider.offset(
+				centerlines,
+				derived.shell_half_width,
+				config.join_type,
+				config.miter_limit,
+				config.arc_tolerance,
+				limits.polygon,
+				allocator,
+			)
+			inner, inner_error := provider.offset(
+				centerlines,
+				contracts.Micrometres(-i64(derived.shell_half_width)),
+				config.join_type,
+				config.miter_limit,
+				config.arc_tolerance,
+				limits.polygon,
+				allocator,
+			)
+			polygon.polygon_set_destroy(&centerlines, allocator)
+			if outer_error != .None || inner_error != .None {
+				polygon.polygon_set_destroy(&outer, allocator)
+				polygon.polygon_set_destroy(&inner, allocator)
+				polygon.polygon_set_destroy(&residual, allocator)
+				return .Provider
+			}
+			band: polygon.Polygon_Set
+			if len(inner.paths) == 0 {
+				band = outer
+			} else {
+				band_error: polygon.Polygon_Error
+				band, band_error = provider.boolean(
+					outer,
+					inner,
+					.Difference,
+					config.fill_rule,
+					limits.polygon,
+					allocator,
+				)
+				polygon.polygon_set_destroy(&outer, allocator)
+				polygon.polygon_set_destroy(&inner, allocator)
+				if band_error != .None {
+					polygon.polygon_set_destroy(&band, allocator)
+					polygon.polygon_set_destroy(&residual, allocator)
+					return .Provider
+				}
+			}
+			if len(band.paths) == 0 {
+				polygon.polygon_set_destroy(&band, allocator)
+				continue
+			}
+			next_residual, diff_error := provider.boolean(
+				residual,
+				band,
+				.Difference,
+				config.fill_rule,
+				limits.polygon,
+				allocator,
+			)
+			polygon.polygon_set_destroy(&band, allocator)
+			polygon.polygon_set_destroy(&residual, allocator)
+			if diff_error != .None {
+				polygon.polygon_set_destroy(&next_residual, allocator)
+				return .Provider
+			}
+			residual = next_residual
+		}
+		output_offset := region_index * 6
+		outputs[output_offset + 1] = residual
+		return .None
+	}
 	for group_index in group_start..<group_end {
 		group := perimeters.groups[group_index]
 		if group.region_index != u32(region_index) ||
