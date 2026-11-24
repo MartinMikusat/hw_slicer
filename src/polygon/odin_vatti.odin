@@ -28,14 +28,11 @@ Vatti_Split :: struct {
 
 @(private = "file")
 Vatti_Atomic_Vert :: struct {
-	x0, y0:      i64, // bottom (y0 < y1)
-	x1, y1:      i64, // top
-	slope:       f64, // (x1 - x0) / (y1 - y0), precomputed once
-	dw_subj:     i32, // +1 for downward subject edge (entering interior L->R), -1 for upward
-	dw_clip:     i32,
-	s0, s1:      int, // scanbeam indices for y0, y1
-	run_verdict: i8,  // active verdict in current run: 0, +1 (bot->top), -1 (top->bot)
-	run_s_start: int,
+	x0, y0:  i64, // bottom (y0 < y1)
+	x1, y1:  i64, // top
+	slope:   f64, // (x1 - x0) / (y1 - y0), precomputed once
+	dw_subj: i32, // +1 for downward subject edge (entering interior L->R), -1 for upward
+	dw_clip: i32,
 }
 
 @(private = "file")
@@ -211,8 +208,20 @@ odin_vatti_boolean :: proc(
 	num_y := len(ys)
 	if num_y < 2 {return {}, .None}
 
-	// Sweep slabs s = 0 ..< num_y maintaining a single in-place Active Edge Table (AET).
-	Active_Entry :: struct {idx: int, x_mid: f64, slope: f64}
+	// Sweep slabs s = 0 ..< num_y maintaining a single self-contained Active Edge Table (AET)
+	// so the inner loop never chases verts[idx] except when emitting a finished run (OPT-10).
+	Active_Entry :: struct {
+		x_mid:       f64,
+		slope:       f64,
+		x0:          i64,
+		y0:          i64,
+		y1:          i64,
+		idx:         i32,
+		dw_subj:     i32,
+		dw_clip:     i32,
+		run_s_start: i32,
+		run_verdict: i8,
+	}
 	aet := make([dynamic]Active_Entry, 0, 64, context.temp_allocator)
 	prev_slab := make([dynamic]Slab_Interval, 0, 64, context.temp_allocator)
 	cur_slab := make([dynamic]Slab_Interval, 0, 64, context.temp_allocator)
@@ -221,19 +230,38 @@ odin_vatti_boolean :: proc(
 	need_slab_intervals := len(horizs) > 0
 	next_vert := 0
 	next_horiz := 0
+	in_zero := vatti_bool_eval(
+		vatti_fill_inside(0, fill_rule),
+		vatti_fill_inside(0, fill_rule),
+		operation,
+	)
 	for s in 0..<num_y {
 		y_cur := ys[s]
-		// Flush expiring edges (y1 <= y_cur) in-place.
+		has_next_slab := s + 1 < num_y
+		y_mid := 0.5 * f64(y_cur + ys[s + 1]) if has_next_slab else 0.0
+
+		// Fused expire-flush + x_mid update in one sequential pass over the L1-resident AET.
 		w := 0
+		need_sort := false
+		prev_x := -1.0e300
+		prev_slope := -1.0e300
 		for entry in aet {
-			v := &verts[entry.idx]
-			if v.y1 <= y_cur {
-				if v.run_verdict != 0 {
-					vatti_emit_vert_run(&kept_edges, v^, ys[:], v.run_s_start, s, v.run_verdict)
-					v.run_verdict = 0
+			if entry.y1 <= y_cur {
+				if entry.run_verdict != 0 {
+					vatti_emit_vert_run(&kept_edges, verts[entry.idx], ys[:], int(entry.run_s_start), s, entry.run_verdict)
 				}
 			} else {
-				aet[w] = entry
+				e := entry
+				if has_next_slab {
+					xm := f64(e.x0) + e.slope * (y_mid - f64(e.y0))
+					e.x_mid = xm
+					if w > 0 && (prev_x > xm || (prev_x == xm && prev_slope > e.slope)) {
+						need_sort = true
+					}
+					prev_x = xm
+					prev_slope = e.slope
+				}
+				aet[w] = e
 				w += 1
 			}
 		}
@@ -244,68 +272,75 @@ odin_vatti_boolean :: proc(
 			next_horiz += 1
 		}
 		has_horiz_here := h_start < next_horiz
-		has_horiz_next := next_horiz < len(horizs) && s + 1 < num_y && horizs[next_horiz].y == ys[s + 1]
+		has_horiz_next := next_horiz < len(horizs) && has_next_slab && horizs[next_horiz].y == ys[s + 1]
 		record_slab := need_slab_intervals && (has_horiz_here || has_horiz_next)
 		clear(&cur_slab)
 
-		if s + 1 < num_y {
+		if has_next_slab {
 			for next_vert < len(verts) && verts[next_vert].y0 == y_cur {
-				append(&aet, Active_Entry{idx = next_vert, slope = verts[next_vert].slope})
+				v := verts[next_vert]
+				xm := f64(v.x0) + v.slope * (y_mid - f64(v.y0))
+				if len(aet) > 0 && (prev_x > xm || (prev_x == xm && prev_slope > v.slope)) {
+					need_sort = true
+				}
+				prev_x = xm
+				prev_slope = v.slope
+				append(&aet, Active_Entry{
+					x_mid   = xm,
+					slope   = v.slope,
+					x0      = v.x0,
+					y0      = v.y0,
+					y1      = v.y1,
+					idx     = i32(next_vert),
+					dw_subj = v.dw_subj,
+					dw_clip = v.dw_clip,
+				})
 				next_vert += 1
 			}
 
 			if len(aet) > 0 {
-				y_mid := 0.5 * f64(y_cur + ys[s + 1])
-				for &entry in aet {
-					v := verts[entry.idx]
-					entry.x_mid = f64(v.x0) + entry.slope * (y_mid - f64(v.y0))
-				}
-				// Insertion sort on nearly-sorted AET (O(k) in the common non-crossing case).
-				for ai := 1; ai < len(aet); ai += 1 {
-					key := aet[ai]
-					aj := ai - 1
-					for aj >= 0 && (aet[aj].x_mid > key.x_mid ||
-					    (aet[aj].x_mid == key.x_mid && aet[aj].slope > key.slope)) {
-						aet[aj + 1] = aet[aj]
-						aj -= 1
+				if need_sort {
+					// Insertion sort on nearly-sorted AET (O(k) when only newly entered edges move).
+					for ai := 1; ai < len(aet); ai += 1 {
+						key := aet[ai]
+						aj := ai - 1
+						for aj >= 0 && (aet[aj].x_mid > key.x_mid ||
+						    (aet[aj].x_mid == key.x_mid && aet[aj].slope > key.slope)) {
+							aet[aj + 1] = aet[aj]
+							aj -= 1
+						}
+						aet[aj + 1] = key
 					}
-					aet[aj + 1] = key
 				}
 
 				w_subj: i32 = 0
 				w_clip: i32 = 0
-				in_prev := vatti_bool_eval(
-					vatti_fill_inside(w_subj, fill_rule),
-					vatti_fill_inside(w_clip, fill_rule),
-					operation,
-				)
-				for entry in aet {
-					v := &verts[entry.idx]
-					w_subj += v.dw_subj
-					w_clip += v.dw_clip
+				in_prev := in_zero
+				y_top := ys[s + 1]
+				for &e in aet {
+					w_subj += e.dw_subj
+					w_clip += e.dw_clip
 					in_next := vatti_bool_eval(
 						vatti_fill_inside(w_subj, fill_rule),
 						vatti_fill_inside(w_clip, fill_rule),
 						operation,
 					)
 					if record_slab {
-						x_bot := f64(v.x0) + entry.slope * f64(y_cur - v.y0)
-						x_top := f64(v.x0) + entry.slope * f64(ys[s + 1] - v.y0)
+						x_bot := f64(e.x0) + e.slope * f64(y_cur - e.y0)
+						x_top := f64(e.x0) + e.slope * f64(y_top - e.y0)
 						append(&cur_slab, Slab_Interval{x_bot = x_bot, x_top = x_top, in_res = in_next})
 					}
 
 					slab_verdict: i8 = 0
-					if in_prev && !in_next {
-						slab_verdict = +1 // interior on left -> emit bottom->top
-					} else if !in_prev && in_next {
-						slab_verdict = -1 // interior on right -> emit top->bottom
+					if in_prev != in_next {
+						slab_verdict = +1 if in_prev else -1
 					}
-					if slab_verdict != v.run_verdict {
-						if v.run_verdict != 0 {
-							vatti_emit_vert_run(&kept_edges, v^, ys[:], v.run_s_start, s, v.run_verdict)
+					if slab_verdict != e.run_verdict {
+						if e.run_verdict != 0 {
+							vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
 						}
-						v.run_verdict = slab_verdict
-						v.run_s_start = s
+						e.run_verdict = slab_verdict
+						e.run_s_start = i32(s)
 					}
 					in_prev = in_next
 				}
@@ -345,9 +380,17 @@ odin_vatti_boolean :: proc(
 @(private = "file")
 vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dynamic]Vatti_Seg, crossings: int) {
 	n_segs := len(segs)
-	Seg_Ord :: struct {idx: int, min_x: i64}
+	Seg_Ord :: struct {
+		min_x: i64,
+		min_y: i64,
+		max_y: i64,
+		idx:   i32,
+	}
 	seg_ords := make([]Seg_Ord, n_segs, context.temp_allocator)
-	for i in 0..<n_segs {seg_ords[i] = {idx = i, min_x = segs[i].min_x}}
+	for i in 0..<n_segs {
+		s := segs[i]
+		seg_ords[i] = {min_x = s.min_x, min_y = s.min_y, max_y = s.max_y, idx = i32(i)}
+	}
 	fast_sort(seg_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
 
 	// Hot pixels are every endpoint and every rounded proper intersection. Endpoint pixels are
@@ -359,21 +402,35 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	try_snap :: proc(snaps: ^[dynamic]Snap_Item, idx: int, sg: Vatti_Seg, h: [2]i64) {
 		if (h[0] == sg.ax && h[1] == sg.ay) || (h[0] == sg.bx && h[1] == sg.by) {return}
 		if h[0] < sg.min_x - 1 || h[0] > sg.max_x + 1 || h[1] < sg.min_y - 1 || h[1] > sg.max_y + 1 {return}
+		// Exact integer line-to-unit-square pre-filter: a point in [-0.5, 0.5]^2 around h satisfies
+		// |(h.x - ax)*dy - (h.y - ay)*dx| <= 0.5*(|dx| + |dy|), rejecting ~99% of misses with no division.
+		dx_i := sg.bx - sg.ax
+		dy_i := sg.by - sg.ay
+		adx := abs(dx_i)
+		ady := abs(dy_i)
+		if adx < 1_000_000_000 && ady < 1_000_000_000 {
+			cross := (h[0] - sg.ax)*dy_i - (h[1] - sg.ay)*dx_i
+			if 2*abs(cross) > adx + ady {return}
+		}
 		if !vatti_segment_hits_pixel(sg, h) {return}
-		dx := f64(sg.bx - sg.ax)
-		dy := f64(sg.by - sg.ay)
+		dx := f64(dx_i)
+		dy := f64(dy_i)
 		t := (f64(h[0] - sg.ax)*dx + f64(h[1] - sg.ay)*dy) / (dx*dx + dy*dy)
 		append(snaps, Snap_Item{idx, t, h[0], h[1]})
 	}
 	hot := make([dynamic][2]i64, 0, 16, context.temp_allocator)
 	for oi in 0..<n_segs {
-		i := seg_ords[oi].idx
+		i := int(seg_ords[oi].idx)
 		sa := segs[i]
+		sa_max_x_1 := sa.max_x + 1
+		sa_min_y_1 := sa.min_y - 1
+		sa_max_y_1 := sa.max_y + 1
 		for oj := oi + 1; oj < n_segs; oj += 1 {
-			if seg_ords[oj].min_x > sa.max_x + 1 {break}
-			j := seg_ords[oj].idx
+			ord_j := seg_ords[oj]
+			if ord_j.min_x > sa_max_x_1 {break}
+			if ord_j.max_y < sa_min_y_1 || ord_j.min_y > sa_max_y_1 {continue}
+			j := int(ord_j.idx)
 			sb := segs[j]
-			if sb.max_y < sa.min_y - 1 || sb.min_y > sa.max_y + 1 {continue}
 			try_snap(&snaps, i, sa, {sb.ax, sb.ay})
 			try_snap(&snaps, i, sa, {sb.bx, sb.by})
 			try_snap(&snaps, j, sb, {sa.ax, sa.ay})
@@ -433,7 +490,7 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	for i in 0..<n_segs {snap_offsets[i + 1] += snap_offsets[i]}
 	routed := make([dynamic]Vatti_Seg, 0, n_segs + len(snaps), context.temp_allocator)
 	for oi in 0..<n_segs {
-		i := seg_ords[oi].idx
+		i := int(seg_ords[oi].idx)
 		sg := segs[i]
 		px, py := sg.ax, sg.ay
 		for sn in snaps[snap_offsets[i]:snap_offsets[i + 1]] {
@@ -447,7 +504,10 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	// Split collinear overlaps at the other piece's endpoints (exact points, no rounding).
 	n_routed := len(routed)
 	route_ords := make([]Seg_Ord, n_routed, context.temp_allocator)
-	for i in 0..<n_routed {route_ords[i] = {idx = i, min_x = routed[i].min_x}}
+	for i in 0..<n_routed {
+		r := routed[i]
+		route_ords[i] = {min_x = r.min_x, min_y = r.min_y, max_y = r.max_y, idx = i32(i)}
+	}
 	// Insertion sort: the pieces are nearly sorted already.
 	for ai := 1; ai < n_routed; ai += 1 {
 		key := route_ords[ai]
@@ -465,13 +525,14 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	}
 	splits := make([dynamic]Flat_Split, 0, 16, context.temp_allocator)
 	for oi in 0..<n_routed {
-		i := route_ords[oi].idx
+		i := int(route_ords[oi].idx)
 		sa := routed[i]
 		for oj := oi + 1; oj < n_routed; oj += 1 {
-			if route_ords[oj].min_x > sa.max_x {break}
-			j := route_ords[oj].idx
+			ord_j := route_ords[oj]
+			if ord_j.min_x > sa.max_x {break}
+			if ord_j.max_y < sa.min_y || ord_j.min_y > sa.max_y {continue}
+			j := int(ord_j.idx)
 			sb := routed[j]
-			if sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
 			if !vatti_segs_collinear(sa, sb) {continue}
 			vatti_maybe_split_flat(&splits, i, sa, sb.ax, sb.ay)
 			vatti_maybe_split_flat(&splits, i, sa, sb.bx, sb.by)
@@ -853,9 +914,18 @@ vatti_canonicalize_loops :: proc(
 				p_prev := next_buf[(i + n - 1) % n]
 				p_cur := next_buf[i]
 				p_next := next_buf[(i + 1) % n]
-				c := i128(i64(p_cur.x) - i64(p_prev.x))*i128(i64(p_next.y) - i64(p_cur.y)) -
-				     i128(i64(p_cur.y) - i64(p_prev.y))*i128(i64(p_next.x) - i64(p_cur.x))
-				if c != 0 {
+				dx1 := i64(p_cur.x) - i64(p_prev.x)
+				dy1 := i64(p_cur.y) - i64(p_prev.y)
+				dx2 := i64(p_next.x) - i64(p_cur.x)
+				dy2 := i64(p_next.y) - i64(p_cur.y)
+				collinear: bool
+				if abs(dx1) < VATTI_I64_SAFE_DELTA && abs(dy1) < VATTI_I64_SAFE_DELTA &&
+				   abs(dx2) < VATTI_I64_SAFE_DELTA && abs(dy2) < VATTI_I64_SAFE_DELTA {
+					collinear = dx1*dy2 - dy1*dx2 == 0
+				} else {
+					collinear = i128(dx1)*i128(dy2) - i128(dy1)*i128(dx2) == 0
+				}
+				if !collinear {
 					append(&cur, p_cur)
 				} else {
 					dropped = true
