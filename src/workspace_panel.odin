@@ -64,7 +64,7 @@ app_workspace_open :: proc(path: string) {
 		}
 	}
 	config.source_units = units
-	config.object_name = strings.clone(strings.trim_suffix(filepath.base(path), filepath.ext(path)), context.temp_allocator)
+	config.object_name = strings.trim_suffix(filepath.base(path), filepath.ext(path))
 	workspace, create_detail, create_ok := pipeline.workspace_create(config, mesh)
 	if !create_ok {
 		devlog.failed(devlog.global(), site, {reason = "workspace could not be created", detail = create_detail, severity = .Warning})

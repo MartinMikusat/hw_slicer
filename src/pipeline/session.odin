@@ -106,6 +106,9 @@ slice_session_create :: proc(
 	s.source = decoded_mesh_clone(source, allocator)
 	s.profile = profile
 	s.options = options
+	if len(options.object_name) > 0 {
+		s.options.object_name = strings.clone(options.object_name, allocator)
+	}
 	session_refresh(s)
 	// Metal device creation takes ~29 ms; start it now so it overlaps the CPU stages before Motion.
 	if options.use_gpu {slicer_gpu.metal_warm_up()}
@@ -115,6 +118,7 @@ slice_session_create :: proc(
 slice_session_destroy :: proc(s: ^Slice_Session) {
 	if s == nil {return}
 	for id in Stage_Id {session_clear_stage(s, id)}
+	delete(s.options.object_name, s.allocator)
 	formats.decoded_mesh_destroy(&s.source, s.allocator)
 	allocator := s.allocator
 	free(s, allocator)
@@ -127,8 +131,11 @@ slice_session_update :: proc(
 	profile: profiles.Resolved_Profiles,
 	options: Slice_Run_Options,
 ) {
+	cloned_name := strings.clone(options.object_name, s.allocator) if len(options.object_name) > 0 else ""
+	delete(s.options.object_name, s.allocator)
 	s.profile = profile
 	s.options = options
+	s.options.object_name = cloned_name
 	session_refresh(s)
 }
 

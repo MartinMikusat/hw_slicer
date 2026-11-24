@@ -323,10 +323,26 @@ process_profile_load_json :: proc(
 		extrusion_accumulation       = .Volume_Then_Fixed_Point_Length,
 		extrusion_length_quantum_nm  = 10,
 	}
-	seam_pos := raw.seam_position
-	if len(seam_pos) == 0 {seam_pos = "aligned"}
-	infill_pat := raw.infill_pattern
-	if len(infill_pat) == 0 {infill_pat = "gyroid"}
+	seam_pos := "aligned"
+	switch {
+	case strings.equal_fold(raw.seam_position, "rear"):
+		seam_pos = "rear"
+	case strings.equal_fold(raw.seam_position, "sharpest"), strings.equal_fold(raw.seam_position, "sharpest_corner"):
+		seam_pos = "sharpest"
+	case strings.equal_fold(raw.seam_position, "nearest"):
+		seam_pos = "nearest"
+	}
+	infill_pat := "gyroid"
+	for pat in ([?]string{"rectilinear", "grid", "triangles", "gyroid", "cubic", "honeycomb", "lightning"}) {
+		if strings.equal_fold(raw.infill_pattern, pat) {
+			infill_pat = pat
+			break
+		}
+	}
+	support_style := "tree"
+	if strings.equal_fold(raw.support_style, "grid") || strings.equal_fold(raw.support_style, "rectilinear") {
+		support_style = "grid"
+	}
 	extras := Process_JSON_Extras{
 		infill_density_percent        = raw.infill_density_percent if raw.infill_density_percent > 0 else 15.0,
 		skirt_loops                   = raw.skirt_loops,
@@ -348,7 +364,7 @@ process_profile_load_json :: proc(
 		arc_fitting_enabled           = raw.arc_fitting_enabled,
 		arc_tolerance_mm              = raw.arc_tolerance_mm if raw.arc_tolerance_mm > 0 else 0.02,
 		variable_walls_enabled        = raw.variable_walls_enabled,
-		support_style                 = raw.support_style if len(raw.support_style) > 0 else "tree",
+		support_style                 = support_style,
 		adaptive_layers               = raw.adaptive_layers,
 	}
 	return p, extras, .None

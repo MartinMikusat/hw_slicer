@@ -250,6 +250,10 @@ workspace_create :: proc(
 	w = new(Workspace)
 	w.config = config
 	w.defaults = config
+	if len(config.object_name) > 0 {
+		w.config.object_name = strings.clone(config.object_name)
+		w.defaults.object_name = strings.clone(config.object_name)
+	}
 	w.session = slice_session_create(mesh, resolved, options)
 	w.queued = make([dynamic]Queued_Edit)
 	return w, "", true
@@ -266,6 +270,8 @@ workspace_destroy :: proc(w: ^Workspace) {
 	delete(w.queued)
 	delete(w.last_error.stage)
 	delete(w.last_error.detail)
+	delete(w.config.object_name)
+	delete(w.defaults.object_name)
 	slice_session_destroy(w.session)
 	free(w)
 }
