@@ -35,7 +35,7 @@ Label unimplemented stages as placeholders. Do not imply that their results exis
 ## Workspace decisions
 
 - Use a full-window workspace with the stage graph and the 3D view split by a draggable divider, and the attribute editor of the selected stage on the right. See the [stage graph plan](docs/stage-graph-plan.md).
-- Keep the attribute editor consistent across stages. For an empty sidebar, state what the stage will configure or produce. Do not invent controls or measurements.
+- Keep the attribute editor consistent across stages. For an empty attribute editor, state what the stage will configure or produce. Do not invent controls or measurements.
 - Show one graph node per engine stage. A click selects the stage and shows its result in the 3D view. Stale and failed stages stay selectable.
 - Preserve the selected layer across applicable stages. The layer selector belongs to the 3D view. Show the layer in model context and provide an isolated view for detailed inspection.
 - Put each setting at the first stage that it affects. Show inherited values as context in later stages without duplicate editable controls.
