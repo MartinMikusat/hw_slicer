@@ -1,11 +1,13 @@
 package pipeline
 
+import "base:runtime"
 import "core:fmt"
 import "core:math"
 import "core:mem"
 import "core:slice"
 import "core:strings"
 import "core:sync"
+import "core:thread"
 import "core:time"
 
 import contracts "../contracts"
@@ -146,39 +148,110 @@ slice_session_run_all :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 
 SLICE_RUN_CANCELLED :: "cancelled"
 
-// Runs every incomplete stage among the target and the stages it needs. A stage that fails stops
-// the run.
-// A set cancel flag stops the run before the next stage and returns a SLICE_RUN_CANCELLED error.
+// Runs every incomplete stage among the target and the stages it needs. Each stage starts on its
+// own thread as soon as all its inputs are complete, so independent stages run side by side and
+// share the worker pool. Stages read only results of stages that finished before them, so the
+// results do not depend on the order.
+// A failed stage keeps stages already running alive but starts nothing that needs it; the run
+// returns the failure of the earliest failed stage. A set cancel flag starts no further stage, lets
+// running stages finish, and returns a SLICE_RUN_CANCELLED error when anything was left undone.
+// Error strings are allocated with the caller's temporary allocator.
 slice_session_run_to :: proc(s: ^Slice_Session, target: Stage_Id, cancel: ^bool = nil) -> Slice_Run_Error {
 	features.set_worker_threads(resolved_worker_threads(s.options.worker_threads))
 	slicing.slicing_set_worker_threads(resolved_worker_threads(s.options.worker_threads))
 	needed := stage_upstream(target)
+
+	finished: sync.Cond
+	running := 0
+	jobs: [Stage_Id]Stage_Job
+	threads: [Stage_Id]^thread.Thread
+	launched: Stage_Set
+
+	sync.mutex_lock(&s.lock)
+	for {
+		if cancel == nil || !sync.atomic_load(cancel) {
+			for id in Stage_Id {
+				if id not_in needed || id in launched || s.slots[id].state == .Complete {continue}
+				ready := true
+				for dep in Stage_Id {
+					if dep in stage_descriptors[id].inputs && s.slots[dep].state != .Complete {ready = false}
+				}
+				if !ready {continue}
+				launched += {id}
+				session_clear_stage(s, id)
+				s.slots[id].state = .Running
+				s.slots[id].started = time.tick_now()
+				running += 1
+				jobs[id] = {s = s, id = id, finished = &finished, running = &running}
+				t := thread.create(session_stage_thread)
+				t.data = &jobs[id]
+				t.init_context = context
+				threads[id] = t
+				thread.start(t)
+			}
+		}
+		if running == 0 {break}
+		sync.cond_wait(&finished, &s.lock)
+	}
+	result: Slice_Run_Error
+	incomplete := false
 	for id in Stage_Id {
 		if id not_in needed {continue}
-		slot := &s.slots[id]
-		if slot.state == .Complete {continue}
-		if cancel != nil && sync.atomic_load(cancel) {return {stage = SLICE_RUN_CANCELLED}}
-		sync.mutex_lock(&s.lock)
-		session_clear_stage(s, id)
-		slot.state = .Running
-		slot.started = time.tick_now()
-		sync.mutex_unlock(&s.lock)
-		start := time.tick_now()
-		err := session_run_stage(s, id)
-		elapsed := time.duration_seconds(time.tick_since(start)) * 1000.0
-		sync.mutex_lock(&s.lock)
-		defer sync.mutex_unlock(&s.lock)
-		slot.duration_ms = elapsed
-		if len(err.stage) > 0 {
-			session_clear_stage(s, id)
-			slot.state = .Failed
-			slot.failure = {stage = strings.clone(err.stage, s.allocator), detail = strings.clone(err.detail, s.allocator)}
-			return err
+		slot := s.slots[id]
+		if slot.state == .Failed && len(result.stage) == 0 {
+			result = {
+				stage  = strings.clone(slot.failure.stage, context.temp_allocator),
+				detail = strings.clone(slot.failure.detail, context.temp_allocator),
+			}
 		}
+		if slot.state != .Complete {incomplete = true}
+	}
+	sync.mutex_unlock(&s.lock)
+	for t in threads {
+		if t == nil {continue}
+		thread.join(t)
+		thread.destroy(t)
+	}
+	if len(result.stage) == 0 && incomplete && cancel != nil && sync.atomic_load(cancel) {
+		result.stage = SLICE_RUN_CANCELLED
+	}
+	return result
+}
+
+// One stage run by slice_session_run_to; lives on the caller's stack until the thread is joined.
+@(private = "file")
+Stage_Job :: struct {
+	s:        ^Slice_Session,
+	id:       Stage_Id,
+	finished: ^sync.Cond,
+	running:  ^int,
+}
+
+@(private = "file")
+session_stage_thread :: proc(t: ^thread.Thread) {
+	// A thread started with a context gets its own temporary arena but must free it itself.
+	defer if context.temp_allocator.procedure == runtime.default_temp_allocator_proc {
+		runtime.default_temp_allocator_destroy(auto_cast context.temp_allocator.data)
+	}
+	job := (^Stage_Job)(t.data)
+	s := job.s
+	start := time.tick_now()
+	err := session_run_stage(s, job.id)
+	elapsed := time.duration_seconds(time.tick_since(start)) * 1000.0
+	sync.mutex_lock(&s.lock)
+	defer sync.mutex_unlock(&s.lock)
+	slot := &s.slots[job.id]
+	slot.duration_ms = elapsed
+	if len(err.stage) > 0 {
+		session_clear_stage(s, job.id)
+		slot.state = .Failed
+		slot.failure = {stage = strings.clone(err.stage, s.allocator), detail = strings.clone(err.detail, s.allocator)}
+	} else {
 		slot.state = .Complete
 		slot.built_hash = slot.expected_hash
 	}
-	return {}
+	job.running^ -= 1
+	sync.cond_broadcast(job.finished)
 }
 
 // Drops the result of one stage so that the next run recomputes it. The stages after it keep their

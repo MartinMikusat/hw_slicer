@@ -1,5 +1,6 @@
 package pipeline
 
+import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
@@ -528,6 +529,10 @@ workspace_start :: proc(w: ^Workspace, target: Stage_Id) {
 	job := new(Run_Job)
 	job^ = {w = w, target = target}
 	t := thread.create(proc(t: ^thread.Thread) {
+		// A thread started with a context gets its own temporary arena but must free it itself.
+		defer if context.temp_allocator.procedure == runtime.default_temp_allocator_proc {
+			runtime.default_temp_allocator_destroy(auto_cast context.temp_allocator.data)
+		}
 		job := (^Run_Job)(t.data)
 		w := job.w
 		err := slice_session_run_to(w.session, job.target, &w.cancel)
