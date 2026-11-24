@@ -239,14 +239,14 @@ plate_slice_sequential :: proc(
 
 // The byte offset where an object's per-layer body begins: its EXCLUDE_OBJECT_START, or its
 // first layer comment when the object has no name.
-@(private = "file")
+@(private = "package")
 sequential_body_start :: proc(g: string) -> int {
 	if idx := strings.index(g, "EXCLUDE_OBJECT_START"); idx >= 0 {return idx}
 	return strings.index(g, ";LAYER:")
 }
 
 // The XY point that the object's first move starts from.
-@(private = "file")
+@(private = "package")
 sequential_first_point :: proc(motion: features.Motion_Plan_Result) -> (polygon.Polygon_Point, bool) {
 	for op in motion.operations {
 		if op.kind != .Dwell {return op.point_a, true}
@@ -254,7 +254,7 @@ sequential_first_point :: proc(motion: features.Motion_Plan_Result) -> (polygon.
 	return {}, false
 }
 
-@(private = "file")
+@(private = "package")
 sequential_append_um :: proc(b: ^strings.Builder, value: contracts.Micrometres) {
 	v := i64(value)
 	if v < 0 {

@@ -51,6 +51,7 @@ CLI_Options :: struct {
 	color_change_layers: [dynamic]u32,
 	overrides:           [dynamic]CLI_Override,
 	then_changes:        [dynamic]CLI_Override,
+	sweep_axes:          [dynamic]pipeline.Sweep_Axis,
 	workspace_script:    string,
 }
 
@@ -340,6 +341,14 @@ main :: proc() {
 				fmt.eprintf("error: unknown --evidence-level '%s'\n", arg[len("--evidence-level="):])
 				os.exit(2)
 			}
+		} else if strings.has_prefix(arg, "--sweep=") {
+			spec := arg[len("--sweep="):]
+			if ax, ok := pipeline.sweep_axis_parse(spec); ok {
+				append(&opts.sweep_axes, ax)
+			} else {
+				fmt.eprintf("error: invalid --sweep '%s' (expected key=v1,v2,...)\n", spec)
+				os.exit(2)
+			}
 		} else if strings.has_prefix(arg, "--modifier=") {
 			spec := arg[len("--modifier="):]
 			if mod, ok := pipeline.modifier_parse(spec); ok {
@@ -460,6 +469,46 @@ main :: proc() {
 
 	has_plate_ops := len(opts.input_paths) > 1 || opts.clone_count > 1 ||
 		opts.scale != 1.0 || opts.rot_x != 0 || opts.rot_y != 0 || opts.rot_z != 0 || opts.lay_flat
+
+	if len(opts.sweep_axes) > 0 {
+		mesh, units, dec_err := pipeline.decode_mesh_bytes(input_bytes, opts.input_path, run_opts.source_units)
+		if len(dec_err.stage) > 0 {
+			fmt.eprintf("SLICE FAILED at [%s]: %s\n", dec_err.stage, dec_err.detail)
+			os.exit(1)
+		}
+		defer formats.decoded_mesh_destroy(&mesh)
+		config.source_units = units
+		stem := strings.trim_suffix(filepath.base(opts.input_path), filepath.ext(opts.input_path))
+		sweep_res, sweep_err := pipeline.plate_slice_settings_sweep(mesh, stem, config, opts.sweep_axes[:])
+		if len(sweep_err.stage) > 0 {
+			fmt.eprintf("SWEEP FAILED at [%s]: %s\n", sweep_err.stage, sweep_err.detail)
+			os.exit(1)
+		}
+		defer pipeline.sweep_result_destroy(&sweep_res)
+		est_s := int(math.round(sweep_res.plate.total_seconds))
+		fmt.printf("SLICE OK (sweep %d copies): %s  printer=%s material=%s process=%s\n",
+			len(sweep_res.copies), filepath.base(opts.input_path), opts.printer, opts.material, opts.process)
+		fmt.printf("  tris=%d  layers=%d  repairs=%d  extrude=%d  travel=%d  filament=%.2f mm  est_time=%02d:%02d:%02d  gcode=%d bytes  total=%.2f ms\n",
+			sweep_res.plate.total_triangles, sweep_res.plate.total_layers, sweep_res.plate.total_repairs,
+			sweep_res.plate.extrude_move_count, sweep_res.plate.travel_move_count,
+			f64(sweep_res.plate.positive_filament_nm)/1_000_000.0,
+			est_s/3600, (est_s%3600)/60, est_s%60,
+			len(sweep_res.plate.gcode_bytes), sweep_res.plate.total_duration_ms)
+		for c in sweep_res.copies {
+			fmt.printf("  copy %2d: %-18s  at (%.1f, %.1f) mm  %s\n", c.index+1, c.name, c.center_x_mm, c.center_y_mm, c.settings)
+		}
+		if len(opts.output_path) > 0 {
+			parent := filepath.dir(opts.output_path)
+			if len(parent) > 0 && parent != "." {_ = os.make_directory_all(parent)}
+			if os.write_entire_file(opts.output_path, sweep_res.plate.gcode_bytes) != nil {
+				fmt.eprintf("error: failed to write G-code '%s'\n", opts.output_path)
+				os.exit(1)
+			}
+			fmt.printf("  wrote G-code: %s\n", opts.output_path)
+		}
+		devlog.succeeded(devlog.global(), site, {scope = "cli", stage = "done"}, {rows = i64(sweep_res.plate.extrude_move_count)})
+		return
+	}
 
 	if len(opts.workspace_script) > 0 {
 		mesh, units, dec_err := pipeline.decode_mesh_bytes(input_bytes, opts.input_path, run_opts.source_units)
