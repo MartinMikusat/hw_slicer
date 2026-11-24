@@ -722,7 +722,7 @@ ui_stage_color :: proc(ui: ^UI_State, stage: pipeline.Stage_View) -> Vec4 {
 	case .Running:  return theme.peach
 	case .Complete: return theme.mint
 	case .Stale:    return theme.warning
-	case .Not_Run:  return {0.20, 0.20, 0.27, 1} if ui.dark else {0.91, 0.89, 0.95, 1}
+	case .Not_Run:  return {0.235, 0.227, 0.306, 1} if ui.dark else {0.91, 0.89, 0.95, 1}
 	}
 	return theme.track
 }
@@ -759,9 +759,10 @@ ui_draw_graph_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	ui_add_rect(painter, {0, 0, ui.width, 40}, theme.header)
 	ui_add_rect(painter, {0, 40-theme.border_width, ui.width, theme.border_width}, theme.border)
 	g := ui_graph_rect(ui)
-	ui_neo_panel(painter, ui, g, theme.surface, theme.radius, true)
+	graph_bg := Vec4{0.145, 0.145, 0.188, 1} if ui.dark else theme.surface
+	ui_neo_panel(painter, ui, g, graph_bg, theme.radius, true)
 	d := ui_graph_divider_rect(ui)
-	grip_fill := theme.peach if ui.workspace.graph.split_dragging || ui.hovered_id == u64(UI_Action.Graph_Divider) else theme.surface
+	grip_fill := theme.peach if ui.workspace.graph.split_dragging || ui.hovered_id == u64(UI_Action.Graph_Divider) else theme.control
 	ui_neo_box(painter, {d.x+d.w/2-2, d.y+d.h/2-28, 6, 56}, 3, grip_fill, theme.border, 1.4)
 }
 
@@ -920,7 +921,7 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 						act := ui_setting_action(row_index, 1)
 						is_on := row.value == "true"
 						hov := ui.hovered_id == u64(act)
-						fill := theme.mint if is_on else (ui_neo_hover_fill(theme, theme.surface) if hov else theme.surface)
+						fill := theme.mint if is_on else (ui_neo_hover_fill(theme, theme.control) if hov else theme.control)
 						ink := NEO_DARK_INK if is_on else theme.text
 						gpu.draw_box(painter.list, {rect = ui_gpu_rect(right_btn), radii = {ctrl_rad, ctrl_rad, ctrl_rad, ctrl_rad}, fill = ui_color(fill), border_color = ui_color(theme.border), border_width = bw})
 						ui_draw_text(painter, body_font, ui, "On" if is_on else "Off", right_btn, ink, 0, .Center)
@@ -928,7 +929,7 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 						act_l := ui_setting_action(row_index, 0)
 						act_r := ui_setting_action(row_index, 1)
 						full_box := UI_Rect{left_btn.x, left_btn.y, right_btn.x+right_btn.w-left_btn.x, left_btn.h}
-						box_fill := theme.peach if row.changed else theme.surface
+						box_fill := theme.peach if row.changed else theme.control
 						gpu.draw_box(painter.list, {rect = ui_gpu_rect(full_box), radii = {ctrl_rad, ctrl_rad, ctrl_rad, ctrl_rad}, fill = ui_color(box_fill), border_color = ui_color(theme.border), border_width = bw})
 						if ui.hovered_id == u64(act_l) {
 							gpu.draw_rect(painter.list, ui_gpu_rect(left_btn), ui_color(theme.lavender), {ctrl_rad, 0, 0, ctrl_rad})

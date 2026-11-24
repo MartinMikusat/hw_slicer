@@ -260,19 +260,19 @@ ui_neo_vec4 :: proc(c: neo.Color) -> Vec4 {
 ui_theme_from_neo :: proc(nt: neo.Theme, dark: bool) -> Theme {
 	return Theme{
 		canvas        = ui_neo_vec4(nt.canvas),
-		header        = ui_neo_vec4(nt.paper if dark else nt.lavender),
+		header        = {0.165, 0.157, 0.224, 1} if dark else ui_neo_vec4(nt.lavender),
 		surface       = ui_neo_vec4(nt.paper),
-		raised        = ui_neo_vec4(nt.paper),
-		control       = ui_neo_vec4(nt.track if dark else nt.paper),
+		raised        = {0.204, 0.204, 0.259, 1} if dark else ui_neo_vec4(nt.paper),
+		control       = {0.208, 0.208, 0.267, 1} if dark else ui_neo_vec4(nt.paper),
 		overlay       = ui_neo_vec4(nt.paper),
-		border        = ui_neo_vec4(nt.ink),
+		border        = ui_neo_vec4(nt.outline),
 		text          = ui_neo_vec4(nt.ink),
 		muted         = ui_neo_vec4(nt.muted),
 		accent        = ui_neo_vec4(nt.mint),
 		accent_ink    = NEO_DARK_INK,
 		bead          = {0.84, 0.79, 0.71, 1} if dark else {0.78, 0.71, 0.62, 1},
-		arc           = {0.43, 0.83, 0.73, 1} if dark else {0.20, 0.45, 0.40, 1},
-		marker        = {0.96, 0.75, 0.56, 1} if dark else {0.92, 0.42, 0.34, 1},
+		arc           = {0.47, 0.84, 0.75, 1} if dark else {0.20, 0.45, 0.40, 1},
+		marker        = {0.96, 0.74, 0.56, 1} if dark else {0.92, 0.42, 0.34, 1},
 		shadow        = ui_neo_vec4(nt.shadow),
 		track         = ui_neo_vec4(nt.track),
 		mint          = ui_neo_vec4(nt.mint),
@@ -1308,7 +1308,7 @@ ui_neo_button_fill :: proc(ui: ^UI_State, control: UI_Control) -> (fill: Vec4, p
 	case .Simulation_Rate:
 		return theme.blue, true
 	case .Open_Settings:
-		return theme.surface, false
+		return theme.control, false
 	case .Toggle_Theme:
 		return theme.peach, true
 	case .Show_Help:
