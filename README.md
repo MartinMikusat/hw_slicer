@@ -78,7 +78,7 @@ Build and run the development app:
 ./dev.sh debug
 ```
 
-The watcher builds `build/HWSlicer.app` and launches it behind the active
+The watcher builds `build/hw_slicer.app` and launches it behind the active
 application. A source or resource change rebuilds the complete app. The watcher
 replaces the running process only after a successful build. Use
 `./dev.sh asan` for AddressSanitizer development.

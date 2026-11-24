@@ -17,18 +17,18 @@ for arg in "$@"; do
 done
 
 case "$MODE" in
-  debug) APP="$ROOT/build/HWSlicer.app" ;;
-  asan) APP="$ROOT/build/asan/HWSlicer.app" ;;
+  debug) APP="$ROOT/build/hw_slicer.app" ;;
+  asan) APP="$ROOT/build/asan/hw_slicer.app" ;;
   release)
     "$ROOT/build.sh" release
-    exec "$ROOT/build/release/HWSlicer.app/Contents/MacOS/HWSlicer"
+    exec "$ROOT/build/release/hw_slicer.app/Contents/MacOS/hw_slicer"
     ;;
 esac
 
 HW_DEVLOG_DIR=${HW_DEVLOG_DIR:-"$ROOT/.dev-logs/$MODE"}
 HW_DEVLOG_PROFILE=${HW_DEVLOG_PROFILE:-dev}
 export HW_DEVLOG_DIR HW_DEVLOG_PROFILE
-HOST="$APP/Contents/MacOS/HWSlicer"
+HOST="$APP/Contents/MacOS/hw_slicer"
 READY_STAMP="$ROOT/build/.ready-$MODE"
 RUNTIME="$ROOT/.hw-slicer-runtime"
 LOCK="$ROOT/build/dev-watcher.lock"

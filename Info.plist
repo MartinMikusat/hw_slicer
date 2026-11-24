@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>HWSlicer</string>
+	<string>hw_slicer</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.halwayland.hwslicer</string>
 	<key>CFBundleInfoDictionaryVersion</key>

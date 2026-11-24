@@ -45,11 +45,11 @@ done
 "$ROOT/build.sh" asan
 "$ROOT/build.sh" release
 
-test -d "$ROOT/build/HWSlicer.app.dSYM"
-test -d "$ROOT/build/asan/HWSlicer.app.dSYM"
-file "$ROOT/build/HWSlicer.app/Contents/MacOS/HWSlicer" | grep -q 'arm64'
-codesign --verify --deep --strict "$ROOT/build/HWSlicer.app"
-codesign --verify --deep --strict "$ROOT/build/asan/HWSlicer.app"
-codesign --verify --deep --strict "$ROOT/build/release/HWSlicer.app"
+test -d "$ROOT/build/hw_slicer.app.dSYM"
+test -d "$ROOT/build/asan/hw_slicer.app.dSYM"
+file "$ROOT/build/hw_slicer.app/Contents/MacOS/hw_slicer" | grep -q 'arm64'
+codesign --verify --deep --strict "$ROOT/build/hw_slicer.app"
+codesign --verify --deep --strict "$ROOT/build/asan/hw_slicer.app"
+codesign --verify --deep --strict "$ROOT/build/release/hw_slicer.app"
 
 printf '[hw_slicer] foundation check passed\n'

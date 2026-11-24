@@ -25,17 +25,17 @@ MODE=${1:-debug}
 
 case "$MODE" in
   debug)
-    APP="$ROOT/build/HWSlicer.app"
+    APP="$ROOT/build/hw_slicer.app"
     ODIN_FLAGS="-debug -o:none -keep-temp-files"
     CLANG_FLAGS="-O0 -g"
     ;;
   asan)
-    APP="$ROOT/build/asan/HWSlicer.app"
+    APP="$ROOT/build/asan/hw_slicer.app"
     ODIN_FLAGS="-debug -o:none -keep-temp-files -sanitize:address"
     CLANG_FLAGS="-O0 -g -fsanitize=address"
     ;;
   release|cli-release)
-    APP="$ROOT/build/release/HWSlicer.app"
+    APP="$ROOT/build/release/hw_slicer.app"
     ODIN_FLAGS="-o:speed"
     CLANG_FLAGS="-O2"
     ;;
@@ -59,7 +59,7 @@ ODIN="$ROOT/scripts/odin.sh"
 CLANG=$(xcrun --find clang)
 SDK_ROOT=$(xcrun --sdk macosx --show-sdk-path)
 BUILD_DIR="$ROOT/build/application/$CLIPPER_MODE"
-EXECUTABLE="$APP/Contents/MacOS/HWSlicer"
+EXECUTABLE="$APP/Contents/MacOS/hw_slicer"
 HOST_OBJECT="$BUILD_DIR/HWSlicerHost.o"
 METAL_COMPUTE_OBJECT="$BUILD_DIR/HWSlicerMetalCompute.o"
 FRAMEWORKS="-framework AppKit -framework Foundation -framework Metal -framework QuartzCore -framework UniformTypeIdentifiers -framework CoreText -framework CoreGraphics"

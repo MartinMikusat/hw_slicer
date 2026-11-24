@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-APP="$ROOT/build/HWSlicer.app/Contents/MacOS/HWSlicer"
+APP="$ROOT/build/hw_slicer.app/Contents/MacOS/hw_slicer"
 OUTPUT=${1:-"$ROOT/.hw-slicer-runtime/render.png"}
 BMP="${OUTPUT%.png}.bmp"
 LOG="$ROOT/.dev-logs/capture"

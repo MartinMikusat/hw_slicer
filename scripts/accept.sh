@@ -32,7 +32,7 @@ fail() {
 
 echo "=== 1. Build & Dependency Pin Verification ==="
 ./build.sh debug >"$OUT_DIR/build-debug.log" 2>&1 || { cat "$OUT_DIR/build-debug.log" >&2; fail "build.sh debug"; }
-pass "build.sh debug (dependencies.lock + HWSlicer.app + hw-slicer-cli)"
+pass "build.sh debug (dependencies.lock + hw_slicer.app + hw-slicer-cli)"
 
 ./build.sh cli-release >"$OUT_DIR/build-release.log" 2>&1 || { cat "$OUT_DIR/build-release.log" >&2; fail "build.sh cli-release"; }
 CLI="$ROOT_DIR/build/release/hw-slicer-cli"
