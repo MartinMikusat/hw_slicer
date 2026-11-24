@@ -19,6 +19,8 @@ An Apple Silicon macOS slicer that converts 3D models into deterministic FFF too
 5. **Development Watcher:** Use `./dev.sh [debug|asan|release]` as the default development loop. The watcher maintains a single-instance lock and handles hot builds.
 6. **Surgical Changes:** Modify only files directly required for the task. Match existing code formatting, naming conventions, and lifetime management (explicit allocators, defer cleanups).
 7. **Commit Style:** Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `perf:`, `test:`, `chore:`). Commit complete units of work autonomously.
+8. **Deleting Commands or Scripts:** Whenever a command, binary, or script is deleted, search `README.md`, `AGENTS.md`, `docs/`, `test.sh`, and `scripts/` for references to the removed names and update or remove them in the same commit.
+9. **Open Decisions:** Propose answers to open product decisions (such as the "Open decisions" list in `TODO.md`) rather than resolving, removing, or implementing them without explicit operator confirmation.
 
 ## UI styling
 
