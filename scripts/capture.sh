@@ -6,12 +6,16 @@ APP="$ROOT/build/hw_slicer.app/Contents/MacOS/hw_slicer"
 OUTPUT=${1:-"$ROOT/.hw-slicer-runtime/render.png"}
 BMP="${OUTPUT%.png}.bmp"
 LOG="$ROOT/.dev-logs/capture"
+# Seconds to wait for the first frame. `--stage-run` slices before that frame, so raise it there.
+TIMEOUT=${CAPTURE_TIMEOUT:-10}
 
 if [ ! -x "$APP" ]; then
   echo "[hw_slicer] missing build: run ./build.sh debug" >&2
   exit 1
 fi
 
+# Each capture starts its own journal, so the summary describes only this run.
+rm -rf "$LOG"
 mkdir -p "$(dirname "$OUTPUT")" "$LOG"
 rm -f "$BMP"
 
@@ -27,8 +31,12 @@ trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT INT
 attempt=0
 while [ ! -f "$BMP" ]; do
   attempt=$((attempt+1))
-  if [ "$attempt" -ge 100 ]; then
-    echo "[hw_slicer] render capture timed out" >&2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "[hw_slicer] the app exited before its first frame; see hw-devlog --dir $LOG summary" >&2
+    exit 1
+  fi
+  if [ "$attempt" -ge $((TIMEOUT*10)) ]; then
+    echo "[hw_slicer] render capture timed out after ${TIMEOUT} s; set CAPTURE_TIMEOUT to wait longer" >&2
     exit 1
   fi
   sleep 0.1

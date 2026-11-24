@@ -75,6 +75,8 @@ startup_design_time := -1.0
 startup_stage := -1
 startup_stage_run: bool
 startup_stage_edits: [dynamic][2]string
+// `--tabs=slicer,design,…`: demo tabs to switch to on the first frame, in order (true = slicer).
+startup_tabs: [dynamic]bool
 bench_frames_target: int
 bench_frames_done: int
 bench_start_tick: time.Tick
@@ -808,6 +810,20 @@ application_shutdown :: proc "c" () {
 	app_destroy()
 }
 
+// Replays `--tabs` once, on the first frame: each switch is followed by a design-watcher check, as
+// the frames after a click would run it. A capture then shows the state after the last switch.
+app_run_startup_tabs :: proc() {
+	if len(startup_tabs) == 0 {return}
+	for slicer in startup_tabs {
+		app_set_demo_tab(slicer)
+		app.design.poll_tick = {}
+		app_poll_design()
+		app_workspace_poll()
+	}
+	clear(&startup_tabs)
+	app.needs_redraw = true
+}
+
 application_frame :: proc "c" (width, height, scale: f64) {
 	context = app_context()
 	if width <= 0 || height <= 0 {return}
@@ -834,6 +850,7 @@ application_frame :: proc "c" (width, height, scale: f64) {
 		app.needs_redraw = true
 	}
 	app_animate_camera()
+	app_run_startup_tabs()
 	app_poll_design()
 	app_workspace_poll()
 	profile_update := profile_editor_update_drag(profile_timing_ptr)
@@ -1492,6 +1509,14 @@ main :: proc() {
 			pair := argument[len("--stage-set="):]
 			if eq := strings.index_byte(pair, '='); eq > 0 {
 				append(&startup_stage_edits, [2]string{pair[:eq], pair[eq+1:]})
+			}
+		} else if strings.has_prefix(argument, "--tabs=") {
+			for name in strings.split(argument[len("--tabs="):], ",", context.temp_allocator) {
+				switch name {
+				case "slicer": append(&startup_tabs, true)
+				case "design": append(&startup_tabs, false)
+				case: fmt.eprintf("hw_slicer: ignoring unknown tab '%s' in --tabs\n", name)
+				}
 			}
 		} else if strings.has_prefix(argument, "--bench-frames=") {
 			if parsed, ok := strconv.parse_int(argument[len("--bench-frames="):], 10); ok && parsed > 0 {
