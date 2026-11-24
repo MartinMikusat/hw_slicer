@@ -8,14 +8,14 @@ import "rune:text"
 import pipeline "./pipeline"
 
 // Graph units are points at zoom 1. Node positions come from the stage dependency table only.
-GRAPH_NODE_W :: 232.0
+GRAPH_NODE_W :: 248.0
 GRAPH_NODE_TITLE_H :: 22.0
-GRAPH_NODE_SUMMARY_H :: 34.0
-GRAPH_NODE_BASE_H :: GRAPH_NODE_TITLE_H + GRAPH_NODE_SUMMARY_H
+GRAPH_NODE_PURPOSE_LINE_H :: 14.0
+GRAPH_NODE_STATUS_H :: 18.0
 GRAPH_NODE_SETTING_H :: 22.0
 GRAPH_NODE_ADV_H :: 20.0
 GRAPH_NODE_PAD_B :: 6.0
-GRAPH_PITCH_X :: 268.0
+GRAPH_PITCH_X :: 284.0
 GRAPH_NODE_GAP_Y :: 16.0
 GRAPH_MARGIN :: 24.0
 GRAPH_ZOOM_MIN :: 0.2
@@ -24,6 +24,71 @@ GRAPH_INLINE_MIN_ZOOM :: 0.45
 GRAPH_SPLIT_DEFAULT :: 0.5
 GRAPH_DIVIDER_W :: 10.0
 GRAPH_MENU_ROW :: 28.0
+
+@(private = "file")
+g_purpose_wrap_ready: bool
+@(private = "file")
+g_purpose_lines: [pipeline.Stage_Id][6]string
+@(private = "file")
+g_purpose_line_counts: [pipeline.Stage_Id]int
+
+// Word-wraps every stage's static purpose text once at zoom 1 into slices of the static literal.
+@(private = "file")
+ui_graph_ensure_purpose_wrap :: proc() {
+	if g_purpose_wrap_ready {return}
+	g_purpose_wrap_ready = true
+	font := ui_font("Inter-Regular", BASE_FONT_SIZE*0.78)
+	if font == nil {
+		for id in pipeline.Stage_Id {
+			g_purpose_lines[id][0] = pipeline.stage_descriptors[id].purpose
+			g_purpose_line_counts[id] = 1
+		}
+		return
+	}
+	defer CFRelease(font)
+	max_w := GRAPH_NODE_W - 20.0
+	for id in pipeline.Stage_Id {
+		text_s := pipeline.stage_descriptors[id].purpose
+		count := 0
+		line_start := 0
+		i := 0
+		for i < len(text_s) && count < len(g_purpose_lines[id]) {
+			// Advance past one word.
+			word_end := i
+			for word_end < len(text_s) && text_s[word_end] != ' ' {word_end += 1}
+			candidate := text_s[line_start:word_end]
+			run := ui_text_run(font, candidate, 0)
+			adv := run.advance
+			if run.line != nil {CFRelease(run.line)}
+			if adv > max_w && i > line_start {
+				// Emit up to the previous word boundary and start a new line at this word.
+				end := i
+				for end > line_start && text_s[end-1] == ' ' {end -= 1}
+				g_purpose_lines[id][count] = text_s[line_start:end]
+				count += 1
+				line_start = i
+			}
+			i = word_end
+			for i < len(text_s) && text_s[i] == ' ' {i += 1}
+		}
+		if line_start < len(text_s) && count < len(g_purpose_lines[id]) {
+			g_purpose_lines[id][count] = text_s[line_start:]
+			count += 1
+		}
+		if count == 0 {
+			g_purpose_lines[id][0] = text_s
+			count = 1
+		}
+		g_purpose_line_counts[id] = count
+	}
+}
+
+@(private = "file")
+ui_graph_node_base_h :: proc(id: pipeline.Stage_Id) -> f64 {
+	ui_graph_ensure_purpose_wrap()
+	lines := max(1, g_purpose_line_counts[id])
+	return GRAPH_NODE_TITLE_H + 5.0 + f64(lines)*GRAPH_NODE_PURPOSE_LINE_H + GRAPH_NODE_STATUS_H + 4.0
+}
 
 // View state of the stage graph and its inline node settings.
 UI_Graph :: struct {
@@ -165,13 +230,14 @@ ui_graph_stage_setting_counts :: proc(ui: ^UI_State, id: pipeline.Stage_Id) -> (
 	return
 }
 
-// Size of a stage node in graph units, expanding vertically to fit its inline settings.
+// Size of a stage node in graph units, expanding vertically to fit its wrapped explanation and inline settings.
 ui_graph_node_size :: proc(ui: ^UI_State, id: pipeline.Stage_Id) -> [2]f64 {
+	base_h := ui_graph_node_base_h(id)
 	total, visible, adv_total := ui_graph_stage_setting_counts(ui, id)
 	if total == 0 || id in ui.workspace.graph.collapsed {
-		return {GRAPH_NODE_W, GRAPH_NODE_BASE_H}
+		return {GRAPH_NODE_W, base_h}
 	}
-	h := GRAPH_NODE_BASE_H + 4.0 + f64(visible)*GRAPH_NODE_SETTING_H + GRAPH_NODE_PAD_B
+	h := base_h + 4.0 + f64(visible)*GRAPH_NODE_SETTING_H + GRAPH_NODE_PAD_B
 	if adv_total > 0 {h += GRAPH_NODE_ADV_H}
 	return {GRAPH_NODE_W, h}
 }
@@ -226,8 +292,9 @@ ui_graph_node_rect :: proc(ui: ^UI_State, id: pipeline.Stage_Id) -> UI_Rect {
 
 // Screen rectangle of a visible inline setting row inside its owner node.
 @(private = "file")
-ui_graph_setting_row_rect :: proc(node_rect: UI_Rect, z: f64, local_index: int) -> UI_Rect {
-	y := node_rect.y + (GRAPH_NODE_BASE_H + 4.0 + f64(local_index)*GRAPH_NODE_SETTING_H)*z
+ui_graph_setting_row_rect :: proc(id: pipeline.Stage_Id, node_rect: UI_Rect, z: f64, local_index: int) -> UI_Rect {
+	base_h := ui_graph_node_base_h(id)
+	y := node_rect.y + (base_h + 4.0 + f64(local_index)*GRAPH_NODE_SETTING_H)*z
 	return {node_rect.x + 6*z, y, max(1.0, node_rect.w - 12*z), GRAPH_NODE_SETTING_H*z}
 }
 
@@ -242,7 +309,7 @@ ui_graph_setting_widget_rects :: proc(row_rect: UI_Rect, z: f64, kind: pipeline.
 		pill := UI_Rect{row_rect.x + row_rect.w - w, y, w, h}
 		return {}, pill, pill
 	}
-	widget_w := 98.0 * z
+	widget_w := (122.0 if kind == .Choice else 96.0) * z
 	btn_w := 18.0 * z
 	x0 := row_rect.x + row_rect.w - widget_w
 	left_btn = {x0, y, btn_w, h}
@@ -253,8 +320,9 @@ ui_graph_setting_widget_rects :: proc(row_rect: UI_Rect, z: f64, kind: pipeline.
 
 // Screen rectangle of the "+N advanced" / "Hide advanced" footer toggle inside a node.
 @(private = "file")
-ui_graph_advanced_row_rect :: proc(node_rect: UI_Rect, z: f64, visible_rows: int) -> UI_Rect {
-	y := node_rect.y + (GRAPH_NODE_BASE_H + 4.0 + f64(visible_rows)*GRAPH_NODE_SETTING_H + 1.0)*z
+ui_graph_advanced_row_rect :: proc(id: pipeline.Stage_Id, node_rect: UI_Rect, z: f64, visible_rows: int) -> UI_Rect {
+	base_h := ui_graph_node_base_h(id)
+	y := node_rect.y + (base_h + 4.0 + f64(visible_rows)*GRAPH_NODE_SETTING_H + 1.0)*z
 	return {node_rect.x + 6*z, y, max(1.0, node_rect.w - 12*z), (GRAPH_NODE_ADV_H - 2.0)*z}
 }
 
@@ -274,7 +342,7 @@ ui_graph_setting_row_at :: proc(ui: ^UI_State, x, y: f64) -> (int, bool) {
 		for row, row_index in ui.workspace.rows {
 			if row.owner_stage != id {continue}
 			if row.advanced && !show_adv {continue}
-			rr := ui_graph_setting_row_rect(r, z, local)
+			rr := ui_graph_setting_row_rect(id, r, z, local)
 			if ui_contains(rr, x, y) {return row_index, true}
 			local += 1
 		}
@@ -357,8 +425,8 @@ ui_bezier_point :: proc(a, b: [2]f64, t: f64) -> [2]f64 {
 ui_graph_edge_ends :: proc(ui: ^UI_State, from, to: pipeline.Stage_Id) -> (a, b: [2]f64) {
 	rf := ui_graph_node_rect(ui, from)
 	rt := ui_graph_node_rect(ui, to)
-	anchor_y := GRAPH_NODE_BASE_H * 0.5 * ui.workspace.graph.zoom
-	return {rf.x+rf.w, rf.y+anchor_y}, {rt.x, rt.y+anchor_y}
+	z := ui.workspace.graph.zoom
+	return {rf.x+rf.w, rf.y+ui_graph_node_base_h(from)*0.5*z}, {rt.x, rt.y+ui_graph_node_base_h(to)*0.5*z}
 }
 
 GRAPH_EDGE_SAMPLES :: 24
@@ -532,7 +600,7 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 		for row, row_index in ui.workspace.rows {
 			if row.owner_stage != id {continue}
 			if row.advanced && !show_adv {continue}
-			rr := ui_graph_setting_row_rect(r, z, local)
+			rr := ui_graph_setting_row_rect(id, r, z, local)
 			local += 1
 			if ui_rect_intersection(rr, g).h < 1 {continue}
 			left_btn, _, right_btn := ui_graph_setting_widget_rects(rr, z, row.kind)
@@ -553,7 +621,7 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 			}
 		}
 		if adv_total > 0 {
-			adv_r := ui_rect_intersection(ui_graph_advanced_row_rect(r, z, visible), g)
+			adv_r := ui_rect_intersection(ui_graph_advanced_row_rect(id, r, z, visible), g)
 			if adv_r.w >= 1 && adv_r.h >= 1 {
 				ui_add_control(ui, GRAPH_ADVANCED_NAMES[id], "toggle advanced stage settings", adv_r, ui_graph_node_advanced_action(id))
 			}
@@ -742,7 +810,7 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		d := pipeline.stage_descriptors[id]
 		radius := f32(6*z)
 		title_h := GRAPH_NODE_TITLE_H * z
-		summary_h := GRAPH_NODE_SUMMARY_H * z
+		base_h := ui_graph_node_base_h(id)
 		state_color := ui_stage_color(ui, stage)
 		hovered := ui.hovered_id == u64(ui_graph_node_action(id))
 		body := theme.raised
@@ -782,11 +850,15 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		}
 
 		if body_ok {
-			line_h := summary_h / 2
-			counts := ""
-			if stage.state == .Complete || stage.state == .Stale {
-				if len(d.counts[0]) > 0 {counts = fmt.tprintf("%s %d", d.counts[0], stage.count_a)}
+			ui_graph_ensure_purpose_wrap()
+			purpose_lines := g_purpose_line_counts[id]
+			purpose_y := r.y + title_h + 5.0*z
+			purpose_lh := GRAPH_NODE_PURPOSE_LINE_H * z
+			for li in 0..<purpose_lines {
+				ui_draw_text(painter, body_font, ui, g_purpose_lines[id][li], {r.x + 8*z, purpose_y + f64(li)*purpose_lh, max(1.0, r.w - 16*z), purpose_lh}, theme.muted, 0)
 			}
+			status_y := purpose_y + f64(purpose_lines)*purpose_lh
+			status_h := GRAPH_NODE_STATUS_H * z
 			timing := ui_stage_state_text(stage)
 			switch {
 			case stage.state == .Running:
@@ -795,16 +867,20 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 			case:
 				timing = fmt.tprintf("%.1f ms", stage.duration_ms)
 			}
-			ui_draw_text(painter, body_font, ui, counts if len(counts) > 0 else d.purpose, {r.x, r.y+title_h, r.w, line_h}, theme.text if len(counts) > 0 else theme.muted, 6*z)
-			ui_draw_text(painter, body_font, ui, timing, {r.x, r.y+title_h+line_h, r.w-18*z, line_h}, ui_error_color(ui) if stage.state == .Failed else theme.muted, 6*z)
+			status_line := timing
+			if (stage.state == .Complete || stage.state == .Stale) && len(d.counts[0]) > 0 {
+				status_line = fmt.tprintf("%s %d · %s", d.counts[0], stage.count_a, timing)
+			}
+			status_ink := ui_error_color(ui) if stage.state == .Failed else (theme.text if stage.state == .Complete || stage.state == .Stale else theme.muted)
+			ui_draw_text(painter, body_font, ui, status_line, {r.x + 8*z, status_y, max(1.0, r.w - 26*z), status_h}, status_ink, 0)
 			if id in v.evidence {
-				ui_draw_text(painter, body_font, ui, "E", {r.x+r.w-18*z, r.y+title_h+line_h, 14*z, line_h}, theme.accent, 0, .Center)
+				ui_draw_text(painter, body_font, ui, "E", {r.x+r.w-18*z, status_y, 14*z, status_h}, theme.accent, 0, .Center)
 			}
 		}
 
 		// Inline Blender-style settings inside the node body.
 		if total_settings > 0 && !is_collapsed {
-			sep_y := r.y + (GRAPH_NODE_BASE_H + 1.0)*z
+			sep_y := r.y + (base_h + 1.0)*z
 			ui_add_rect(painter, {r.x + 6*z, sep_y, max(1.0, r.w - 12*z), max(1.0, z)}, theme.border)
 			if z >= GRAPH_INLINE_MIN_ZOOM && body_ok {
 				show_adv := id in v.advanced_open
@@ -813,7 +889,7 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 				for row, row_index in ui.workspace.rows {
 					if row.owner_stage != id {continue}
 					if row.advanced && !show_adv {continue}
-					rr := ui_graph_setting_row_rect(r, z, local)
+					rr := ui_graph_setting_row_rect(id, r, z, local)
 					local += 1
 					left_btn, val_rect, right_btn := ui_graph_setting_widget_rects(rr, z, row.kind)
 					widget_x := right_btn.x if row.kind == .Toggle else left_btn.x
@@ -850,7 +926,7 @@ ui_draw_stage_graph :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 					}
 				}
 				if adv_total > 0 {
-					adv_r := ui_graph_advanced_row_rect(r, z, visible_settings)
+					adv_r := ui_graph_advanced_row_rect(id, r, z, visible_settings)
 					adv_hov := ui.hovered_id == u64(ui_graph_node_advanced_action(id))
 					if adv_hov {
 						gpu.draw_box(painter.list, {rect = ui_gpu_rect(adv_r), radii = {ctrl_rad, ctrl_rad, ctrl_rad, ctrl_rad}, fill = ui_color(theme.control)})
