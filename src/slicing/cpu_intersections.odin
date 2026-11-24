@@ -1,59 +1,23 @@
 package slicing
 
 import "core:mem"
-import "core:sync"
-import "core:thread"
 
 import contracts "../contracts"
 import geometry "../geometry"
+import workers "../workers"
 
 @(private = "file")
 g_slicing_worker_threads := 8
 
 slicing_set_worker_threads :: proc(n: int) {
-	g_slicing_worker_threads = clamp(n, 1, 16)
+	g_slicing_worker_threads = clamp(n, 1, workers.MAX_WORKERS)
 }
 
-// Runs `body(ctx, index)` for every index across the worker threads. Each index must write only
+// Runs `body(ctx, index)` for every index on the shared worker pool. Each index must write only
 // storage of its own.
 @(private)
 slicing_parallel_for :: proc(count: int, ctx: ^$T, body: proc(ctx: ^T, index: int)) {
-	if count <= 0 {return}
-	workers := min(g_slicing_worker_threads, count)
-	if workers <= 1 || count < 4 {
-		for i in 0..<count {body(ctx, i)}
-		return
-	}
-	State :: struct {
-		next:  int,
-		count: int,
-		ctx:   ^T,
-		body:  proc(ctx: ^T, index: int),
-	}
-	state := State{count = count, ctx = ctx, body = body}
-	worker_fn :: proc(st: ^State) {
-		for {
-			idx := sync.atomic_add(&st.next, 1)
-			if idx >= st.count {break}
-			st.body(st.ctx, idx)
-		}
-	}
-	spawned_worker_fn :: proc(st: ^State) {
-		defer free_all(context.temp_allocator)
-		worker_fn(st)
-	}
-	threads: [15]^thread.Thread
-	spawned := workers - 1
-	for i in 0..<spawned {
-		threads[i] = thread.create_and_start_with_poly_data(&state, spawned_worker_fn)
-	}
-	worker_fn(&state)
-	for i in 0..<spawned {
-		if threads[i] != nil {
-			thread.join(threads[i])
-			thread.destroy(threads[i])
-		}
-	}
+	workers.parallel_for(count, ctx, body, g_slicing_worker_threads)
 }
 
 Planar_Candidate_Kind :: enum u8 {

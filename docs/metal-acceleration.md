@@ -42,8 +42,8 @@ This document records the measured release-mode (`-o:speed`) CPU profiling basel
 - **`batch_travel_crosses_exterior` kernel:** Reuses the exact same flattened `PolyEdge`/`LayerEdgeRange` buffers to test all travel move endpoints, midpoints, and polygon-edge intersections on the GPU in one batch (`256` threads/threadgroup).
 - **`batch_triangle_plane_intersect` kernel:** Compiled alongside the polygon kernels in `shaders/slicer_compute.metal` and exposed via `gpu.metal_batch_triangle_plane_intersect`.
 
-### Multi-Core CPU Parallelism (`src/features/parallel.odin`)
-- Dispatches up to `--threads=N` (default: every logical core, at most 16) worker threads (`core:thread` + `sync.atomic_add` dynamic work-stealing) across `perimeters_generate`, `surfaces_classify`, `gap_evidence_build`, `infill_pattern_generate`, and CPU-mode `motion_cpu_mt_compute_overhangs`, and `motion_plan_fit_arcs`.
+### Multi-Core CPU Parallelism (`src/workers/pool.odin`)
+- Runs parallel loops on one persistent worker pool shared by every stage, with up to `--threads=N` threads per loop (default: every logical core, at most 16; `sync.atomic_add` dynamic work-stealing), across `perimeters_generate`, `surfaces_classify`, `gap_evidence_build`, `infill_pattern_generate`, and CPU-mode `motion_cpu_mt_compute_overhangs`, and `motion_plan_fit_arcs`.
 - Every stage writes into disjoint per-region/per-layer slots and merges in strict index order for 100% deterministic output.
 
 ## 4. Measured 4-Way Comparison (`(a)` vs `(b)` vs `(c)` vs `(d)`)

@@ -1,13 +1,13 @@
 package features
 
 import "core:sync"
-import "core:thread"
 
 import contracts "../contracts"
 import geometry "../geometry"
 import gpu "../gpu"
 import polygon "../polygon"
 import profiles "../profiles"
+import workers "../workers"
 
 Motion_Operation_Kind :: enum u8 {
 	Invalid,
@@ -1029,18 +1029,8 @@ motion_cpu_mt_compute_overhangs :: proc(
 	if len(plan.layers) < 8 || num_workers <= 1 {
 		worker_proc(&wctx)
 	} else {
-		threads: [15]^thread.Thread
-		spawn_count := num_workers - 1
-		for wi in 0..<spawn_count {
-			threads[wi] = thread.create_and_start_with_poly_data(&wctx, worker_proc)
-		}
-		worker_proc(&wctx)
-		for wi in 0..<spawn_count {
-			if threads[wi] != nil {
-				thread.join(threads[wi])
-				thread.destroy(threads[wi])
-			}
-		}
+		// Each pool task drains the shared layer counter, as each spawned thread used to.
+		workers.parallel_for(num_workers, &wctx, proc(c: ^Ov_Worker_Ctx, _: int) {worker_proc(c)}, num_workers, min_count = 1)
 	}
 	return flags, true
 }
