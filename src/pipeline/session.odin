@@ -243,7 +243,7 @@ session_refresh :: proc(s: ^Slice_Session) {
 			contracts.canonical_hash_append_content_hash(&h, s.source.source.content_hash)
 		}
 		cause := id
-		has_cause := own_changed
+		has_cause := false
 		for dep in Stage_Id {
 			if dep not_in stage_descriptors[id].inputs {continue}
 			contracts.canonical_hash_append_content_hash(&h, s.slots[dep].expected_hash)
@@ -252,6 +252,7 @@ session_refresh :: proc(s: ^Slice_Session) {
 				has_cause = true
 			}
 		}
+		if own_changed {has_cause = true}
 		slot.expected_hash = contracts.canonical_hash_final(&h)
 		if slot.state == .Complete && slot.built_hash != slot.expected_hash {
 			slot.state = .Stale

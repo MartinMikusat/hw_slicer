@@ -48,6 +48,7 @@ CLI_Options :: struct {
 	pause_layers:        [dynamic]u32,
 	color_change_layers: [dynamic]u32,
 	overrides:           [dynamic]CLI_Override,
+	then_changes:        [dynamic]CLI_Override,
 }
 
 resolve_profile_path :: proc(dir, kind, name: string) -> string {
@@ -179,6 +180,72 @@ print_usage :: proc() {
 	fmt.eprintln("usage: hw-slicer-cli --input=<file.stl|.obj|.3mf> [--out=<file.gcode>] [--printer=vcore3] [--material=pla] [--process=0.20-standard] [--supports] [--set key=val] [--trace-json=<path>] [--dump-svg-dir=<dir>]")
 }
 
+// Slices once, then applies each `--then key=value` change in turn and reruns only the stages that
+// the change made stale. Each step prints the stale stages and writes its G-code to
+// `<out>.then<N>.gcode`, so it can be compared with a fresh slice of the same settings.
+run_stage_reruns :: proc(opts: CLI_Options, config_in: pipeline.Slice_Configuration, input_bytes: []u8) {
+	config := config_in
+	resolved, run_opts, detail, ok := pipeline.slice_configuration_resolve(config)
+	if !ok {
+		fmt.eprintf("error: %s\n", detail)
+		os.exit(1)
+	}
+	decoded, units, dec_err := pipeline.decode_mesh_bytes(input_bytes, opts.input_path, run_opts.source_units)
+	if len(dec_err.stage) > 0 {
+		fmt.eprintf("SLICE FAILED at [%s]: %s\n", dec_err.stage, dec_err.detail)
+		os.exit(1)
+	}
+	defer formats.decoded_mesh_destroy(&decoded)
+	run_opts.source_units = units
+	config.source_units = units
+	session := pipeline.slice_session_create(decoded, resolved, run_opts)
+	defer pipeline.slice_session_destroy(session)
+
+	run_step :: proc(session: ^pipeline.Slice_Session, label, out_path: string) {
+		pending := pipeline.slice_session_pending(session, .Gcode)
+		fmt.printf("%s: %d of %d stages to run\n", label, card(pending), len(pipeline.Stage_Id))
+		for id in pipeline.Stage_Id {
+			if id not_in pending {continue}
+			slot := session.slots[id]
+			why := "not run" if slot.state == .Not_Run else fmt.tprintf("stale, %s changed", pipeline.stage_descriptors[slot.changed_by].name)
+			fmt.printf("  run  %-24s %s\n", pipeline.stage_descriptors[id].name, why)
+		}
+		if err := pipeline.slice_session_run_all(session); len(err.stage) > 0 {
+			fmt.eprintf("SLICE FAILED at [%s]: %s\n", err.stage, err.detail)
+			os.exit(1)
+		}
+		total := 0.0
+		for id in pending {total += session.slots[id].duration_ms}
+		fmt.printf("  ran %.2f ms; gcode %d bytes\n", total, len(session.klipper.bytes))
+		if len(out_path) > 0 {
+			_ = os.write_entire_file(out_path, session.klipper.bytes)
+		}
+	}
+	card :: proc(set: pipeline.Stage_Set) -> int {
+		n := 0
+		for id in pipeline.Stage_Id {if id in set {n += 1}}
+		return n
+	}
+
+	run_step(session, "initial", fmt.tprintf("%s.then0.gcode", opts.output_path) if len(opts.output_path) > 0 else "")
+	for change, index in opts.then_changes {
+		if detail, ok := pipeline.slice_configuration_override(&config, change.key, change.val); !ok {
+			fmt.eprintf("error: %s\n", detail)
+			os.exit(1)
+		}
+		new_resolved, new_opts, new_detail, new_ok := pipeline.slice_configuration_resolve(config)
+		if !new_ok {
+			fmt.eprintf("error: %s\n", new_detail)
+			os.exit(1)
+		}
+		new_opts.source_units = units
+		pipeline.slice_session_update(session, new_resolved, new_opts)
+		label := fmt.tprintf("then %s=%s", change.key, change.val)
+		out := fmt.tprintf("%s.then%d.gcode", opts.output_path, index+1) if len(opts.output_path) > 0 else ""
+		run_step(session, label, out)
+	}
+}
+
 main :: proc() {
 	started := devlog.global_start(devlog.default_directory("hw-slicer", "cli"))
 	if started {context.assertion_failure_proc = devlog.fatal_hook()}
@@ -199,12 +266,14 @@ main :: proc() {
 		pause_layers        = make([dynamic]u32),
 		color_change_layers = make([dynamic]u32),
 		overrides           = make([dynamic]CLI_Override),
+		then_changes        = make([dynamic]CLI_Override),
 	}
 	defer delete(opts.input_paths)
 	defer delete(opts.modifiers)
 	defer delete(opts.pause_layers)
 	defer delete(opts.color_change_layers)
 	defer delete(opts.overrides)
+	defer delete(opts.then_changes)
 
 	args := os.args[1:]
 	for i := 0; i < len(args); i += 1 {
@@ -303,6 +372,14 @@ main :: proc() {
 				os.exit(2)
 			}
 			append(&opts.overrides, CLI_Override{key = pair[:eq], val = pair[eq+1:]})
+		} else if strings.has_prefix(arg, "--then=") {
+			pair := arg[len("--then="):]
+			eq := strings.index_byte(pair, '=')
+			if eq <= 0 {
+				fmt.eprintf("error: invalid --then '%s' (expected key=value)\n", pair)
+				os.exit(2)
+			}
+			append(&opts.then_changes, CLI_Override{key = pair[:eq], val = pair[eq+1:]})
 		} else if arg == "-h" || arg == "--help" {
 			print_usage()
 			os.exit(0)
@@ -325,38 +402,32 @@ main :: proc() {
 	material_path := resolve_profile_path(opts.profiles_dir, "materials", opts.material)
 	process_path := resolve_profile_path(opts.profiles_dir, "processes", opts.process)
 
-	printer_prof, p_err := profiles.printer_profile_load_json(printer_path)
-	if p_err != .None {
-		fmt.eprintf("error: printer profile '%s': %s\n", printer_path, profiles.profile_json_error_text(p_err))
+	config, load_detail, load_ok := pipeline.slice_configuration_load(printer_path, material_path, process_path)
+	if !load_ok {
+		fmt.eprintf("error: %s\n", load_detail)
 		os.exit(1)
 	}
-	material_prof, m_err := profiles.material_profile_load_json(material_path)
-	if m_err != .None {
-		fmt.eprintf("error: material profile '%s': %s\n", material_path, profiles.profile_json_error_text(m_err))
-		os.exit(1)
-	}
-	process_prof, extras, pr_err := profiles.process_profile_load_json(process_path, printer_prof)
-	if pr_err != .None {
-		fmt.eprintf("error: process profile '%s': %s\n", process_path, profiles.profile_json_error_text(pr_err))
-		os.exit(1)
-	}
-	profiles.profile_fit_printer(&process_prof, printer_prof)
-	profiles.profile_fit_material(&process_prof, material_prof)
 	for ov in opts.overrides {
-		ov_err := profiles.profile_apply_override(&process_prof, &extras, ov.key, ov.val)
-		if ov_err != .None {
-			fmt.eprintf("error: override '%s=%s': %s\n", ov.key, ov.val, profiles.profile_json_error_text(ov_err))
+		if detail, ok := pipeline.slice_configuration_override(&config, ov.key, ov.val); !ok {
+			fmt.eprintf("error: %s\n", detail)
 			os.exit(1)
 		}
 	}
-	if opts.vase_mode {
-		process_prof.perimeter_count = 1
-		extras.infill_density_percent = 0.0
-	}
-	dialect_prof := profiles.profiles_default_klipper_dialect()
-	resolved, res_err := profiles.profiles_resolve(printer_prof, material_prof, process_prof, dialect_prof)
-	if res_err != .None {
-		fmt.eprintf("error: profile resolution failed: %v\n", res_err)
+	config.enable_supports = opts.enable_supports
+	config.adaptive_layers = opts.adaptive_layers
+	config.use_native_polygon = opts.use_native_polygon
+	config.use_gpu = opts.use_gpu
+	config.worker_threads = opts.worker_threads
+	config.scarf_seam = opts.scarf_seam
+	config.vase_mode = opts.vase_mode
+	config.fuzzy_skin = opts.fuzzy_skin
+	config.modifiers = opts.modifiers[:]
+	config.pause_layers = opts.pause_layers[:]
+	config.color_change_layers = opts.color_change_layers[:]
+	config.object_name = strings.clone(strings.trim_suffix(filepath.base(opts.input_path), filepath.ext(opts.input_path)), context.temp_allocator)
+	resolved, run_opts, resolve_detail, resolve_ok := pipeline.slice_configuration_resolve(config)
+	if !resolve_ok {
+		fmt.eprintf("error: %s\n", resolve_detail)
 		os.exit(1)
 	}
 
@@ -367,57 +438,14 @@ main :: proc() {
 	}
 	defer delete(input_bytes)
 
-	run_opts := pipeline.DEFAULT_SLICE_RUN_OPTIONS
-	run_opts.infill_density_percent = extras.infill_density_percent
-	run_opts.enable_supports = opts.enable_supports
-	run_opts.skirt_loops = extras.skirt_loops
-	run_opts.skirt_distance_um = contracts.Micrometres(i64(math.round(extras.skirt_distance_mm*1000.0)))
-	run_opts.skirt_height_layers = extras.skirt_height_layers
-	run_opts.brim_width_um = contracts.Micrometres(i64(math.round(extras.brim_width_mm*1000.0)))
-	run_opts.brim_gap_um = contracts.Micrometres(i64(math.round(extras.brim_gap_mm*1000.0)))
-	run_opts.brim_inner = extras.brim_inner
-	run_opts.elephant_foot_compensation_um = contracts.Micrometres(i64(math.round(extras.elephant_foot_compensation_mm*1000.0)))
-	run_opts.wipe_distance_um = contracts.Micrometres(i64(math.round(extras.wipe_distance_mm*1000.0)))
-	run_opts.overhang_slowdown_enabled = extras.overhang_slowdown_enabled
-	run_opts.overhang_speed_percent = extras.overhang_speed_percent
-	switch extras.seam_position {
-	case "rear":     run_opts.seam_strategy = .Rear
-	case "sharpest": run_opts.seam_strategy = .Sharpest_Corner
-	case "nearest":  run_opts.seam_strategy = .Nearest
-	case:            run_opts.seam_strategy = .Aligned
-	}
-	switch extras.infill_pattern {
-	case "rectilinear": run_opts.infill_pattern = .Rectilinear
-	case "grid":        run_opts.infill_pattern = .Grid
-	case "triangles":   run_opts.infill_pattern = .Triangles
-	case "cubic":       run_opts.infill_pattern = .Cubic
-	case "honeycomb":   run_opts.infill_pattern = .Honeycomb
-	case "lightning":   run_opts.infill_pattern = .Lightning
-	case:               run_opts.infill_pattern = .Gyroid
-	}
-	run_opts.monotonic_skin = extras.monotonic_skin
-	run_opts.ironing_enabled = extras.ironing_enabled
-	run_opts.ironing_spacing_um = contracts.Micrometres(i64(math.round(extras.ironing_spacing_mm*1000.0)))
-	run_opts.ironing_flow_percent = extras.ironing_flow_percent
-	run_opts.arc_fitting_enabled = extras.arc_fitting_enabled
-	run_opts.arc_tolerance_um = extras.arc_tolerance_mm * 1000.0
-	run_opts.variable_walls_enabled = extras.variable_walls_enabled
-	run_opts.support_style_tree = extras.support_style != "grid"
-	run_opts.adaptive_layers = opts.adaptive_layers || extras.adaptive_layers
-	run_opts.use_native_polygon = opts.use_native_polygon
-	run_opts.use_gpu = opts.use_gpu
-	run_opts.worker_threads = opts.worker_threads
-	run_opts.scarf_seam_enabled = opts.scarf_seam
-	run_opts.vase_mode = opts.vase_mode
-	run_opts.fuzzy_skin_enabled = opts.fuzzy_skin
-	run_opts.modifiers = opts.modifiers[:]
-	run_opts.pause_layers = opts.pause_layers[:]
-	run_opts.color_change_layers = opts.color_change_layers[:]
-	raw_stem := strings.trim_suffix(filepath.base(opts.input_path), filepath.ext(opts.input_path))
-	run_opts.object_name = strings.clone(raw_stem, context.temp_allocator)
 
 	has_plate_ops := len(opts.input_paths) > 1 || opts.clone_count > 1 ||
 		opts.scale != 1.0 || opts.rot_x != 0 || opts.rot_y != 0 || opts.rot_z != 0 || opts.lay_flat
+
+	if len(opts.then_changes) > 0 && !has_plate_ops {
+		run_stage_reruns(opts, config, input_bytes)
+		return
+	}
 
 	res: pipeline.Slice_Run_Result
 	slice_err: pipeline.Slice_Run_Error
