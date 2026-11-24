@@ -272,44 +272,100 @@ stable_id_root :: proc(content_hash: Content_Hash, kind: Entity_Kind) -> Stable_
 	return stable_id_nonzero(hash)
 }
 
-stable_id_child :: proc(
+@(private = "file")
+FNV1A_MASK_64 :: 0xffffffffffffffff
+@(private = "file")
+FNV1A_P_RAW :: 1099511628211
+@(private = "file")
+FNV1A_P2_RAW :: (FNV1A_P_RAW * FNV1A_P_RAW) & FNV1A_MASK_64
+@(private = "file")
+FNV1A_P4_RAW :: (FNV1A_P2_RAW * FNV1A_P2_RAW) & FNV1A_MASK_64
+@(private = "file")
+FNV1A_P6_RAW :: (FNV1A_P4_RAW * FNV1A_P2_RAW) & FNV1A_MASK_64
+@(private = "file")
+FNV1A_P7_RAW :: (FNV1A_P6_RAW * FNV1A_P_RAW) & FNV1A_MASK_64
+@(private = "file")
+FNV1A_P8_RAW :: (FNV1A_P4_RAW * FNV1A_P4_RAW) & FNV1A_MASK_64
+
+@(private = "file")
+FNV1A_OFFSET_BASIS :: u64(14695981039346656037)
+@(private = "file")
+FNV1A_PRIME :: u64(FNV1A_P_RAW)
+@(private = "file")
+FNV1A_PRIME_4 :: u64(FNV1A_P4_RAW)
+@(private = "file")
+FNV1A_PRIME_7 :: u64(FNV1A_P7_RAW)
+@(private = "file")
+FNV1A_PRIME_8 :: u64(FNV1A_P8_RAW)
+
+// Precomputed FNV-1a state after hashing STABLE_ID_ALGORITHM_VERSION (u32(1) little-endian: 1, 0, 0, 0).
+@(private = "file")
+STABLE_ID_VERSION_PREFIX :: u64(((14695981039346656037 ~ 1) * FNV1A_P4_RAW) & FNV1A_MASK_64)
+
+stable_id_child_prefix :: #force_inline proc(
+	parent: Stable_ID,
+	kind: Entity_Kind,
+) -> u64 {
+	hash := stable_id_hash_u64(STABLE_ID_VERSION_PREFIX, u64(parent))
+	return (hash ~ u64(kind)) * FNV1A_PRIME
+}
+
+stable_id_child_from_prefix :: #force_inline proc(
+	prefix: u64,
+	canonical_ordinal: u64,
+) -> Stable_ID {
+	return stable_id_nonzero(stable_id_hash_u64(prefix, canonical_ordinal))
+}
+
+stable_id_child :: #force_inline proc(
 	parent: Stable_ID,
 	kind: Entity_Kind,
 	canonical_ordinal: u64,
 ) -> Stable_ID {
-	hash := stable_id_hash_begin()
-	hash = stable_id_hash_u32(hash, STABLE_ID_ALGORITHM_VERSION)
-	hash = stable_id_hash_u64(hash, u64(parent))
-	hash = stable_id_hash_u8(hash, u8(kind))
+	hash := stable_id_hash_u64(STABLE_ID_VERSION_PREFIX, u64(parent))
+	hash = (hash ~ u64(kind)) * FNV1A_PRIME
 	hash = stable_id_hash_u64(hash, canonical_ordinal)
 	return stable_id_nonzero(hash)
 }
 
-stable_id_hash_begin :: proc() -> u64 {
-	return 14695981039346656037
+stable_id_hash_begin :: #force_inline proc() -> u64 {
+	return FNV1A_OFFSET_BASIS
 }
 
-stable_id_hash_u8 :: proc(hash: u64, value: u8) -> u64 {
-	return (hash ~ u64(value))*1099511628211
+stable_id_hash_u8 :: #force_inline proc(hash: u64, value: u8) -> u64 {
+	return (hash ~ u64(value)) * FNV1A_PRIME
 }
 
-stable_id_hash_u32 :: proc(hash: u64, value: u32) -> u64 {
-	result := hash
-	for shift: u32 = 0; shift < 32; shift += 8 {
-		result = stable_id_hash_u8(result, u8(value>>shift))
+stable_id_hash_u32 :: #force_inline proc(hash: u64, value: u32) -> u64 {
+	h := (hash ~ u64(value & 0xff)) * FNV1A_PRIME
+	h = (h ~ u64((value >> 8) & 0xff)) * FNV1A_PRIME
+	h = (h ~ u64((value >> 16) & 0xff)) * FNV1A_PRIME
+	return (h ~ u64((value >> 24) & 0xff)) * FNV1A_PRIME
+}
+
+stable_id_hash_u64 :: #force_inline proc(hash: u64, value: u64) -> u64 {
+	// Collapse trailing zero bytes via precomputed powers of FNV1A_PRIME (mod 2^64).
+	if value < 256 {
+		return (hash ~ value) * FNV1A_PRIME_8
 	}
-	return result
-}
-
-stable_id_hash_u64 :: proc(hash: u64, value: u64) -> u64 {
-	result := hash
-	for shift: u64 = 0; shift < 64; shift += 8 {
-		result = stable_id_hash_u8(result, u8(value>>shift))
+	if value < 65536 {
+		h := (hash ~ (value & 0xff)) * FNV1A_PRIME
+		return (h ~ (value >> 8)) * FNV1A_PRIME_7
 	}
-	return result
+	h := (hash ~ (value & 0xff)) * FNV1A_PRIME
+	h = (h ~ ((value >> 8) & 0xff)) * FNV1A_PRIME
+	h = (h ~ ((value >> 16) & 0xff)) * FNV1A_PRIME
+	h = (h ~ ((value >> 24) & 0xff)) * FNV1A_PRIME
+	if value < (u64(1) << 32) {
+		return h * FNV1A_PRIME_4
+	}
+	h = (h ~ ((value >> 32) & 0xff)) * FNV1A_PRIME
+	h = (h ~ ((value >> 40) & 0xff)) * FNV1A_PRIME
+	h = (h ~ ((value >> 48) & 0xff)) * FNV1A_PRIME
+	return (h ~ (value >> 56)) * FNV1A_PRIME
 }
 
-stable_id_nonzero :: proc(value: u64) -> Stable_ID {
+stable_id_nonzero :: #force_inline proc(value: u64) -> Stable_ID {
 	if value == 0 {return Stable_ID(1)}
 	return Stable_ID(value)
 }

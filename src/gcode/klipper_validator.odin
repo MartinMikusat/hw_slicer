@@ -769,11 +769,16 @@ klipper_expected_evidence :: proc(
 klipper_parse_command :: proc(
 	line: string,
 ) -> (Klipper_Parsed_Command, Klipper_Validation_Error) {
-	if line == KLIPPER_HEADER {
-		return {kind = .Header}, .None
-	}
-	if strings.has_prefix(line, ";LAYER:") {
-		return klipper_parse_layer_comment(line)
+	if len(line) == 0 {return {}, .Invalid_Syntax}
+	// Fast path: 99.8% of commands are G0/G1/G2/G3 motion commands.
+	if line[0] == ';' {
+		if line == KLIPPER_HEADER {
+			return {kind = .Header}, .None
+		}
+		if strings.has_prefix(line, ";LAYER:") {
+			return klipper_parse_layer_comment(line)
+		}
+		return {}, .Unsupported_Command
 	}
 	tokens: [8]string
 	token_count, token_ok := klipper_tokenize(line, tokens[:])
@@ -781,25 +786,32 @@ klipper_parse_command :: proc(
 		return {}, .Invalid_Syntax
 	}
 	result := Klipper_Parsed_Command{}
-	switch tokens[0] {
-	case "G0":   result.kind = .G0
-	case "G1":   result.kind = .G1
-	case "G2":   result.kind = .G2
-	case "G3":   result.kind = .G3
-	case "G4":   result.kind = .G4
-	case "G21":  result.kind = .G21
-	case "G90":  result.kind = .G90
-	case "M83":  result.kind = .M83
-	case "M106": result.kind = .M106
-	case "M107": result.kind = .M107
-	case "START_PRINT", "END_PRINT", "SET_VELOCITY_LIMIT", "SET_PRINT_STATS_INFO":
-		return klipper_parse_extended(tokens[:token_count])
-	case "EXCLUDE_OBJECT_DEFINE", "EXCLUDE_OBJECT_START", "EXCLUDE_OBJECT_END":
-		return {kind = .Exclude_Object}, .None
-	case "PAUSE", "M600":
-		return {kind = .Pause_Or_Filament}, .None
-	case:
-		return {}, .Unsupported_Command
+	t0 := tokens[0]
+	if len(t0) == 2 && t0[0] == 'G' {
+		switch t0[1] {
+		case '1': result.kind = .G1
+		case '0': result.kind = .G0
+		case '2': result.kind = .G2
+		case '3': result.kind = .G3
+		case '4': result.kind = .G4
+		case:     return {}, .Unsupported_Command
+		}
+	} else {
+		switch t0 {
+		case "G21":  result.kind = .G21
+		case "G90":  result.kind = .G90
+		case "M83":  result.kind = .M83
+		case "M106": result.kind = .M106
+		case "M107": result.kind = .M107
+		case "START_PRINT", "END_PRINT", "SET_VELOCITY_LIMIT", "SET_PRINT_STATS_INFO":
+			return klipper_parse_extended(tokens[:token_count])
+		case "EXCLUDE_OBJECT_DEFINE", "EXCLUDE_OBJECT_START", "EXCLUDE_OBJECT_END":
+			return {kind = .Exclude_Object}, .None
+		case "PAUSE", "M600":
+			return {kind = .Pause_Or_Filament}, .None
+		case:
+			return {}, .Unsupported_Command
+		}
 	}
 	for token in tokens[1:token_count] {
 		if len(token) < 2 {return {}, .Invalid_Syntax}
@@ -1012,20 +1024,32 @@ klipper_tokenize :: proc(line: string, tokens: []string) -> (int, bool) {
 	return count, true
 }
 
-klipper_parse_i64 :: proc(text: string) -> (i64, bool) {
-	if len(text) == 0 {return 0, false}
+klipper_parse_i64 :: #force_inline proc(text: string) -> (i64, bool) {
+	n := len(text)
+	if n == 0 {return 0, false}
 	negative := false
 	cursor := 0
 	if text[0] == '-' {
 		negative = true
 		cursor = 1
-		if cursor == len(text) {return 0, false}
+		if cursor == n {return 0, false}
 	}
-	if len(text)-cursor > 1 && text[cursor] == '0' {
+	digits := n - cursor
+	if digits > 1 && text[cursor] == '0' {
 		return 0, false
 	}
 	value: u64
-	for cursor < len(text) {
+	if digits <= 18 {
+		// <= 18 decimal digits cannot overflow i64; skip per-digit division check.
+		for cursor < n {
+			d := text[cursor] - '0'
+			if d > 9 {return 0, false}
+			value = value*10 + u64(d)
+			cursor += 1
+		}
+		return -i64(value) if negative else i64(value), true
+	}
+	for cursor < n {
 		digit := text[cursor]
 		if digit < '0' || digit > '9' {
 			return 0, false
@@ -1044,21 +1068,42 @@ klipper_parse_i64 :: proc(text: string) -> (i64, bool) {
 	return i64(value), true
 }
 
-klipper_parse_fixed_i64 :: proc(
+klipper_parse_fixed_i64 :: #force_inline proc(
 	text: string,
 	decimal_places: int,
 ) -> (i64, bool) {
-	if len(text) < decimal_places+2 {return 0, false}
+	n := len(text)
+	if n < decimal_places+2 {return 0, false}
 	negative := text[0] == '-'
 	cursor := 1 if negative else 0
-	dot := len(text)-decimal_places-1
+	dot := n - decimal_places - 1
 	if dot <= cursor || text[dot] != '.' {
 		return 0, false
+	}
+	whole_len := dot - cursor
+	if whole_len > 1 && text[cursor] == '0' {return 0, false}
+	// Fast path for normal coordinates (<= 12 integer digits, 3 or 5 decimals: zero divisions).
+	if whole_len <= 12 && (decimal_places == 3 || decimal_places == 5) {
+		whole: i64
+		for i in cursor..<dot {
+			d := text[i] - '0'
+			if d > 9 {return 0, false}
+			whole = whole*10 + i64(d)
+		}
+		fraction: i64
+		for i in dot+1..<n {
+			d := text[i] - '0'
+			if d > 9 {return 0, false}
+			fraction = fraction*10 + i64(d)
+		}
+		scale: i64 = 1_000 if decimal_places == 3 else 100_000
+		value := whole*scale + fraction
+		return -value if negative else value, true
 	}
 	whole, whole_ok := klipper_parse_i64(text[cursor:dot])
 	if !whole_ok || whole < 0 {return 0, false}
 	fraction: i64
-	for index in dot+1..<len(text) {
+	for index in dot+1..<n {
 		digit := text[index]
 		if digit < '0' || digit > '9' {return 0, false}
 		fraction = fraction*10+i64(digit-'0')

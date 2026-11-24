@@ -108,14 +108,49 @@ odin_vatti_boolean :: proc(
 	segs, crossing_count := vatti_snap_round(all_segs[:], skip_same_set)
 	first_pass_splits := crossing_count
 
-	// Fast path for non-self-intersecting single-ring Union (covers ~80% of odin_offset calls!).
-	if first_pass_splits == 0 && operation == .Union && len(clips.paths) == 0 && len(subjects.paths) == 1 {
-		area := polygon_path_area_2(subjects.points)
-		if area == 0 {return {}, .None}
-		if fill_rule == .Positive && area < 0 {return {}, .None}
-		if fill_rule == .Negative && area > 0 {return {}, .None}
-		if area > 0 {
-			return vatti_canonicalize_set(subjects, limits, allocator)
+	// Fast path for non-self-intersecting Union with no crossings/overlaps.
+	if first_pass_splits == 0 && operation == .Union && len(clips.paths) == 0 {
+		if len(subjects.paths) == 1 {
+			area := polygon_path_area_2(subjects.points)
+			if area == 0 {return {}, .None}
+			if fill_rule == .Positive && area < 0 {return {}, .None}
+			if fill_rule == .Negative && area > 0 {return {}, .None}
+			if area > 0 {
+				return vatti_canonicalize_set(subjects, limits, allocator)
+			}
+		} else if len(subjects.paths) <= 32 && (fill_rule == .Positive || fill_rule == .Non_Zero) {
+			// Disjoint positive-area islands cannot nest or cancel; skip scanbeam sweep.
+			bboxes: [32][4]i64
+			all_pos := true
+			disjoint := true
+			for p, pi in subjects.paths {
+				s := int(p.offset)
+				n := int(p.count)
+				if n < 3 {all_pos = false; break}
+				ring := subjects.points[s:s + n]
+				if polygon_path_area_2(ring) <= 0 {all_pos = false; break}
+				min_x, max_x := i64(ring[0].x), i64(ring[0].x)
+				min_y, max_y := i64(ring[0].y), i64(ring[0].y)
+				for pt in ring[1:] {
+					x, y := i64(pt.x), i64(pt.y)
+					if x < min_x {min_x = x}
+					if x > max_x {max_x = x}
+					if y < min_y {min_y = y}
+					if y > max_y {max_y = y}
+				}
+				bboxes[pi] = {min_x, min_y, max_x, max_y}
+				for pj in 0..<pi {
+					ob := bboxes[pj]
+					if !(max_x < ob[0] || ob[2] < min_x || max_y < ob[1] || ob[3] < min_y) {
+						disjoint = false
+						break
+					}
+				}
+				if !disjoint {break}
+			}
+			if all_pos && disjoint {
+				return vatti_canonicalize_set(subjects, limits, allocator)
+			}
 		}
 	}
 
@@ -150,13 +185,38 @@ odin_vatti_boolean :: proc(
 
 	if len(verts) == 0 {return {}, .None}
 
-	// Sort vertical edges by (y0, x0, y1, x1) and merge coincident edges in-place (already sorted by y0!).
-	fast_sort(verts[:], proc(a, b: Vatti_Atomic_Vert) -> bool {
-		if a.y0 != b.y0 {return a.y0 < b.y0}
-		if a.x0 != b.x0 {return a.x0 < b.x0}
-		if a.y1 != b.y1 {return a.y1 < b.y1}
-		return a.x1 < b.x1
-	})
+	// Sort vertical edges by (y0, x0, y1, x1) and merge coincident edges in-place.
+	// Radix-sort by y0 in O(N), then insertion-sort only the tiny equal-y0 runs by (x0, y1, x1).
+	if radix_sort_by_i64(verts[:], proc(v: Vatti_Atomic_Vert) -> i64 {return v.y0}) {
+		nv_raw := len(verts)
+		rs := 0
+		for rs < nv_raw {
+			re := rs + 1
+			y_run := verts[rs].y0
+			for re < nv_raw && verts[re].y0 == y_run {re += 1}
+			if re - rs > 1 {
+				for a := rs + 1; a < re; a += 1 {
+					key := verts[a]
+					b := a - 1
+					for b >= rs && (verts[b].x0 > key.x0 ||
+					    (verts[b].x0 == key.x0 && (verts[b].y1 > key.y1 ||
+					    (verts[b].y1 == key.y1 && verts[b].x1 > key.x1)))) {
+						verts[b + 1] = verts[b]
+						b -= 1
+					}
+					verts[b + 1] = key
+				}
+			}
+			rs = re
+		}
+	} else {
+		fast_sort(verts[:], proc(a, b: Vatti_Atomic_Vert) -> bool {
+			if a.y0 != b.y0 {return a.y0 < b.y0}
+			if a.x0 != b.x0 {return a.x0 < b.x0}
+			if a.y1 != b.y1 {return a.y1 < b.y1}
+			return a.x1 < b.x1
+		})
+	}
 	vw := 0
 	for vi in 0..<len(verts) {
 		v := verts[vi]
@@ -190,20 +250,25 @@ odin_vatti_boolean :: proc(
 	}
 
 	// Step 3: Build sorted unique scanbeam Y coordinates.
-	raw_ys := make([dynamic]i64, 0, len(verts)*2 + len(horizs), context.temp_allocator)
-	for v in verts {
-		append(&raw_ys, v.y0)
-		append(&raw_ys, v.y1)
-	}
-	for h in horizs {
-		append(&raw_ys, h.y)
-	}
-	fast_sort(raw_ys[:], proc(a, b: i64) -> bool {return a < b})
-	ys := make([dynamic]i64, 0, len(raw_ys), context.temp_allocator)
-	for y in raw_ys {
-		if len(ys) == 0 || ys[len(ys)-1] != y {
-			append(&ys, y)
+	// `verts` is already sorted by `y0` and `horizs` is already sorted by `y`, so only `y1` needs
+	// sorting; a 3-way merge produces unique sorted `ys` with half the sort work.
+	y1s := make([]i64, len(verts), context.temp_allocator)
+	for v, vi in verts {y1s[vi] = v.y1}
+	radix_sort_i64(y1s)
+	ys := make([dynamic]i64, 0, len(verts) + len(horizs) + 8, context.temp_allocator)
+	i0, i1, ih := 0, 0, 0
+	nv, nh := len(verts), len(horizs)
+	for i0 < nv || i1 < nv || ih < nh {
+		y_min := max(i64)
+		if i0 < nv && verts[i0].y0 < y_min {y_min = verts[i0].y0}
+		if i1 < nv && y1s[i1] < y_min {y_min = y1s[i1]}
+		if ih < nh && horizs[ih].y < y_min {y_min = horizs[ih].y}
+		if len(ys) == 0 || ys[len(ys) - 1] != y_min {
+			append(&ys, y_min)
 		}
+		for i0 < nv && verts[i0].y0 == y_min {i0 += 1}
+		for i1 < nv && y1s[i1] == y_min {i1 += 1}
+		for ih < nh && horizs[ih].y == y_min {ih += 1}
 	}
 	num_y := len(ys)
 	if num_y < 2 {return {}, .None}
@@ -211,8 +276,8 @@ odin_vatti_boolean :: proc(
 	Active_Entry :: struct {
 		x_mid:       f64,
 		slope:       f64,
-		x0:          i64,
-		y0:          i64,
+		x0_f:        f64,
+		y0_f:        f64,
 		y1:          i64,
 		idx:         i32,
 		dw_subj:     i32,
@@ -233,37 +298,64 @@ odin_vatti_boolean :: proc(
 		vatti_fill_inside(0, fill_rule),
 		operation,
 	)
+	fast_mode: u8 = 0
+	if fill_rule == .Non_Zero {
+		switch operation {
+		case .Difference:   fast_mode = 1
+		case .Intersection: fast_mode = 2
+		case .Union:        fast_mode = 3
+		case .Xor, .Invalid:
+		}
+	} else if fill_rule == .Positive && operation == .Union {
+		fast_mode = 4
+	}
 	for s in 0..<num_y {
 		y_cur := ys[s]
 		has_next_slab := s + 1 < num_y
-		y_mid := 0.5 * f64(y_cur + ys[s + 1]) if has_next_slab else 0.0
+		has_new_vert := has_next_slab && next_vert < len(verts) && verts[next_vert].y0 == y_cur
+		y_mid := 0.5 * f64(y_cur + ys[s + 1]) if has_new_vert else 0.0
 
-		// Fused expire-flush + x_mid update in one sequential pass over the L1-resident AET.
+		// Fused expire-flush + conditional x_mid update (only needed when new edges enter at y_cur).
 		w := 0
+		surviving_unsorted := false
 		need_sort := false
 		prev_x := -1.0e300
 		prev_slope := -1.0e300
-		for entry in aet {
-			if entry.y1 <= y_cur {
-				if entry.run_verdict != 0 {
-					vatti_emit_vert_run(&kept_edges, verts[entry.idx], ys[:], int(entry.run_s_start), s, entry.run_verdict)
-				}
-			} else {
-				e := entry
-				if has_next_slab {
-					xm := f64(e.x0) + e.slope * (y_mid - f64(e.y0))
+		if has_new_vert {
+			for ai in 0..<len(aet) {
+				e := &aet[ai]
+				if e.y1 <= y_cur {
+					if e.run_verdict != 0 {
+						vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
+					}
+				} else {
+					xm := e.x0_f + e.slope * (y_mid - e.y0_f)
 					e.x_mid = xm
 					if w > 0 && (prev_x > xm || (prev_x == xm && prev_slope > e.slope)) {
+						surviving_unsorted = true
 						need_sort = true
 					}
 					prev_x = xm
 					prev_slope = e.slope
+					if w != ai {aet[w] = e^}
+					w += 1
 				}
-				aet[w] = e
-				w += 1
+			}
+		} else {
+			for ai in 0..<len(aet) {
+				e := &aet[ai]
+				if e.y1 <= y_cur {
+					if e.run_verdict != 0 {
+						vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
+					}
+				} else {
+					if w != ai {aet[w] = e^}
+					w += 1
+				}
 			}
 		}
 		resize(&aet, w)
+		existing_count := w
 
 		h_start := next_horiz
 		for next_horiz < len(horizs) && horizs[next_horiz].y == y_cur {
@@ -275,31 +367,36 @@ odin_vatti_boolean :: proc(
 		clear(&cur_slab)
 
 		if has_next_slab {
-			for next_vert < len(verts) && verts[next_vert].y0 == y_cur {
-				v := verts[next_vert]
-				xm := f64(v.x0) + v.slope * (y_mid - f64(v.y0))
-				if len(aet) > 0 && (prev_x > xm || (prev_x == xm && prev_slope > v.slope)) {
-					need_sort = true
+			if has_new_vert {
+				for next_vert < len(verts) && verts[next_vert].y0 == y_cur {
+					v := verts[next_vert]
+					x0_f := f64(v.x0)
+					y0_f := f64(v.y0)
+					xm := x0_f + v.slope * (y_mid - y0_f)
+					if len(aet) > 0 && (prev_x > xm || (prev_x == xm && prev_slope > v.slope)) {
+						need_sort = true
+					}
+					prev_x = xm
+					prev_slope = v.slope
+					append(&aet, Active_Entry{
+						x_mid   = xm,
+						slope   = v.slope,
+						x0_f    = x0_f,
+						y0_f    = y0_f,
+						y1      = v.y1,
+						idx     = i32(next_vert),
+						dw_subj = v.dw_subj,
+						dw_clip = v.dw_clip,
+					})
+					next_vert += 1
 				}
-				prev_x = xm
-				prev_slope = v.slope
-				append(&aet, Active_Entry{
-					x_mid   = xm,
-					slope   = v.slope,
-					x0      = v.x0,
-					y0      = v.y0,
-					y1      = v.y1,
-					idx     = i32(next_vert),
-					dw_subj = v.dw_subj,
-					dw_clip = v.dw_clip,
-				})
-				next_vert += 1
 			}
 
 			if len(aet) > 0 {
 				if need_sort {
-					// Insertion sort on nearly-sorted AET (O(k) when only newly entered edges move).
-					for ai := 1; ai < len(aet); ai += 1 {
+					// Insertion sort: when surviving edges stayed ordered, only insert the newly entered tail.
+					sort_start := 1 if surviving_unsorted else max(1, existing_count)
+					for ai := sort_start; ai < len(aet); ai += 1 {
 						key := aet[ai]
 						aj := ai - 1
 						for aj >= 0 && (aet[aj].x_mid > key.x_mid ||
@@ -314,33 +411,121 @@ odin_vatti_boolean :: proc(
 				w_subj: i32 = 0
 				w_clip: i32 = 0
 				in_prev := in_zero
-				y_top := ys[s + 1]
-				for &e in aet {
-					w_subj += e.dw_subj
-					w_clip += e.dw_clip
-					in_next := vatti_bool_eval(
-						vatti_fill_inside(w_subj, fill_rule),
-						vatti_fill_inside(w_clip, fill_rule),
-						operation,
-					)
-					if record_slab {
-						x_bot := f64(e.x0) + e.slope * f64(y_cur - e.y0)
-						x_top := f64(e.x0) + e.slope * f64(y_top - e.y0)
-						append(&cur_slab, Slab_Interval{x_bot = x_bot, x_top = x_top, in_res = in_next})
-					}
-
-					slab_verdict: i8 = 0
-					if in_prev != in_next {
-						slab_verdict = +1 if in_prev else -1
-					}
-					if slab_verdict != e.run_verdict {
-						if e.run_verdict != 0 {
-							vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
+				if !record_slab {
+					switch fast_mode {
+					case 1: // Difference + Non_Zero
+						for &e in aet {
+							w_subj += e.dw_subj
+							w_clip += e.dw_clip
+							in_next := w_subj != 0 && w_clip == 0
+							slab_verdict: i8 = (+1 if in_prev else -1) if in_prev != in_next else 0
+							if slab_verdict != e.run_verdict {
+								if e.run_verdict != 0 {
+									vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
+								}
+								e.run_verdict = slab_verdict
+								e.run_s_start = i32(s)
+							}
+							in_prev = in_next
 						}
-						e.run_verdict = slab_verdict
-						e.run_s_start = i32(s)
+					case 2: // Intersection + Non_Zero
+						for &e in aet {
+							w_subj += e.dw_subj
+							w_clip += e.dw_clip
+							in_next := w_subj != 0 && w_clip != 0
+							slab_verdict: i8 = (+1 if in_prev else -1) if in_prev != in_next else 0
+							if slab_verdict != e.run_verdict {
+								if e.run_verdict != 0 {
+									vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
+								}
+								e.run_verdict = slab_verdict
+								e.run_s_start = i32(s)
+							}
+							in_prev = in_next
+						}
+					case 3: // Union + Non_Zero
+						for &e in aet {
+							w_subj += e.dw_subj
+							w_clip += e.dw_clip
+							in_next := w_subj != 0 || w_clip != 0
+							slab_verdict: i8 = (+1 if in_prev else -1) if in_prev != in_next else 0
+							if slab_verdict != e.run_verdict {
+								if e.run_verdict != 0 {
+									vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
+								}
+								e.run_verdict = slab_verdict
+								e.run_s_start = i32(s)
+							}
+							in_prev = in_next
+						}
+					case 4: // Union + Positive
+						for &e in aet {
+							w_subj += e.dw_subj
+							w_clip += e.dw_clip
+							in_next := w_subj > 0 || w_clip > 0
+							slab_verdict: i8 = (+1 if in_prev else -1) if in_prev != in_next else 0
+							if slab_verdict != e.run_verdict {
+								if e.run_verdict != 0 {
+									vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
+								}
+								e.run_verdict = slab_verdict
+								e.run_s_start = i32(s)
+							}
+							in_prev = in_next
+						}
+					case:
+						for &e in aet {
+							w_subj += e.dw_subj
+							w_clip += e.dw_clip
+							in_next := vatti_bool_eval(
+								vatti_fill_inside(w_subj, fill_rule),
+								vatti_fill_inside(w_clip, fill_rule),
+								operation,
+							)
+							slab_verdict: i8 = (+1 if in_prev else -1) if in_prev != in_next else 0
+							if slab_verdict != e.run_verdict {
+								if e.run_verdict != 0 {
+									vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
+								}
+								e.run_verdict = slab_verdict
+								e.run_s_start = i32(s)
+							}
+							in_prev = in_next
+						}
 					}
-					in_prev = in_next
+				} else {
+					y_cur_f := f64(y_cur)
+					y_top_f := f64(ys[s + 1])
+					for &e in aet {
+						w_subj += e.dw_subj
+						w_clip += e.dw_clip
+						in_next: bool
+						switch fast_mode {
+						case 1: in_next = w_subj != 0 && w_clip == 0
+						case 2: in_next = w_subj != 0 && w_clip != 0
+						case 3: in_next = w_subj != 0 || w_clip != 0
+						case 4: in_next = w_subj > 0 || w_clip > 0
+						case:
+							in_next = vatti_bool_eval(
+								vatti_fill_inside(w_subj, fill_rule),
+								vatti_fill_inside(w_clip, fill_rule),
+								operation,
+							)
+						}
+						x_bot := e.x0_f + e.slope * (y_cur_f - e.y0_f)
+						x_top := e.x0_f + e.slope * (y_top_f - e.y0_f)
+						append(&cur_slab, Slab_Interval{x_bot = x_bot, x_top = x_top, in_res = in_next})
+
+						slab_verdict: i8 = (+1 if in_prev else -1) if in_prev != in_next else 0
+						if slab_verdict != e.run_verdict {
+							if e.run_verdict != 0 {
+								vatti_emit_vert_run(&kept_edges, verts[e.idx], ys[:], int(e.run_s_start), s, e.run_verdict)
+							}
+							e.run_verdict = slab_verdict
+							e.run_s_start = i32(s)
+						}
+						in_prev = in_next
+					}
 				}
 			}
 		}
@@ -378,18 +563,44 @@ odin_vatti_boolean :: proc(
 @(private = "file")
 vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dynamic]Vatti_Seg, crossings: int) {
 	n_segs := len(segs)
+	Seg_Ord_32 :: struct {
+		min_x: i32,
+		min_y: i32,
+		max_y: i32,
+		idx:   i32,
+	}
 	Seg_Ord :: struct {
 		min_x: i64,
 		min_y: i64,
 		max_y: i64,
 		idx:   i32,
 	}
-	seg_ords := make([]Seg_Ord, n_segs, context.temp_allocator)
-	for i in 0..<n_segs {
-		s := segs[i]
-		seg_ords[i] = {min_x = s.min_x, min_y = s.min_y, max_y = s.max_y, idx = i32(i)}
+	SNAP_I32_LIMIT :: i64(2_000_000_000)
+	fits_i32 := true
+	for s in segs {
+		if s.min_x < -SNAP_I32_LIMIT || s.max_x > SNAP_I32_LIMIT ||
+		   s.min_y < -SNAP_I32_LIMIT || s.max_y > SNAP_I32_LIMIT {
+			fits_i32 = false
+			break
+		}
 	}
-	fast_sort(seg_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
+	seg_ords_32: []Seg_Ord_32
+	seg_ords: []Seg_Ord
+	if fits_i32 {
+		seg_ords_32 = make([]Seg_Ord_32, n_segs, context.temp_allocator)
+		for i in 0..<n_segs {
+			s := segs[i]
+			seg_ords_32[i] = {min_x = i32(s.min_x), min_y = i32(s.min_y), max_y = i32(s.max_y), idx = i32(i)}
+		}
+		fast_sort(seg_ords_32, proc(a, b: Seg_Ord_32) -> bool {return a.min_x < b.min_x})
+	} else {
+		seg_ords = make([]Seg_Ord, n_segs, context.temp_allocator)
+		for i in 0..<n_segs {
+			s := segs[i]
+			seg_ords[i] = {min_x = s.min_x, min_y = s.min_y, max_y = s.max_y, idx = i32(i)}
+		}
+		fast_sort(seg_ords, proc(a, b: Seg_Ord) -> bool {return a.min_x < b.min_x})
+	}
 
 	// Hot pixels are every endpoint and every rounded proper intersection. Endpoint pixels are
 	// tested in the same pair sweep that finds intersections (a segment passing within one unit of
@@ -397,9 +608,9 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	// are looked up per segment afterwards.
 	Snap_Item :: struct {seg: int, t: f64, x, y: i64}
 	snaps := make([dynamic]Snap_Item, 0, 64, context.temp_allocator)
-	try_snap :: proc(snaps: ^[dynamic]Snap_Item, idx: int, sg: Vatti_Seg, h: [2]i64) {
-		if (h[0] == sg.ax && h[1] == sg.ay) || (h[0] == sg.bx && h[1] == sg.by) {return}
-		if h[0] < sg.min_x - 1 || h[0] > sg.max_x + 1 || h[1] < sg.min_y - 1 || h[1] > sg.max_y + 1 {return}
+	try_snap :: #force_inline proc(snaps: ^[dynamic]Snap_Item, idx: int, sg: ^Vatti_Seg, hx, hy: i64) {
+		if (hx == sg.ax && hy == sg.ay) || (hx == sg.bx && hy == sg.by) {return}
+		if hx < sg.min_x - 1 || hx > sg.max_x + 1 || hy < sg.min_y - 1 || hy > sg.max_y + 1 {return}
 		// Exact integer line-to-unit-square pre-filter: a point in [-0.5, 0.5]^2 around h satisfies
 		// |(h.x - ax)*dy - (h.y - ay)*dx| <= 0.5*(|dx| + |dy|), rejecting ~99% of misses with no division.
 		dx_i := sg.bx - sg.ax
@@ -407,43 +618,76 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 		adx := abs(dx_i)
 		ady := abs(dy_i)
 		if adx < 1_000_000_000 && ady < 1_000_000_000 {
-			cross := (h[0] - sg.ax)*dy_i - (h[1] - sg.ay)*dx_i
+			cross := (hx - sg.ax)*dy_i - (hy - sg.ay)*dx_i
 			if 2*abs(cross) > adx + ady {return}
 		}
-		if !vatti_segment_hits_pixel(sg, h) {return}
+		if !vatti_segment_hits_pixel(sg^, {hx, hy}) {return}
 		dx := f64(dx_i)
 		dy := f64(dy_i)
-		t := (f64(h[0] - sg.ax)*dx + f64(h[1] - sg.ay)*dy) / (dx*dx + dy*dy)
-		append(snaps, Snap_Item{idx, t, h[0], h[1]})
+		t := (f64(hx - sg.ax)*dx + f64(hy - sg.ay)*dy) / (dx*dx + dy*dy)
+		append(snaps, Snap_Item{idx, t, hx, hy})
 	}
 	hot := make([dynamic][2]i64, 0, 16, context.temp_allocator)
-	for oi in 0..<n_segs {
-		i := int(seg_ords[oi].idx)
-		sa := segs[i]
-		sa_max_x_1 := sa.max_x + 1
-		sa_min_y_1 := sa.min_y - 1
-		sa_max_y_1 := sa.max_y + 1
-		for oj := oi + 1; oj < n_segs; oj += 1 {
-			ord_j := seg_ords[oj]
-			if ord_j.min_x > sa_max_x_1 {break}
-			if ord_j.max_y < sa_min_y_1 || ord_j.min_y > sa_max_y_1 {continue}
-			j := int(ord_j.idx)
-			sb := segs[j]
-			try_snap(&snaps, i, sa, {sb.ax, sb.ay})
-			try_snap(&snaps, i, sa, {sb.bx, sb.by})
-			try_snap(&snaps, j, sb, {sa.ax, sa.ay})
-			try_snap(&snaps, j, sb, {sa.bx, sa.by})
-			if sb.min_x > sa.max_x || sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
-			if skip_same_set && sa.is_clip == sb.is_clip {continue}
-			if px, py, ta, tb, hit := vatti_seg_intersect(sa, sb); hit {
-				if (ta > 1e-9 && ta < 1.0 - 1e-9) || (tb > 1e-9 && tb < 1.0 - 1e-9) {
-					append(&hot, [2]i64{px, py})
+	if fits_i32 {
+		for oi in 0..<n_segs {
+			i := int(seg_ords_32[oi].idx)
+			sa := &segs[i]
+			sa_max_x_1 := i32(sa.max_x + 1)
+			sa_min_y_1 := i32(sa.min_y - 1)
+			sa_max_y_1 := i32(sa.max_y + 1)
+			for oj := oi + 1; oj < n_segs; oj += 1 {
+				ord_j := seg_ords_32[oj]
+				if ord_j.min_x > sa_max_x_1 {break}
+				if ord_j.max_y < sa_min_y_1 || ord_j.min_y > sa_max_y_1 {continue}
+				j := int(ord_j.idx)
+				sb := &segs[j]
+				try_snap(&snaps, i, sa, sb.ax, sb.ay)
+				try_snap(&snaps, i, sa, sb.bx, sb.by)
+				try_snap(&snaps, j, sb, sa.ax, sa.ay)
+				try_snap(&snaps, j, sb, sa.bx, sa.by)
+				if sb.min_x > sa.max_x || sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
+				if skip_same_set && sa.is_clip == sb.is_clip {continue}
+				if px, py, ta, tb, hit := vatti_seg_intersect(sa, sb); hit {
+					if (ta > 1e-9 && ta < 1.0 - 1e-9) || (tb > 1e-9 && tb < 1.0 - 1e-9) {
+						append(&hot, [2]i64{px, py})
+						crossings += 1
+					}
+				} else if vatti_segs_collinear(sa, sb) &&
+				          max(sa.min_x, sb.min_x) <= min(sa.max_x, sb.max_x) &&
+				          max(sa.min_y, sb.min_y) <= min(sa.max_y, sb.max_y) {
 					crossings += 1
 				}
-			} else if vatti_segs_collinear(sa, sb) &&
-			          max(sa.min_x, sb.min_x) <= min(sa.max_x, sb.max_x) &&
-			          max(sa.min_y, sb.min_y) <= min(sa.max_y, sb.max_y) {
-				crossings += 1
+			}
+		}
+	} else {
+		for oi in 0..<n_segs {
+			i := int(seg_ords[oi].idx)
+			sa := &segs[i]
+			sa_max_x_1 := sa.max_x + 1
+			sa_min_y_1 := sa.min_y - 1
+			sa_max_y_1 := sa.max_y + 1
+			for oj := oi + 1; oj < n_segs; oj += 1 {
+				ord_j := seg_ords[oj]
+				if ord_j.min_x > sa_max_x_1 {break}
+				if ord_j.max_y < sa_min_y_1 || ord_j.min_y > sa_max_y_1 {continue}
+				j := int(ord_j.idx)
+				sb := &segs[j]
+				try_snap(&snaps, i, sa, sb.ax, sb.ay)
+				try_snap(&snaps, i, sa, sb.bx, sb.by)
+				try_snap(&snaps, j, sb, sa.ax, sa.ay)
+				try_snap(&snaps, j, sb, sa.bx, sa.by)
+				if sb.min_x > sa.max_x || sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
+				if skip_same_set && sa.is_clip == sb.is_clip {continue}
+				if px, py, ta, tb, hit := vatti_seg_intersect(sa, sb); hit {
+					if (ta > 1e-9 && ta < 1.0 - 1e-9) || (tb > 1e-9 && tb < 1.0 - 1e-9) {
+						append(&hot, [2]i64{px, py})
+						crossings += 1
+					}
+				} else if vatti_segs_collinear(sa, sb) &&
+				          max(sa.min_x, sb.min_x) <= min(sa.max_x, sb.max_x) &&
+				          max(sa.min_y, sb.min_y) <= min(sa.max_y, sb.max_y) {
+					crossings += 1
+				}
 			}
 		}
 	}
@@ -460,14 +704,14 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 			}
 		}
 		resize(&hot, unique)
-		for sg, i in segs {
+		for &sg, i in segs {
 			lo, hi := 0, len(hot)
 			for lo < hi {
 				mid := (lo + hi) / 2
 				if hot[mid][0] < sg.min_x - 1 {lo = mid + 1} else {hi = mid}
 			}
 			for k := lo; k < len(hot) && hot[k][0] <= sg.max_x + 1; k += 1 {
-				try_snap(&snaps, i, sg, hot[k])
+				try_snap(&snaps, i, &sg, hot[k][0], hot[k][1])
 			}
 		}
 	}
@@ -488,7 +732,7 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	for i in 0..<n_segs {snap_offsets[i + 1] += snap_offsets[i]}
 	routed := make([dynamic]Vatti_Seg, 0, n_segs + len(snaps), context.temp_allocator)
 	for oi in 0..<n_segs {
-		i := int(seg_ords[oi].idx)
+		i := int(seg_ords_32[oi].idx) if fits_i32 else int(seg_ords[oi].idx)
 		sg := segs[i]
 		px, py := sg.ax, sg.ay
 		for sn in snaps[snap_offsets[i]:snap_offsets[i + 1]] {
@@ -530,12 +774,12 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 			if ord_j.min_x > sa.max_x {break}
 			if ord_j.max_y < sa.min_y || ord_j.min_y > sa.max_y {continue}
 			j := int(ord_j.idx)
-			sb := routed[j]
-			if !vatti_segs_collinear(sa, sb) {continue}
+			sb := &routed[j]
+			if !vatti_segs_collinear(&routed[i], sb) {continue}
 			vatti_maybe_split_flat(&splits, i, sa, sb.ax, sb.ay)
 			vatti_maybe_split_flat(&splits, i, sa, sb.bx, sb.by)
-			vatti_maybe_split_flat(&splits, j, sb, sa.ax, sa.ay)
-			vatti_maybe_split_flat(&splits, j, sb, sa.bx, sa.by)
+			vatti_maybe_split_flat(&splits, j, sb^, sa.ax, sa.ay)
+			vatti_maybe_split_flat(&splits, j, sb^, sa.bx, sa.by)
 		}
 	}
 	pieces = make([dynamic]Vatti_Seg, 0, n_routed + len(splits), context.temp_allocator)
@@ -646,7 +890,7 @@ vatti_collect_segs :: proc(set: Polygon_Set, is_clip: bool, out: ^[dynamic]Vatti
 VATTI_I64_SAFE_DELTA :: i64(2_000_000_000)
 
 @(private = "file")
-vatti_seg_intersect :: proc(a, b: Vatti_Seg) -> (px, py: i64, ta, tb: f64, hit: bool) {
+vatti_seg_intersect :: #force_inline proc(a, b: ^Vatti_Seg) -> (px, py: i64, ta, tb: f64, hit: bool) {
 	dax := a.bx - a.ax
 	day := a.by - a.ay
 	dbx := b.bx - b.ax
@@ -691,7 +935,7 @@ vatti_seg_intersect :: proc(a, b: Vatti_Seg) -> (px, py: i64, ta, tb: f64, hit: 
 }
 
 @(private = "file")
-vatti_segs_collinear :: proc(a, b: Vatti_Seg) -> bool {
+vatti_segs_collinear :: #force_inline proc(a, b: ^Vatti_Seg) -> bool {
 	dax := a.bx - a.ax
 	day := a.by - a.ay
 	rx0 := b.ax - a.ax
@@ -795,35 +1039,50 @@ vatti_trace_loops :: proc(edges: []Vatti_Dir_Edge, allocator: mem.Allocator) -> 
 	n := len(edges)
 	if n == 0 {return nil}
 
-	Out_Entry :: struct {
-		x, y: i64,
-		idx:  int,
-	}
-	entries := make([]Out_Entry, n, context.temp_allocator)
-	for e, idx in edges {
-		entries[idx] = {x = e.ax, y = e.ay, idx = idx}
-	}
-	fast_sort(entries, proc(a, b: Out_Entry) -> bool {
-		if a.x != b.x {return a.x < b.x}
-		return a.y < b.y
-	})
+	// Flat power-of-2 open-addressing hash table mapping (ax, ay) -> head edge index + 1 (0 = empty),
+	// with a parallel `next_same` linked-list array for multi-way junctions (O(N) build & lookup).
+	cap_pow2 := 16
+	for cap_pow2 < n * 2 {cap_pow2 <<= 1}
+	mask := u64(cap_pow2 - 1)
+	table := make([]i32, cap_pow2, context.temp_allocator)
+	next_same := make([]i32, n, context.temp_allocator)
 
-	find_range :: proc(entries: []Out_Entry, x, y: i64) -> (lo, hi: int) {
-		l, r := 0, len(entries)
-		for l < r {
-			m := (l + r) >> 1
-			if entries[m].x < x || (entries[m].x == x && entries[m].y < y) {
-				l = m + 1
-			} else {
-				r = m
+	hash_pt :: #force_inline proc(x, y: i64) -> u64 {
+		h := u64(x) * 0x9e3779b97f4a7c15
+		h ~= u64(y) * 0xbf58476d1ce4e5b9
+		h ~= h >> 30
+		h *= 0x94d049bb133111eb
+		return h ~ (h >> 31)
+	}
+
+	for e, idx in edges {
+		slot := hash_pt(e.ax, e.ay) & mask
+		for {
+			head := table[slot]
+			if head == 0 {
+				table[slot] = i32(idx + 1)
+				break
 			}
+			he := edges[head - 1]
+			if he.ax == e.ax && he.ay == e.ay {
+				// Prepend into chain (or append? Multi-way junction picks minimum turn angle).
+				next_same[idx] = head
+				table[slot] = i32(idx + 1)
+				break
+			}
+			slot = (slot + 1) & mask
 		}
-		lo = l
-		hi = l
-		for hi < len(entries) && entries[hi].x == x && entries[hi].y == y {
-			hi += 1
+	}
+
+	lookup_head :: #force_inline proc(table: []i32, edges: []Vatti_Dir_Edge, mask: u64, x, y: i64) -> i32 {
+		slot := hash_pt(x, y) & mask
+		for {
+			head := table[slot]
+			if head == 0 {return 0}
+			he := edges[head - 1]
+			if he.ax == x && he.ay == y {return head}
+			slot = (slot + 1) & mask
 		}
-		return lo, hi
 	}
 
 	loops := make([dynamic][dynamic]Polygon_Point, 0, 16, allocator)
@@ -843,14 +1102,14 @@ vatti_trace_loops :: proc(edges: []Vatti_Dir_Edge, allocator: mem.Allocator) -> 
 				closed = true
 				break
 			}
-			lo, hi := find_range(entries, nx, ny)
-			if lo == hi {break}
+			head := lookup_head(table, edges, mask, nx, ny)
+			if head == 0 {break}
 
 			// Fast path (99.9% of vertices): single outgoing edge — skip atan2 completely.
-			if hi - lo == 1 {
-				ci := entries[lo].idx
-				if edges[ci].used {break}
-				cur_idx = ci
+			ci0 := int(head - 1)
+			if next_same[ci0] == 0 {
+				if edges[ci0].used {break}
+				cur_idx = ci0
 				continue
 			}
 
@@ -858,8 +1117,8 @@ vatti_trace_loops :: proc(edges: []Vatti_Dir_Edge, allocator: mem.Allocator) -> 
 			in_ang := math.atan2(f64(e.by - e.ay), f64(e.bx - e.ax))
 			best_idx := -1
 			best_turn := f64(1e9)
-			for k in lo..<hi {
-				ci := entries[k].idx
+			for cur := head; cur != 0; cur = next_same[cur - 1] {
+				ci := int(cur - 1)
 				if edges[ci].used {continue}
 				out_ang := math.atan2(f64(edges[ci].by - edges[ci].ay), f64(edges[ci].bx - edges[ci].ax))
 				diff := out_ang - (in_ang + math.PI)

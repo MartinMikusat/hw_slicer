@@ -442,7 +442,19 @@ infill_collect_hits :: proc(
 			hit_count += 1
 		}
 	}
-	slice.sort_by(hits[:hit_count], infill_rational_hit_less)
+	if hit_count <= 16 {
+		for i := 1; i < hit_count; i += 1 {
+			key := hits[i]
+			j := i - 1
+			for j >= 0 && infill_rational_hit_less(key, hits[j]) {
+				hits[j + 1] = hits[j]
+				j -= 1
+			}
+			hits[j + 1] = key
+		}
+	} else {
+		slice.sort_by(hits[:hit_count], infill_rational_hit_less)
+	}
 	return hit_count, .None
 }
 
@@ -481,12 +493,25 @@ infill_rational_round :: proc(
 		return 0, 0, false
 	}
 	negative := numerator < 0
-	magnitude := numerator
-	if negative {magnitude = -magnitude}
-	if magnitude > max(i128)-denominator/2 {
+	magnitude := -numerator if negative else numerator
+	half_d := denominator >> 1
+	if magnitude <= i128(max(u64)) - half_d && denominator <= i128(max(u64)) {
+		// Hardware 64-bit division fast path (avoids __divti3).
+		d64 := u64(denominator)
+		m64 := u64(magnitude)
+		q64 := (m64 + (d64 >> 1)) / d64
+		if q64 > u64(geometry.MAX_PLANAR_COORDINATE_UM) {
+			return 0, 0, false
+		}
+		rounded := -i64(q64) if negative else i64(q64)
+		prod := q64 * d64
+		err64 := prod - m64 if prod >= m64 else m64 - prod
+		return contracts.Micrometres(rounded), u128(err64), true
+	}
+	if magnitude > max(i128)-half_d {
 		return 0, 0, false
 	}
-	rounded_magnitude := (magnitude+denominator/2)/denominator
+	rounded_magnitude := (magnitude+half_d)/denominator
 	rounded := rounded_magnitude
 	if negative {rounded = -rounded}
 	if rounded < -i128(geometry.MAX_PLANAR_COORDINATE_UM) ||

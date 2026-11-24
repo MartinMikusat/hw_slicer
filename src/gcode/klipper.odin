@@ -1432,33 +1432,123 @@ klipper_command_end :: proc(
 	return true
 }
 
-klipper_append_coordinate :: proc(
+@(private = "file")
+KLIPPER_DIGITS_2 := [200]u8{
+	'0','0','0','1','0','2','0','3','0','4','0','5','0','6','0','7','0','8','0','9',
+	'1','0','1','1','1','2','1','3','1','4','1','5','1','6','1','7','1','8','1','9',
+	'2','0','2','1','2','2','2','3','2','4','2','5','2','6','2','7','2','8','2','9',
+	'3','0','3','1','3','2','3','3','3','4','3','5','3','6','3','7','3','8','3','9',
+	'4','0','4','1','4','2','4','3','4','4','4','5','4','6','4','7','4','8','4','9',
+	'5','0','5','1','5','2','5','3','5','4','5','5','5','6','5','7','5','8','5','9',
+	'6','0','6','1','6','2','6','3','6','4','6','5','6','6','6','7','6','8','6','9',
+	'7','0','7','1','7','2','7','3','7','4','7','5','7','6','7','7','7','8','7','9',
+	'8','0','8','1','8','2','8','3','8','4','8','5','8','6','8','7','8','8','8','9',
+	'9','0','9','1','9','2','9','3','9','4','9','5','9','6','9','7','9','8','9','9',
+}
+
+klipper_append_coordinate :: #force_inline proc(
 	builder: ^strings.Builder,
 	value: contracts.Micrometres,
 ) {
-	klipper_append_fixed(builder, i128(value), 3)
+	klipper_append_fixed_u64(builder, i64(value), 3)
 }
 
-klipper_append_extrusion :: proc(builder: ^strings.Builder, value_nm: i128) {
-	klipper_append_fixed(builder, value_nm/10, 5)
+klipper_append_extrusion :: #force_inline proc(builder: ^strings.Builder, value_nm: i128) {
+	if value_nm >= i128(min(i64)) && value_nm <= i128(max(i64)) {
+		klipper_append_fixed_u64(builder, i64(value_nm) / 10, 5)
+		return
+	}
+	klipper_append_fixed(builder, value_nm / 10, 5)
 }
 
 klipper_append_feed :: proc(builder: ^strings.Builder, feed: i64) {
 	buf: [24]u8
 	pos := len(buf)
 	pos -= 1; buf[pos] = '\n'
-	v := feed
+	v := u64(feed)
 	if v == 0 {
 		pos -= 1; buf[pos] = '0'
 	} else {
-		for v > 0 {
+		for v >= 100 {
+			r := (v % 100) * 2
+			v /= 100
+			pos -= 2
+			buf[pos] = KLIPPER_DIGITS_2[r]
+			buf[pos + 1] = KLIPPER_DIGITS_2[r + 1]
+		}
+		if v >= 10 {
+			r := v * 2
+			pos -= 2
+			buf[pos] = KLIPPER_DIGITS_2[r]
+			buf[pos + 1] = KLIPPER_DIGITS_2[r + 1]
+		} else {
 			pos -= 1
-			buf[pos] = u8('0' + (v % 10))
-			v /= 10
+			buf[pos] = u8('0' + v)
 		}
 	}
 	pos -= 1; buf[pos] = 'F'
 	pos -= 1; buf[pos] = ' '
+	strings.write_bytes(builder, buf[pos:])
+}
+
+@(private = "file")
+klipper_append_fixed_u64 :: #force_inline proc(
+	builder: ^strings.Builder,
+	units: i64,
+	$decimal_places: u8,
+) {
+	negative := units < 0
+	magnitude := u64(-units if negative else units)
+	when decimal_places == 3 {
+		whole := magnitude / 1_000
+		frac := magnitude % 1_000
+	} else {
+		whole := magnitude / 100_000
+		frac := magnitude % 100_000
+	}
+	buf: [32]u8
+	pos := len(buf)
+	when decimal_places == 3 {
+		d2 := (frac % 100) * 2
+		pos -= 3
+		buf[pos] = u8('0' + frac / 100)
+		buf[pos + 1] = KLIPPER_DIGITS_2[d2]
+		buf[pos + 2] = KLIPPER_DIGITS_2[d2 + 1]
+	} else {
+		d2 := (frac % 100) * 2
+		frac /= 100
+		d4 := (frac % 100) * 2
+		pos -= 5
+		buf[pos] = u8('0' + frac / 100)
+		buf[pos + 1] = KLIPPER_DIGITS_2[d4]
+		buf[pos + 2] = KLIPPER_DIGITS_2[d4 + 1]
+		buf[pos + 3] = KLIPPER_DIGITS_2[d2]
+		buf[pos + 4] = KLIPPER_DIGITS_2[d2 + 1]
+	}
+	pos -= 1; buf[pos] = '.'
+	if whole == 0 {
+		pos -= 1; buf[pos] = '0'
+	} else {
+		for whole >= 100 {
+			r := (whole % 100) * 2
+			whole /= 100
+			pos -= 2
+			buf[pos] = KLIPPER_DIGITS_2[r]
+			buf[pos + 1] = KLIPPER_DIGITS_2[r + 1]
+		}
+		if whole >= 10 {
+			r := whole * 2
+			pos -= 2
+			buf[pos] = KLIPPER_DIGITS_2[r]
+			buf[pos + 1] = KLIPPER_DIGITS_2[r + 1]
+		} else {
+			pos -= 1
+			buf[pos] = u8('0' + whole)
+		}
+	}
+	if negative {
+		pos -= 1; buf[pos] = '-'
+	}
 	strings.write_bytes(builder, buf[pos:])
 }
 

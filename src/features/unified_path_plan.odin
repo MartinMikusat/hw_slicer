@@ -149,8 +149,8 @@ unified_path_plan_build :: proc(
 	if u64(len(sources)) > limits.max_paths {
 		return {}, .Path_Limit
 	}
-	orders := make([]Unified_Path_Order, len(sources), allocator)
-	identities := make([]contracts.Stable_ID, len(sources), allocator)
+	orders := features_make_non_zeroed([]Unified_Path_Order, len(sources), allocator)
+	identities := features_make_non_zeroed([]contracts.Stable_ID, len(sources), allocator)
 	if len(sources) > 0 &&
 	   (orders == nil || identities == nil) {
 		delete(orders, allocator)
@@ -220,8 +220,8 @@ unified_path_plan_build :: proc(
 			}
 		}
 	}
-	slice.sort_by(orders, unified_path_order_less)
-	slice.sort_by(identities, unified_path_stable_id_less)
+	features_fast_sort(orders, unified_path_order_less)
+	features_fast_sort(identities, unified_path_stable_id_less)
 	for stable_id, stable_id_index in identities {
 		if stable_id_index > 0 &&
 		   stable_id == identities[stable_id_index-1] {
@@ -238,7 +238,7 @@ unified_path_plan_build :: proc(
 		return {}, .Arithmetic
 	}
 
-	emit_items := make([]Plan_Emit_Item, len(sources), allocator)
+	emit_items := features_make_non_zeroed([]Plan_Emit_Item, len(sources), allocator)
 	if len(sources) > 0 && emit_items == nil {
 		return {}, .Allocation_Failed
 	}
@@ -250,7 +250,7 @@ unified_path_plan_build :: proc(
 		len(layer_ids),
 		allocator,
 	)
-	result.paths = make(
+	result.paths = features_make_non_zeroed(
 		[]Unified_Planned_Path,
 		len(sources),
 		allocator,
@@ -365,7 +365,7 @@ unified_path_plan_build :: proc(
 		return {}, .Arithmetic
 	}
 
-	result.moves = make([]Unified_Planned_Move, move_write, allocator)
+	result.moves = features_make_non_zeroed([]Unified_Planned_Move, move_write, allocator)
 	if move_write > 0 && result.moves == nil {
 		unified_path_plan_result_destroy(&result, allocator)
 		return {}, .Allocation_Failed
@@ -467,11 +467,12 @@ unified_path_emit_layer :: proc(ctx: ^Plan_Emit_Context, layer_index: int) {
 		source := ctx.sources[item.order.source_slice_index]
 		path_set_id := contracts.stable_id_child(source.stable_id, .Feature, 0)
 		path_id := contracts.stable_id_child(path_set_id, .Path, 0)
+		move_id_prefix := contracts.stable_id_child_prefix(path_id, .Path)
 		move_write := int(item.move_offset)
 		start_index := int(item.start_index)
 		if item.has_travel {
 			ctx.moves[move_write] = {
-				stable_id         = contracts.stable_id_child(path_id, .Path, u64(1)<<63),
+				stable_id         = contracts.stable_id_child_from_prefix(move_id_prefix, u64(1)<<63),
 				path_id           = path_id,
 				kind              = .Travel,
 				source_edge_index = max(u32),
@@ -502,7 +503,7 @@ unified_path_emit_layer :: proc(ctx: ^Plan_Emit_Context, layer_index: int) {
 				return
 			}
 			ctx.moves[move_write] = {
-				stable_id         = contracts.stable_id_child(path_id, .Path, u64(source_edge_index)),
+				stable_id         = contracts.stable_id_child_from_prefix(move_id_prefix, u64(source_edge_index)),
 				path_id           = path_id,
 				kind              = .Extrude,
 				role              = source.role,

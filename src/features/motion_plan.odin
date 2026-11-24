@@ -36,24 +36,25 @@ Motion_Arc_Kind :: enum u8 {
 }
 
 Motion_Operation :: struct {
+	// Ordered by alignment (16 -> 8 -> 4 -> 1) to eliminate interior padding.
+	filament_delta_nm:     i128,
 	stable_id:             contracts.Stable_ID,
 	source_move_id:        contracts.Stable_ID,
-	source_move_index:     u32,
 	path_id:               contracts.Stable_ID,
-	layer_index:           u32,
-	kind:                  Motion_Operation_Kind,
-	arc:                   Motion_Arc_Kind,
-	role:                  profiles.Printable_Role,
 	point_a:               polygon.Polygon_Point,
 	point_b:               polygon.Polygon_Point,
 	arc_center:            polygon.Polygon_Point,
 	z_hop_um:              contracts.Micrometres,
 	z_offset_um:           contracts.Micrometres, // non-zero for scarf seams / spiral vase Z interpolation
+	duration_us:           u64,
+	source_move_index:     u32,
+	layer_index:           u32,
 	speed:                 profiles.Speed_Um_Per_Second,
 	acceleration:          profiles.Acceleration_Um_Per_Second_Squared,
 	fan_ratio:             profiles.Ratio_Ppm,
-	filament_delta_nm:     i128,
-	duration_us:           u64,
+	kind:                  Motion_Operation_Kind,
+	arc:                   Motion_Arc_Kind,
+	role:                  profiles.Printable_Role,
 	crosses_exterior:      bool,
 }
 
@@ -156,7 +157,7 @@ motion_plan_build :: proc(
 		return {}, .Extrusion_Mismatch
 	}
 
-	sources := make([]Motion_Source_Move, len(plan.moves), allocator)
+	sources := features_make_non_zeroed([]Motion_Source_Move, len(plan.moves), allocator)
 	layer_states := make([]Motion_Layer_Build_State, len(plan.layers), allocator)
 	if len(plan.moves) > 0 && sources == nil ||
 	   len(plan.layers) > 0 && layer_states == nil {
@@ -255,7 +256,7 @@ motion_plan_build :: proc(
 	result := Motion_Plan_Result{}
 	result.layers = make([]Motion_Layer, len(plan.layers), allocator)
 	result.operations =
-		make([]Motion_Operation, int(operation_count), allocator)
+		features_make_non_zeroed([]Motion_Operation, int(operation_count), allocator)
 	if len(plan.layers) > 0 && result.layers == nil ||
 	   operation_count > 0 && result.operations == nil {
 		motion_plan_result_destroy(&result, allocator)

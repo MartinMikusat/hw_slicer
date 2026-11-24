@@ -62,7 +62,7 @@ motion_plan_fit_arcs :: proc(
 		config   = config,
 		min_segs = min_segs,
 		max_err  = max_err,
-		scratch  = make([]Motion_Operation, len(motion.operations), allocator),
+		scratch  = features_make_non_zeroed([]Motion_Operation, len(motion.operations), allocator),
 		produced = make([]int, len(motion.layers), allocator),
 		stats    = make([]Arc_Fit_Stats, len(motion.layers), allocator),
 	}
@@ -183,24 +183,53 @@ motion_plan_fit_arcs :: proc(
 
 	total := 0
 	for count in fit_ctx.produced {total += count}
-	new_ops := make([]Motion_Operation, total, allocator)
+	new_ops := features_make_non_zeroed([]Motion_Operation, total, allocator)
+	old_offsets := make([]int, len(motion.layers), allocator)
+	defer delete(old_offsets, allocator)
 	write := 0
 	for &layer, layer_index in motion.layers {
-		start := int(layer.operation_offset)
+		old_offsets[layer_index] = int(layer.operation_offset)
 		count := fit_ctx.produced[layer_index]
-		copy(new_ops[write:], fit_ctx.scratch[start:start + count])
 		layer.operation_offset = u64(write)
 		layer.operation_count = u32(count)
 		write += count
 	}
 	assert(write == len(new_ops))
+
+	Compact_Ctx :: struct {
+		layers:      []Motion_Layer,
+		old_offsets: []int,
+		scratch:     []Motion_Operation,
+		new_ops:     []Motion_Operation,
+		ext_counts:  []u64,
+	}
+	ext_counts := make([]u64, len(motion.layers), allocator)
+	defer delete(ext_counts, allocator)
+	compact_ctx := Compact_Ctx{
+		layers      = motion.layers,
+		old_offsets = old_offsets,
+		scratch     = fit_ctx.scratch,
+		new_ops     = new_ops,
+		ext_counts  = ext_counts,
+	}
+	parallel_for(len(motion.layers), &compact_ctx, proc(c: ^Compact_Ctx, layer_index: int) {
+		layer := c.layers[layer_index]
+		old_start := c.old_offsets[layer_index]
+		new_start := int(layer.operation_offset)
+		count := int(layer.operation_count)
+		src := c.scratch[old_start:old_start + count]
+		dst := c.new_ops[new_start:new_start + count]
+		copy(dst, src)
+		cnt: u64
+		for op in src {
+			if op.kind == .Extrude {cnt += 1}
+		}
+		c.ext_counts[layer_index] = cnt
+	})
 	delete(motion.operations, allocator)
 	motion.operations = new_ops
-	// Recompute extrusion_count accurately.
 	ext_count: u64
-	for op in motion.operations {
-		if op.kind == .Extrude {ext_count += 1}
-	}
+	for c in ext_counts {ext_count += c}
 	motion.extrusion_count = ext_count
 	return stats
 }

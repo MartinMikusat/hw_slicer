@@ -67,6 +67,7 @@ Slice_Session :: struct {
 	has_repaired:      bool,
 	contour_repairs:   u32,
 	regions:           slicing.Region_Result,
+	model_layer_sets:  []polygon.Polygon_Set,
 	surfaces:          features.Surface_Result,
 	skins:             features.Skin_Result,
 	perimeters:        features.Perimeter_Result,
@@ -437,6 +438,8 @@ session_clear_stage :: proc(s: ^Slice_Session, id: Stage_Id) {
 		s.simplified = {}
 		s.has_simplified = false
 	case .Regions:
+		destroy_model_polygon_sets(s.model_layer_sets, a)
+		s.model_layer_sets = nil
 		slicing.region_result_destroy(&s.regions, a)
 		if s.has_repaired {slicing.topology_result_destroy(&s.repaired, a)}
 		s.repaired = {}
@@ -674,6 +677,7 @@ stage_regions :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		}
 		return {stage = "regions", detail = fmt.tprintf("regions error: %v (layer %d, repairs=%d)", reg_err, failure.layer_index, s.contour_repairs)}
 	}
+	s.model_layer_sets = build_model_polygon_sets(session_active_topology(s), s.regions, a)
 	s.slots[.Regions].count_a = u64(len(s.regions.regions))
 	s.slots[.Regions].count_b = u64(s.contour_repairs)
 	return {}
@@ -788,10 +792,8 @@ stage_solid_areas :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	vertical_shells: features.Vertical_Shell_Result
 	defer features.vertical_shell_result_destroy(&vertical_shells, a)
 	if s.options.ensure_vertical_shells && !s.options.vase_mode {
-		shell_model_sets := build_model_polygon_sets(active, s.regions, a)
-		defer destroy_model_polygon_sets(shell_model_sets, a)
 		vertical_shells = features.vertical_shells_build(
-			shell_model_sets,
+			s.model_layer_sets,
 			contracts.Micrometres(i64(proc_src.perimeter_count)*i64(proc_src.nominal_line_width)),
 			proc_src.nominal_line_width,
 			proc_src.top_skin.minimum_layers,
@@ -805,7 +807,7 @@ stage_solid_areas :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			layer_id := s.schedule.layer_ids[li]
 			for band, side in ([2]polygon.Polygon_Set{vertical_shells.top[li], vertical_shells.bottom[li]}) {
 				if len(band.paths) == 0 || polygon_set_total_area_2(band) <= 0 {continue}
-				if _, ok := polygon.polygon_set_hash(band); !ok {continue}
+				if polygon.polygon_set_validate(band, polygon.DEFAULT_POLYGON_LIMITS) != .None {continue}
 				append(&extended, features.Role_Overlap_Source{
 					stable_id   = contracts.stable_id_child(layer_id, .Feature, u64(1)<<58 | u64(side)),
 					layer_id    = layer_id,
@@ -963,12 +965,10 @@ stage_supports :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		s.supports.pattern = proc_src.support_pattern
 		s.supports.line_width = proc_src.nominal_line_width
 		s.supports.layers = make([]features.Support_Path_Layer, layer_count, a)
-		model_sets := build_model_polygon_sets(active, s.regions, a)
-		defer destroy_model_polygon_sets(model_sets, a)
 		s.tree_supports = features.tree_supports_generate(
 			active,
 			s.regions,
-			model_sets,
+			s.model_layer_sets,
 			s.schedule.print_z,
 			{
 				overhang_angle_deg  = f64(i32(proc_src.support_overhang_angle)) / 1000.0,
@@ -1242,13 +1242,11 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	ext_err: features.Extrusion_Error
 	s.extrusion, ext_err = features.extrusion_calculate(s.unified_plan, s.layer_heights, s.profile.material, process, allocator = a)
 	if ext_err != .None {return {stage = "extrusion", detail = fmt.tprintf("extrusion error: %v", ext_err)}}
-	model_sets := build_model_polygon_sets(session_active_topology(s), s.regions, a)
-	defer destroy_model_polygon_sets(model_sets, a)
 	mot_err: features.Motion_Plan_Error
 	s.motion, mot_err = features.motion_plan_build(
 		s.schedule.layer_ids,
 		s.schedule.print_z,
-		model_sets,
+		s.model_layer_sets,
 		s.unified_plan,
 		s.extrusion,
 		s.profile,

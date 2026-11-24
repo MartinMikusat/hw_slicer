@@ -208,7 +208,7 @@ snapped_segments_build :: proc(
 			write_index += 1
 		}
 		assert(write_index == end)
-		slice.sort_by(c.records[start:end], snapped_segment_record_less)
+		slicing_fast_sort(c.records[start:end], snapped_segment_record_less)
 		for index in start..<end {snapped_segment_record_write(c.output, index, c.records[index])}
 	})
 	return result, .None
@@ -274,6 +274,29 @@ snapped_segments_merge :: proc(
 	slicing_parallel_for(layer_count, &merge_ctx, proc(c: ^Merge_Context, layer_index: int) {
 		start := int(c.layers[layer_index].offset)
 		end := start+int(c.layers[layer_index].count)
+		right_layer := c.right.layers[layer_index]
+		if right_layer.count == 0 {
+			left_layer := c.left.layers[layer_index]
+			l_off := int(left_layer.offset)
+			cnt := int(left_layer.count)
+			if cnt > 0 {
+				copy(c.output.layer_indices[start:end], c.left.segments.layer_indices[l_off:l_off + cnt])
+				copy(c.output.triangle_indices[start:end], c.left.segments.triangle_indices[l_off:l_off + cnt])
+				copy(c.output.segment_ids[start:end], c.left.segments.segment_ids[l_off:l_off + cnt])
+				copy(c.output.triangle_ids[start:end], c.left.segments.triangle_ids[l_off:l_off + cnt])
+				copy(c.output.edge_a[start:end], c.left.segments.edge_a[l_off:l_off + cnt])
+				copy(c.output.edge_b[start:end], c.left.segments.edge_b[l_off:l_off + cnt])
+				copy(c.output.x0[start:end], c.left.segments.x0[l_off:l_off + cnt])
+				copy(c.output.y0[start:end], c.left.segments.y0[l_off:l_off + cnt])
+				copy(c.output.x1[start:end], c.left.segments.x1[l_off:l_off + cnt])
+				copy(c.output.y1[start:end], c.left.segments.y1[l_off:l_off + cnt])
+				copy(c.output.x0_error_um[start:end], c.left.segments.x0_error_um[l_off:l_off + cnt])
+				copy(c.output.y0_error_um[start:end], c.left.segments.y0_error_um[l_off:l_off + cnt])
+				copy(c.output.x1_error_um[start:end], c.left.segments.x1_error_um[l_off:l_off + cnt])
+				copy(c.output.y1_error_um[start:end], c.left.segments.y1_error_um[l_off:l_off + cnt])
+			}
+			return
+		}
 		write_index := start
 		sources := [2]Snapped_Segment_Result{c.left, c.right}
 		for source in sources {
@@ -284,7 +307,7 @@ snapped_segments_merge :: proc(
 			}
 		}
 		assert(write_index == end)
-		slice.sort_by(c.records[start:end], snapped_segment_record_less)
+		slicing_fast_sort(c.records[start:end], snapped_segment_record_less)
 		for index in start..<end {snapped_segment_record_write(c.output, index, c.records[index])}
 	})
 	return result, .None

@@ -339,7 +339,7 @@ topology_reconstruct_layer :: proc(c: ^Topology_Reconstruct_Context, layer_index
 			endpoint = 1,
 		}
 	}
-	slice.sort_by(layer_occurrences, endpoint_occurrence_less)
+	slicing_fast_sort(layer_occurrences, endpoint_occurrence_less)
 	vertex_write := 0
 	local_vertex_count := topology_cluster_endpoints(
 		layer_occurrences,

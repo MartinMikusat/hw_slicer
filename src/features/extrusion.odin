@@ -1,5 +1,7 @@
 package features
 
+import "core:math"
+
 import contracts "../contracts"
 import geometry "../geometry"
 import profiles "../profiles"
@@ -18,25 +20,26 @@ Extrusion_Layer :: struct {
 }
 
 Extrusion_Move :: struct {
-	stable_id:                  contracts.Stable_ID,
-	planned_move_id:            contracts.Stable_ID,
-	planned_move_index:         u32,
-	path_id:                    contracts.Stable_ID,
-	layer_index:                u32,
-	role:                       profiles.Printable_Role,
-	flow_ratio:                 profiles.Ratio_Ppm,
-	layer_height:               contracts.Micrometres,
-	line_width_a:               contracts.Micrometres,
-	line_width_b:               contracts.Micrometres,
+	// Ordered by alignment (16 -> 8 -> 4 -> 1) to eliminate interior padding (208 B -> 176 B).
 	distance_squared_um_2:      u128,
-	path_length_nm:             u64,
 	length_error_squared_nm_2:  u128,
 	cross_section_numerator:    u128,
 	volume_numerator:           u128,
-	volume_cubic_um:            u64,
 	volume_error_numerator:     u128,
-	incremental_filament_nm:    u64,
 	remainder_numerator_after:  u128,
+	stable_id:                  contracts.Stable_ID,
+	planned_move_id:            contracts.Stable_ID,
+	path_id:                    contracts.Stable_ID,
+	layer_height:               contracts.Micrometres,
+	line_width_a:               contracts.Micrometres,
+	line_width_b:               contracts.Micrometres,
+	path_length_nm:             u64,
+	volume_cubic_um:            u64,
+	incremental_filament_nm:    u64,
+	planned_move_index:         u32,
+	layer_index:                u32,
+	flow_ratio:                 profiles.Ratio_Ppm,
+	role:                       profiles.Printable_Role,
 }
 
 Extrusion_Result :: struct {
@@ -168,7 +171,7 @@ extrusion_calculate :: proc(
 		len(plan.layers),
 		allocator,
 	)
-	result.moves = make(
+	result.moves = features_make_non_zeroed(
 		[]Extrusion_Move,
 		int(extrude_move_count),
 		allocator,
@@ -399,18 +402,25 @@ extrusion_integer_sqrt_round :: proc(
 	value: u128,
 ) -> (u64, u128, bool) {
 	if value == 0 {return 0, 0, true}
-	remainder := value
 	root: u128
-	bit := u128(1)<<126
-	for bit > remainder {bit >>= 2}
-	for bit != 0 {
-		if remainder >= root+bit {
-			remainder -= root+bit
-			root = (root>>1)+bit
-		} else {
-			root >>= 1
+	if value <= (u128(1) << 104) {
+		// Hardware FSQRT gives an exact or ±1 initial estimate; 0-1 integer adjustments ensure exact floor(sqrt).
+		root = u128(math.sqrt(f64(value)))
+		for (root + 1) * (root + 1) <= value {root += 1}
+		for root * root > value {root -= 1}
+	} else {
+		remainder := value
+		bit := u128(1)<<126
+		for bit > remainder {bit >>= 2}
+		for bit != 0 {
+			if remainder >= root+bit {
+				remainder -= root+bit
+				root = (root>>1)+bit
+			} else {
+				root >>= 1
+			}
+			bit >>= 2
 		}
-		bit >>= 2
 	}
 	if root > u128(max(u64)) {return 0, 0, false}
 	floor := root
