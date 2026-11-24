@@ -48,19 +48,24 @@ Renderer :: struct {
 	layer:            Id,
 	device:           Id,
 	queue:            Id,
-	mesh_pipeline:       Id,
-	bead_pipeline:       Id,
-	depth_pipeline:      Id,
-	bead_depth_pipeline: Id,
-	line_pipeline:       Id,
-	depth_state:         Id,
-	ui_depth_state:      Id,
-	mesh_buffer:         Id,
-	bead_buffers:        [2]Id,
-	bead_capacities:     [2]int,
-	bead_slot:           int,
-	bead_buffer:         Id,
-	bead_count:          int,
+	mesh_pipeline:               Id,
+	bead_pipeline:               Id,
+	colored_bead_pipeline:       Id,
+	depth_pipeline:              Id,
+	bead_depth_pipeline:         Id,
+	colored_bead_depth_pipeline: Id,
+	line_pipeline:               Id,
+	depth_state:                 Id,
+	ui_depth_state:              Id,
+	mesh_buffer:                 Id,
+	bead_buffers:                [2]Id,
+	bead_capacities:             [2]int,
+	bead_slot:                   int,
+	bead_buffer:                 Id,
+	bead_count:                  int,
+	colored_bead_buffer:         Id,
+	colored_bead_capacity:       int,
+	colored_bead_count:          int,
 	section_buffer:      Id,
 	marker_buffer:    Id,
 	capture_texture:  Id,
@@ -122,6 +127,7 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.resolve_pipeline,
 		renderer.depth_pipeline,
 		renderer.bead_depth_pipeline,
+		renderer.colored_bead_depth_pipeline,
 		renderer.ao_depth,
 		renderer.depth_texture,
 		renderer.capture_texture,
@@ -130,11 +136,13 @@ renderer_shutdown :: proc(renderer: ^Renderer) {
 		renderer.mesh_buffer,
 		renderer.bead_buffers[0],
 		renderer.bead_buffers[1],
+		renderer.colored_bead_buffer,
 		renderer.ui_depth_state,
 		renderer.depth_state,
 		renderer.line_pipeline,
 		renderer.mesh_pipeline,
 		renderer.bead_pipeline,
+		renderer.colored_bead_pipeline,
 		renderer.queue,
 		renderer.device,
 	}
@@ -266,6 +274,17 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 		4,
 	)
 	if renderer.bead_pipeline == nil {return false}
+	renderer.colored_bead_pipeline = renderer_build_pipeline(
+		renderer,
+		library,
+		"colored_bead_vertex",
+		"mesh_fragment",
+		true,
+		false,
+		false,
+		4,
+	)
+	if renderer.colored_bead_pipeline == nil {return false}
 	renderer.floor_pipeline = renderer_build_pipeline(renderer, library, "mesh_vertex", "floor_fragment", true, false)
 	if renderer.floor_pipeline == nil {return false}
 	renderer.resolve_pipeline = renderer_build_pipeline(renderer, library, "resolve_vertex", "resolve_fragment", true, true, false)
@@ -274,6 +293,8 @@ renderer_build_pipelines :: proc(renderer: ^Renderer) -> bool {
 	if renderer.depth_pipeline == nil {return false}
 	renderer.bead_depth_pipeline = renderer_build_pipeline(renderer, library, "bead_vertex", "", true, false)
 	if renderer.bead_depth_pipeline == nil {return false}
+	renderer.colored_bead_depth_pipeline = renderer_build_pipeline(renderer, library, "colored_bead_vertex", "", true, false)
+	if renderer.colored_bead_depth_pipeline == nil {return false}
 	renderer.line_pipeline = renderer_build_pipeline(
 		renderer,
 		library,
@@ -477,6 +498,36 @@ renderer_draw_beads :: proc(
 	}
 	msg_void_ptr_u_u(encoder, sel_registerName("setVertexBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
 	msg_void_ptr_u_u(encoder, sel_registerName("setFragmentBytes:length:atIndex:"), uniforms, size_of(Scene_Uniforms), 1)
+}
+
+renderer_set_colored_beads :: proc(renderer: ^Renderer, beads: []Gpu_Colored_Bead) -> bool {
+	count := len(beads)
+	if count == 0 {
+		renderer.colored_bead_count = 0
+		return true
+	}
+	if renderer.colored_bead_buffer == nil || count > renderer.colored_bead_capacity {
+		cap := max(count, renderer.colored_bead_capacity * 2)
+		new_buf := transmute(proc "c" (Id, Sel, uint, uint) -> Id)objc_send_address
+		next := new_buf(
+			renderer.device,
+			sel_registerName("newBufferWithLength:options:"),
+			uint(cap * size_of(Gpu_Colored_Bead)),
+			0,
+		)
+		if next == nil {return false}
+		if renderer.colored_bead_buffer != nil {
+			msg_void(renderer.colored_bead_buffer, sel_registerName("release"))
+		}
+		renderer.colored_bead_buffer = next
+		renderer.colored_bead_capacity = cap
+	}
+	get_contents := transmute(proc "c" (Id, Sel) -> rawptr)objc_send_address
+	dst := get_contents(renderer.colored_bead_buffer, sel_registerName("contents"))
+	if dst == nil {return false}
+	mem.copy(dst, raw_data(beads), count * size_of(Gpu_Colored_Bead))
+	renderer.colored_bead_count = count
+	return true
 }
 
 renderer_set_section :: proc(renderer: ^Renderer, vertices: []Mesh_Vertex) -> bool {
@@ -861,7 +912,10 @@ renderer_draw :: proc(
 		viewport = {0, 0, 1, 1},
 		sh = renderer.harmonics,
 	}
-	cull_back := visual.is_design && !wireframe
+	cull_back := (visual.is_design || visual.is_gcode_preview) && !wireframe
+	gcode_uniforms := mesh_uniforms
+	gcode_uniforms.model = mat4_identity()
+	gcode_uniforms.mvp = mat4_mul(projection, view)
 	ao_vp := MTL_Viewport{0, 0, f64(vp_w), f64(vp_h), 0, 1}
 	ss_vp := MTL_Viewport{0, 0, f64(renderer.ss_width), f64(renderer.ss_height), 0, 1}
 
@@ -885,6 +939,15 @@ renderer_draw :: proc(
 		msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.bead_buffer, 0, 0)
 		msg_void_ptr_u_u(prepass, sel_registerName("setVertexBytes:length:atIndex:"), &mesh_uniforms, size_of(Scene_Uniforms), 1)
 		renderer_draw_beads(renderer, prepass, visual.finished_beads, visual.has_partial, visual.partial_bead)
+	} else if visual.is_gcode_preview && renderer.colored_bead_count > 0 && visual.gcode_bead_count > 0 {
+		start_b := clamp(visual.gcode_bead_start, 0, renderer.colored_bead_count)
+		cnt_b := min(visual.gcode_bead_count, renderer.colored_bead_count - start_b)
+		if cnt_b > 0 {
+			msg_void_id(prepass, sel_registerName("setRenderPipelineState:"), renderer.colored_bead_depth_pipeline)
+			msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.colored_bead_buffer, 0, 0)
+			msg_void_ptr_u_u(prepass, sel_registerName("setVertexBytes:length:atIndex:"), &gcode_uniforms, size_of(Scene_Uniforms), 1)
+			msg_void_u_u_u(prepass, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(start_b*36), uint(cnt_b*36))
+		}
 	} else {
 		msg_void_id(prepass, sel_registerName("setRenderPipelineState:"), renderer.depth_pipeline)
 		msg_void_id_u_u(prepass, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)
@@ -919,6 +982,20 @@ renderer_draw :: proc(
 		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
 		msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
 		renderer_draw_beads(renderer, scene_encoder, visual.finished_beads, visual.has_partial, visual.partial_bead, &mesh_uniforms, visual.highlight_start_bead, theme.accent)
+	} else if visual.is_gcode_preview && renderer.colored_bead_count > 0 && visual.gcode_bead_count > 0 {
+		start_b := clamp(visual.gcode_bead_start, 0, renderer.colored_bead_count)
+		cnt_b := min(visual.gcode_bead_count, renderer.colored_bead_count - start_b)
+		if cnt_b > 0 {
+			msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.colored_bead_pipeline)
+			msg_void_id_u_u(scene_encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.colored_bead_buffer, 0, 0)
+			msg_void_ptr_u_u(scene_encoder, sel_registerName("setVertexBytes:length:atIndex:"), &gcode_uniforms, size_of(Scene_Uniforms), 1)
+			msg_void_ptr_u_u(scene_encoder, sel_registerName("setFragmentBytes:length:atIndex:"), &gcode_uniforms, size_of(Scene_Uniforms), 1)
+			msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.environment, 0)
+			msg_void_id_u(scene_encoder, sel_registerName("setFragmentTexture:atIndex:"), renderer.ao_depth, 1)
+			msg_void_u_u_u(scene_encoder, sel_registerName("drawPrimitives:vertexStart:vertexCount:"), 3, uint(start_b*36), uint(cnt_b*36))
+			renderer.last_draw_calls += 1
+			renderer.last_triangles += cnt_b * 12
+		}
 	} else {
 		msg_void_id(scene_encoder, sel_registerName("setRenderPipelineState:"), renderer.mesh_pipeline)
 		msg_void_id_u_u(scene_encoder, sel_registerName("setVertexBuffer:offset:atIndex:"), renderer.mesh_buffer, 0, 0)

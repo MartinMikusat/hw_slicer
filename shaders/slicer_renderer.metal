@@ -110,6 +110,65 @@ vertex MeshOut bead_vertex(
     return out;
 }
 
+struct ColoredBead {
+    float4 a;     // xyz = start, w = width
+    float4 b;     // xyz = end,   w = height
+    float4 color; // rgba linear/srgb color for G-code preview modes
+};
+
+vertex MeshOut colored_bead_vertex(
+    uint id [[vertex_id]],
+    device const ColoredBead *beads [[buffer(0)]],
+    constant SceneUniforms &scene [[buffer(1)]]
+) {
+    uint bead_idx = id / 36;
+    uint local_id = id % 36;
+    uint side_idx = local_id / 6;
+    uint tri_v    = local_id % 6;
+
+    ColoredBead bead = beads[bead_idx];
+    float3 a = bead.a.xyz;
+    float3 b_pos = bead.b.xyz;
+    float width = bead.a.w;
+    float height = bead.b.w;
+
+    float3 along = float3(b_pos.x - a.x, b_pos.y - a.y, 0.0);
+    float len = length(along);
+    float3 dir = len > 1e-6 ? (along / len) : float3(1.0, 0.0, 0.0);
+    float3 side = float3(-dir.y, dir.x, 0.0);
+    float half_w = width * 0.5;
+    float3 start_p = a - dir * half_w;
+    float3 stop_p  = b_pos + dir * half_w;
+    float rnd = min(height * 0.42, half_w);
+
+    const float2 profile[6] = {
+        float2(-half_w + rnd, 0.0),
+        float2( half_w - rnd, 0.0),
+        float2( half_w,       height * 0.5),
+        float2( half_w - rnd, height),
+        float2(-half_w + rnd, height),
+        float2(-half_w,       height * 0.5),
+    };
+    float2 p = profile[side_idx];
+    float2 q = profile[(side_idx + 1) % 6];
+    float2 mid = (p + q) * 0.5 - float2(0.0, height * 0.5);
+    float3 raw_n = normalize(float3(side.x * mid.x, side.y * mid.x, -mid.y));
+
+    bool use_stop = (tri_v == 1 || tri_v == 2 || tri_v == 4);
+    bool use_q    = (tri_v == 2 || tri_v == 4 || tri_v == 5);
+    float3 origin = use_stop ? stop_p : start_p;
+    float2 prof   = use_q ? q : p;
+    float3 pos    = float3(origin.x + side.x * prof.x, origin.y + side.y * prof.x, origin.z - prof.y);
+
+    MeshOut out;
+    out.position = scene.mvp * float4(pos, 1.0);
+    out.normal   = normalize((scene.model * float4(raw_n, 0.0)).xyz);
+    out.color    = bead.color;
+    out.world    = (scene.model * float4(pos, 1.0)).xyz;
+    out.camera   = scene.camera.xyz;
+    return out;
+}
+
 // Adapted from hw_delta_support/shaders/charger3d.metal.
 static float2 environment_brdf(float roughness, float n_dot_v) {
     const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);

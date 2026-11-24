@@ -286,11 +286,19 @@ emit_topology_path :: proc(e: ^Segment_Emitter, t: slicing.Topology_Result, path
 }
 
 // True when every listed stage holds a result that no run is changing. The caller holds the lock.
-@(private = "file")
+@(private = "package")
 session_readable :: proc(s: ^Slice_Session, ids: Stage_Set) -> bool {
 	for id in ids {
 		state := s.slots[id].state
 		if state != .Complete && state != .Stale {return false}
 	}
 	return true
+}
+
+workspace_stage_readable :: proc(w: ^Workspace, id: Stage_Id) -> bool {
+	if w == nil || w.session == nil {return false}
+	s := w.session
+	sync.mutex_lock(&s.lock)
+	defer sync.mutex_unlock(&s.lock)
+	return session_readable(s, {id})
 }

@@ -44,9 +44,14 @@ UI_Graph :: struct {
 	advanced:         bool,
 	// Settings of the selected stage that the Advanced toggle hides.
 	hidden_advanced:  int,
-	show_mesh:        bool,
-	show_result:      bool,
-	hover_edge:       bool,
+	show_mesh:           bool,
+	show_result:         bool,
+	gcode_mode:          pipeline.GCode_View_Mode,
+	gcode_single_layer:  bool,
+	gcode_preview_ready: bool,
+	gcode_min:           f32,
+	gcode_max:           f32,
+	hover_edge:          bool,
 	hover_from:       pipeline.Stage_Id,
 	hover_to:         pipeline.Stage_Id,
 	// Stages that have records in the loaded evidence bundle.
@@ -442,6 +447,12 @@ ui_graph_controls :: proc(ui: ^UI_State) {
 	ui_add_control(ui, "wireframe", "toggle mesh wireframe", {vp.x+98, vp.y+12, 98, 30}, .Toggle_Wireframe, true, 1, ui.wireframe)
 	ui_add_control(ui, "show mesh", "toggle the model mesh", {vp.x+204, vp.y+12, 66, 30}, .View_Mesh, true, 1, v.show_mesh)
 	ui_add_control(ui, "show result", "toggle the stage result", {vp.x+278, vp.y+12, 72, 30}, .View_Result, true, 1, v.show_result)
+	if ui_gcode_preview_visible(ui) {
+		gx, gy := ui_gcode_toolbar_origin(vp)
+		ui_add_control(ui, "previous gcode view", "previous G-code color scheme", {gx, gy, 28, 30}, .View_GCode_Prev)
+		ui_add_control(ui, "next gcode view", "cycle G-code color scheme", {gx+32, gy, 152, 30}, .View_GCode_Next)
+		ui_add_control(ui, "single layer toggle", "toggle single layer vs stacked layers", {gx+190, gy, 76, 30}, .View_GCode_Single_Layer, true, 1, v.gcode_single_layer)
+	}
 	ui_add_control(ui, "section enabled", "toggle the layer view", ui_section_bar_rect(ui), .Toggle_Section, ui.section_max > 0)
 	ui_add_control(ui, "section height", "layer height", ui_section_slider_rect(ui), .Section_Height, ui.section_max > 0)
 
@@ -851,6 +862,107 @@ ui_draw_setting_rows :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	}
 }
 
+ui_gcode_preview_visible :: proc(ui: ^UI_State) -> bool {
+	v := ui.workspace.graph
+	sel := ui.workspace.view.selected
+	return (sel == .Motion || sel == .Gcode) && v.show_result && v.gcode_preview_ready
+}
+
+ui_gcode_toolbar_origin :: proc(vp: UI_Rect) -> (x, y: f64) {
+	if vp.w >= 820 {
+		return vp.x+362, vp.y+12
+	}
+	return vp.x+12, vp.y+48
+}
+
+@(private = "file")
+ui_gcode_legend_value :: proc(value: f32, mode: pipeline.GCode_View_Mode) -> string {
+	switch mode {
+	case .Line_Type:
+		return ""
+	case .Speed, .Actual_Speed, .Acceleration, .Temperature, .Fan_Speed, .Flow_Ratio, .Filament:
+		return fmt.tprintf("%.0f", value)
+	case .Volumetric_Flow, .Layer_Time, .Layer_Time_Log:
+		return fmt.tprintf("%.1f", value)
+	case .Layer_Height, .Line_Width, .Pressure_Advance:
+		return fmt.tprintf("%.2f", value)
+	}
+	return fmt.tprintf("%.2f", value)
+}
+
+@(private = "file")
+ui_draw_gcode_legend :: proc(painter: ^UI_Painter, ui: ^UI_State) {
+	if !ui_gcode_preview_visible(ui) {return}
+	theme := ui_theme(ui)
+	vp := ui_viewport_rect(ui)
+	v := ui.workspace.graph
+	mode := v.gcode_mode
+	info := pipeline.GCODE_VIEW_INFOS[mode]
+
+	bg := theme.overlay
+	bg.w = 0.92
+	if mode == .Line_Type {
+		swatches := pipeline.GCODE_LINE_SWATCHES
+		row_h := 18.0
+		card_w := 152.0
+		card_h := 32.0 + f64(len(swatches))*row_h + 8.0
+		if vp.h < card_h + 72 || vp.w < card_w + 24 {return}
+		card := UI_Rect{vp.x + vp.w - card_w - 12, vp.y + 12, card_w, card_h}
+		ui_add_rect(painter, card, bg)
+		ui_add_border(painter, card, theme.border)
+		ui_draw_text(painter, painter.font, ui, "Line type", {card.x+10, card.y+6, card.w-20, 20}, theme.muted, 0)
+		for sw, idx in swatches {
+			ry := card.y + 28 + f64(idx)*row_h
+			col := Vec4{sw.color[0], sw.color[1], sw.color[2], 1}
+			ui_add_round_rect(painter, {card.x+10, ry+3, 12, 12}, 2, col)
+			ui_draw_text(painter, painter.font, ui, sw.label, {card.x+28, ry, card.w-36, row_h}, theme.text, 0)
+		}
+		return
+	}
+
+	card_w := 184.0
+	bar_h := 140.0
+	card_h := 38.0 + bar_h + 14.0
+	if vp.h < card_h + 72 || vp.w < card_w + 24 {return}
+	card := UI_Rect{vp.x + vp.w - card_w - 12, vp.y + 12, card_w, card_h}
+	ui_add_rect(painter, card, bg)
+	ui_add_border(painter, card, theme.border)
+
+	header := info.label
+	if len(info.unit) > 0 {
+		header = fmt.tprintf("%s (%s)", info.label, info.unit)
+	}
+	ui_draw_text(painter, painter.font, ui, header, {card.x+10, card.y+6, card.w-20, 22}, theme.muted, 0)
+
+	bar := UI_Rect{card.x+12, card.y+34, 16, bar_h}
+	steps :: 35
+	strip_h := bar.h / f64(steps)
+	for i in 0..<steps {
+		t := 1.0 - f32(i)/f32(steps-1)
+		c := pipeline.gcode_preview_heat_color(t)
+		col := Vec4{c[0], c[1], c[2], 1}
+		ui_add_rect(painter, {bar.x, bar.y + f64(i)*strip_h, bar.w, strip_h + 0.5}, col)
+	}
+	ui_add_border(painter, bar, theme.border)
+
+	min_v := v.gcode_min
+	max_v := v.gcode_max
+	for ti in 0..<5 {
+		frac := f32(4 - ti) / 4.0
+		val: f32
+		if mode == .Layer_Time_Log {
+			lo := math.log10_f32(max(min_v, f32(0.1)))
+			hi := math.log10_f32(max(max_v, max(min_v, f32(0.1)) + 0.001))
+			val = math.pow_f32(10.0, lo + (hi - lo)*frac)
+		} else {
+			val = min_v + (max_v - min_v)*frac
+		}
+		ty := bar.y + f64(ti)*(bar.h/4.0) - 9.0
+		label := ui_gcode_legend_value(val, mode)
+		ui_draw_text(painter, painter.mono, ui, label, {bar.x + bar.w + 10, ty, card.w - (bar.w + 26), 18}, theme.text, 0, tracked = true)
+	}
+}
+
 // The labels of the 3D view in the graph workspace and the action bar.
 ui_draw_graph_view_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	theme := ui_theme(ui)
@@ -859,6 +971,14 @@ ui_draw_graph_view_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	}
 	for label in labels {
 		ui_draw_text(painter, painter.font, ui, label.text, ui_control_rect(ui, label.action), ui_control_ink(ui, label.action), 0, .Center)
+	}
+	if ui_gcode_preview_visible(ui) {
+		v := ui.workspace.graph
+		mode_label := fmt.tprintf("%s  ›", pipeline.GCODE_VIEW_INFOS[v.gcode_mode].label)
+		ui_draw_text(painter, painter.font, ui, "‹", ui_control_rect(ui, .View_GCode_Prev), ui_control_ink(ui, .View_GCode_Prev), 0, .Center)
+		ui_draw_text(painter, painter.font, ui, mode_label, ui_control_rect(ui, .View_GCode_Next), ui_control_ink(ui, .View_GCode_Next), 0, .Center)
+		ui_draw_text(painter, painter.font, ui, "1 layer" if v.gcode_single_layer else "Stack", ui_control_rect(ui, .View_GCode_Single_Layer), ui_control_ink(ui, .View_GCode_Single_Layer), 0, .Center)
+		ui_draw_gcode_legend(painter, ui)
 	}
 	section := ui_section_bar_rect(ui)
 	ui_draw_text(painter, painter.font, ui, "Layer", {section.x+52, section.y, section.w-52, section.h}, theme.text, 0)

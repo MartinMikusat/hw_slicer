@@ -739,10 +739,19 @@ design_beads :: proc(
 	return
 }
 
+Gpu_Colored_Bead :: struct {
+	a:     Vec4,
+	b:     Vec4,
+	color: Vec4,
+}
+
 Design_Visual :: struct {
 	finished_vertices:    int,
 	partial:              []Mesh_Vertex,
 	is_design:            bool,
+	is_gcode_preview:     bool,
+	gcode_bead_start:     int,
+	gcode_bead_count:     int,
 	finished_beads:       int,
 	has_partial:          bool,
 	partial_bead:         Gpu_Bead,

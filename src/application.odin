@@ -37,6 +37,10 @@ App_State :: struct {
 	workspace_model:         int,
 	workspace_path:          string,
 	workspace_exported_hash: contracts.Content_Hash,
+	gcode_preview:           pipeline.GCode_Preview_Data,
+	gcode_colored_beads:     [dynamic]Gpu_Colored_Bead,
+	gcode_colored_hash:      contracts.Content_Hash,
+	gcode_colored_mode:      pipeline.GCode_View_Mode,
 	placement: Model_Placement,
 	face_hover: int,
 	face_pressed: int,
@@ -78,6 +82,7 @@ startup_design: string
 startup_design_time := -1.0
 startup_stage := -1
 startup_stage_run: bool
+startup_gcode_view := -1
 startup_stage_edits: [dynamic][2]string
 // `--tabs=slicer,design,…`: demo tabs to switch to on the first frame, in order (true = slicer).
 startup_tabs: [dynamic]bool
@@ -465,7 +470,7 @@ app_activate :: proc(action: UI_Action) -> bool {
 	case .None, .Evidence_Stage_Base, .Graph_Node_Base, .Graph_Fit, .Graph_Divider, .Graph_Minimap,
 	     .Graph_Menu_Surface, .Graph_Menu_Run_To, .Graph_Menu_Run_Only, .Graph_Menu_Reset, .Graph_Menu_Evidence,
 	     .Graph_Menu_Copy, .Attribute_Settings, .Attribute_Log, .Attribute_Docs, .Attribute_Advanced, .View_Mesh,
-	     .View_Result:
+	     .View_Result, .View_GCode_Prev, .View_GCode_Next, .View_GCode_Single_Layer:
 		return false
 	}
 	return true
@@ -553,6 +558,8 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 }
 
 app_destroy :: proc() {
+	pipeline.gcode_preview_destroy(&app.gcode_preview)
+	delete(app.gcode_colored_beads)
 	mesh_destroy(&app.mesh)
 	design_state_clear(&app.design)
 	delete(app.section_vertices)
@@ -737,6 +744,12 @@ app_rebuild_section :: proc() {
 		layer, print_z, has_layer := pipeline.workspace_layer_at(w, app.ui.section_z)
 		ui.layer = layer
 		ui.layer_z = print_z if has_layer else app.ui.section_z
+		if ui_gcode_preview_visible(&app.ui) {
+			clear(&app.section_vertices)
+			app.ui.section_segments = 0
+			ui.result_shown = true
+			return
+		}
 		if has_layer && ui.graph.show_result {
 			clear(&app.stage_segments)
 			if pipeline.workspace_stage_segments(w, ui.view.selected, layer, &app.stage_segments) {
@@ -827,6 +840,26 @@ renderer_draw_application :: proc() -> Render_Result {
 	visual := Design_Visual{finished_vertices = app.renderer.mesh_vertex_count, highlight_start = -1}
 	if app.design.active {visual = design_visible(&app.design)}
 	if ui_graph_mode(&app.ui) && !app.ui.workspace.graph.show_mesh {visual.finished_vertices = 0}
+	if ui_graph_mode(&app.ui) && ui_gcode_preview_visible(&app.ui) && len(app.gcode_preview.beads) > 0 {
+		bead_start := 0
+		bead_count := len(app.gcode_preview.beads)
+		if app.ui.section_enabled && len(app.gcode_preview.layer_bead_offsets) > 0 {
+			li := clamp(app.ui.workspace.layer, 0, len(app.gcode_preview.layer_bead_offsets)-1)
+			if app.ui.workspace.graph.gcode_single_layer {
+				bead_start = app.gcode_preview.layer_bead_offsets[li]
+				bead_count = app.gcode_preview.layer_bead_counts[li]
+			} else {
+				bead_start = 0
+				bead_count = app.gcode_preview.layer_bead_offsets[li] + app.gcode_preview.layer_bead_counts[li]
+			}
+		}
+		visual.is_gcode_preview = true
+		visual.gcode_bead_start = bead_start
+		visual.gcode_bead_count = bead_count
+		if !app.ui.wireframe {
+			visual.finished_vertices = 0
+		}
+	}
 	viewport := ui_viewport_rect(&app.ui)
 	viewport.x *= app.ui.ui_scale
 	viewport.y *= app.ui.ui_scale
@@ -1572,6 +1605,10 @@ main :: proc() {
 			if parsed, ok := strconv.parse_int(argument[len("--stage="):], 10); ok {startup_stage = parsed}
 		} else if argument == "--stage-run" {
 			startup_stage_run = true
+		} else if strings.has_prefix(argument, "--gcode-view=") {
+			if parsed, ok := strconv.parse_int(argument[len("--gcode-view="):], 10); ok {
+				startup_gcode_view = parsed
+			}
 		} else if strings.has_prefix(argument, "--stage-set=") {
 			pair := argument[len("--stage-set="):]
 			if eq := strings.index_byte(pair, '='); eq > 0 {

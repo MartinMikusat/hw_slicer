@@ -85,6 +85,9 @@ app_workspace_open :: proc(path: string) {
 
 app_workspace_close :: proc() {
 	if app.workspace == nil {return}
+	pipeline.gcode_preview_destroy(&app.gcode_preview)
+	clear(&app.gcode_colored_beads)
+	app.gcode_colored_hash = {}
 	pipeline.workspace_destroy(app.workspace)
 	app.workspace = nil
 	app.ui.workspace.active = false
@@ -174,8 +177,54 @@ app_workspace_refresh :: proc() {
 		}
 		append(&ui.rows, row)
 	}
+	app_sync_gcode_preview()
 	app.section_dirty = true
 	app.needs_redraw = true
+}
+
+@(private = "file")
+app_sync_gcode_preview :: proc() {
+	w := app.workspace
+	graph := &app.ui.workspace.graph
+	sel := app.ui.workspace.view.selected
+	if w == nil || (sel != .Motion && sel != .Gcode) || !pipeline.workspace_stage_readable(w, .Motion) {
+		graph.gcode_preview_ready = false
+		return
+	}
+	motion_hash := w.session.slots[.Motion].built_hash
+	if motion_hash != app.gcode_preview.built_hash {
+		pipeline.gcode_preview_destroy(&app.gcode_preview)
+		if built, ok := pipeline.workspace_build_gcode_preview(w, context.allocator); ok {
+			app.gcode_preview = built
+		}
+	}
+	if len(app.gcode_preview.beads) == 0 {
+		graph.gcode_preview_ready = false
+		return
+	}
+	graph.gcode_preview_ready = true
+	mode := graph.gcode_mode
+	min_v := app.gcode_preview.mode_min[mode]
+	max_v := app.gcode_preview.mode_max[mode]
+	graph.gcode_min = min_v
+	graph.gcode_max = max_v
+	if app.gcode_colored_hash != app.gcode_preview.built_hash ||
+	   app.gcode_colored_mode != mode ||
+	   len(app.gcode_colored_beads) != len(app.gcode_preview.beads) {
+		clear(&app.gcode_colored_beads)
+		reserve(&app.gcode_colored_beads, len(app.gcode_preview.beads))
+		for bd in app.gcode_preview.beads {
+			col := pipeline.gcode_preview_bead_color(bd, mode, min_v, max_v)
+			append(&app.gcode_colored_beads, Gpu_Colored_Bead{
+				a = Vec4{bd.a[0], bd.a[1], bd.a[2], bd.width_mm},
+				b = Vec4{bd.b[0], bd.b[1], bd.b[2], bd.height_mm},
+				color = Vec4{col[0], col[1], col[2], col[3]},
+			})
+		}
+		_ = renderer_set_colored_beads(&app.renderer, app.gcode_colored_beads[:])
+		app.gcode_colored_hash = app.gcode_preview.built_hash
+		app.gcode_colored_mode = mode
+	}
 }
 
 // Once per frame: joins a finished run, exports completed G-code to build/gcode/, and refreshes.
@@ -277,6 +326,14 @@ app_workspace_activate :: proc(action: UI_Action) -> bool {
 		graph.show_mesh = !graph.show_mesh
 	case .View_Result:
 		graph.show_result = !graph.show_result
+	case .View_GCode_Prev:
+		count := len(pipeline.GCode_View_Mode)
+		graph.gcode_mode = pipeline.GCode_View_Mode((int(graph.gcode_mode) + count - 1) % count)
+	case .View_GCode_Next:
+		count := len(pipeline.GCode_View_Mode)
+		graph.gcode_mode = pipeline.GCode_View_Mode((int(graph.gcode_mode) + 1) % count)
+	case .View_GCode_Single_Layer:
+		graph.gcode_single_layer = !graph.gcode_single_layer
 	case:
 		return false
 	}
@@ -556,6 +613,9 @@ app_workspace_startup :: proc() {
 		}
 	}
 	pipeline.workspace_wait(w)
+	if startup_gcode_view >= 0 {
+		app.ui.workspace.graph.gcode_mode = pipeline.GCode_View_Mode(clamp(startup_gcode_view, 0, len(pipeline.GCode_View_Mode)-1))
+	}
 	app_workspace_refresh()
 	ui_build_controls(&app.ui)
 }
