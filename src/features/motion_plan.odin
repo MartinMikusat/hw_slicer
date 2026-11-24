@@ -169,13 +169,21 @@ motion_plan_build :: proc(
 		delete(layer_states, allocator)
 	}
 
-	// Precompute per-move overhang and travel-exterior-crossing flags via Metal GPU when enabled.
-	// On the CPU path, Pass 1 below evaluates both per layer on the shared worker pool.
+	worker_limit := options.worker_threads
+	if worker_limit <= 0 {
+		worker_limit = get_worker_threads()
+	}
+
+	// Precompute per-move overhang and travel-exterior-crossing flags via Metal GPU when enabled
+	// and the move count is large enough to beat the multi-threaded CPU pass (OPT-21).
+	// On smaller models (or --no-gpu), Pass 1 evaluates both per layer on the shared worker pool.
+	GPU_QUERY_MIN_MOVES :: 300_000
 	precomputed_overhangs: []bool
 	precomputed_overhangs_ready := false
 	precomputed_travels: []bool
 	precomputed_travels_ready := false
-	if len(plan.moves) > 0 && len(model_layers) > 0 && options.use_gpu {
+	use_gpu_queries := options.use_gpu && (worker_limit <= 1 || len(plan.moves) >= GPU_QUERY_MIN_MOVES)
+	if len(plan.moves) > 0 && len(model_layers) > 0 && use_gpu_queries {
 		precomputed_overhangs, precomputed_overhangs_ready, precomputed_travels, precomputed_travels_ready =
 			motion_gpu_compute_queries(
 				model_layers,
@@ -186,11 +194,6 @@ motion_plan_build :: proc(
 	}
 	defer delete(precomputed_overhangs, allocator)
 	defer delete(precomputed_travels, allocator)
-
-	worker_limit := options.worker_threads
-	if worker_limit <= 0 {
-		worker_limit = get_worker_threads()
-	}
 
 	build_ctx := Motion_Build_Context{
 		layer_ids                   = layer_ids,
@@ -1097,81 +1100,68 @@ motion_gpu_compute_queries :: proc(
 		ranges[li] = {offset = u32(start), count = u32(ew - start)}
 	}
 
-	// 1. Overhang point-in-polygon batch.
-	if compute_overhangs && len(model_layers) > 1 {
-		queries := make([dynamic]gpu.Point_Query, 0, len(plan.moves) / 2, context.temp_allocator)
-		move_indices := make([dynamic]int, 0, len(plan.moves) / 4, context.temp_allocator)
-		for layer, li in plan.layers {
-			if li == 0 || len(model_layers[li - 1].paths) == 0 {continue}
-			ms := int(layer.move_offset)
-			me := ms + int(layer.move_count)
-			prev_li := u32(li - 1)
-			for mi in ms..<me {
-				m := plan.moves[mi]
-				if m.kind != .Extrude || (m.role != .Perimeter && m.role != .Thin_Wall) {continue}
+	// Collect overhang and travel-crossing queries in a single pass over moves, then dispatch both
+	// in one Metal command buffer sharing the uploaded edges and layer ranges.
+	want_ov := compute_overhangs && len(model_layers) > 1
+	pip_queries := make([dynamic]gpu.Point_Query, 0, len(plan.moves)/2 if want_ov else 0, context.temp_allocator)
+	pip_indices := make([dynamic]int, 0, len(plan.moves)/4 if want_ov else 0, context.temp_allocator)
+	t_queries := make([dynamic]gpu.Travel_Query, 0, int(plan.travel_move_count), context.temp_allocator)
+	t_indices := make([dynamic]int, 0, int(plan.travel_move_count), context.temp_allocator)
+
+	for layer, li in plan.layers {
+		ms := int(layer.move_offset)
+		me := ms + int(layer.move_count)
+		check_ov := want_ov && li > 0 && len(model_layers[li - 1].paths) > 0
+		prev_li := u32(li - 1) if li > 0 else 0
+		for mi in ms..<me {
+			m := plan.moves[mi]
+			if m.kind == .Travel {
+				append(&t_indices, mi)
+				append(&t_queries, gpu.Travel_Query{
+					ax        = i64(m.point_a.x),
+					ay        = i64(m.point_a.y),
+					bx        = i64(m.point_b.x),
+					by        = i64(m.point_b.y),
+					layer_idx = u32(li),
+				})
+			} else if check_ov && m.kind == .Extrude && (m.role == .Perimeter || m.role == .Thin_Wall) {
 				ax, ay := i64(m.point_a.x), i64(m.point_a.y)
 				bx, by := i64(m.point_b.x), i64(m.point_b.y)
-				append(&move_indices, mi)
-				append(&queries, gpu.Point_Query{x2 = ax + bx, y2 = ay + by, layer_idx = prev_li})
-				append(&queries, gpu.Point_Query{x2 = (3*ax + bx)/2, y2 = (3*ay + by)/2, layer_idx = prev_li})
-				append(&queries, gpu.Point_Query{x2 = (ax + 3*bx)/2, y2 = (ay + 3*by)/2, layer_idx = prev_li})
-			}
-		}
-		ov_flags = make([]bool, len(plan.moves), allocator)
-		if len(queries) == 0 {
-			ov_ok = true
-		} else {
-			out_res := make([]u8, len(queries), context.temp_allocator)
-			if gpu.metal_batch_point_in_polygon(edges, ranges, queries[:], out_res) {
-				for mi, idx in move_indices {
-					base := idx * 3
-					unsupported := 0
-					if out_res[base + 0] == 0 {unsupported += 1}
-					if out_res[base + 1] == 0 {unsupported += 1}
-					if out_res[base + 2] == 0 {unsupported += 1}
-					ov_flags[mi] = unsupported >= 2
-				}
-				ov_ok = true
-			} else {
-				delete(ov_flags, allocator)
-				ov_flags = nil
+				append(&pip_indices, mi)
+				append(&pip_queries, gpu.Point_Query{x2 = ax + bx, y2 = ay + by, layer_idx = prev_li})
+				append(&pip_queries, gpu.Point_Query{x2 = (3*ax + bx)/2, y2 = (3*ay + by)/2, layer_idx = prev_li})
+				append(&pip_queries, gpu.Point_Query{x2 = (ax + 3*bx)/2, y2 = (ay + 3*by)/2, layer_idx = prev_li})
 			}
 		}
 	}
 
-	// 2. Travel exterior-crossing batch.
-	t_queries := make([dynamic]gpu.Travel_Query, 0, int(plan.travel_move_count), context.temp_allocator)
-	t_indices := make([dynamic]int, 0, int(plan.travel_move_count), context.temp_allocator)
-	for layer, li in plan.layers {
-		ms := int(layer.move_offset)
-		me := ms + int(layer.move_count)
-		for mi in ms..<me {
-			m := plan.moves[mi]
-			if m.kind != .Travel {continue}
-			append(&t_indices, mi)
-			append(&t_queries, gpu.Travel_Query{
-				ax        = i64(m.point_a.x),
-				ay        = i64(m.point_a.y),
-				bx        = i64(m.point_b.x),
-				by        = i64(m.point_b.y),
-				layer_idx = u32(li),
-			})
+	pip_out := make([]u8, len(pip_queries), context.temp_allocator)
+	t_out := make([]u8, len(t_queries), context.temp_allocator)
+	if !gpu.metal_batch_motion_queries(edges, ranges, pip_queries[:], pip_out, t_queries[:], t_out) {
+		return
+	}
+
+	if want_ov {
+		ov_flags = make([]bool, len(plan.moves), allocator)
+		if ov_flags != nil {
+			for mi, idx in pip_indices {
+				base := idx * 3
+				unsupported := 0
+				if pip_out[base + 0] == 0 {unsupported += 1}
+				if pip_out[base + 1] == 0 {unsupported += 1}
+				if pip_out[base + 2] == 0 {unsupported += 1}
+				ov_flags[mi] = unsupported >= 2
+			}
+			ov_ok = true
 		}
 	}
+
 	trv_flags = make([]bool, len(plan.moves), allocator)
-	if len(t_queries) == 0 {
-		trv_ok = true
-	} else {
-		t_out := make([]u8, len(t_queries), context.temp_allocator)
-		if gpu.metal_batch_travel_crosses_exterior(edges, ranges, t_queries[:], t_out) {
-			for mi, idx in t_indices {
-				trv_flags[mi] = t_out[idx] != 0
-			}
-			trv_ok = true
-		} else {
-			delete(trv_flags, allocator)
-			trv_flags = nil
+	if trv_flags != nil {
+		for mi, idx in t_indices {
+			trv_flags[mi] = t_out[idx] != 0
 		}
+		trv_ok = true
 	}
 	return
 }

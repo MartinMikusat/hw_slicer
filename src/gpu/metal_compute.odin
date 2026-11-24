@@ -81,6 +81,18 @@ foreign {
 		query_count: u32,
 		out_results: [^]u8,
 	) -> bool ---
+	hw_metal_batch_motion_queries :: proc(
+		edges: [^]Poly_Edge,
+		edge_count: u32,
+		layer_ranges: [^]Layer_Edge_Range,
+		layer_count: u32,
+		pip_queries: [^]Point_Query,
+		pip_count: u32,
+		pip_out: [^]u8,
+		trv_queries: [^]Travel_Query,
+		trv_count: u32,
+		trv_out: [^]u8,
+	) -> bool ---
 }
 
 // Starts the Metal compute setup in the background so that the first GPU stage does not pay for
@@ -155,6 +167,37 @@ metal_batch_travel_crosses_exterior :: proc(
 		raw_data(queries),
 		u32(len(queries)),
 		raw_data(out_results),
+	)
+}
+
+metal_batch_motion_queries :: proc(
+	edges: []Poly_Edge,
+	layer_ranges: []Layer_Edge_Range,
+	pip_queries: []Point_Query,
+	pip_out: []u8,
+	trv_queries: []Travel_Query,
+	trv_out: []u8,
+) -> bool {
+	if len(layer_ranges) == 0 ||
+	   len(pip_out) < len(pip_queries) ||
+	   len(trv_out) < len(trv_queries) {
+		return false
+	}
+	if len(pip_queries) == 0 && len(trv_queries) == 0 {
+		return true
+	}
+	if !metal_init() {return false}
+	return hw_metal_batch_motion_queries(
+		raw_data(edges),
+		u32(len(edges)),
+		raw_data(layer_ranges),
+		u32(len(layer_ranges)),
+		raw_data(pip_queries),
+		u32(len(pip_queries)),
+		raw_data(pip_out),
+		raw_data(trv_queries),
+		u32(len(trv_queries)),
+		raw_data(trv_out),
 	)
 }
 

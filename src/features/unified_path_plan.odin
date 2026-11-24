@@ -700,18 +700,145 @@ unified_path_plan_chain_nearest :: proc(
 	original := make([]Unified_Path_Order, n, context.temp_allocator)
 	copy(original, run)
 	used := make([]bool, n, context.temp_allocator)
-	grid := make(map[[2]i64][dynamic]int, n, context.temp_allocator)
-	min_c, max_c := [2]i64{max(i64), max(i64)}, [2]i64{min(i64), min(i64)}
+	endpoints := make([][2]polygon.Polygon_Point, n, context.temp_allocator)
 	for o, i in original {
 		pts := sources[o.source_slice_index].points
-		for p in ([2]polygon.Polygon_Point{pts[0], pts[len(pts) - 1]}) {
-			c := cell_of(p)
+		endpoints[i] = {pts[0], pts[len(pts)-1]}
+	}
+
+	// Small runs avoid grid construction entirely.
+	if n <= 32 {
+		current := start
+		for k in 0..<n {
+			best := -1
+			best_d: u128
+			for i in 0..<n {
+				if used[i] {continue}
+				ep := endpoints[i]
+				d := min(path_plan_distance_2(current, ep[0]), path_plan_distance_2(current, ep[1]))
+				if best < 0 || d < best_d {
+					best = i
+					best_d = d
+				}
+			}
+			used[best] = true
+			run[k] = original[best]
+			ep := endpoints[best]
+			if path_plan_distance_2(current, ep[1]) < path_plan_distance_2(current, ep[0]) {
+				current = ep[0]
+			} else {
+				current = ep[1]
+			}
+		}
+		return
+	}
+
+	min_c, max_c := [2]i64{max(i64), max(i64)}, [2]i64{min(i64), min(i64)}
+	ep_cells := make([][2][2]i64, n, context.temp_allocator)
+	for ep, i in endpoints {
+		c0 := cell_of(ep[0])
+		c1 := cell_of(ep[1])
+		ep_cells[i] = {c0, c1}
+		min_c = {min(min_c[0], min(c0[0], c1[0])), min(min_c[1], min(c0[1], c1[1]))}
+		max_c = {max(max_c[0], max(c0[0], c1[0])), max(max_c[1], max(c0[1], c1[1]))}
+	}
+
+	gw := max_c[0] - min_c[0] + 1
+	gh := max_c[1] - min_c[1] + 1
+	if gw > 0 && gh > 0 && gw <= 1024 && gh <= 1024 && gw*gh <= 262_144 {
+		// Flat 2D CSR grid: zero maps, zero per-cell dynamic allocations.
+		cell_count := int(gw * gh)
+		offsets := make([]int, cell_count+1, context.temp_allocator)
+		for cs in ep_cells {
+			idx0 := int((cs[0][1]-min_c[1])*gw + (cs[0][0]-min_c[0]))
+			offsets[idx0+1] += 1
+			idx1 := int((cs[1][1]-min_c[1])*gw + (cs[1][0]-min_c[0]))
+			if idx1 != idx0 {offsets[idx1+1] += 1}
+		}
+		for c in 1..=cell_count {offsets[c] += offsets[c-1]}
+		entries := make([]int, offsets[cell_count], context.temp_allocator)
+		cursors := make([]int, cell_count, context.temp_allocator)
+		copy(cursors, offsets[:cell_count])
+		for cs, i in ep_cells {
+			idx0 := int((cs[0][1]-min_c[1])*gw + (cs[0][0]-min_c[0]))
+			entries[cursors[idx0]] = i
+			cursors[idx0] += 1
+			idx1 := int((cs[1][1]-min_c[1])*gw + (cs[1][0]-min_c[0]))
+			if idx1 != idx0 {
+				entries[cursors[idx1]] = i
+				cursors[idx1] += 1
+			}
+		}
+
+		current := start
+		for k in 0..<n {
+			center := cell_of(current)
+			best := -1
+			best_d: u128
+			max_ring := max(abs(center[0]-min_c[0]), abs(center[0]-max_c[0]), abs(center[1]-min_c[1]), abs(center[1]-max_c[1]))
+			for ring := i64(0); ring <= max_ring; ring += 1 {
+				if best >= 0 && ring > 0 {
+					reach := u128((ring-1) * CELL)
+					if reach*reach > best_d {break}
+				}
+				y_lo := max(min_c[1], center[1]-ring)
+				y_hi := min(max_c[1], center[1]+ring)
+				x_lo := max(min_c[0], center[0]-ring)
+				x_hi := min(max_c[0], center[0]+ring)
+				for cy := y_lo; cy <= y_hi; cy += 1 {
+					dy := abs(cy - center[1])
+					row := (cy - min_c[1]) * gw
+					if dy == ring {
+						for cx := x_lo; cx <= x_hi; cx += 1 {
+							cidx := int(row + (cx - min_c[0]))
+							for pos in offsets[cidx]..<offsets[cidx+1] {
+								i := entries[pos]
+								if used[i] {continue}
+								ep := endpoints[i]
+								d := min(path_plan_distance_2(current, ep[0]), path_plan_distance_2(current, ep[1]))
+								if best < 0 || d < best_d || (d == best_d && i < best) {
+									best = i
+									best_d = d
+								}
+							}
+						}
+					} else {
+						for cx in ([2]i64{center[0]-ring, center[0]+ring}) {
+							if cx < min_c[0] || cx > max_c[0] {continue}
+							cidx := int(row + (cx - min_c[0]))
+							for pos in offsets[cidx]..<offsets[cidx+1] {
+								i := entries[pos]
+								if used[i] {continue}
+								ep := endpoints[i]
+								d := min(path_plan_distance_2(current, ep[0]), path_plan_distance_2(current, ep[1]))
+								if best < 0 || d < best_d || (d == best_d && i < best) {
+									best = i
+									best_d = d
+								}
+							}
+						}
+					}
+				}
+			}
+			used[best] = true
+			run[k] = original[best]
+			ep := endpoints[best]
+			if path_plan_distance_2(current, ep[1]) < path_plan_distance_2(current, ep[0]) {
+				current = ep[0]
+			} else {
+				current = ep[1]
+			}
+		}
+		return
+	}
+
+	grid := make(map[[2]i64][dynamic]int, n, context.temp_allocator)
+	for cs, i in ep_cells {
+		for c in cs {
 			bucket, found := grid[c]
 			if !found {bucket = make([dynamic]int, 0, 4, context.temp_allocator)}
 			append(&bucket, i)
 			grid[c] = bucket
-			min_c = {min(min_c[0], c[0]), min(min_c[1], c[1])}
-			max_c = {max(max_c[0], c[0]), max(max_c[1], c[1])}
 		}
 	}
 	current := start
@@ -721,7 +848,6 @@ unified_path_plan_chain_nearest :: proc(
 		best_d: u128
 		max_ring := max(abs(center[0] - min_c[0]), abs(center[0] - max_c[0]), abs(center[1] - min_c[1]), abs(center[1] - max_c[1]))
 		for ring := i64(0); ring <= max_ring; ring += 1 {
-			// Once a candidate exists, a ring whose nearest possible point is farther stops the search.
 			if best >= 0 && ring > 0 {
 				reach := u128((ring - 1) * CELL)
 				if reach * reach > best_d {break}
@@ -733,8 +859,8 @@ unified_path_plan_chain_nearest :: proc(
 					if !found {continue}
 					for i in bucket {
 						if used[i] {continue}
-						pts := sources[original[i].source_slice_index].points
-						d := min(path_plan_distance_2(current, pts[0]), path_plan_distance_2(current, pts[len(pts) - 1]))
+						ep := endpoints[i]
+						d := min(path_plan_distance_2(current, ep[0]), path_plan_distance_2(current, ep[1]))
 						if best < 0 || d < best_d || (d == best_d && i < best) {
 							best = i
 							best_d = d
@@ -745,11 +871,11 @@ unified_path_plan_chain_nearest :: proc(
 		}
 		used[best] = true
 		run[k] = original[best]
-		pts := sources[original[best].source_slice_index].points
-		if path_plan_distance_2(current, pts[len(pts) - 1]) < path_plan_distance_2(current, pts[0]) {
-			current = pts[0]
+		ep := endpoints[best]
+		if path_plan_distance_2(current, ep[1]) < path_plan_distance_2(current, ep[0]) {
+			current = ep[0]
 		} else {
-			current = pts[len(pts) - 1]
+			current = ep[1]
 		}
 	}
 }
