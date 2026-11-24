@@ -867,13 +867,25 @@ renderer_draw_application :: proc() -> Render_Result {
 	if ui_printer_mode(&app.ui) {
 		visual.finished_vertices = 0
 		s := &app.printer.client.state
-		if app.printer.subtab == .Control && (s.live_position_available || s.position_available) {
-			pos := s.live_position if s.live_position_available else s.position
+		if app.printer.subtab == .Control {
 			bx := s.axis_maximum[0] if (s.limits_available && s.axis_maximum[0] > 0) else 250.0
 			by := s.axis_maximum[1] if (s.limits_available && s.axis_maximum[1] > 0) else 250.0
-			visual.marker_active = true
-			visual.marker_pos = {f32(pos[0] - bx*0.5), f32(pos[1] - by*0.5), f32(pos[2])}
-			visual.marker_radius = 4.0
+			if revealed := printer_tracking_revealed_beads(&app.printer); revealed > 0 {
+				visual.is_gcode_preview = true
+				visual.gcode_bead_start = 0
+				visual.gcode_bead_count = revealed
+			}
+			if app.printer.tracking.has_pos {
+				pos := app.printer.tracking.last_pos
+				visual.marker_active = true
+				visual.marker_pos = {pos[0] - f32(bx*0.5), pos[1] - f32(by*0.5), pos[2]}
+				visual.marker_radius = 4.0
+			} else if s.live_position_available || s.position_available {
+				pos := s.live_position if s.live_position_available else s.position
+				visual.marker_active = true
+				visual.marker_pos = {f32(pos[0] - bx*0.5), f32(pos[1] - by*0.5), f32(pos[2])}
+				visual.marker_radius = 4.0
+			}
 		}
 	}
 	if ui_graph_mode(&app.ui) && ui_gcode_preview_visible(&app.ui) && len(app.gcode_preview.beads) > 0 {

@@ -31,6 +31,7 @@ Printer_Subtab :: enum u8 {
 
 Printer_State :: struct {
 	client:         mr.Client,
+	tracking:       Print_Tracking,
 	initialized:    bool,
 	demo:           bool,
 	subtab:         Printer_Subtab,
@@ -77,6 +78,7 @@ printer_state_init :: proc(p: ^Printer_State) {
 
 printer_state_destroy :: proc(p: ^Printer_State) {
 	if !p.initialized {return}
+	printer_tracking_destroy(p)
 	mr.destroy(&p.client)
 	text_input.destroy(&p.edit)
 	delete(p.endpoint)
@@ -94,6 +96,7 @@ app_printer_poll :: proc() {
 	p := &app.printer
 	if !p.initialized {return}
 	changed := mr.poll(&p.client)
+	if printer_tracking_step(p) {changed = true}
 	// Handle completed file downloads to disk.
 	if len(p.download_dest) > 0 && p.client.state.transfer.kind == .Download {
 		switch p.client.state.transfer.status {
@@ -980,7 +983,11 @@ printer_draw_control_overlay :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Pr
 	ui_draw_text(painter, painter.mono, ui, pos_text, {ctrl.x+12, ctrl.y+56, ctrl.w-24, 20}, theme.text, 0, tracked = true)
 	homed := strings.to_upper(s.homed_axes, context.temp_allocator) if len(s.homed_axes) > 0 else "none"
 	motors := "engaged" if (s.motors_available && s.motors_engaged) else ("off" if s.motors_available else "–")
-	ui_draw_text(painter, painter.font, ui, fmt.tprintf("Homed: %s · Motors: %s", homed, motors), {ctrl.x+12, ctrl.y+78, ctrl.w-24, 20}, theme.muted, 0)
+	status_line := fmt.tprintf("Homed: %s · Motors: %s", homed, motors)
+	if p.tracking.status != .Off {
+		status_line = fmt.tprintf("%s · %s", status_line, TRACKING_STATUS_NAMES[p.tracking.status])
+	}
+	ui_draw_text(painter, painter.font, ui, status_line, {ctrl.x+12, ctrl.y+78, ctrl.w-24, 20}, theme.muted, 0)
 	ui_add_rect(painter, {ctrl.x+12, ctrl.y+104, ctrl.w-24, 1}, theme.border)
 
 	// Heaters list.
