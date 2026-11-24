@@ -117,6 +117,8 @@ UI_Action :: enum u64 {
 	Profile_Point,
 	Workspace_Run,
 	Workspace_Auto,
+	Demo_Tab_Design,
+	Demo_Tab_Slicer,
 	Evidence_Stage_Base = 1000,
 	Setting_Base = 3000,
 }
@@ -245,6 +247,8 @@ UI_State :: struct {
 	dark: bool,
 	selected_model: int,
 	stage_index: int,
+	// Development demo tabs: false shows the toolpath design, true the slicer stages.
+	slicer_tab: bool,
 	workspace: UI_Workspace,
 	panel: UI_Panel,
 	wireframe: bool,
@@ -558,6 +562,13 @@ ui_evidence_stage_action_index :: proc(
 	return int(id-base), true
 }
 
+// Development tabs at the top of the window, one per demo under work.
+ui_demo_tab_rect :: proc(ui: ^UI_State, index: int) -> UI_Rect {
+	width := 150.0
+	x := max(330.0, ui.width/2-width) + f64(index)*(width+6)
+	return {x, 6, width, 28}
+}
+
 ui_setting_action :: proc(row, side: int) -> UI_Action {
 	return UI_Action(u64(UI_Action.Setting_Base)+u64(row*2+side))
 }
@@ -787,6 +798,9 @@ ui_build_controls :: proc(
 			.Open_Settings,
 		)
 	}
+
+	ui_add_control(ui, "demo toolpath design", "show the toolpath design demo", ui_demo_tab_rect(ui, 0), .Demo_Tab_Design, true, 1, !ui.slicer_tab)
+	ui_add_control(ui, "demo slicer stages", "show the slicer stages demo", ui_demo_tab_rect(ui, 1), .Demo_Tab_Slicer, true, 1, ui.slicer_tab)
 
 	compact := ui_compact(ui)
 	if compact {
@@ -1969,7 +1983,9 @@ ui_draw_labels :: proc(
 	title_width := max(0.0, ui.width-383)
 	title := fmt.tprintf("HW Slicer / %s", pipeline.stage_group_names[pipeline.Stage_Group(ui.stage_index)]) if title_width >= 230 else "Slicer"
 	if design_shown {title = fmt.tprintf("HW Slicer / %s", model_name) if title_width >= 230 else model_name}
-	ui_draw_text(painter, painter.font, ui, title, {12, 0, title_width, 40}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, title, {12, 0, min(title_width, 310), 40}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, "Toolpath design", ui_control_rect(ui, .Demo_Tab_Design), ui_control_ink(ui, .Demo_Tab_Design), 0, .Center)
+	ui_draw_text(painter, painter.font, ui, "Slicer stages", ui_control_rect(ui, .Demo_Tab_Slicer), ui_control_ink(ui, .Demo_Tab_Slicer), 0, .Center)
 	window_labels := [3]string{"−", "+", "×"}
 	window_actions := [3]UI_Action{.Window_Minimize, .Window_Zoom, .Window_Close}
 	for label, index in window_labels {

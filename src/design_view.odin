@@ -247,7 +247,7 @@ app_install_design_preview :: proc(candidate: ^design.Design, keep_time: bool,
 	delete(app.design.layers)
 	app.design.selected_junction = -1
 	app.design.dirty = false
-	app.design.active = true
+	app.design.active = !app.ui.slicer_tab
 	app.design.evaluated = candidate^
 	candidate^ = {}
 	app.design.toolpath = toolpath

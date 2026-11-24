@@ -314,6 +314,8 @@ app_activate :: proc(action: UI_Action) -> bool {
 		app.ui.stage_index = clamp(app.ui.stage_index+delta, 0, len(pipeline.Stage_Group)-1)
 		app.ui.lay_on_face = false
 		app.needs_redraw = true
+	case .Demo_Tab_Design, .Demo_Tab_Slicer:
+		app_set_demo_tab(action == .Demo_Tab_Slicer)
 	case .Modal_Surface, .Workspace_Run, .Workspace_Auto, .Setting_Base:
 		return false
 	case .Evidence_Stages, .Evidence_Details:
@@ -516,6 +518,7 @@ app_initialize :: proc(host: ^Host_Services) -> bool {
 	startup := startup_design
 	app.design.pinned = startup != "" || startup_stage >= 0
 	if startup_stage >= 0 && app.workspace != nil {
+		app.ui.slicer_tab = true
 		app_workspace_startup()
 	} else {
 		if startup == "" {startup, _ = design_newest()}

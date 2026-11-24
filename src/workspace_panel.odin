@@ -235,3 +235,21 @@ app_workspace_startup :: proc() {
 	app_workspace_refresh()
 	ui_build_controls(&app.ui)
 }
+
+// Switches between the development demos. The loaded design stays in memory while the slicer tab
+// is shown, so switching back is immediate.
+app_set_demo_tab :: proc(slicer: bool) {
+	app.ui.slicer_tab = slicer
+	if slicer {
+		app.design.active = false
+		app.ui.focused_id = 0
+		app_workspace_refresh()
+	} else {
+		if len(app.design.layers) == 0 {
+			if newest, found := design_newest(); found {_ = app_load_design(newest)}
+		}
+		app.design.active = len(app.design.layers) > 0
+	}
+	ui_build_controls(&app.ui)
+	app.needs_redraw = true
+}
