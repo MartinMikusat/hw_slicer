@@ -9,7 +9,7 @@ Models used:
 
 - **gpt-5.6-sol**
 
-The research library currently contains 20 records and 15 local PDF snapshots.
+The research library currently contains 30 records and 21 local PDF snapshots.
 The catalog separates source claims, project interpretations, limitations, and
 use decisions.
 

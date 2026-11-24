@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedThrough": "2026-07-29",
+  "reviewedThrough": "2026-11-24",
   "sources": [
     {
       "id": "shewchuk-1997-adaptive-predicates",
@@ -765,6 +765,375 @@
         "targets": ["release runbook", "signed artifact verification"]
       },
       "notePath": "notes/formats-validation-and-tooling.md#apple-notarization-documentation",
+      "pdf": null
+    },
+    {
+      "id": "lefebvre-2013-icesl-gpu-slicer",
+      "citationKey": "lefebvre2013icesl",
+      "type": "paper",
+      "title": "IceSL: A GPU Accelerated CSG Modeler and Slicer",
+      "authors": ["Sylvain Lefebvre"],
+      "year": 2013,
+      "publication": "18th European Forum on Additive Manufacturing (AEFA'13)",
+      "publisher": "Inria",
+      "volume": null,
+      "issue": null,
+      "pages": null,
+      "doi": null,
+      "url": "https://inria.hal.science/hal-00926861",
+      "topics": ["GPU slicing", "CSG", "ray representation", "image erosion"],
+      "status": "background",
+      "confidence": "high",
+      "planSections": ["M3", "M5"],
+      "summary": "Introduces IceSL, a GPU-accelerated CSG modeler and FFF slicer that converts meshes and analytic primitives into a GPU ray-based representation and generates slices and toolpaths via image-space erosion.",
+      "keyFindings": [
+        "Full GPU FFF slicing is practical when the internal representation shifts from exact vector polygons to GPU ray-reps and image buffers.",
+        "The same GPU code path can drive both interactive real-time preview and slicing."
+      ],
+      "limitations": [
+        "Image-space erosion quantizes geometry to a fixed pixel grid and requires contour vectorization/simplification, conflicting with exact 1 micrometre vector contracts."
+      ],
+      "usage": {
+        "decision": "Retain as architectural background; do not replace the exact vector core, and consider GPU preview only for non-authoritative interactive UI feedback.",
+        "targets": ["GPU slicing evaluation", "interactive preview architecture"]
+      },
+      "notePath": "notes/gpu-slicing.md#lefebvre-2013-icesl-gpu-slicer",
+      "pdf": null
+    },
+    {
+      "id": "wang-chen-2010-ldni-gpu-solid-modeling",
+      "citationKey": "wang2010ldni",
+      "type": "paper",
+      "title": "Layered Depth-Normal Images: a Sparse Implicit Representation of Solid Models",
+      "authors": ["Charlie C. L. Wang", "Yong Chen"],
+      "year": 2010,
+      "publication": "arXiv preprint arXiv:1009.0794 (companion to Computer-Aided Design 42(6), pp. 535–544)",
+      "publisher": "arXiv / Elsevier",
+      "volume": "42",
+      "issue": "6",
+      "pages": "535–544",
+      "doi": "10.1016/j.cad.2010.02.005",
+      "url": "https://arxiv.org/abs/1009.0794",
+      "topics": ["GPU slicing", "LDNI", "depth peeling", "solid modeling"],
+      "status": "rejected",
+      "confidence": "high",
+      "planSections": ["M2", "M3"],
+      "summary": "Represents polyhedral solids using three orthogonal Layered Depth-Normal Images sampled via GPU depth peeling, enabling robust GPU Boolean operations and offsetting without mesh self-intersection failures.",
+      "keyFindings": [
+        "GPU depth peeling converts arbitrary polyhedral meshes into compact 1D ray-interval lists with surface normals.",
+        "Boolean and offsetting operations on ray intervals avoid topological breakdown on self-intersecting meshes."
+      ],
+      "limitations": [
+        "Grid sampling resolution limits thin-feature preservation and scales memory with surface area and pixel density."
+      ],
+      "usage": {
+        "decision": "Reject as the primary slicing representation because hw_slicer requires exact integer micrometre vector contours and already handles mesh repair on CPU.",
+        "targets": ["GPU slicing evaluation", "mesh slicing representation"]
+      },
+      "notePath": "notes/gpu-slicing.md#wang-chen-2010-ldni-gpu-solid-modeling",
+      "pdf": {
+        "path": "papers/wang-chen-2010-ldni-gpu-solid-modeling.pdf",
+        "sourceUrl": "https://arxiv.org/pdf/1009.0794.pdf",
+        "sha256": "3f259b77b621fdf7a131c427e17e11ba2a01492626a1330193115f94e33259ff",
+        "provenance": "arXiv open-access preprint",
+        "accessNote": "Public arXiv preprint companion to Computer-Aided Design 42(6), 2010.",
+        "retrieved": "2026-11-24"
+      }
+    },
+    {
+      "id": "martinez-et-al-2015-chained-segment-offsetting",
+      "citationKey": "martinez2015chained",
+      "type": "paper",
+      "title": "Chained Segment Offsetting for Ray-Based Solid Representations",
+      "authors": ["Jonàs Martínez", "Samuel Hornus", "Frédéric Claux", "Sylvain Lefebvre"],
+      "year": 2015,
+      "publication": "Computers & Graphics",
+      "publisher": "Elsevier",
+      "volume": "46",
+      "issue": "1",
+      "pages": "36–47",
+      "doi": "10.1016/j.cag.2014.09.017",
+      "url": "https://doi.org/10.1016/j.cag.2014.09.017",
+      "topics": ["GPU offsetting", "morphological operations", "ray representation", "fabrication"],
+      "status": "background",
+      "confidence": "high",
+      "planSections": ["M3", "M5"],
+      "summary": "Decomposes 3D morphological dilation and erosion into chained 1D segment offsets (zonotopes approximating a Euclidean ball) executed directly on GPU ray-based solid representations without boundary-mesh reconstruction.",
+      "keyFindings": [
+        "Chained 1D segment operations support arbitrary erosion and dilation sequences on GPU ray-reps with bounded zonotope error.",
+        "Avoids intermediate mesh recovery during hollowing, mold creation, and morphological closing."
+      ],
+      "limitations": [
+        "Approximates circular/spherical offsets with zonotopes and operates on sampled ray grids rather than exact 2D micrometre polygons."
+      ],
+      "usage": {
+        "decision": "Keep as background for future 3D volumetric hollowing or mold features; do not use for exact 2D perimeter offsetting.",
+        "targets": ["GPU slicing evaluation", "3D offsetting"]
+      },
+      "notePath": "notes/gpu-slicing.md#martinez-et-al-2015-chained-segment-offsetting",
+      "pdf": {
+        "path": "papers/martinez-et-al-2015-chained-segment-offsetting.pdf",
+        "sourceUrl": "https://inria.hal.science/hal-01080614/document",
+        "sha256": "c8b865c081fc519b70d864d2ab1c37be6c9eff73656060d8dbdecb00ac432075",
+        "provenance": "HAL-Inria author manuscript",
+        "accessNote": "Public HAL-Inria deposit (hal-01080614). Cite the Computers & Graphics article.",
+        "retrieved": "2026-11-24"
+      }
+    },
+    {
+      "id": "hornus-et-al-2015-tight-printable-enclosures",
+      "citationKey": "hornus2015tight",
+      "type": "report",
+      "title": "Tight Printable Enclosures for Additive Manufacturing",
+      "authors": ["Samuel Hornus", "Sylvain Lefebvre", "Jérémie Dumas", "Frédéric Claux"],
+      "year": 2015,
+      "publication": "Inria Research Report RR-8712",
+      "publisher": "Inria",
+      "volume": null,
+      "issue": null,
+      "pages": "1–22",
+      "doi": null,
+      "url": "https://inria.hal.science/hal-01141706",
+      "topics": ["supports", "morphological sweep", "overhangs", "GPU slicing"],
+      "status": "candidate",
+      "confidence": "high",
+      "planSections": ["M6"],
+      "summary": "Formulates minimal self-supporting printable enclosures and support volumes as a top-down slice-by-slice sweep of planar morphological dilations and erosions governed by overhang angle.",
+      "keyFindings": [
+        "Downward slice-by-slice erosion and union produces minimal self-supporting support volumes without complex 3D mesh Booleans.",
+        "Support geometry tolerates coarser discretization (100–200 micrometres), making it well suited to GPU distance-field or morphological passes."
+      ],
+      "limitations": [
+        "Requires converting raster support masks back into printable contours or hatches if executed on a pixel grid."
+      ],
+      "usage": {
+        "decision": "Evaluate as a candidate algorithm for GPU-accelerated support generation and overhang volume estimation when support features expand.",
+        "targets": ["support generation", "build orientation optimization"]
+      },
+      "notePath": "notes/gpu-slicing.md#hornus-et-al-2015-tight-printable-enclosures",
+      "pdf": {
+        "path": "papers/hornus-et-al-2015-tight-printable-enclosures.pdf",
+        "sourceUrl": "https://inria.hal.science/hal-01141706/document",
+        "sha256": "27af2078500fc2ce0066e7b2a2a9ec8e3310c47840db3979c27e9c1ae43a118f",
+        "provenance": "HAL-Inria institutional repository",
+        "accessNote": "Public Inria Research Report RR-8712 (hal-01141706).",
+        "retrieved": "2026-11-24"
+      }
+    },
+    {
+      "id": "rong-tan-2006-jump-flooding-gpu",
+      "citationKey": "rong2006jump",
+      "type": "paper",
+      "title": "Jump Flooding in GPU with Applications to Voronoi Diagram and Distance Transform",
+      "authors": ["Guodong Rong", "Tiow-Seng Tan"],
+      "year": 2006,
+      "publication": "Proceedings of the 2006 Symposium on Interactive 3D Graphics and Games (I3D '06)",
+      "publisher": "Association for Computing Machinery",
+      "volume": null,
+      "issue": null,
+      "pages": "109–116",
+      "doi": "10.1145/1111411.1111431",
+      "url": "https://doi.org/10.1145/1111411.1111431",
+      "topics": ["GPU distance transform", "Voronoi diagram", "Jump Flooding"],
+      "status": "background",
+      "confidence": "high",
+      "planSections": ["M6"],
+      "summary": "Introduces the Jump Flooding Algorithm (JFA) on GPUs to compute 2D Voronoi diagrams and distance transforms in O(log N) passes with constant per-pixel work per pass.",
+      "keyFindings": [
+        "Halving step sizes from N/2 down to 1 propagates nearest-seed information across a 2D grid in O(log N) GPU passes.",
+        "Simple to implement in compute shaders for interactive distance fields and Voronoi patterns."
+      ],
+      "limitations": [
+        "Produces occasional small exactness errors on a tiny fraction of pixels compared to exact Euclidean distance transforms."
+      ],
+      "usage": {
+        "decision": "Keep as background; prefer the exact Parallel Banding Algorithm (PBA) over JFA whenever GPU distance transforms feed geometry.",
+        "targets": ["GPU distance fields", "Voronoi infill background"]
+      },
+      "notePath": "notes/gpu-slicing.md#rong-tan-2006-jump-flooding-gpu",
+      "pdf": {
+        "path": "papers/rong-tan-2006-jump-flooding-gpu.pdf",
+        "sourceUrl": "https://www.comp.nus.edu.sg/~tants/jfa/i3d06.pdf",
+        "sha256": "52f0d8159da671b18af8949f563c479c12b75d1844821180cccb49340826703e",
+        "provenance": "Author-maintained university repository (NUS)",
+        "accessNote": "Public author copy hosted at National University of Singapore. Cite the ACM I3D '06 paper.",
+        "retrieved": "2026-11-24"
+      }
+    },
+    {
+      "id": "cao-et-al-2010-parallel-banding-gpu-dt",
+      "citationKey": "cao2010parallel",
+      "type": "paper",
+      "title": "Parallel Banding Algorithm to Compute Exact Distance Transform with the GPU",
+      "authors": ["Thanh-Tung Cao", "Ke Tang", "Anis Mohamed", "Tiow-Seng Tan"],
+      "year": 2010,
+      "publication": "Proceedings of the 2010 ACM SIGGRAPH Symposium on Interactive 3D Graphics and Games (I3D '10)",
+      "publisher": "Association for Computing Machinery",
+      "volume": null,
+      "issue": null,
+      "pages": "83–90",
+      "doi": "10.1145/1730804.1730818",
+      "url": "https://doi.org/10.1145/1730804.1730818",
+      "topics": ["GPU distance transform", "exact EDT", "medial axis", "morphological offsetting"],
+      "status": "candidate",
+      "confidence": "high",
+      "planSections": ["M6"],
+      "summary": "Presents the Parallel Banding Algorithm (PBA) to compute exact 2D and 3D Euclidean Distance Transforms on the GPU in optimal linear work, supporting exact discrete morphological operations and integer medial axes.",
+      "keyFindings": [
+        "Computes the exact discrete Euclidean distance transform on the GPU while running faster than approximate JFA in 2D and 3D.",
+        "Directly supports discrete morphological offsetting (d <= r) and integer medial-axis skeleton extraction."
+      ],
+      "limitations": [
+        "Operates on discrete pixel/voxel grids, so exact 1 micrometre resolution over a full 300 mm print bed remains memory-prohibitive."
+      ],
+      "usage": {
+        "decision": "Candidate Metal compute primitive for coarse-grid support sweeps (100–200 micrometres) or interactive overhang/thin-wall visualization; not for exact perimeter offsetting.",
+        "targets": ["support generation", "interactive UI overlays"]
+      },
+      "notePath": "notes/gpu-slicing.md#cao-et-al-2010-parallel-banding-gpu-dt",
+      "pdf": {
+        "path": "papers/cao-et-al-2010-parallel-banding-gpu-dt.pdf",
+        "sourceUrl": "https://www.comp.nus.edu.sg/~tants/pba_files/pba.pdf",
+        "sha256": "06d874f3a5f83a9c40f9f7c784919f83bca16ba03ae8f44f1344afc13ab7f5f1",
+        "provenance": "Author-maintained university repository (NUS)",
+        "accessNote": "Public author copy hosted at National University of Singapore. Cite the ACM I3D '10 paper.",
+        "retrieved": "2026-11-24"
+      }
+    },
+    {
+      "id": "livesu-et-al-2017-3d-printing-pipeline",
+      "citationKey": "livesu2017from",
+      "type": "paper",
+      "title": "From 3D Models to 3D Prints: an Overview of the Processing Pipeline",
+      "authors": ["Marco Livesu", "Stefano Ellero", "Jonàs Martínez", "Sylvain Lefebvre", "Marco Attene"],
+      "year": 2017,
+      "publication": "Computer Graphics Forum",
+      "publisher": "Wiley / Eurographics",
+      "volume": "36",
+      "issue": "2",
+      "pages": "537–564",
+      "doi": "10.1111/cgf.13147",
+      "url": "https://doi.org/10.1111/cgf.13147",
+      "topics": ["slicing survey", "ray representation", "process planning", "GPU slicing"],
+      "status": "background",
+      "confidence": "high",
+      "planSections": ["M2", "M3", "M5", "M6"],
+      "summary": "Eurographics state-of-the-art report surveying the complete 3D printing process-planning pipeline, explicitly contrasting triangle-mesh slicing against GPU ray-rep/dexel/LDNI slicing and their resolution-memory tradeoffs.",
+      "keyFindings": [
+        "Ray-rep slicing (dexels, A-buffers, LDNIs) simplifies CSG, self-intersection regulation, and hollowing on GPUs.",
+        "Contours extracted from ray-reps produce dense pixel-stepped segments that require topology-preserving simplification, and memory scales with surface area and resolution."
+      ],
+      "limitations": [
+        "Survey predates modern Apple Silicon unified-memory architectures and multi-core SIMD CPU Vatti optimizations."
+      ],
+      "usage": {
+        "decision": "Use as the canonical literature map separating exact vector FFF stages from GPU raster/ray-rep techniques.",
+        "targets": ["pipeline architecture", "GPU slicing evaluation"]
+      },
+      "notePath": "notes/gpu-slicing.md#livesu-et-al-2017-3d-printing-pipeline",
+      "pdf": {
+        "path": "papers/livesu-et-al-2017-3d-printing-pipeline.pdf",
+        "sourceUrl": "https://arxiv.org/pdf/1705.03811.pdf",
+        "sha256": "5235ed4e475ea8800847839a1432de9d3e4ecb9e93cc9d88167c66e0e3f808b1",
+        "provenance": "arXiv open-access preprint",
+        "accessNote": "Public arXiv preprint (arXiv:1705.03811v2). Cite the Computer Graphics Forum STAR article.",
+        "retrieved": "2026-11-24"
+      }
+    },
+    {
+      "id": "wang-et-al-2017-gpu-continuous-slicing",
+      "citationKey": "wang2017towards",
+      "type": "paper",
+      "title": "Towards Scalable and Efficient GPU-Enabled Slicing Acceleration in Continuous 3D Printing",
+      "authors": ["Aosen Wang", "Chi Zhou", "Zhanpeng Jin", "Wenyao Xu"],
+      "year": 2017,
+      "publication": "22nd Asia and South Pacific Design Automation Conference (ASP-DAC)",
+      "publisher": "IEEE",
+      "volume": null,
+      "issue": null,
+      "pages": "623–628",
+      "doi": "10.1109/ASPDAC.2017.7858383",
+      "url": "https://doi.org/10.1109/ASPDAC.2017.7858383",
+      "topics": ["GPU slicing", "continuous 3D printing", "ray-triangle intersection", "DLP"],
+      "status": "rejected",
+      "confidence": "medium",
+      "planSections": ["M2"],
+      "summary": "Accelerates image-mask-projection continuous 3D printing (DLP/CLIP) slicing on GPUs via Pixelwise Parallel Slicing (shared-memory per-pixel ray casting and trunk sorting) and Fully Parallel Slicing.",
+      "keyFindings": [
+        "Per-pixel ray-triangle intersection and trunk sorting achieve large GPU speedups when output slices are 2D binary projection bitmaps."
+      ],
+      "limitations": [
+        "Targets projection-mask printers (DLP/CLIP) rather than exact vector FFF contour and toolpath generation; evaluated via architectural simulators."
+      ],
+      "usage": {
+        "decision": "Reject for hw_slicer because FFF requires exact closed vector contours rather than projection bitmaps.",
+        "targets": ["GPU slicing evaluation"]
+      },
+      "notePath": "notes/gpu-slicing.md#wang-et-al-2017-gpu-continuous-slicing",
+      "pdf": null
+    },
+    {
+      "id": "lai-wei-2021-gpu-slicing-partition-scanning",
+      "citationKey": "lai2021slicing",
+      "type": "paper",
+      "title": "Slicing Algorithm and Partition Scanning Strategy for 3D Printing Based on GPU Parallel Computing",
+      "authors": ["Xuhui Lai", "Zhengying Wei"],
+      "year": 2021,
+      "publication": "Materials",
+      "publisher": "MDPI",
+      "volume": "14",
+      "issue": "15",
+      "pages": "4297",
+      "doi": "10.3390/ma14154297",
+      "url": "https://doi.org/10.3390/ma14154297",
+      "topics": ["GPU slicing", "stencil buffer", "Marching Squares", "partition scanning"],
+      "status": "rejected",
+      "confidence": "medium",
+      "planSections": ["M2", "M5"],
+      "summary": "Uses GPU projection matrices, stencil/depth buffers, and reverse ray tracing to acquire per-layer voxel slices, extracting contours via Marching Squares with NURBS fitting and partition scanning for large-scale AM.",
+      "keyFindings": [
+        "Hardware stencil/depth rasterization combined with Marching Squares produces parallel contours without explicit mesh-plane topological chaining."
+      ],
+      "limitations": [
+        "Voxel discretization, Marching Squares extraction, and NURBS fitting introduce geometric approximation incompatible with hw_slicer's exact micrometre determinism."
+      ],
+      "usage": {
+        "decision": "Reject for hw_slicer's core FFF slicing stages due to sampling and curve-fitting approximation.",
+        "targets": ["GPU slicing evaluation"]
+      },
+      "notePath": "notes/gpu-slicing.md#lai-wei-2021-gpu-slicing-partition-scanning",
+      "pdf": null
+    },
+    {
+      "id": "zuo-et-al-2025-cuda-greiner-hormann-clipping",
+      "citationKey": "zuo2025parallel",
+      "type": "paper",
+      "title": "Parallel CUDA-Based Optimization of the Intersection Calculation Process in the Greiner–Hormann Algorithm",
+      "authors": ["Jiwei Zuo", "Junfu Fan", "Kuan Li", "Qingyun Liu", "Yuke Zhou", "Yi Zhang"],
+      "year": 2025,
+      "publication": "Algorithms",
+      "publisher": "MDPI",
+      "volume": "18",
+      "issue": "3",
+      "pages": "147",
+      "doi": "10.3390/a18030147",
+      "url": "https://doi.org/10.3390/a18030147",
+      "topics": ["GPU polygon clipping", "CUDA", "Greiner-Hormann", "vector Booleans"],
+      "status": "rejected",
+      "confidence": "medium",
+      "planSections": ["M3"],
+      "summary": "Parallelizes the edge-edge intersection calculation step of the Greiner–Hormann 2D polygon clipping algorithm on CUDA by mapping polygon edge pairs to GPU threads.",
+      "keyFindings": [
+        "Pairwise intersection search parallelizes well on GPUs for very large polygon vertex counts, while linked-list topology traversal remains sequential."
+      ],
+      "limitations": [
+        "FFF layer polygons typically have 50–2,000 vertices (too small to amortize GPU dispatch/readback), and Greiner–Hormann lacks Vatti's integer snap-rounding for degenerate/coincident offset edges."
+      ],
+      "usage": {
+        "decision": "Reject for hw_slicer's polygon kernel; retain multi-core per-layer CPU Vatti with integer snap-rounding.",
+        "targets": ["GPU slicing evaluation", "polygon Boolean kernel"]
+      },
+      "notePath": "notes/gpu-slicing.md#zuo-et-al-2025-cuda-greiner-hormann-clipping",
       "pdf": null
     }
   ]
