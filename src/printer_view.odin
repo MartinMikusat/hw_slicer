@@ -32,6 +32,7 @@ Printer_Subtab :: enum u8 {
 Printer_State :: struct {
 	client:         mr.Client,
 	tracking:       Print_Tracking,
+	config:         Printer_Config_State,
 	initialized:    bool,
 	demo:           bool,
 	subtab:         Printer_Subtab,
@@ -69,6 +70,7 @@ printer_state_init :: proc(p: ^Printer_State) {
 	}
 	mr.initialize(&p.client, limited = true)
 	p.endpoint = strings.clone(PRINTER_DEFAULT_ENDPOINT)
+	printer_config_sync_drafts(&p.config)
 	p.initialized = true
 	// Auto-connect in the background on launch (non-blocking).
 	if !mr.connect(&p.client, p.endpoint, p.api_key) {
@@ -78,6 +80,7 @@ printer_state_init :: proc(p: ^Printer_State) {
 
 printer_state_destroy :: proc(p: ^Printer_State) {
 	if !p.initialized {return}
+	printer_config_destroy(&p.config)
 	printer_tracking_destroy(p)
 	mr.destroy(&p.client)
 	text_input.destroy(&p.edit)
@@ -97,6 +100,7 @@ app_printer_poll :: proc() {
 	if !p.initialized {return}
 	changed := mr.poll(&p.client)
 	if printer_tracking_step(p) {changed = true}
+	if printer_config_poll(p) {changed = true}
 	// Handle completed file downloads to disk.
 	if len(p.download_dest) > 0 && p.client.state.transfer.kind == .Download {
 		switch p.client.state.transfer.status {
@@ -146,7 +150,7 @@ printer_field_ptr :: proc(p: ^Printer_State, field: text_input.Field_ID) -> ^str
 	if idx, ok := printer_heater_field_index(action); ok && idx < PRINTER_MAX_HEATERS {
 		return &p.heater_drafts[idx]
 	}
-	return nil
+	return printer_config_field_ptr(p, action)
 }
 
 @(private = "file")
@@ -235,6 +239,7 @@ app_printer_key :: proc(key_code: u16, characters: string, modifiers: u64) -> bo
 				clean, _ := strings.replace_all(pasted, "\n", "", context.temp_allocator)
 				clean2, _ := strings.replace_all(clean, "\r", "", context.temp_allocator)
 				_ = text_input.insert_text(&p.edit, ptr, clean2)
+				printer_config_on_field_edited(p, UI_Action(u64(p.edit.active_field)))
 				app.needs_redraw = true
 			}
 			return true
@@ -249,10 +254,12 @@ app_printer_key :: proc(key_code: u16, characters: string, modifiers: u64) -> bo
 		} else {
 			_ = text_input.delete_backward(&p.edit, ptr)
 		}
+		printer_config_on_field_edited(p, UI_Action(u64(p.edit.active_field)))
 		app.needs_redraw = true
 		return true
 	case 117: // Forward delete
 		_ = text_input.delete_forward(&p.edit, ptr)
+		printer_config_on_field_edited(p, UI_Action(u64(p.edit.active_field)))
 		app.needs_redraw = true
 		return true
 	case 123: // Left
@@ -283,6 +290,7 @@ app_printer_key :: proc(key_code: u16, characters: string, modifiers: u64) -> bo
 	// Printable UTF-8 characters.
 	if len(characters) > 0 && characters[0] >= 0x20 && characters[0] != 0x7f {
 		_ = text_input.insert_text(&p.edit, ptr, characters)
+		printer_config_on_field_edited(p, UI_Action(u64(p.edit.active_field)))
 		app.needs_redraw = true
 		return true
 	}
@@ -436,6 +444,7 @@ printer_download_selected :: proc(p: ^Printer_State) {
 
 app_printer_activate :: proc(action: UI_Action) -> bool {
 	p := &app.printer
+	if printer_config_activate(p, action) {return true}
 	if idx, ok := printer_heater_field_index(action); ok {
 		_ = idx
 		printer_focus_field(p, action)
@@ -479,6 +488,10 @@ app_printer_activate :: proc(action: UI_Action) -> bool {
 	case .Printer_Sub_Config:
 		printer_blur_field(p)
 		p.subtab = .Config
+		app.section_dirty = true
+		if !p.config.resolved && !p.config.loading && p.client.state.connection == .Connected && !p.demo {
+			printer_config_refresh(p)
+		}
 	case .Printer_Sub_Connection:
 		printer_blur_field(p)
 		p.subtab = .Connection
@@ -609,7 +622,9 @@ app_printer_scroll :: proc(delta_y: f64) -> bool {
 			return true
 		}
 		return false
-	case .Config, .Connection:
+	case .Config:
+		return printer_config_scroll(p, delta_y)
+	case .Connection:
 		return true
 	}
 	return false
@@ -658,10 +673,13 @@ printer_console_visible_rows :: proc(ui: ^UI_State) -> int {
 ui_printer_custom_control :: proc(action: UI_Action) -> bool {
 	if _, ok := printer_heater_field_index(action); ok {return true}
 	if _, ok := printer_file_row_index(action); ok {return true}
+	if _, ok := printer_cfg_param_index(action); ok {return true}
+	if _, ok := printer_cfg_row_index(action); ok {return true}
 	#partial switch action {
 	case .Printer_Control_Surface, .Printer_Chart_Surface,
 	     .Printer_Conn_Endpoint, .Printer_Conn_Api_Key,
-	     .Printer_Move_X_Field, .Printer_Move_Y_Field, .Printer_Move_Z_Field:
+	     .Printer_Move_X_Field, .Printer_Move_Y_Field, .Printer_Move_Z_Field,
+	     .Printer_Cfg_Search:
 		return true
 	}
 	return false
@@ -795,8 +813,10 @@ ui_printer_controls :: proc(ui: ^UI_State) {
 			ui_add_control(ui, "download file", "Download selected G-code file", {detail_x+12, vp.y+vp.h-44, 120, 30}, .Printer_Files_Download, s.transfer.status != .Running)
 		}
 
-	case .Console, .Config:
-		// Read-only scrollable views (Config editor lands in Milestone 3).
+	case .Console:
+		// Read-only scrollable log.
+	case .Config:
+		ui_printer_config_controls(ui)
 
 	case .Connection:
 		cx := vp.x + 24
@@ -835,7 +855,6 @@ printer_connection_label :: proc(p: ^Printer_State) -> (text: string, color: Vec
 	return "Offline", theme.muted
 }
 
-@(private = "file")
 printer_draw_text_field :: proc(painter: ^UI_Painter, ui: ^UI_State, action: UI_Action, value: string, placeholder: string, masked := false) {
 	rect := ui_control_rect(ui, action)
 	if rect.w <= 0 || rect.h <= 0 {return}
@@ -896,7 +915,11 @@ ui_draw_printer_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 			ui_add_round_rect(painter, chart, 8, bg)
 			ui_add_border(painter, chart, theme.border)
 		}
-	case .Files, .Console, .Config, .Connection:
+	case .Config:
+		panel := ui_printer_config_left_rect(ui)
+		ui_add_round_rect(painter, panel, 8, theme.surface)
+		ui_add_border(painter, panel, theme.border)
+	case .Files, .Console, .Connection:
 		ui_add_round_rect(painter, vp, 8, theme.surface)
 		ui_add_border(painter, vp, theme.border)
 	}
@@ -943,12 +966,7 @@ ui_draw_printer_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	case .Console:
 		printer_draw_console_panel(painter, ui, p, vp)
 	case .Config:
-		ui_draw_text(painter, painter.font, ui, "Printer Configuration", {vp.x+20, vp.y+16, vp.w-40, 26}, theme.text, 0)
-		msg := fmt.tprintf("Connected: %d configuration files discovered on Moonraker. Guided & Layered configuration editor lands in Milestone 3 (read-only printer_config MCP tool is active now).", len(s.config_files))
-		if s.connection != .Connected {
-			msg = "Connect to Moonraker to inspect live Klipper configuration. Guided & Layered configuration editor lands in Milestone 3 (read-only printer_config MCP tool is active now)."
-		}
-		ui_draw_text(painter, painter.font, ui, msg, {vp.x+20, vp.y+52, vp.w-40, 24}, theme.muted, 0)
+		ui_draw_printer_config(painter, ui, p)
 	case .Connection:
 		printer_draw_connection_panel(painter, ui, p, vp)
 	}

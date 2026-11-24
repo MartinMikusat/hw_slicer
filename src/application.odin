@@ -491,7 +491,13 @@ app_activate :: proc(action: UI_Action) -> bool {
 	     .Printer_Files_Refresh, .Printer_Files_Download, .Printer_Conn_Endpoint, .Printer_Conn_Api_Key,
 	     .Printer_Conn_Connect, .Printer_Conn_Disconnect, .Printer_Conn_Local, .Printer_Conn_Preview,
 	     .Printer_Control_Surface, .Printer_Chart_Surface,
-	     .Printer_Heater_Field_Base, .Printer_Heater_Set_Base, .Printer_Heater_Off_Base, .Printer_File_Row_Base:
+	     .Printer_Cfg_Mode_Guided, .Printer_Cfg_Mode_Layered,
+	     .Printer_Cfg_Sub_Build, .Printer_Cfg_Sub_Mesh, .Printer_Cfg_Sub_Tool,
+	     .Printer_Cfg_Sub_Board, .Printer_Cfg_Sub_Heat,
+	     .Printer_Cfg_Refresh, .Printer_Cfg_Save, .Printer_Cfg_Revert,
+	     .Printer_Cfg_Search, .Printer_Cfg_Overridden, .Printer_Cfg_Drift,
+	     .Printer_Heater_Field_Base, .Printer_Heater_Set_Base, .Printer_Heater_Off_Base, .Printer_File_Row_Base,
+	     .Printer_Cfg_Param_Base, .Printer_Cfg_Row_Base:
 		return false
 	}
 	return true
@@ -754,7 +760,17 @@ app_pick_stage_segment :: proc(px, py: f64) {
 
 app_rebuild_section :: proc() {
 	app.ui.workspace.result_shown = false
-	if !app.ui.section_enabled || len(app.mesh.vertices) == 0 || app.design.active || ui_printer_mode(&app.ui) {
+	if ui_printer_mode(&app.ui) {
+		if printer_config_shows_3d(&app.printer) {
+			printer_config_build_3d_lines(&app.printer, &app.section_vertices)
+			app.ui.section_segments = len(app.section_vertices) / 2
+			return
+		}
+		clear(&app.section_vertices)
+		app.ui.section_segments = 0
+		return
+	}
+	if !app.ui.section_enabled || len(app.mesh.vertices) == 0 || app.design.active {
 		clear(&app.section_vertices)
 		app.ui.section_segments = 0
 		return

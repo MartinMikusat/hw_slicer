@@ -181,6 +181,19 @@ UI_Action :: enum u64 {
 	Printer_Conn_Preview,
 	Printer_Control_Surface,
 	Printer_Chart_Surface,
+	Printer_Cfg_Mode_Guided,
+	Printer_Cfg_Mode_Layered,
+	Printer_Cfg_Sub_Build,
+	Printer_Cfg_Sub_Mesh,
+	Printer_Cfg_Sub_Tool,
+	Printer_Cfg_Sub_Board,
+	Printer_Cfg_Sub_Heat,
+	Printer_Cfg_Refresh,
+	Printer_Cfg_Save,
+	Printer_Cfg_Revert,
+	Printer_Cfg_Search,
+	Printer_Cfg_Overridden,
+	Printer_Cfg_Drift,
 	Evidence_Stage_Base = 1000,
 	Graph_Node_Base = 2000,
 	Setting_Base = 3000,
@@ -188,6 +201,8 @@ UI_Action :: enum u64 {
 	Printer_Heater_Set_Base = 4100,
 	Printer_Heater_Off_Base = 4200,
 	Printer_File_Row_Base = 4300,
+	Printer_Cfg_Param_Base = 4400,
+	Printer_Cfg_Row_Base = 4500,
 }
 
 UI_Control :: struct {
