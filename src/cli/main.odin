@@ -261,7 +261,7 @@ main :: proc() {
 		scale               = 1.0,
 		use_native_polygon  = true,
 		use_gpu             = true,
-		worker_threads      = 8,
+		worker_threads      = 0,
 		input_paths         = make([dynamic]string),
 		modifiers           = make([dynamic]pipeline.Modifier_Zone),
 		pause_layers        = make([dynamic]u32),

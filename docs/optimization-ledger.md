@@ -35,7 +35,7 @@ Workspace slice of `benchy.stl`, release CLI, `--threads=1|4|8|10`, faster of tw
 
 | ID | Stage / File | Finding | Gain (Benchy, release, 8 threads) | Status |
 |---|---|---|---|---|
-| **OPT-12** | `configuration.odin`, `orchestrator.odin` | `worker_threads` defaults to 8; this machine has 10 cores (4 performance, 6 efficiency). Default to the core count. | Full slice `641 ms → 602 ms` measured with `--threads=10` | `OPEN` |
+| **OPT-12** | `configuration.odin`, `orchestrator.odin`, `cli/main.odin`, `session.odin` | `worker_threads` defaulted to 8 on a 10-core machine (4 performance, 6 efficiency). It now defaults to 0, which `resolved_worker_threads` turns into every logical core (at most 16); `--threads=N` still overrides it. G-code is byte-identical to `--threads=8`. | Full slice `679 ms → 651 ms` (best of three alternating runs each; 4 %). An earlier, quieter run measured `641 → 602 ms` with `--threads=10` (6 %). | `DONE` |
 | **OPT-13** | `cpu_intersections.odin`, `session.odin` (`stage_intersections`) | Mesh intersections scale only 1.2× (102 → 83 ms) although both intersection passes are parallel; snapping, planar ownership or span indexing appear to run single-threaded. Profile, then parallelize the dominant part. | Up to ~70 ms on the longest chain (estimate) | `OPEN` |
 | **OPT-14** | `motion_plan.odin`, `extrusion.odin`, `session.odin` (`stage_motion`) | Motion scales only 1.3× (83 → 65 ms). Profile the single-threaded part. | Up to ~55 ms on the longest chain (estimate) | `OPEN` |
 | **OPT-15** | `slicing/topology.odin` | Contour reconstruction has no `parallel_for`; layers are independent. Parallelize per layer. | ~40 ms of 53 ms (estimate) | `OPEN` |

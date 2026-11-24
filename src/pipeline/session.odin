@@ -147,8 +147,8 @@ SLICE_RUN_CANCELLED :: "cancelled"
 // the run.
 // A set cancel flag stops the run before the next stage and returns a SLICE_RUN_CANCELLED error.
 slice_session_run_to :: proc(s: ^Slice_Session, target: Stage_Id, cancel: ^bool = nil) -> Slice_Run_Error {
-	features.set_worker_threads(s.options.worker_threads)
-	slicing.slicing_set_worker_threads(s.options.worker_threads)
+	features.set_worker_threads(resolved_worker_threads(s.options.worker_threads))
+	slicing.slicing_set_worker_threads(resolved_worker_threads(s.options.worker_threads))
 	needed := stage_upstream(target)
 	for id in Stage_Id {
 		if id not_in needed {continue}
@@ -792,7 +792,7 @@ stage_sparse_infill :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 				spacing_um     = infill_spacing,
 				line_width_um  = proc_src.nominal_line_width,
 				boundary_inset = infill_inset,
-				worker_threads = s.options.worker_threads,
+				worker_threads = resolved_worker_threads(s.options.worker_threads),
 			},
 			a,
 			solid_areas,
@@ -1148,7 +1148,7 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			overhang_slowdown_enabled = options.overhang_slowdown_enabled,
 			overhang_speed_percent    = options.overhang_speed_percent,
 			use_gpu                   = options.use_gpu,
-			worker_threads            = options.worker_threads,
+			worker_threads            = resolved_worker_threads(options.worker_threads),
 		},
 	)
 	if mot_err != .None {return {stage = "motion_plan", detail = fmt.tprintf("motion plan error: %v", mot_err)}}

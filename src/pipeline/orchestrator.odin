@@ -114,7 +114,7 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	adaptive_layers               = false,
 	use_native_polygon            = true,
 	use_gpu                       = true,
-	worker_threads                = 8,
+	worker_threads                = 0,
 	scarf_seam_enabled            = false,
 	scarf_length_um               = 15_000,
 	vase_mode                     = false,

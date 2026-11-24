@@ -2,9 +2,21 @@ package pipeline
 
 import "core:fmt"
 import "core:math"
+import "core:os"
 
 import contracts "../contracts"
 import profiles "../profiles"
+
+// The most worker threads a stage starts; the parallel helpers clamp to this as well.
+WORKER_THREADS_MAX :: 16
+
+// Worker threads for a requested count: the count itself, or every logical core for 0. Measured on
+// a 10-core M-series machine (4 performance, 6 efficiency), 10 threads slice Benchy 6 % faster than
+// 8 (optimization ledger OPT-12).
+resolved_worker_threads :: proc(requested: int) -> int {
+	if requested > 0 {return min(requested, WORKER_THREADS_MAX)}
+	return clamp(os.get_processor_core_count(), 1, WORKER_THREADS_MAX)
+}
 
 // Everything a slice reads besides the model: the unresolved profile documents and the run flags
 // that no profile carries. The CLI and the application edit one of these and resolve it into the
@@ -19,6 +31,7 @@ Slice_Configuration :: struct {
 	adaptive_layers:     bool,
 	use_native_polygon:  bool,
 	use_gpu:             bool,
+	// 0 uses every logical core (see `resolved_worker_threads`).
 	worker_threads:      int,
 	scarf_seam:          bool,
 	vase_mode:           bool,
@@ -56,7 +69,6 @@ slice_configuration_load :: proc(
 		dialect            = profiles.profiles_default_klipper_dialect(),
 		use_native_polygon = true,
 		use_gpu            = true,
-		worker_threads     = 8,
 	}
 	return config, "", true
 }
