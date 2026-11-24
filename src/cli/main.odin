@@ -27,8 +27,10 @@ CLI_Options :: struct {
 	material:        string,
 	process:         string,
 	profiles_dir:    string,
-	trace_json_path: string,
-	svg_dir:         string,
+	trace_json_path:      string,
+	svg_dir:              string,
+	evidence_bundle_path: string,
+	evidence_level:       contracts.Evidence_Level,
 	enable_supports: bool,
 	adaptive_layers: bool,
 	clone_count:     int,
@@ -325,6 +327,19 @@ main :: proc() {
 			opts.fuzzy_skin = true
 		} else if arg == "--sequential" {
 			opts.sequential = true
+		} else if strings.has_prefix(arg, "--evidence-bundle=") {
+			opts.evidence_bundle_path = arg[len("--evidence-bundle="):]
+			if opts.evidence_level == .Disabled {opts.evidence_level = .Summary}
+		} else if strings.has_prefix(arg, "--evidence-level=") {
+			switch arg[len("--evidence-level="):] {
+			case "disabled", "none": opts.evidence_level = .Disabled
+			case "summary":          opts.evidence_level = .Summary
+			case "primitives", "full": opts.evidence_level = .Primitives
+			case "renders":          opts.evidence_level = .Renders
+			case:
+				fmt.eprintf("error: unknown --evidence-level '%s'\n", arg[len("--evidence-level="):])
+				os.exit(2)
+			}
 		} else if strings.has_prefix(arg, "--modifier=") {
 			spec := arg[len("--modifier="):]
 			if mod, ok := pipeline.modifier_parse(spec); ok {
@@ -433,6 +448,7 @@ main :: proc() {
 		fmt.eprintf("error: %s\n", resolve_detail)
 		os.exit(1)
 	}
+	run_opts.evidence_level = opts.evidence_level
 
 	input_bytes, read_err := os.read_entire_file(opts.input_path, context.allocator)
 	if read_err != nil {
@@ -596,6 +612,16 @@ main :: proc() {
 			os.exit(1)
 		}
 		fmt.printf("  wrote G-code: %s\n", opts.output_path)
+	}
+
+	if len(opts.evidence_bundle_path) > 0 && len(res.evidence_bundle_bytes) > 0 {
+		parent := filepath.dir(opts.evidence_bundle_path)
+		if len(parent) > 0 && parent != "." {_ = os.make_directory_all(parent)}
+		if os.write_entire_file(opts.evidence_bundle_path, res.evidence_bundle_bytes) != nil {
+			fmt.eprintf("error: failed to write evidence bundle '%s'\n", opts.evidence_bundle_path)
+			os.exit(1)
+		}
+		fmt.printf("  wrote evidence bundle: %s (%d bytes)\n", opts.evidence_bundle_path, len(res.evidence_bundle_bytes))
 	}
 
 	if len(opts.trace_json_path) > 0 {

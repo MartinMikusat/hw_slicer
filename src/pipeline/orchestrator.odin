@@ -80,6 +80,7 @@ Slice_Run_Options :: struct {
 	modifiers:                     []Modifier_Zone,
 	pause_layers:                  []u32,
 	color_change_layers:           []u32,
+	evidence_level:                contracts.Evidence_Level,
 }
 
 DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
@@ -139,8 +140,9 @@ Slice_Run_Result :: struct {
 	validation:        gcode.Klipper_Validation_Report,
 	time_estimate:     features.Print_Time_Estimate,
 	mesh_repair_stats: repair.Mesh_Repair_Stats,
-	stages:            [dynamic]Stage_Trace,
-	total_duration_ms: f64,
+	stages:                [dynamic]Stage_Trace,
+	total_duration_ms:     f64,
+	evidence_bundle_bytes: []u8,
 }
 
 Slice_Run_Error :: struct {
@@ -159,6 +161,7 @@ slice_run_result_destroy :: proc(r: ^Slice_Run_Result, allocator := context.allo
 		slicing.topology_result_destroy(&r.repaired_topology, allocator)
 	}
 	slice_spine_result_destroy(&r.spine, allocator)
+	delete(r.evidence_bundle_bytes, allocator)
 	delete(r.stages)
 	r^ = {}
 }
@@ -437,5 +440,13 @@ slice_run_decoded_mesh :: proc(
 	defer slice_session_destroy(session)
 	run_err := slice_session_run_all(session)
 	if len(run_err.stage) > 0 {return {}, run_err}
-	return slice_session_take_result(session), {}
+	evidence_bytes: []u8
+	if options.evidence_level != .Disabled {
+		ev_err: Slice_Run_Error
+		evidence_bytes, ev_err = slice_session_export_evidence_bundle(session, options.evidence_level, allocator)
+		if len(ev_err.stage) > 0 {return {}, ev_err}
+	}
+	res := slice_session_take_result(session)
+	res.evidence_bundle_bytes = evidence_bytes
+	return res, {}
 }

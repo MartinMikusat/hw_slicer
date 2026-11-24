@@ -83,11 +83,16 @@ Slice_Session :: struct {
 	tree_supports:     features.Tree_Support_Result,
 	support_footprint: polygon.Polygon_Set,
 	adhesion:          features.Adhesion_Result,
-	unified_plan:      features.Unified_Path_Plan_Result,
-	extrusion:         features.Extrusion_Result,
-	motion:            features.Motion_Plan_Result,
-	time_estimate:     features.Print_Time_Estimate,
-	klipper:           gcode.Klipper_Result,
+	unified_plan:        features.Unified_Path_Plan_Result,
+	variable_wall_stats: features.Variable_Wall_Stats,
+	fuzzy_skin_stats:    features.Fuzzy_Skin_Stats,
+	extrusion:           features.Extrusion_Result,
+	motion:              features.Motion_Plan_Result,
+	z_ramp_stats:        features.Scarf_Seam_Stats,
+	arc_fit_stats:       features.Arc_Fit_Stats,
+	time_estimate:       features.Print_Time_Estimate,
+	klipper:             gcode.Klipper_Result,
+	validation:          gcode.Klipper_Validation_Report,
 }
 
 slice_session_create :: proc(
@@ -1161,8 +1166,9 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			line_widths  = tp.line_widths,
 		})
 	}
+	s.variable_wall_stats = {}
 	if options.variable_walls_enabled {
-		_ = features.variable_walls_adapt(all_sources[:], {
+		s.variable_wall_stats = features.variable_walls_adapt(all_sources[:], {
 			enabled          = true,
 			nominal_width_um = proc_src.nominal_line_width,
 			min_width_um     = max(max_lh, contracts.Micrometres((i64(proc_src.nominal_line_width)*65)/100)),
@@ -1176,8 +1182,9 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		delete(fuzzy_owned_pts)
 		delete(fuzzy_owned_ws)
 	}
+	s.fuzzy_skin_stats = {}
 	if options.fuzzy_skin_enabled {
-		_ = features.fuzzy_skin_apply(
+		s.fuzzy_skin_stats = features.fuzzy_skin_apply(
 			all_sources[:],
 			s.perimeters,
 			{
@@ -1250,8 +1257,9 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	if mot_err != .None {return {stage = "motion_plan", detail = fmt.tprintf("motion plan error: %v", mot_err)}}
 	// Scarf seam / spiral vase Z ramps run on linear segments before arc fitting, which leaves the
 	// ramped moves linear and fits arcs to the rest.
+	s.z_ramp_stats = {}
 	if options.scarf_seam_enabled || options.vase_mode {
-		_ = features.motion_plan_apply_z_ramps(
+		s.z_ramp_stats = features.motion_plan_apply_z_ramps(
 			&s.motion,
 			s.layer_heights,
 			{enabled = options.scarf_seam_enabled, length_um = options.scarf_length_um, start_height_pct = 10},
@@ -1263,11 +1271,12 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		)
 	}
 	// G2/G3 circular arc fitting of moves without a Z offset.
+	s.arc_fit_stats = {}
 	if options.arc_fitting_enabled && !options.vase_mode {
 		arc_cfg := features.DEFAULT_ARC_FIT_CONFIG
 		if options.arc_tolerance_um > 0 {arc_cfg.max_chord_error_um = options.arc_tolerance_um}
-		arc_stats := features.motion_plan_fit_arcs(&s.motion, s.profile.printer, arc_cfg, a)
-		s.slots[.Motion].count_b = arc_stats.arcs_fitted
+		s.arc_fit_stats = features.motion_plan_fit_arcs(&s.motion, s.profile.printer, arc_cfg, a)
+		s.slots[.Motion].count_b = s.arc_fit_stats.arcs_fitted
 	}
 	if len(options.modifiers) > 0 {
 		_ = modifiers_apply_motion(&s.motion, options.modifiers, s.profile)
