@@ -101,7 +101,7 @@ Added all **155 official Voron 2.4r2 printed parts** (`VoronDesign/Voron-2` comm
 
 Baseline run (`./slice-benchmark.sh --suite=all --runs=1`, release CLI, 10 threads):
 - **Core 3-model suite (PLA / `0.20-standard`):** 3/3 passed (`1,689.2 ms` cold single-run total; `1,468.2 ms` best of 3).
-- **Voron 2.4 suite (ABS / `voron-2.4-standard` + `voron-2.4-high-stress`):** **155/155 passed**, `45,104.1 ms` total (**45.10 s**, **291.0 ms average per part**).
+- **Voron 2.4 suite (ABS / `voron-2.4-standard` + `voron-2.4-high-stress`):** **155/155 passed**, `44,782.8 ms` total (**44.78 s**, **288.9 ms avg**) vs. OrcaSlicer 2.5.1 `70,679.1 ms` (**70.68 s**, **456.0 ms avg**) — **1.58× faster overall** (**1.85× geometric mean**, **1.70× median**, faster on **152/155** parts; full per-part table in [voron-2.4-benchmark.md](voron-2.4-benchmark.md)).
 - **Root-cause fixes landed from the full-printer suite:**
   - Added layer-wide contour union + progressive `-1 µm` / `-2k µm` pinch-vertex inset fallback (`repair.contour_layer_repair_for_regions`) so multi-contour pair intersections, boundary touches, and 0-width pinch vertices resolve cleanly instead of failing with `Invalid_Input` or looping to `max_contour_repairs`.
   - Deduplicated consecutive boundary vertices in `infill_pat_connect`'s `arc_points` and restricted `unified_path_source_validate`'s closing-edge check (`points[0] != points[len-1]`) to closed loops only.

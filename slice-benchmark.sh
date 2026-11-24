@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# End-to-end slicing benchmark runner for hw_slicer.
-# Benchmarks the 3 core reference models (PLA / 0.20-standard) and all 155 official Voron 2.4
-# printed parts (ABS / voron-2.4-standard, with voron-2.4-high-stress for high-stress parts).
+# End-to-end slicing benchmark runner for hw_slicer, with optional head-to-head OrcaSlicer CLI
+# comparison using matched machine, filament, and process settings.
 #
 # Usage:
-#   ./slice-benchmark.sh [--suite=all|core|voron2.4] [--runs=1] [--threads=0] [--out-json=path]
+#   ./slice-benchmark.sh [--suite=all|core|voron2.4] [--runs=1] [--threads=0] \
+#                        [--compare-orca] [--out-json=PATH] [--out-md=PATH]
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -14,16 +14,20 @@ cd "$ROOT"
 SUITE="all"
 RUNS=1
 THREADS=""
+COMPARE_ORCA=0
 OUT_JSON=""
+OUT_MD=""
 
 for arg in "$@"; do
   case "$arg" in
     --suite=*) SUITE="${arg#--suite=}" ;;
     --runs=*) RUNS="${arg#--runs=}" ;;
     --threads=*) THREADS="${arg#--threads=}" ;;
+    --compare-orca) COMPARE_ORCA=1 ;;
     --out-json=*) OUT_JSON="${arg#--out-json=}" ;;
+    --out-md=*) OUT_MD="${arg#--out-md=}" ;;
     -h|--help)
-      echo "Usage: $0 [--suite=all|core|voron2.4] [--runs=N] [--threads=N] [--out-json=PATH]"
+      echo "Usage: $0 [--suite=all|core|voron2.4] [--runs=N] [--threads=N] [--compare-orca] [--out-json=PATH] [--out-md=PATH]"
       exit 0
       ;;
     *)
@@ -35,12 +39,19 @@ done
 
 ./build.sh cli-release >&2
 CLI="$ROOT/build/release/hw-slicer-cli"
+ORCA_BIN="/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer"
 
-python3 - "$ROOT" "$CLI" "$SUITE" "$RUNS" "$THREADS" "$OUT_JSON" <<'PY'
-import glob, json, os, re, subprocess, sys, tempfile, time
+if [ "$COMPARE_ORCA" = "1" ] && [ ! -x "$ORCA_BIN" ]; then
+  echo "[slice-benchmark] OrcaSlicer binary not found at $ORCA_BIN" >&2
+  exit 1
+fi
 
-root, cli, suite, runs_s, threads, out_json = sys.argv[1:7]
+python3 - "$ROOT" "$CLI" "$ORCA_BIN" "$SUITE" "$RUNS" "$THREADS" "$COMPARE_ORCA" "$OUT_JSON" "$OUT_MD" <<'PY'
+import json, math, os, re, statistics, subprocess, sys, tempfile, time
+
+root, cli, orca_bin, suite, runs_s, threads, cmp_orca_s, out_json, out_md = sys.argv[1:10]
 runs = max(1, int(runs_s))
+compare_orca = cmp_orca_s == "1"
 
 HIGH_STRESS_PREFIXES = (
     "xy_topbrace_",
@@ -87,14 +98,128 @@ if not cases:
     print(f"[slice-benchmark] no models matched suite={suite}", file=sys.stderr)
     sys.exit(1)
 
+def write_orca_profiles(tmpdir):
+    machine = {
+        "type": "machine",
+        "name": "HW Slicer Benchmark Klipper 350",
+        "from": "User",
+        "gcode_flavor": "klipper",
+        "printable_area": ["0x0", "350x0", "350x350", "0x350"],
+        "printable_height": "350",
+        "nozzle_diameter": ["0.4"],
+        "machine_max_acceleration_x": ["6000"],
+        "machine_max_acceleration_y": ["6000"],
+        "machine_max_acceleration_z": ["500"],
+        "machine_max_acceleration_e": ["5000"],
+        "machine_max_speed_x": ["300"],
+        "machine_max_speed_y": ["300"],
+        "machine_max_speed_z": ["20"],
+        "machine_max_speed_e": ["100"],
+        "retraction_length": ["0.8"],
+        "retraction_speed": ["40"],
+        "deretraction_speed": ["40"],
+        "z_hop": ["0.4"],
+    }
+    def make_proc(name, lw, walls, top_b, top_mm, infill_pct):
+        return {
+            "type": "process",
+            "name": name,
+            "from": "User",
+            "layer_height": "0.2",
+            "initial_layer_print_height": "0.2",
+            "line_width": lw,
+            "initial_layer_line_width": lw,
+            "outer_wall_line_width": lw,
+            "inner_wall_line_width": lw,
+            "top_surface_line_width": lw,
+            "sparse_infill_line_width": lw,
+            "internal_solid_infill_line_width": lw,
+            "wall_loops": str(walls),
+            "top_shell_layers": str(top_b),
+            "top_shell_thickness": top_mm,
+            "bottom_shell_layers": str(top_b),
+            "bottom_shell_thickness": top_mm,
+            "sparse_infill_density": f"{infill_pct}%",
+            "sparse_infill_pattern": "gyroid",
+            "enable_support": "0",
+            "enable_arc_fitting": "1",
+            "skirt_loops": "1",
+            "brim_width": "0",
+            "elefant_foot_compensation": "0.15",
+            "outer_wall_speed": "80",
+            "inner_wall_speed": "80",
+            "top_surface_speed": "90",
+            "internal_solid_infill_speed": "90",
+            "sparse_infill_speed": "120",
+            "gap_infill_speed": "60",
+            "bridge_speed": "35",
+            "travel_speed": "200",
+        }
+    fil_pla = {
+        "type": "filament",
+        "name": "Benchmark PLA",
+        "from": "User",
+        "filament_type": ["PLA"],
+        "filament_diameter": ["1.75"],
+        "filament_density": ["1.24"],
+        "nozzle_temperature": ["210"],
+        "nozzle_temperature_initial_layer": ["210"],
+        "hot_plate_temp": ["60"],
+        "hot_plate_temp_initial_layer": ["60"],
+        "fan_min_speed": ["100"],
+        "fan_max_speed": ["100"],
+        "overhang_fan_speed": ["100"],
+        "filament_max_volumetric_speed": ["20"],
+    }
+    fil_abs = {
+        "type": "filament",
+        "name": "Benchmark ABS",
+        "from": "User",
+        "filament_type": ["ABS"],
+        "filament_diameter": ["1.75"],
+        "filament_density": ["1.04"],
+        "nozzle_temperature": ["250"],
+        "nozzle_temperature_initial_layer": ["250"],
+        "hot_plate_temp": ["105"],
+        "hot_plate_temp_initial_layer": ["105"],
+        "fan_min_speed": ["25"],
+        "fan_max_speed": ["35"],
+        "overhang_fan_speed": ["35"],
+        "filament_max_volumetric_speed": ["18"],
+    }
+    paths = {}
+    for key, obj in [
+        ("machine", machine),
+        ("0.20-standard", make_proc("0.20-standard", "0.42", 3, 4, "0.8", 15)),
+        ("voron-2.4-standard", make_proc("voron-2.4-standard", "0.4", 4, 5, "1.0", 40)),
+        ("voron-2.4-high-stress", make_proc("voron-2.4-high-stress", "0.4", 5, 8, "1.6", 50)),
+        ("pla", fil_pla),
+        ("abs", fil_abs),
+    ]:
+        p = os.path.join(tmpdir, f"orca_{key}.json")
+        with open(p, "w") as f:
+            json.dump(obj, f)
+        paths[key] = p
+    return paths
+
 results = []
 failures = []
 total_wall_ms = 0.0
+total_orca_ms = 0.0
 suite_wall_ms = {}
+suite_orca_ms = {}
 suite_counts = {}
+orca_paired_hw_ms = 0.0
+orca_paired_orca_ms = 0.0
+ratios = []
+hw_faster_count = 0
 
 with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
     out_gcode = os.path.join(tmpdir, "out.gcode")
+    orca_out_dir = os.path.join(tmpdir, "orca_out")
+    os.makedirs(orca_out_dir, exist_ok=True)
+    orca_profiles = write_orca_profiles(tmpdir) if compare_orca else {}
+
     for idx, c in enumerate(cases, 1):
         cmd = [
             cli,
@@ -147,7 +272,53 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
             total_wall_ms += best_ms
             suite_wall_ms[c["suite"]] = suite_wall_ms.get(c["suite"], 0.0) + best_ms
             suite_counts[c["suite"]] = suite_counts.get(c["suite"], 0) + 1
-            print(f"[{idx:3d}/{len(cases)}] OK   {best_ms:7.1f} ms  {c['process']:22s}  {c['name']}", flush=True)
+
+        if compare_orca:
+            orca_cmd = [
+                orca_bin,
+                "--slice", "0",
+                "--arrange", "1",
+                "--load-settings", f"{orca_profiles['machine']};{orca_profiles[c['process']]}",
+                "--load-filaments", orca_profiles[c["material"]],
+                "--outputdir", orca_out_dir,
+                c["path"],
+            ]
+            best_orca = None
+            orca_ok = True
+            orca_err = ""
+            for _ in range(runs):
+                t0 = time.perf_counter()
+                op = subprocess.run(orca_cmd, capture_output=True, text=True)
+                odt = (time.perf_counter() - t0) * 1000.0
+                if op.returncode != 0:
+                    orca_ok = False
+                    orca_err = (op.stderr or op.stdout).strip().splitlines()[-1] if (op.stderr or op.stdout).strip() else f"exit {op.returncode}"
+                    break
+                if best_orca is None or odt < best_orca:
+                    best_orca = odt
+            rec["orca_ok"] = orca_ok
+            rec["orca_ms"] = round(best_orca, 2) if best_orca is not None else None
+            if orca_ok:
+                total_orca_ms += best_orca
+                suite_orca_ms[c["suite"]] = suite_orca_ms.get(c["suite"], 0.0) + best_orca
+                if ok and best_ms > 0:
+                    ratio = best_orca / best_ms
+                    rec["speedup_vs_orca"] = round(ratio, 2)
+                    orca_paired_hw_ms += best_ms
+                    orca_paired_orca_ms += best_orca
+                    ratios.append(ratio)
+                    if ratio >= 1.0:
+                        hw_faster_count += 1
+            else:
+                rec["orca_error"] = orca_err
+
+        if ok:
+            if compare_orca and rec.get("orca_ok"):
+                print(f"[{idx:3d}/{len(cases)}] OK   hw={best_ms:6.1f} ms  orca={rec['orca_ms']:7.1f} ms  ({rec['speedup_vs_orca']:5.2f}x)  {c['name']}", flush=True)
+            elif compare_orca:
+                print(f"[{idx:3d}/{len(cases)}] OK   hw={best_ms:6.1f} ms  orca=FAIL             {c['name']}", flush=True)
+            else:
+                print(f"[{idx:3d}/{len(cases)}] OK   {best_ms:7.1f} ms  {c['process']:22s}  {c['name']}", flush=True)
         else:
             rec["error"] = err_text
             failures.append(rec)
@@ -158,6 +329,7 @@ summary = {
     "suite": suite,
     "runs_per_model": runs,
     "threads": threads or "default",
+    "compare_orca": compare_orca,
     "total_models": len(cases),
     "passed": len(cases) - len(failures),
     "failed": len(failures),
@@ -166,18 +338,58 @@ summary = {
     "suite_passed": suite_counts,
     "results": results,
 }
+if compare_orca:
+    geomean = math.exp(sum(math.log(r) for r in ratios) / len(ratios)) if ratios else 0.0
+    summary["orca_total_ms"] = round(total_orca_ms, 2)
+    summary["overall_speedup"] = round(orca_paired_orca_ms / orca_paired_hw_ms, 2) if orca_paired_hw_ms > 0 else 0.0
+    summary["geomean_speedup"] = round(geomean, 2)
+    summary["median_speedup"] = round(statistics.median(ratios), 2) if ratios else 0.0
+    summary["hw_faster_count"] = hw_faster_count
+    summary["paired_count"] = len(ratios)
 
 print("\n=== SUMMARY ===")
-print(f"Suite: {suite} | Passed: {summary['passed']}/{summary['total_models']} | Total wall: {total_wall_ms:.1f} ms ({total_wall_ms/1000.0:.2f} s)")
+print(f"Suite: {suite} | Passed: {summary['passed']}/{summary['total_models']} | Total hw_slicer wall: {total_wall_ms:.1f} ms ({total_wall_ms/1000.0:.2f} s)")
+if compare_orca and ratios:
+    print(f"OrcaSlicer 2.5.1 total wall: {total_orca_ms:.1f} ms ({total_orca_ms/1000.0:.2f} s)")
+    print(f"Overall speedup: {summary['overall_speedup']:.2f}x | Geomean: {summary['geomean_speedup']:.2f}x | Median: {summary['median_speedup']:.2f}x | hw_slicer faster on {hw_faster_count}/{len(ratios)} parts")
 for k, v in sorted(suite_wall_ms.items()):
     cnt = suite_counts[k]
-    print(f"  {k:10s}: {cnt:3d} models  {v:8.1f} ms total  ({v/cnt:6.1f} ms avg)")
+    if compare_orca and k in suite_orca_ms:
+        ov = suite_orca_ms[k]
+        print(f"  {k:10s}: {cnt:3d} models  hw={v:8.1f} ms ({v/cnt:5.1f} avg)  orca={ov:8.1f} ms ({ov/cnt:5.1f} avg)  speedup={ov/v:.2f}x")
+    else:
+        print(f"  {k:10s}: {cnt:3d} models  {v:8.1f} ms total  ({v/cnt:6.1f} ms avg)")
 
 if out_json:
     os.makedirs(os.path.dirname(os.path.abspath(out_json)), exist_ok=True)
     with open(out_json, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"Wrote JSON report: {out_json}")
+
+if out_md:
+    os.makedirs(os.path.dirname(os.path.abspath(out_md)), exist_ok=True)
+    with open(out_md, "w") as f:
+        f.write("# Voron 2.4 Full-Printer Slicing Benchmark (`hw_slicer` vs. OrcaSlicer 2.5.1)\n\n")
+        f.write(f"End-to-end CLI wall-clock timings for all {summary['total_models']} models in suite `{suite}` (`runs={runs}`, matched Klipper 350 mm machine, ABS filament, `voron-2.4-standard` 0.20 mm / 0.40 mm / 4 walls / 5 top & bottom / 40% gyroid, and `voron-2.4-high-stress` 5 walls / 8 top & bottom / 50% gyroid for front idlers).\n\n")
+        if compare_orca and ratios:
+            f.write("## Summary\n\n")
+            f.write("| Metric | Value |\n|---|---:|\n")
+            f.write(f"| Models sliced | {summary['passed']}/{summary['total_models']} |\n")
+            f.write(f"| `hw_slicer` total wall time | **{total_wall_ms/1000.0:.2f} s** ({total_wall_ms/len(ratios):.1f} ms avg) |\n")
+            f.write(f"| OrcaSlicer 2.5.1 total wall time | **{total_orca_ms/1000.0:.2f} s** ({total_orca_ms/len(ratios):.1f} ms avg) |\n")
+            f.write(f"| Overall wall-time speedup (`Orca / hw`) | **{summary['overall_speedup']:.2f}×** |\n")
+            f.write(f"| Geometric mean speedup | **{summary['geomean_speedup']:.2f}×** |\n")
+            f.write(f"| Median speedup | **{summary['median_speedup']:.2f}×** |\n")
+            f.write(f"| Parts where `hw_slicer` is faster | **{hw_faster_count}/{len(ratios)}** |\n\n")
+            f.write("## Per-Part Comparison\n\n")
+            f.write("| # | Part | Profile | Tris | Layers | `hw_slicer` (ms) | OrcaSlicer 2.5.1 (ms) | Speedup (`Orca / hw`) |\n")
+            f.write("|---:|---|---|---:|---:|---:|---:|---:|\n")
+            for i, r in enumerate(results, 1):
+                hw_s = f"{r['wall_ms']:.1f}" if r.get("ok") else "FAIL"
+                or_s = f"{r['orca_ms']:.1f}" if r.get("orca_ok") else "FAIL"
+                sp_s = f"**{r['speedup_vs_orca']:.2f}×**" if r.get("speedup_vs_orca") is not None else "—"
+                f.write(f"| {i} | `{r['name']}` | `{r['process']}` | {r.get('tris', 0)} | {r.get('layers', 0)} | {hw_s} | {or_s} | {sp_s} |\n")
+    print(f"Wrote Markdown report: {out_md}")
 
 if failures:
     print("\n=== FAILURES ===")
