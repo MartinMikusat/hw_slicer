@@ -127,36 +127,83 @@ solid_paths_generate :: proc(
 	mask_errors := make([]Solid_Path_Error, len(overlap.masks), allocator)
 	defer delete(mask_errors, allocator)
 
+	// Deduplicate identical skin masks across layers (e.g. 5–8 layer top/bottom solid stacks) so
+	// both boundary and connector inset offsets run once per unique mask shape.
+	mask_count := len(overlap.masks)
+	mask_inputs := make([]polygon.Polygon_Set, mask_count, allocator)
+	canon_of := make([]int, mask_count, allocator)
+	unique_masks := make([dynamic]int, 0, mask_count, allocator)
+	defer {
+		for &inp in mask_inputs {polygon.polygon_set_destroy(&inp, allocator)}
+		delete(mask_inputs, allocator)
+		delete(canon_of, allocator)
+		delete(unique_masks)
+	}
+	if mask_count > 0 {
+		cap_pow2 := 16
+		for cap_pow2 < mask_count * 2 {cap_pow2 <<= 1}
+		ht_mask := u64(cap_pow2 - 1)
+		ht := make([]int, cap_pow2, allocator)
+		defer delete(ht, allocator)
+		for mi in 0..<mask_count {
+			canon_of[mi] = -1
+			mask := overlap.masks[mi]
+			if !solid_path_role_is_skin(mask.role) || mask.path_count == 0 {continue}
+			inp, inp_err := role_overlap_mask_input(overlap, u32(mi), allocator)
+			if inp_err != .None {
+				return {}, solid_path_overlap_error(inp_err)
+			}
+			mask_inputs[mi] = inp
+			h := features_polygon_set_hash64(inp)
+			slot := h & ht_mask
+			found := -1
+			for {
+				entry := ht[slot]
+				if entry == 0 {break}
+				cand := entry - 1
+				if features_polygon_sets_equal(mask_inputs[cand], inp) {
+					found = cand
+					break
+				}
+				slot = (slot + 1) & ht_mask
+			}
+			if found >= 0 {
+				canon_of[mi] = found
+			} else {
+				ht[slot] = mi + 1
+				canon_of[mi] = mi
+				append(&unique_masks, mi)
+			}
+		}
+	}
+
 	Solid_Par_Ctx :: struct {
-		overlap:        Role_Overlap_Result,
-		boundaries:     []polygon.Polygon_Set,
+		mask_inputs:          []polygon.Polygon_Set,
+		unique_masks:         []int,
+		boundaries:           []polygon.Polygon_Set,
 		connector_boundaries: []polygon.Polygon_Set,
-		mask_errors:    []Solid_Path_Error,
-		boundary_inset: contracts.Micrometres,
-		connector_inset: contracts.Micrometres,
-		provider:       polygon.Polygon_Provider,
-		limits:         Solid_Path_Limits,
-		allocator:      mem.Allocator,
+		mask_errors:          []Solid_Path_Error,
+		boundary_inset:       contracts.Micrometres,
+		connector_inset:      contracts.Micrometres,
+		provider:             polygon.Polygon_Provider,
+		limits:               Solid_Path_Limits,
+		allocator:            mem.Allocator,
 	}
 	spctx := Solid_Par_Ctx{
-		overlap        = overlap,
-		boundaries     = boundaries,
+		mask_inputs          = mask_inputs,
+		unique_masks         = unique_masks[:],
+		boundaries           = boundaries,
 		connector_boundaries = connector_boundaries,
-		mask_errors    = mask_errors,
-		boundary_inset = boundary_inset,
-		connector_inset = connector_inset,
-		provider       = provider,
-		limits         = limits,
-		allocator      = allocator,
+		mask_errors          = mask_errors,
+		boundary_inset       = boundary_inset,
+		connector_inset      = connector_inset,
+		provider             = provider,
+		limits               = limits,
+		allocator            = allocator,
 	}
-	parallel_for(len(overlap.masks), &spctx, proc(c: ^Solid_Par_Ctx, mask_index: int) {
-		mask := c.overlap.masks[mask_index]
-		if !solid_path_role_is_skin(mask.role) || mask.path_count == 0 {return}
-		input, input_error := role_overlap_mask_input(c.overlap, u32(mask_index), c.allocator)
-		if input_error != .None {
-			c.mask_errors[mask_index] = solid_path_overlap_error(input_error)
-			return
-		}
+	parallel_for(len(unique_masks), &spctx, proc(c: ^Solid_Par_Ctx, ui: int) {
+		mask_index := c.unique_masks[ui]
+		input := c.mask_inputs[mask_index]
 		provider_error: polygon.Polygon_Error
 		c.boundaries[mask_index], provider_error = c.provider.offset(
 			input,
@@ -178,11 +225,23 @@ solid_paths_generate :: proc(
 				c.allocator,
 			)
 		}
-		polygon.polygon_set_destroy(&input, c.allocator)
 		if provider_error != .None {
 			c.mask_errors[mask_index] = .Provider
 		}
 	})
+	for ui in unique_masks {
+		if mask_errors[ui] != .None {return {}, mask_errors[ui]}
+	}
+	for mi in 0..<mask_count {
+		src := canon_of[mi]
+		if src < 0 || src == mi {continue}
+		if len(boundaries[src].paths) > 0 {
+			ok1, ok2: bool
+			boundaries[mi], ok1 = skin_polygon_clone(boundaries[src], allocator)
+			connector_boundaries[mi], ok2 = skin_polygon_clone(connector_boundaries[src], allocator)
+			if !ok1 || !ok2 {return {}, .Allocation_Failed}
+		}
+	}
 
 	maximum_boundary_points := 0
 	skin_mask_count: u64

@@ -165,7 +165,8 @@ extrusion_result_content_hash :: proc(
 		contracts.canonical_hash_append_u32(&hash, layer.move_count)
 	}
 	contracts.canonical_hash_append_u64(&hash, u64(len(result.moves)))
-	for move in result.moves {
+	for move, move_index in result.moves {
+		audit := result.move_audits[move_index]
 		contracts.canonical_hash_append_stable_id(&hash, move.stable_id)
 		contracts.canonical_hash_append_stable_id(
 			&hash,
@@ -196,7 +197,7 @@ extrusion_result_content_hash :: proc(
 		)
 		bridge_direction_hash_append_u128(
 			&hash,
-			move.distance_squared_um_2,
+			audit.distance_squared_um_2,
 		)
 		contracts.canonical_hash_append_u64(
 			&hash,
@@ -204,15 +205,15 @@ extrusion_result_content_hash :: proc(
 		)
 		bridge_direction_hash_append_u128(
 			&hash,
-			move.length_error_squared_nm_2,
+			audit.length_error_squared_nm_2,
 		)
 		bridge_direction_hash_append_u128(
 			&hash,
-			move.cross_section_numerator,
+			audit.cross_section_numerator,
 		)
 		bridge_direction_hash_append_u128(
 			&hash,
-			move.volume_numerator,
+			audit.volume_numerator,
 		)
 		contracts.canonical_hash_append_u64(
 			&hash,
@@ -220,7 +221,7 @@ extrusion_result_content_hash :: proc(
 		)
 		bridge_direction_hash_append_u128(
 			&hash,
-			move.volume_error_numerator,
+			audit.volume_error_numerator,
 		)
 		contracts.canonical_hash_append_u64(
 			&hash,
@@ -228,7 +229,7 @@ extrusion_result_content_hash :: proc(
 		)
 		bridge_direction_hash_append_u128(
 			&hash,
-			move.remainder_numerator_after,
+			audit.remainder_numerator_after,
 		)
 	}
 	return contracts.canonical_hash_final(&hash), true
@@ -303,13 +304,15 @@ extrusion_result_structurally_valid :: proc(
 		expected_move_offset += u64(layer.move_count)
 	}
 	if expected_move_offset != u64(len(result.moves)) {return false}
+	if len(result.move_audits) != len(result.moves) {return false}
 
 	total_volume_numerator: u128
 	total_filament_nm: u128
 	remainder: u128
 	previous_planned_move_index: u32
 	planned_move_index_set := false
-	for move in result.moves {
+	for move, move_index in result.moves {
+		audit := result.move_audits[move_index]
 		if move.stable_id == contracts.INVALID_STABLE_ID ||
 		   move.planned_move_id == contracts.INVALID_STABLE_ID ||
 		   move.path_id == contracts.INVALID_STABLE_ID ||
@@ -326,7 +329,7 @@ extrusion_result_structurally_valid :: proc(
 		   i64(move.layer_height) <= 0 ||
 		   i64(move.line_width_a) < i64(move.layer_height) ||
 		   i64(move.line_width_b) < i64(move.layer_height) ||
-		   move.distance_squared_um_2 == 0 ||
+		   audit.distance_squared_um_2 == 0 ||
 		   move.path_length_nm == 0 {
 			return false
 		}
@@ -334,7 +337,7 @@ extrusion_result_structurally_valid :: proc(
 		planned_move_index_set = true
 		scaled_distance, scaled_distance_ok :=
 			extrusion_checked_multiply(
-				move.distance_squared_um_2,
+				audit.distance_squared_um_2,
 				1_000_000,
 			)
 		path_length_squared :=
@@ -369,11 +372,11 @@ extrusion_result_structurally_valid :: proc(
 		   !cross_section_ok ||
 		   !volume_ok ||
 		   !volume_round_ok ||
-		   move.length_error_squared_nm_2 != length_error ||
-		   move.cross_section_numerator != cross_section_numerator ||
-		   move.volume_numerator != volume_numerator ||
+		   audit.length_error_squared_nm_2 != length_error ||
+		   audit.cross_section_numerator != cross_section_numerator ||
+		   audit.volume_numerator != volume_numerator ||
 		   move.volume_cubic_um != volume_cubic_um ||
-		   move.volume_error_numerator != volume_error ||
+		   audit.volume_error_numerator != volume_error ||
 		   remainder > max(u128)-volume_numerator {
 			return false
 		}
@@ -390,7 +393,7 @@ extrusion_result_structurally_valid :: proc(
 			accumulated%result.quantized_length_denominator
 		if move.incremental_filament_nm !=
 			u64(incremental_filament_nm) ||
-		   move.remainder_numerator_after != remainder ||
+		   audit.remainder_numerator_after != remainder ||
 		   total_volume_numerator > max(u128)-volume_numerator ||
 		   total_filament_nm > max(u128)-incremental_filament_nm {
 			return false

@@ -1279,7 +1279,7 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	proc_src := process.source
 	options := s.options
 	ext_err: features.Extrusion_Error
-	s.extrusion, ext_err = features.extrusion_calculate(s.unified_plan, s.layer_heights, s.profile.material, process, allocator = a)
+	s.extrusion, ext_err = features.extrusion_calculate(s.unified_plan, s.layer_heights, s.profile.material, process, allocator = a, record_audit = false)
 	if ext_err != .None {return {stage = "extrusion", detail = fmt.tprintf("extrusion error: %v", ext_err)}}
 	mot_err: features.Motion_Plan_Error
 	s.motion, mot_err = features.motion_plan_build(

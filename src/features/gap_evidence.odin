@@ -137,33 +137,96 @@ gap_evidence_build :: proc(
 		delete(outputs, allocator)
 	}
 
-	Gap_Par_Ctx :: struct {
-		topology:      slicing.Topology_Result,
-		regions:       slicing.Region_Result,
-		perimeters:    Perimeter_Result,
-		provider:      polygon.Polygon_Provider,
-		config:        Gap_Evidence_Config,
-		derived:       Gap_Evidence_Derived_Config,
-		limits:        Gap_Evidence_Limits,
-		outputs:       []polygon.Polygon_Set,
-		region_errors: []Gap_Evidence_Error,
-		allocator:     mem.Allocator,
+	// Deduplicate regions with identical 2D contours and perimeter layer-0 inset flag so gap-fill
+	// offsets/booleans run once per unique region shape on prismatic CAD walls.
+	region_count := len(regions.regions)
+	region_inputs := make([]polygon.Polygon_Set, region_count, allocator)
+	canon_of := make([]int, region_count, allocator)
+	unique_regions := make([dynamic]int, 0, region_count, allocator)
+	defer {
+		for &inp in region_inputs {polygon.polygon_set_destroy(&inp, allocator)}
+		delete(region_inputs, allocator)
+		delete(canon_of, allocator)
+		delete(unique_regions)
 	}
-	region_errors := make([]Gap_Evidence_Error, len(regions.regions), allocator)
+	if region_count > 0 {
+		has_l0_inset := i64(perimeters.config.first_layer_inset_um) > 0
+		pcount := int(perimeters.config.count)
+		cap_pow2 := 16
+		for cap_pow2 < region_count * 2 {cap_pow2 <<= 1}
+		ht_mask := u64(cap_pow2 - 1)
+		ht := make([]int, cap_pow2, allocator)
+		defer delete(ht, allocator)
+		for r_idx in 0..<region_count {
+			inp, inp_err := perimeter_region_input(topology, regions, u32(r_idx), allocator)
+			if inp_err != .None {
+				return {}, gap_evidence_perimeter_error(inp_err)
+			}
+			region_inputs[r_idx] = inp
+			is_l0 := has_l0_inset && regions.regions[r_idx].layer_index == 0
+			h := features_polygon_set_hash64(inp) ~ (u64(0x9e3779b97f4a7c15) if is_l0 else 0)
+			slot := h & ht_mask
+			found := -1
+			for {
+				entry := ht[slot]
+				if entry == 0 {break}
+				cand := entry - 1
+				cand_l0 := has_l0_inset && regions.regions[cand].layer_index == 0
+				if cand_l0 == is_l0 && features_polygon_sets_equal(region_inputs[cand], inp) {
+					same_groups := true
+					for p in 0..<pcount {
+						if perimeters.groups[cand * pcount + p].path_count != perimeters.groups[r_idx * pcount + p].path_count {
+							same_groups = false
+							break
+						}
+					}
+					if same_groups {
+						found = cand
+						break
+					}
+				}
+				slot = (slot + 1) & ht_mask
+			}
+			if found >= 0 {
+				canon_of[r_idx] = found
+			} else {
+				ht[slot] = r_idx + 1
+				canon_of[r_idx] = r_idx
+				append(&unique_regions, r_idx)
+			}
+		}
+	}
+
+	Gap_Par_Ctx :: struct {
+		topology:       slicing.Topology_Result,
+		regions:        slicing.Region_Result,
+		perimeters:     Perimeter_Result,
+		unique_regions: []int,
+		provider:       polygon.Polygon_Provider,
+		config:         Gap_Evidence_Config,
+		derived:        Gap_Evidence_Derived_Config,
+		limits:         Gap_Evidence_Limits,
+		outputs:        []polygon.Polygon_Set,
+		region_errors:  []Gap_Evidence_Error,
+		allocator:      mem.Allocator,
+	}
+	region_errors := make([]Gap_Evidence_Error, region_count, allocator)
 	defer delete(region_errors, allocator)
 	gctx := Gap_Par_Ctx{
-		topology      = topology,
-		regions       = regions,
-		perimeters    = perimeters,
-		provider      = provider,
-		config        = config,
-		derived       = derived,
-		limits        = limits,
-		outputs       = outputs,
-		region_errors = region_errors,
-		allocator     = allocator,
+		topology       = topology,
+		regions        = regions,
+		perimeters     = perimeters,
+		unique_regions = unique_regions[:],
+		provider       = provider,
+		config         = config,
+		derived        = derived,
+		limits         = limits,
+		outputs        = outputs,
+		region_errors  = region_errors,
+		allocator      = allocator,
 	}
-	parallel_for(len(regions.regions), &gctx, proc(c: ^Gap_Par_Ctx, region_index: int) {
+	parallel_for(len(unique_regions), &gctx, proc(c: ^Gap_Par_Ctx, ui: int) {
+		region_index := c.unique_regions[ui]
 		c.region_errors[region_index] = gap_evidence_process_region(
 			c.topology,
 			c.regions,
@@ -177,29 +240,33 @@ gap_evidence_build :: proc(
 			c.allocator,
 		)
 	})
-	for err in region_errors {
-		if err != .None {return {}, err}
+	for ui in unique_regions {
+		if region_errors[ui] != .None {return {}, region_errors[ui]}
 	}
 
 	total_masks: u64
 	total_paths: u64
 	total_points: u64
-	for output in outputs {
-		if len(output.paths) == 0 {continue}
-		total_masks += 1
-		if total_masks > limits.max_masks {
-			return {}, .Mask_Limit
+	for r_idx in 0..<region_count {
+		src_r := canon_of[r_idx]
+		for kind_index in 0..<6 {
+			output := outputs[src_r * 6 + kind_index]
+			if len(output.paths) == 0 {continue}
+			total_masks += 1
+			if total_masks > limits.max_masks {
+				return {}, .Mask_Limit
+			}
+			if total_paths > limits.max_paths ||
+			   u64(len(output.paths)) > limits.max_paths-total_paths {
+				return {}, .Path_Limit
+			}
+			if total_points > limits.max_points ||
+			   u64(len(output.points)) > limits.max_points-total_points {
+				return {}, .Point_Limit
+			}
+			total_paths += u64(len(output.paths))
+			total_points += u64(len(output.points))
 		}
-		if total_paths > limits.max_paths ||
-		   u64(len(output.paths)) > limits.max_paths-total_paths {
-			return {}, .Path_Limit
-		}
-		if total_points > limits.max_points ||
-		   u64(len(output.points)) > limits.max_points-total_points {
-			return {}, .Point_Limit
-		}
-		total_paths += u64(len(output.paths))
-		total_points += u64(len(output.points))
 	}
 	if total_masks > u64(max(int)) ||
 	   total_paths > u64(max(int)) ||
@@ -252,8 +319,9 @@ gap_evidence_build :: proc(
 		region_end := region_start+int(layer.region_count)
 		for region_index in region_start..<region_end {
 			region := regions.regions[region_index]
+			src_region := canon_of[region_index]
 			for kind_index in 0..<6 {
-				output := outputs[region_index*6+kind_index]
+				output := outputs[src_region*6+kind_index]
 				if len(output.paths) == 0 {continue}
 				kind := Gap_Evidence_Kind(kind_index+1)
 				ordinal, ordinal_ok := feature_gap_evidence_ordinal(

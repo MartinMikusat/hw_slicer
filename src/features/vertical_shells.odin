@@ -41,20 +41,62 @@ vertical_shells_build :: proc(
 	}
 	if layer_count == 0 || provider.offset == nil || provider.boolean == nil {return result}
 
+	// Deduplicate identical model layers so offset(-perimeter_inset) runs once per unique layer shape.
+	canon_layer := make([]int, layer_count, allocator)
+	unique_layers := make([dynamic]int, 0, layer_count, allocator)
+	defer delete(canon_layer, allocator)
+	defer delete(unique_layers)
+	{
+		cap_pow2 := 16
+		for cap_pow2 < layer_count * 2 {cap_pow2 <<= 1}
+		ht_mask := u64(cap_pow2 - 1)
+		ht := make([]int, cap_pow2, allocator)
+		defer delete(ht, allocator)
+		for li in 0..<layer_count {
+			ml := model_layers[li]
+			if len(ml.paths) == 0 {
+				canon_layer[li] = li
+				continue
+			}
+			h := features_polygon_set_hash64(ml)
+			slot := h & ht_mask
+			found := -1
+			for {
+				entry := ht[slot]
+				if entry == 0 {break}
+				cand := entry - 1
+				if features_polygon_sets_equal(model_layers[cand], ml) {
+					found = cand
+					break
+				}
+				slot = (slot + 1) & ht_mask
+			}
+			if found >= 0 {
+				canon_layer[li] = found
+			} else {
+				ht[slot] = li + 1
+				canon_layer[li] = li
+				append(&unique_layers, li)
+			}
+		}
+	}
+
 	Inner_Ctx :: struct {
-		model_layers: []polygon.Polygon_Set,
-		inner:        []polygon.Polygon_Set,
-		inset:        contracts.Micrometres,
-		provider:     polygon.Polygon_Provider,
-		allocator:    mem.Allocator,
+		model_layers:  []polygon.Polygon_Set,
+		unique_layers: []int,
+		inner:         []polygon.Polygon_Set,
+		inset:         contracts.Micrometres,
+		provider:      polygon.Polygon_Provider,
+		allocator:     mem.Allocator,
 	}
 	inner := make([]polygon.Polygon_Set, layer_count, allocator)
 	defer {
-		for &set in inner {polygon.polygon_set_destroy(&set, allocator)}
+		for ui in unique_layers {polygon.polygon_set_destroy(&inner[ui], allocator)}
 		delete(inner, allocator)
 	}
-	ictx := Inner_Ctx{model_layers, inner, perimeter_inset, provider, allocator}
-	parallel_for(layer_count, &ictx, proc(c: ^Inner_Ctx, li: int) {
+	ictx := Inner_Ctx{model_layers, unique_layers[:], inner, perimeter_inset, provider, allocator}
+	parallel_for(len(unique_layers), &ictx, proc(c: ^Inner_Ctx, idx: int) {
+		li := c.unique_layers[idx]
 		if len(c.model_layers[li].paths) == 0 {return}
 		set, err := c.provider.offset(c.model_layers[li], -c.inset, .Miter, 2.0, 0.0, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
 		if err != .None {
@@ -63,32 +105,48 @@ vertical_shells_build :: proc(
 		}
 		c.inner[li] = set
 	})
+	for li in 0..<layer_count {
+		if canon_layer[li] != li {
+			inner[li] = inner[canon_layer[li]]
+		}
+	}
 
-	// pair[k] = L_k intersect L_(k+1); a window of layers is then a few pair intersections
-	// instead of one intersection per layer.
+	// pair[k] = L_k intersect L_(k+1); skip boolean when L_k == L_(k+1) (borrow read-only!).
 	Pair_Ctx :: struct {
 		layers, pair: []polygon.Polygon_Set,
-		provider:    polygon.Polygon_Provider,
-		allocator:   mem.Allocator,
+		canon_layer:  []int,
+		pair_owned:   []bool,
+		provider:     polygon.Polygon_Provider,
+		allocator:    mem.Allocator,
 	}
 	pair := make([]polygon.Polygon_Set, layer_count, allocator)
+	pair_owned := make([]bool, layer_count, allocator)
 	defer {
-		for &set in pair {polygon.polygon_set_destroy(&set, allocator)}
+		for k in 0..<layer_count {
+			if pair_owned[k] {polygon.polygon_set_destroy(&pair[k], allocator)}
+		}
 		delete(pair, allocator)
+		delete(pair_owned, allocator)
 	}
-	pctx := Pair_Ctx{model_layers, pair, provider, allocator}
+	pctx := Pair_Ctx{model_layers, pair, canon_layer, pair_owned, provider, allocator}
 	parallel_for(layer_count - 1, &pctx, proc(c: ^Pair_Ctx, k: int) {
 		if len(c.layers[k].paths) == 0 || len(c.layers[k + 1].paths) == 0 {return}
+		if c.canon_layer[k] == c.canon_layer[k + 1] {
+			c.pair[k] = c.layers[k]
+			return
+		}
 		set, err := c.provider.boolean(c.layers[k], c.layers[k + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
 		if err != .None {
 			polygon.polygon_set_destroy(&set, c.allocator)
 			return
 		}
 		c.pair[k] = set
+		c.pair_owned[k] = true
 	})
 
 	Band_Ctx :: struct {
 		model_layers:  []polygon.Polygon_Set,
+		canon_layer:   []int,
 		spacing:       f64,
 		inner, pair:   []polygon.Polygon_Set,
 		top, bottom:   []polygon.Polygon_Set,
@@ -97,20 +155,53 @@ vertical_shells_build :: proc(
 		provider:      polygon.Polygon_Provider,
 		allocator:     mem.Allocator,
 	}
-	bctx := Band_Ctx{model_layers, 1.05 * f64(i64(line_width)), inner, pair, result.top, result.bottom, int(top_layers), int(bottom_layers), provider, allocator}
+	bctx := Band_Ctx{model_layers, canon_layer, 1.05 * f64(i64(line_width)), inner, pair, result.top, result.bottom, int(top_layers), int(bottom_layers), provider, allocator}
 	parallel_for(layer_count, &bctx, proc(c: ^Band_Ctx, li: int) {
 		if len(c.inner[li].paths) == 0 {return}
-		object_volume: polygon.Polygon_Set
-		if li > 0 && li + 1 < len(c.model_layers) {
-			object_volume, _ = c.provider.boolean(c.model_layers[li - 1], c.model_layers[li + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
+		my_canon := c.canon_layer[li]
+		top_identical := c.top_layers > 0 && li + c.top_layers < len(c.model_layers)
+		if top_identical {
+			for k in li + 1..=li + c.top_layers {
+				if c.canon_layer[k] != my_canon {top_identical = false; break}
+			}
 		}
-		defer polygon.polygon_set_destroy(&object_volume, c.allocator)
-		top := vertical_shell_band(c.model_layers, c.inner, c.pair, li, li + 1, li + c.top_layers, c.provider, c.allocator)
-		bottom := vertical_shell_band(c.model_layers, c.inner, c.pair, li, li - c.bottom_layers, li - 1, c.provider, c.allocator)
-		c.top[li] = vertical_shell_regularize(top, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
-		c.bottom[li] = vertical_shell_regularize(bottom, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
-		polygon.polygon_set_destroy(&top, c.allocator)
-		polygon.polygon_set_destroy(&bottom, c.allocator)
+		bottom_identical := c.bottom_layers > 0 && li - c.bottom_layers >= 0
+		if bottom_identical {
+			for k in li - c.bottom_layers..<li {
+				if c.canon_layer[k] != my_canon {bottom_identical = false; break}
+			}
+		}
+		if top_identical && bottom_identical {return}
+
+		top: polygon.Polygon_Set
+		if !top_identical {
+			top = vertical_shell_band(c.model_layers, c.inner, c.pair, li, li + 1, li + c.top_layers, c.provider, c.allocator)
+		}
+		bottom: polygon.Polygon_Set
+		if !bottom_identical {
+			bottom = vertical_shell_band(c.model_layers, c.inner, c.pair, li, li - c.bottom_layers, li - 1, c.provider, c.allocator)
+		}
+		defer polygon.polygon_set_destroy(&top, c.allocator)
+		defer polygon.polygon_set_destroy(&bottom, c.allocator)
+		if len(top.paths) == 0 && len(bottom.paths) == 0 {return}
+
+		object_volume: polygon.Polygon_Set
+		object_volume_owned := false
+		if li > 0 && li + 1 < len(c.model_layers) {
+			if c.canon_layer[li - 1] == c.canon_layer[li + 1] {
+				object_volume = c.model_layers[li - 1]
+			} else {
+				object_volume, _ = c.provider.boolean(c.model_layers[li - 1], c.model_layers[li + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
+				object_volume_owned = true
+			}
+		}
+		defer if object_volume_owned {polygon.polygon_set_destroy(&object_volume, c.allocator)}
+		if len(top.paths) > 0 {
+			c.top[li] = vertical_shell_regularize(top, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
+		}
+		if len(bottom.paths) > 0 {
+			c.bottom[li] = vertical_shell_regularize(bottom, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
+		}
 	})
 	return result
 }

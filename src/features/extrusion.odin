@@ -20,13 +20,7 @@ Extrusion_Layer :: struct {
 }
 
 Extrusion_Move :: struct {
-	// Ordered by alignment (16 -> 8 -> 4 -> 1) to eliminate interior padding (208 B -> 176 B).
-	distance_squared_um_2:      u128,
-	length_error_squared_nm_2:  u128,
-	cross_section_numerator:    u128,
-	volume_numerator:           u128,
-	volume_error_numerator:     u128,
-	remainder_numerator_after:  u128,
+	// Hot fields only (80 B, down from 176 B); cold u128 audit fields live in Extrusion_Move_Audit.
 	stable_id:                  contracts.Stable_ID,
 	planned_move_id:            contracts.Stable_ID,
 	path_id:                    contracts.Stable_ID,
@@ -42,6 +36,15 @@ Extrusion_Move :: struct {
 	role:                       profiles.Printable_Role,
 }
 
+Extrusion_Move_Audit :: struct {
+	distance_squared_um_2:      u128,
+	length_error_squared_nm_2:  u128,
+	cross_section_numerator:    u128,
+	volume_numerator:           u128,
+	volume_error_numerator:     u128,
+	remainder_numerator_after:  u128,
+}
+
 Extrusion_Result :: struct {
 	policy:                       profiles.Extrusion_Accumulation_Policy,
 	cross_section_model:          Extrusion_Cross_Section_Model,
@@ -55,6 +58,7 @@ Extrusion_Result :: struct {
 	quantized_length_denominator: u128,
 	layers:                       []Extrusion_Layer,
 	moves:                        []Extrusion_Move,
+	move_audits:                  []Extrusion_Move_Audit,
 	total_volume_numerator:       u128,
 	total_volume_cubic_um:        u64,
 	total_volume_error_numerator: u128,
@@ -86,6 +90,7 @@ extrusion_calculate :: proc(
 	process: profiles.Resolved_Process_Profile,
 	limits := DEFAULT_EXTRUSION_LIMITS,
 	allocator := context.allocator,
+	record_audit := true,
 ) -> (Extrusion_Result, Extrusion_Error) {
 	if process.source.extrusion_accumulation !=
 		.Volume_Then_Fixed_Point_Length ||
@@ -176,19 +181,40 @@ extrusion_calculate :: proc(
 		int(extrude_move_count),
 		allocator,
 	)
+	if record_audit {
+		result.move_audits = features_make_non_zeroed(
+			[]Extrusion_Move_Audit,
+			int(extrude_move_count),
+			allocator,
+		)
+	}
 	if len(result.layers) > 0 && result.layers == nil ||
-	   extrude_move_count > 0 && result.moves == nil {
+	   extrude_move_count > 0 && result.moves == nil ||
+	   record_audit && extrude_move_count > 0 && result.move_audits == nil {
 		extrusion_result_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
 
+	// Compact per-move remainder scratch when cold audit records are omitted.
+	compact_rems: []u128
+	if !record_audit && extrude_move_count > 0 {
+		compact_rems = features_make_non_zeroed([]u128, int(extrude_move_count), allocator)
+		if compact_rems == nil {
+			extrusion_result_destroy(&result, allocator)
+			return {}, .Allocation_Failed
+		}
+	}
+	defer delete(compact_rems, allocator)
+
 	// Compute per-layer extrude move offsets so each layer writes into a disjoint slice in parallel.
 	layer_ext_offsets := make([]int, len(plan.layers), allocator)
 	layer_ext_counts := make([]int, len(plan.layers), allocator)
+	layer_vol_sums := make([]u128, len(plan.layers), allocator)
 	layer_errors := make([]Extrusion_Error, len(plan.layers), allocator)
 	defer {
 		delete(layer_ext_offsets, allocator)
 		delete(layer_ext_counts, allocator)
+		delete(layer_vol_sums, allocator)
 		delete(layer_errors, allocator)
 	}
 	ext_cursor := 0
@@ -227,8 +253,12 @@ extrusion_calculate :: proc(
 		quantized_length_denominator: u128,
 		max_q:                        u128,
 		layer_ext_offsets:            []int,
+		layer_vol_sums:               []u128,
 		layer_errors:                 []Extrusion_Error,
 		out_moves:                    []Extrusion_Move,
+		out_audits:                   []Extrusion_Move_Audit,
+		compact_rems:                 []u128,
+		record_audit:                 bool,
 	}
 	ectx := Ext_Par_Ctx{
 		plan                         = plan,
@@ -238,8 +268,12 @@ extrusion_calculate :: proc(
 		quantized_length_denominator = quantized_length_denominator,
 		max_q                        = max_q,
 		layer_ext_offsets            = layer_ext_offsets,
+		layer_vol_sums               = layer_vol_sums,
 		layer_errors                 = layer_errors,
 		out_moves                    = result.moves,
+		out_audits                   = result.move_audits,
+		compact_rems                 = compact_rems,
+		record_audit                 = record_audit,
 	}
 	parallel_for(len(plan.layers), &ectx, proc(c: ^Ext_Par_Ctx, layer_index: int) {
 		plan_layer := c.plan.layers[layer_index]
@@ -247,6 +281,7 @@ extrusion_calculate :: proc(
 		ms := int(plan_layer.move_offset)
 		me := ms + int(plan_layer.move_count)
 		w := c.layer_ext_offsets[layer_index]
+		vol_sum: u128
 		for planned_move_index in ms..<me {
 			move := c.plan.moves[planned_move_index]
 			if move.kind == .Travel {continue}
@@ -283,10 +318,20 @@ extrusion_calculate :: proc(
 				c.layer_errors[layer_index] = .Arithmetic
 				return
 			}
-			volume_cubic_um, volume_error, volume_round_ok := extrusion_round_ratio_u64(volume_numerator, c.volume_denominator)
-			if !volume_round_ok {
+			if vol_sum > max(u128)-volume_numerator {
 				c.layer_errors[layer_index] = .Arithmetic
 				return
+			}
+			vol_sum += volume_numerator
+			volume_cubic_um: u64
+			volume_error: u128
+			if c.record_audit {
+				volume_round_ok: bool
+				volume_cubic_um, volume_error, volume_round_ok = extrusion_round_ratio_u64(volume_numerator, c.volume_denominator)
+				if !volume_round_ok {
+					c.layer_errors[layer_index] = .Arithmetic
+					return
+				}
 			}
 			base_units := volume_numerator / c.quantized_length_denominator
 			if base_units > c.max_q {
@@ -295,28 +340,35 @@ extrusion_calculate :: proc(
 			}
 			base_rem := volume_numerator % c.quantized_length_denominator
 			c.out_moves[w] = {
-				stable_id                 = contracts.stable_id_child(move.stable_id, .Feature, 0),
-				planned_move_id           = move.stable_id,
-				planned_move_index        = u32(planned_move_index),
-				path_id                   = move.path_id,
-				layer_index               = u32(layer_index),
-				role                      = move.role,
-				flow_ratio                = flow_ratio,
-				layer_height              = height,
-				line_width_a              = move.line_width_a,
-				line_width_b              = move.line_width_b,
-				distance_squared_um_2     = distance_squared,
-				path_length_nm            = path_length_nm,
-				length_error_squared_nm_2 = length_error,
-				cross_section_numerator   = cross_section_numerator,
-				volume_numerator          = volume_numerator,
-				volume_cubic_um           = volume_cubic_um,
-				volume_error_numerator    = volume_error,
-				incremental_filament_nm   = u64(base_units),
-				remainder_numerator_after = base_rem,
+				stable_id               = contracts.stable_id_child(move.stable_id, .Feature, 0),
+				planned_move_id         = move.stable_id,
+				planned_move_index      = u32(planned_move_index),
+				path_id                 = move.path_id,
+				layer_index             = u32(layer_index),
+				role                    = move.role,
+				flow_ratio              = flow_ratio,
+				layer_height            = height,
+				line_width_a            = move.line_width_a,
+				line_width_b            = move.line_width_b,
+				path_length_nm          = path_length_nm,
+				volume_cubic_um         = volume_cubic_um,
+				incremental_filament_nm = u64(base_units),
+			}
+			if c.record_audit {
+				c.out_audits[w] = {
+					distance_squared_um_2     = distance_squared,
+					length_error_squared_nm_2 = length_error,
+					cross_section_numerator   = cross_section_numerator,
+					volume_numerator          = volume_numerator,
+					volume_error_numerator    = volume_error,
+					remainder_numerator_after = base_rem,
+				}
+			} else {
+				c.compact_rems[w] = base_rem
 			}
 			w += 1
 		}
+		c.layer_vol_sums[layer_index] = vol_sum
 	})
 	for err in layer_errors {
 		if err != .None {
@@ -324,36 +376,64 @@ extrusion_calculate :: proc(
 			return {}, err
 		}
 	}
+	for lvs in layer_vol_sums {
+		if result.total_volume_numerator > max(u128)-lvs {
+			extrusion_result_destroy(&result, allocator)
+			return {}, .Arithmetic
+		}
+		result.total_volume_numerator += lvs
+	}
 
 	// Sequential exact remainder carry pass (preserves bit-exact filament quantization without serial u128 div).
 	remainder: u128
-	for &em in result.moves {
-		v_num := em.volume_numerator
-		if remainder > max(u128)-v_num {
-			extrusion_result_destroy(&result, allocator)
-			return {}, .Arithmetic
+	if record_audit {
+		for &em, i in result.moves {
+			audit := &result.move_audits[i]
+			if remainder > max(u128)-audit.volume_numerator {
+				extrusion_result_destroy(&result, allocator)
+				return {}, .Arithmetic
+			}
+			quantized_units := u128(em.incremental_filament_nm)
+			rem_sum := remainder + audit.remainder_numerator_after
+			if rem_sum >= quantized_length_denominator {
+				rem_sum -= quantized_length_denominator
+				quantized_units += 1
+			}
+			if quantized_units > max_q {
+				extrusion_result_destroy(&result, allocator)
+				return {}, .Arithmetic
+			}
+			incremental_filament_nm := quantized_units * quantum
+			remainder = rem_sum
+			if result.total_filament_nm > max(u128)-incremental_filament_nm {
+				extrusion_result_destroy(&result, allocator)
+				return {}, .Arithmetic
+			}
+			result.total_filament_nm += incremental_filament_nm
+			em.incremental_filament_nm = u64(incremental_filament_nm)
+			audit.remainder_numerator_after = remainder
 		}
-		quantized_units := u128(em.incremental_filament_nm)
-		rem_sum := remainder + em.remainder_numerator_after
-		if rem_sum >= quantized_length_denominator {
-			rem_sum -= quantized_length_denominator
-			quantized_units += 1
+	} else {
+		for &em, i in result.moves {
+			quantized_units := u128(em.incremental_filament_nm)
+			rem_sum := remainder + compact_rems[i]
+			if rem_sum >= quantized_length_denominator {
+				rem_sum -= quantized_length_denominator
+				quantized_units += 1
+			}
+			if quantized_units > max_q {
+				extrusion_result_destroy(&result, allocator)
+				return {}, .Arithmetic
+			}
+			incremental_filament_nm := quantized_units * quantum
+			remainder = rem_sum
+			if result.total_filament_nm > max(u128)-incremental_filament_nm {
+				extrusion_result_destroy(&result, allocator)
+				return {}, .Arithmetic
+			}
+			result.total_filament_nm += incremental_filament_nm
+			em.incremental_filament_nm = u64(incremental_filament_nm)
 		}
-		if quantized_units > max_q {
-			extrusion_result_destroy(&result, allocator)
-			return {}, .Arithmetic
-		}
-		incremental_filament_nm := quantized_units * quantum
-		remainder = rem_sum
-		if result.total_volume_numerator > max(u128)-v_num ||
-		   result.total_filament_nm > max(u128)-incremental_filament_nm {
-			extrusion_result_destroy(&result, allocator)
-			return {}, .Arithmetic
-		}
-		result.total_volume_numerator += v_num
-		result.total_filament_nm += incremental_filament_nm
-		em.incremental_filament_nm = u64(incremental_filament_nm)
-		em.remainder_numerator_after = remainder
 	}
 	total_volume, total_volume_error, total_volume_ok :=
 		extrusion_round_ratio_u64(
@@ -545,5 +625,6 @@ extrusion_result_destroy :: proc(
 ) {
 	delete(result.layers, allocator)
 	delete(result.moves, allocator)
+	delete(result.move_audits, allocator)
 	result^ = {}
 }

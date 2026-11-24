@@ -122,13 +122,123 @@ infill_pattern_generate :: proc(
 	per_layer_out := make([][dynamic]Infill_Pattern_Path, layer_count, allocator)
 	defer delete(per_layer_out, allocator)
 
+	// Deduplicate (region_input, exclude[layer]) pairs across layers so the inset offset and
+	// solid-area exclusion Difference run once per unique sparse-infill boundary shape.
+	region_count := len(regions.regions)
+	region_inputs := make([]polygon.Polygon_Set, region_count, allocator)
+	canon_of := make([]int, region_count, allocator)
+	unique_preps := make([dynamic]int, 0, region_count, allocator)
+	prep_boundaries := make([]polygon.Polygon_Set, region_count, allocator)
+	defer {
+		for &inp in region_inputs {polygon.polygon_set_destroy(&inp, allocator)}
+		for &pb in prep_boundaries {polygon.polygon_set_destroy(&pb, allocator)}
+		delete(region_inputs, allocator)
+		delete(canon_of, allocator)
+		delete(unique_preps)
+		delete(prep_boundaries, allocator)
+	}
+	if region_count > 0 {
+		cap_pow2 := 16
+		for cap_pow2 < region_count * 2 {cap_pow2 <<= 1}
+		ht_mask := u64(cap_pow2 - 1)
+		ht := make([]int, cap_pow2, allocator)
+		defer delete(ht, allocator)
+		empty_set: polygon.Polygon_Set
+		for ri in 0..<region_count {
+			canon_of[ri] = -1
+			li := int(regions.regions[ri].layer_index)
+			if config.pattern == .Lightning && !has_lightning[li] {continue}
+			inp, in_err := perimeter_region_input(topology, regions, u32(ri), allocator)
+			if in_err != .None {continue}
+			region_inputs[ri] = inp
+			ex := exclude[li] if li < len(exclude) else empty_set
+			h := features_polygon_set_hash64(inp) ~ (features_polygon_set_hash64(ex) * 0x9e3779b97f4a7c15)
+			slot := h & ht_mask
+			found := -1
+			for {
+				entry := ht[slot]
+				if entry == 0 {break}
+				cand := entry - 1
+				cand_li := int(regions.regions[cand].layer_index)
+				cand_ex := exclude[cand_li] if cand_li < len(exclude) else empty_set
+				if features_polygon_sets_equal(region_inputs[cand], inp) &&
+				   features_polygon_sets_equal(cand_ex, ex) {
+					found = cand
+					break
+				}
+				slot = (slot + 1) & ht_mask
+			}
+			if found >= 0 {
+				canon_of[ri] = found
+			} else {
+				ht[slot] = ri + 1
+				canon_of[ri] = ri
+				append(&unique_preps, ri)
+			}
+		}
+	}
+
+	Infill_Prep_Ctx :: struct {
+		regions:         slicing.Region_Result,
+		region_inputs:   []polygon.Polygon_Set,
+		unique_preps:    []int,
+		exclude:         []polygon.Polygon_Set,
+		provider:        polygon.Polygon_Provider,
+		boundary_inset:  contracts.Micrometres,
+		prep_boundaries: []polygon.Polygon_Set,
+		allocator:       mem.Allocator,
+	}
+	pctx := Infill_Prep_Ctx{
+		regions         = regions,
+		region_inputs   = region_inputs,
+		unique_preps    = unique_preps[:],
+		exclude         = exclude,
+		provider        = provider,
+		boundary_inset  = config.boundary_inset,
+		prep_boundaries = prep_boundaries,
+		allocator       = allocator,
+	}
+	parallel_for(len(unique_preps), &pctx, proc(c: ^Infill_Prep_Ctx, ui: int) {
+		ri := c.unique_preps[ui]
+		li := int(c.regions.regions[ri].layer_index)
+		boundary, off_err := c.provider.offset(
+			c.region_inputs[ri],
+			-c.boundary_inset,
+			.Miter,
+			2.0,
+			0.0,
+			polygon.DEFAULT_POLYGON_LIMITS,
+			c.allocator,
+		)
+		if off_err != .None || len(boundary.paths) == 0 {
+			polygon.polygon_set_destroy(&boundary, c.allocator)
+			return
+		}
+		if li < len(c.exclude) && len(c.exclude[li].paths) > 0 {
+			sparse, diff_err := c.provider.boolean(
+				boundary,
+				c.exclude[li],
+				.Difference,
+				.Non_Zero,
+				polygon.DEFAULT_POLYGON_LIMITS,
+				c.allocator,
+			)
+			polygon.polygon_set_destroy(&boundary, c.allocator)
+			if diff_err != .None || len(sparse.paths) == 0 {
+				polygon.polygon_set_destroy(&sparse, c.allocator)
+				return
+			}
+			boundary = sparse
+		}
+		c.prep_boundaries[ri] = boundary
+	})
+
 	Infill_Worker_Ctx :: struct {
-		topology:        slicing.Topology_Result,
 		regions:         slicing.Region_Result,
 		layer_z:         []contracts.Micrometres,
-		provider:        polygon.Polygon_Provider,
 		config:          Infill_Pattern_Config,
-		exclude:         []polygon.Polygon_Set,
+		canon_of:        []int,
+		prep_boundaries: []polygon.Polygon_Set,
 		lightning_boxes: [][4]i64,
 		has_lightning:   []bool,
 		S:               f64,
@@ -140,12 +250,11 @@ infill_pattern_generate :: proc(
 	}
 
 	wctx := Infill_Worker_Ctx{
-		topology        = topology,
 		regions         = regions,
 		layer_z         = layer_z,
-		provider        = provider,
 		config          = config,
-		exclude         = exclude,
+		canon_of        = canon_of,
+		prep_boundaries = prep_boundaries,
 		lightning_boxes = lightning_boxes,
 		has_lightning   = has_lightning,
 		S               = S,
@@ -169,42 +278,13 @@ infill_pattern_generate :: proc(
 			reg_start := int(layer.region_offset)
 			reg_end := reg_start + int(layer.region_count)
 			for ri in reg_start..<reg_end {
-				input, in_err := perimeter_region_input(c.topology, c.regions, u32(ri), c.out_allocator)
-				if in_err != .None {continue}
-				boundary, off_err := c.provider.offset(
-					input,
-					-c.config.boundary_inset,
-					.Miter,
-					2.0,
-					0.0,
-					polygon.DEFAULT_POLYGON_LIMITS,
-					c.out_allocator,
-				)
-				polygon.polygon_set_destroy(&input, c.out_allocator)
-				if off_err != .None || len(boundary.paths) == 0 {
-					polygon.polygon_set_destroy(&boundary, c.out_allocator)
-					continue
-				}
-				if li < len(c.exclude) && len(c.exclude[li].paths) > 0 {
-					sparse, diff_err := c.provider.boolean(
-						boundary,
-						c.exclude[li],
-						.Difference,
-						.Non_Zero,
-						polygon.DEFAULT_POLYGON_LIMITS,
-						c.out_allocator,
-					)
-					polygon.polygon_set_destroy(&boundary, c.out_allocator)
-					if diff_err != .None || len(sparse.paths) == 0 {
-						polygon.polygon_set_destroy(&sparse, c.out_allocator)
-						continue
-					}
-					boundary = sparse
-				}
+				src := c.canon_of[ri]
+				if src < 0 {continue}
+				boundary := c.prep_boundaries[src]
+				if len(boundary.paths) == 0 {continue}
 
 				min_x, min_y, max_x, max_y := infill_pat_bounds(boundary)
 				if max_x <= min_x || max_y <= min_y {
-					polygon.polygon_set_destroy(&boundary, c.out_allocator)
 					continue
 				}
 
@@ -243,7 +323,6 @@ infill_pattern_generate :: proc(
 					}
 				}
 				infill_pat_connect(&local_out, region_start, boundary, min(3.0 * c.S, INFILL_CONNECT_MAX_UM), c.lw, c.out_allocator)
-				polygon.polygon_set_destroy(&boundary, c.out_allocator)
 			}
 			c.per_layer_out[li] = local_out
 		}

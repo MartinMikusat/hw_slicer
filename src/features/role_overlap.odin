@@ -234,8 +234,10 @@ role_overlap_resolve :: proc(
 			for cur < rng.end && c.orders[cur].priority == priority {
 				cur += 1
 			}
+			has_more_priorities := cur < rng.end
+			need_priority_cov := (cur - priority_start > 1) || has_more_priorities
 			priority_coverage: polygon.Polygon_Set
-			for order in c.orders[priority_start:cur] {
+			for order, group_pos in c.orders[priority_start:cur] {
 				source := c.sources[order.source_index]
 				output: polygon.Polygon_Set
 				if len(occupied.paths) == 0 {
@@ -260,18 +262,6 @@ role_overlap_resolve :: proc(
 						polygon.polygon_set_destroy(&priority_coverage, c.allocator)
 						c.layer_errors[layer_index] = .Provider
 						return
-					}
-				}
-				output_area: i128
-				if len(output.paths) > 0 {
-					output_area_ok: bool
-					output_area, output_area_ok = role_overlap_area_2(output)
-					if !output_area_ok {
-						polygon.polygon_set_destroy(&output, c.allocator)
-						output = {}
-						output_area = 0
-					} else if output_area > c.source_areas[order.source_index] {
-						output_area = c.source_areas[order.source_index]
 					}
 				}
 				if len(priority_coverage.paths) > 0 && len(output.paths) > 0 {
@@ -307,19 +297,18 @@ role_overlap_resolve :: proc(
 							return
 						}
 						output = trimmed
-						if len(output.paths) > 0 {
-							area_ok: bool
-							output_area, area_ok = role_overlap_area_2(output)
-							if !area_ok {
-								polygon.polygon_set_destroy(&output, c.allocator)
-								output = {}
-								output_area = 0
-							} else if output_area > c.source_areas[order.source_index] {
-								output_area = c.source_areas[order.source_index]
-							}
-						} else {
-							output_area = 0
-						}
+					}
+				}
+				output_area: i128
+				if len(output.paths) > 0 {
+					output_area_ok: bool
+					output_area, output_area_ok = role_overlap_area_2(output)
+					if !output_area_ok {
+						polygon.polygon_set_destroy(&output, c.allocator)
+						output = {}
+						output_area = 0
+					} else if output_area > c.source_areas[order.source_index] {
+						output_area = c.source_areas[order.source_index]
 					}
 				}
 				if len(output.paths) == 0 {
@@ -329,15 +318,32 @@ role_overlap_resolve :: proc(
 				}
 				c.outputs[order.source_index] = output
 				c.output_areas[order.source_index] = output_area
-				contribution, clone_ok := skin_polygon_clone(output, c.allocator)
-				if !clone_ok {
-					polygon.polygon_set_destroy(&priority_coverage, c.allocator)
-					c.layer_errors[layer_index] = .Allocation_Failed
-					return
+				if need_priority_cov && (group_pos + 1 < cur - priority_start || has_more_priorities) {
+					contribution, clone_ok := skin_polygon_clone(output, c.allocator)
+					if !clone_ok {
+						polygon.polygon_set_destroy(&priority_coverage, c.allocator)
+						c.layer_errors[layer_index] = .Allocation_Failed
+						return
+					}
+					accumulate_error := skin_polygon_accumulate(
+						&priority_coverage,
+						&contribution,
+						c.provider,
+						c.fill_rule,
+						c.limits.polygon,
+						c.allocator,
+					)
+					if accumulate_error != .None {
+						polygon.polygon_set_destroy(&priority_coverage, c.allocator)
+						c.layer_errors[layer_index] = role_overlap_skin_error(accumulate_error)
+						return
+					}
 				}
+			}
+			if has_more_priorities {
 				accumulate_error := skin_polygon_accumulate(
+					&occupied,
 					&priority_coverage,
-					&contribution,
 					c.provider,
 					c.fill_rule,
 					c.limits.polygon,
@@ -348,19 +354,8 @@ role_overlap_resolve :: proc(
 					c.layer_errors[layer_index] = role_overlap_skin_error(accumulate_error)
 					return
 				}
-			}
-			accumulate_error := skin_polygon_accumulate(
-				&occupied,
-				&priority_coverage,
-				c.provider,
-				c.fill_rule,
-				c.limits.polygon,
-				c.allocator,
-			)
-			if accumulate_error != .None {
+			} else {
 				polygon.polygon_set_destroy(&priority_coverage, c.allocator)
-				c.layer_errors[layer_index] = role_overlap_skin_error(accumulate_error)
-				return
 			}
 		}
 	})

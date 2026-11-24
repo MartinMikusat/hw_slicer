@@ -1,8 +1,34 @@
 package features
 
 import "core:mem"
+import "core:slice"
 
+import polygon "../polygon"
 import workers "../workers"
+
+@(private)
+features_polygon_sets_equal :: #force_inline proc(a, b: polygon.Polygon_Set) -> bool {
+	return len(a.paths) == len(b.paths) &&
+	       len(a.points) == len(b.points) &&
+	       slice.equal(a.paths, b.paths) &&
+	       slice.equal(a.points, b.points)
+}
+
+@(private)
+features_polygon_set_hash64 :: proc(set: polygon.Polygon_Set) -> u64 {
+	h := u64(14695981039346656037)
+	h = (h ~ u64(len(set.paths))) * 1099511628211
+	h = (h ~ u64(len(set.points))) * 1099511628211
+	for p in set.paths {
+		h = (h ~ p.offset) * 1099511628211
+		h = (h ~ p.count) * 1099511628211
+	}
+	for pt in set.points {
+		h = (h ~ u64(i64(pt.x))) * 1099511628211
+		h = (h ~ u64(i64(pt.y))) * 1099511628211
+	}
+	return h
+}
 
 // Allocates a slice without zero-initializing its backing memory. Only use when every element
 // (and every field within it) is unconditionally written before being read.

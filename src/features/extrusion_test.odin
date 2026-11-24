@@ -32,10 +32,11 @@ extrusion_accumulates_rounded_bead_volume_and_filament_test :: proc(
 	testing.expect_value(t, result.length_quantum_nm, u32(10))
 	testing.expect_value(t, len(result.moves), 2)
 	testing.expect_value(t, result.layers[0].move_count, u32(2))
-	for move in result.moves {
+	for move, mi in result.moves {
+		audit := result.move_audits[mi]
 		testing.expect_value(t, move.path_length_nm, u64(10_000_000))
-		testing.expect_value(t, move.distance_squared_um_2, u128(100_000_000))
-		testing.expect_value(t, move.length_error_squared_nm_2, u128(0))
+		testing.expect_value(t, audit.distance_squared_um_2, u128(100_000_000))
+		testing.expect_value(t, audit.length_error_squared_nm_2, u128(0))
 		testing.expect_value(t, move.layer_height, contracts.Micrometres(200))
 		testing.expect_value(t, move.line_width_a, contracts.Micrometres(400))
 		testing.expect_value(t, move.line_width_b, contracts.Micrometres(400))
@@ -47,8 +48,8 @@ extrusion_accumulates_rounded_bead_volume_and_filament_test :: proc(
 			u64(0),
 		)
 	}
-	sum_numerator := result.moves[0].volume_numerator+
-		result.moves[1].volume_numerator
+	sum_numerator := result.move_audits[0].volume_numerator+
+		result.move_audits[1].volume_numerator
 	testing.expect_value(t, result.total_volume_numerator, sum_numerator)
 	testing.expect_value(
 		t,

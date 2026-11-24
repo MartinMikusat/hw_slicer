@@ -193,7 +193,8 @@ extrusion_artifact_encode :: proc(
 		extrusion_artifact_put_u32(bytes, offset+8, layer.move_count)
 		offset += int(EXTRUSION_ARTIFACT_LAYER_SIZE)
 	}
-	for move in result.moves {
+	for move, move_index in result.moves {
+		audit := result.move_audits[move_index]
 		extrusion_artifact_put_u64(
 			bytes,
 			offset,
@@ -243,7 +244,7 @@ extrusion_artifact_encode :: proc(
 		extrusion_artifact_put_u128(
 			bytes,
 			offset+72,
-			move.distance_squared_um_2,
+			audit.distance_squared_um_2,
 		)
 		extrusion_artifact_put_u64(
 			bytes,
@@ -253,17 +254,17 @@ extrusion_artifact_encode :: proc(
 		extrusion_artifact_put_u128(
 			bytes,
 			offset+96,
-			move.length_error_squared_nm_2,
+			audit.length_error_squared_nm_2,
 		)
 		extrusion_artifact_put_u128(
 			bytes,
 			offset+112,
-			move.cross_section_numerator,
+			audit.cross_section_numerator,
 		)
 		extrusion_artifact_put_u128(
 			bytes,
 			offset+128,
-			move.volume_numerator,
+			audit.volume_numerator,
 		)
 		extrusion_artifact_put_u64(
 			bytes,
@@ -273,7 +274,7 @@ extrusion_artifact_encode :: proc(
 		extrusion_artifact_put_u128(
 			bytes,
 			offset+152,
-			move.volume_error_numerator,
+			audit.volume_error_numerator,
 		)
 		extrusion_artifact_put_u64(
 			bytes,
@@ -283,7 +284,7 @@ extrusion_artifact_encode :: proc(
 		extrusion_artifact_put_u128(
 			bytes,
 			offset+176,
-			move.remainder_numerator_after,
+			audit.remainder_numerator_after,
 		)
 		offset += int(EXTRUSION_ARTIFACT_MOVE_SIZE)
 	}
@@ -360,8 +361,13 @@ extrusion_artifact_decode :: proc(
 		int(summary.move_count),
 		allocator,
 	)
+	result.move_audits = make(
+		[]Extrusion_Move_Audit,
+		int(summary.move_count),
+		allocator,
+	)
 	if summary.layer_count > 0 && result.layers == nil ||
-	   summary.move_count > 0 && result.moves == nil {
+	   summary.move_count > 0 && (result.moves == nil || result.move_audits == nil) {
 		extrusion_artifact_destroy(&artifact, allocator)
 		return {}, .Allocation_Failed
 	}
@@ -375,7 +381,8 @@ extrusion_artifact_decode :: proc(
 		layer.move_count = extrusion_artifact_get_u32(bytes, offset+8)
 		offset += int(EXTRUSION_ARTIFACT_LAYER_SIZE)
 	}
-	for &move in result.moves {
+	for &move, move_index in result.moves {
+		audit := &result.move_audits[move_index]
 		if !extrusion_artifact_bytes_zero(bytes, offset+33, offset+40) ||
 		   !extrusion_artifact_bytes_zero(bytes, offset+44, offset+48) {
 			extrusion_artifact_destroy(&artifact, allocator)
@@ -408,23 +415,23 @@ extrusion_artifact_decode :: proc(
 		move.line_width_b = contracts.Micrometres(
 			extrusion_artifact_get_i64(bytes, offset+64),
 		)
-		move.distance_squared_um_2 =
+		audit.distance_squared_um_2 =
 			extrusion_artifact_get_u128(bytes, offset+72)
 		move.path_length_nm =
 			extrusion_artifact_get_u64(bytes, offset+88)
-		move.length_error_squared_nm_2 =
+		audit.length_error_squared_nm_2 =
 			extrusion_artifact_get_u128(bytes, offset+96)
-		move.cross_section_numerator =
+		audit.cross_section_numerator =
 			extrusion_artifact_get_u128(bytes, offset+112)
-		move.volume_numerator =
+		audit.volume_numerator =
 			extrusion_artifact_get_u128(bytes, offset+128)
 		move.volume_cubic_um =
 			extrusion_artifact_get_u64(bytes, offset+144)
-		move.volume_error_numerator =
+		audit.volume_error_numerator =
 			extrusion_artifact_get_u128(bytes, offset+152)
 		move.incremental_filament_nm =
 			extrusion_artifact_get_u64(bytes, offset+168)
-		move.remainder_numerator_after =
+		audit.remainder_numerator_after =
 			extrusion_artifact_get_u128(bytes, offset+176)
 		offset += int(EXTRUSION_ARTIFACT_MOVE_SIZE)
 	}

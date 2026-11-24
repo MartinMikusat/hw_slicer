@@ -151,9 +151,61 @@ perimeters_generate :: proc(
 		delete(temporary_outputs, allocator)
 	}
 
+	// Deduplicate regions with identical 2D contours and inset settings (common on prismatic CAD
+	// vertical walls) so offsetting runs once per unique region shape.
+	region_count := len(regions.regions)
+	region_inputs := make([]polygon.Polygon_Set, region_count, allocator)
+	canon_of := make([]int, region_count, allocator)
+	unique_regions := make([dynamic]int, 0, region_count, allocator)
+	defer {
+		for &inp in region_inputs {polygon.polygon_set_destroy(&inp, allocator)}
+		delete(region_inputs, allocator)
+		delete(canon_of, allocator)
+		delete(unique_regions)
+	}
+	if region_count > 0 {
+		has_l0_inset := i64(config.first_layer_inset_um) > 0
+		cap_pow2 := 16
+		for cap_pow2 < region_count * 2 {cap_pow2 <<= 1}
+		ht_mask := u64(cap_pow2 - 1)
+		ht := make([]int, cap_pow2, allocator)
+		defer delete(ht, allocator)
+		for r_idx in 0..<region_count {
+			inp, inp_err := perimeter_region_input(topology, regions, u32(r_idx), allocator)
+			if inp_err != .None {
+				perimeter_result_destroy(&result, allocator)
+				return {}, inp_err
+			}
+			region_inputs[r_idx] = inp
+			is_l0 := has_l0_inset && regions.regions[r_idx].layer_index == 0
+			h := features_polygon_set_hash64(inp) ~ (u64(0x9e3779b97f4a7c15) if is_l0 else 0)
+			slot := h & ht_mask
+			found := -1
+			for {
+				entry := ht[slot]
+				if entry == 0 {break}
+				cand := entry - 1
+				cand_l0 := has_l0_inset && regions.regions[cand].layer_index == 0
+				if cand_l0 == is_l0 && features_polygon_sets_equal(region_inputs[cand], inp) {
+					found = cand
+					break
+				}
+				slot = (slot + 1) & ht_mask
+			}
+			if found >= 0 {
+				canon_of[r_idx] = found
+			} else {
+				ht[slot] = r_idx + 1
+				canon_of[r_idx] = r_idx
+				append(&unique_regions, r_idx)
+			}
+		}
+	}
+
 	Perim_Par_Ctx :: struct {
-		topology:          slicing.Topology_Result,
 		regions:           slicing.Region_Result,
+		region_inputs:     []polygon.Polygon_Set,
+		unique_regions:    []int,
 		provider:          polygon.Polygon_Provider,
 		config:            Perimeter_Config,
 		limits:            Perimeter_Limits,
@@ -161,11 +213,12 @@ perimeters_generate :: proc(
 		region_errors:     []Perimeter_Error,
 		allocator:         mem.Allocator,
 	}
-	region_errors := make([]Perimeter_Error, len(regions.regions), allocator)
+	region_errors := make([]Perimeter_Error, region_count, allocator)
 	defer delete(region_errors, allocator)
 	pctx := Perim_Par_Ctx{
-		topology          = topology,
 		regions           = regions,
+		region_inputs     = region_inputs,
+		unique_regions    = unique_regions[:],
 		provider          = provider,
 		config            = config,
 		limits            = limits,
@@ -173,19 +226,10 @@ perimeters_generate :: proc(
 		region_errors     = region_errors,
 		allocator         = allocator,
 	}
-	parallel_for(len(regions.regions), &pctx, proc(c: ^Perim_Par_Ctx, region_index: int) {
+	parallel_for(len(unique_regions), &pctx, proc(c: ^Perim_Par_Ctx, ui: int) {
+		region_index := c.unique_regions[ui]
 		region := c.regions.regions[region_index]
-		input, input_error := perimeter_region_input(
-			c.topology,
-			c.regions,
-			u32(region_index),
-			c.allocator,
-		)
-		if input_error != .None {
-			c.region_errors[region_index] = input_error
-			return
-		}
-		defer polygon.polygon_set_destroy(&input, c.allocator)
+		input := c.region_inputs[region_index]
 		base_slot := region_index * int(c.config.count)
 		for perimeter_index in 0..<c.config.count {
 			base_delta, delta_ok := perimeter_delta(c.config, perimeter_index)
@@ -235,13 +279,14 @@ perimeters_generate :: proc(
 	total_points: u64
 	group_write := 0
 	for region, region_index in regions.regions {
-		if region_errors[region_index] != .None {
+		src_region := canon_of[region_index]
+		if region_errors[src_region] != .None {
 			perimeter_result_destroy(&result, allocator)
-			return {}, region_errors[region_index]
+			return {}, region_errors[src_region]
 		}
 		for perimeter_index in 0..<config.count {
 			base_delta, _ := perimeter_delta(config, perimeter_index)
-			output := temporary_outputs[group_write]
+			output := temporary_outputs[src_region * int(config.count) + int(perimeter_index)]
 			if total_paths > limits.max_paths ||
 			   u64(len(output.paths)) >
 			   	limits.max_paths-total_paths {
@@ -293,7 +338,8 @@ perimeters_generate :: proc(
 	path_write := 0
 	point_write := 0
 	for group, group_index in result.groups {
-		output := temporary_outputs[group_index]
+		src_slot := canon_of[int(group.region_index)] * int(config.count) + int(group.perimeter_index)
+		output := temporary_outputs[src_slot]
 		for output_path, output_path_index in output.paths {
 			if output_path.count > u64(max(u32)) {
 				perimeter_result_destroy(&result, allocator)
