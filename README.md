@@ -341,6 +341,26 @@ build/release/hw-slicer-cli \
   --evidence-bundle=build/benchy.hwsdebug
 ```
 
+Compare feature-enabled builds with the end-to-end slicing benchmark. Save a
+baseline CLI before changing the slicer. The benchmark rebuilds the candidate.
+
+```sh
+./build.sh cli-release
+cp build/release/hw-slicer-cli build/baseline-cli
+```
+
+After making changes, compare both builds on Benchy.
+
+```sh
+./slice-benchmark.sh --suite=core --model=benchy.stl --scenario=ironing \
+  --ab=build/baseline-cli --runs=5 --out-json=build/ironing-ab.json
+```
+
+Repeat `--scenario` to select presets, or use `--scenarios` for the full set
+shared with the OrcaSlicer comparison. Repeat `--hw-set=KEY=VALUE` to override
+settings on both builds. With `--compare-orca`, the runner applies the matching
+OrcaSlicer preset. Use `--orca-set=KEY=VALUE` to override its settings separately.
+
 Run the validated G1 vertical-spine benchmark:
 
 ```sh

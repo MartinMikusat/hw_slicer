@@ -1,83 +1,81 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# End-to-end slicing benchmark runner for hw_slicer, with optional head-to-head OrcaSlicer CLI
-# comparison using matched machine, filament, and process settings.
-#
-# Usage:
-#   ./slice-benchmark.sh [--suite=all|core|voron2.4] [--runs=1] [--threads=0] \
-#                        [--compare-orca] [--out-json=PATH] [--out-md=PATH] \
-#                        [--save-baseline=DIR] [--verify-determinism] [--stage-diff=DIR] \
-#                        [--ab=BASELINE_CLI]
-
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-SUITE="all"
-RUNS=1
-THREADS=""
-COMPARE_ORCA=0
-OUT_JSON=""
-OUT_MD=""
-SAVE_BASELINE=""
-VERIFY_DET=0
-STAGE_DIFF=""
-AB_BASE=""
-
-for arg in "$@"; do
-  case "$arg" in
-    --suite=*) SUITE="${arg#--suite=}" ;;
-    --runs=*) RUNS="${arg#--runs=}" ;;
-    --threads=*) THREADS="${arg#--threads=}" ;;
-    --compare-orca) COMPARE_ORCA=1 ;;
-    --out-json=*) OUT_JSON="${arg#--out-json=}" ;;
-    --out-md=*) OUT_MD="${arg#--out-md=}" ;;
-    --save-baseline=*) SAVE_BASELINE="${arg#--save-baseline=}" ;;
-    --verify-determinism) VERIFY_DET=1 ;;
-    --verify-determinism=*) VERIFY_DET=1; STAGE_DIFF="${STAGE_DIFF:-${arg#--verify-determinism=}}" ;;
-    --stage-diff=*) STAGE_DIFF="${arg#--stage-diff=}" ;;
-    --ab=*) AB_BASE="${arg#--ab=}" ;;
-    -h|--help)
-      echo "Usage: $0 [--suite=all|core|voron2.4] [--runs=N] [--threads=N] [--compare-orca] [--out-json=PATH] [--out-md=PATH] [--save-baseline=DIR] [--verify-determinism[=DIR]] [--stage-diff=DIR] [--ab=BASELINE_CLI]"
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $arg" >&2
-      exit 2
-      ;;
-  esac
-done
-
-if [ -n "$AB_BASE" ] && [ ! -x "$AB_BASE" ]; then
-  echo "[slice-benchmark] baseline CLI binary not found or not executable: $AB_BASE" >&2
-  exit 1
-fi
-
-./build.sh cli-release >&2
-CLI="$ROOT/build/release/hw-slicer-cli"
-ORCA_BIN="/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer"
-
-if [ "$COMPARE_ORCA" = "1" ] && [ ! -x "$ORCA_BIN" ]; then
-  echo "[slice-benchmark] OrcaSlicer binary not found at $ORCA_BIN" >&2
-  exit 1
-fi
-
-python3 - "$ROOT" "$CLI" "$ORCA_BIN" "$SUITE" "$RUNS" "$THREADS" "$COMPARE_ORCA" "$OUT_JSON" "$OUT_MD" "$SAVE_BASELINE" "$VERIFY_DET" "$STAGE_DIFF" "$AB_BASE" <<'PY'
+python3 -B - "$@" <<'PY'
+import argparse
 import hashlib, importlib.util, json, math, os, re, statistics, subprocess, sys, tempfile, time
 
-root, cli, orca_bin, suite, runs_s, threads, cmp_orca_s, out_json, out_md, save_baseline, verify_det_s, stage_diff, ab_base = sys.argv[1:14]
-runs = max(1, int(runs_s))
-compare_orca = cmp_orca_s == "1"
-verify_det = verify_det_s == "1"
-want_stages = bool(save_baseline or stage_diff or ab_base)
+root = os.getcwd()
+cli = os.path.join(root, "build/release/hw-slicer-cli")
+spec = importlib.util.spec_from_file_location("orca_compare", os.path.join(root, "scripts", "orca-compare.py"))
+orca_cmp_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(orca_cmp_mod)
+orca_bin = orca_cmp_mod.ORCA_BIN
+scenarios = orca_cmp_mod.SCENARIOS
 
-orca_cmp_mod = None
-if compare_orca:
-    _cmp_path = os.path.join(root, "scripts", "orca-compare.py")
-    if os.path.exists(_cmp_path):
-        _spec = importlib.util.spec_from_file_location("orca_compare", _cmp_path)
-        orca_cmp_mod = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(orca_cmp_mod)
+def key_value(value):
+    key, separator, _ = value.partition("=")
+    if not separator or not key:
+        raise argparse.ArgumentTypeError("expected KEY=VALUE")
+    return value
+
+parser = argparse.ArgumentParser(
+    prog="./slice-benchmark.sh",
+    description="Measure end-to-end slicing with optional baseline and OrcaSlicer comparisons.",
+    allow_abbrev=False,
+)
+parser.add_argument("--suite", choices=("all", "core", "voron2.4"), default="all")
+parser.add_argument("--model", action="append", default=[], help="Select a model by its name in the suite. Repeat to select more.")
+parser.add_argument("--runs", type=int, default=1)
+parser.add_argument("--threads", default="")
+parser.add_argument("--scenario", action="append", default=[], choices=[*scenarios, "all"], help="Run each selected model with this preset. Repeat to select more.")
+parser.add_argument("--scenarios", action="store_true", help="Run all feature presets.")
+parser.add_argument("--hw-set", action="append", default=[], type=key_value, metavar="KEY=VALUE", help="Override a process setting on both hw_slicer builds. Repeat to set more.")
+parser.add_argument("--orca-set", action="append", default=[], type=key_value, metavar="KEY=VALUE", help="Override an OrcaSlicer process setting. Repeat to set more.")
+parser.add_argument("--compare-orca", action="store_true")
+parser.add_argument("--out-json", default="", metavar="PATH")
+parser.add_argument("--out-md", default="", metavar="PATH")
+parser.add_argument("--save-baseline", default="", metavar="DIR")
+parser.add_argument("--verify-determinism", nargs="?", const="", metavar="BASELINE")
+parser.add_argument("--stage-diff", default="", metavar="BASELINE")
+parser.add_argument("--ab", default="", metavar="BASELINE_CLI", help="Alternate the candidate with a saved CLI binary.")
+args = parser.parse_args()
+suite = args.suite
+runs = max(1, args.runs)
+threads = args.threads
+compare_orca = args.compare_orca
+out_json, out_md = args.out_json, args.out_md
+save_baseline = args.save_baseline
+verify_det = args.verify_determinism is not None
+stage_diff = args.stage_diff or args.verify_determinism or ""
+ab_base = args.ab
+want_stages = bool(save_baseline or stage_diff or ab_base)
+if args.scenarios or "all" in args.scenario:
+    scenario_names = list(scenarios)
+else:
+    scenario_names = list(dict.fromkeys(args.scenario)) or ["default"]
+hw_overrides = {
+    name: [*scenarios[name]["hw_set"], *args.hw_set]
+    for name in scenario_names
+}
+orca_extra = dict(setting.split("=", 1) for setting in args.orca_set)
+orca_overrides = {
+    name: {**scenarios[name]["orca_set"], **orca_extra}
+    for name in scenario_names
+}
+if args.orca_set and not compare_orca:
+    parser.error("--orca-set requires --compare-orca")
+if ab_base:
+    if not (os.path.isfile(ab_base) and os.access(ab_base, os.X_OK)):
+        parser.error(f"baseline CLI binary not found or not executable: {ab_base}")
+    if os.path.isfile(cli) and os.path.samefile(ab_base, cli):
+        parser.error("--ab requires a saved CLI binary outside the candidate build path")
+    ab_base = os.path.abspath(ab_base)
+if compare_orca and not os.access(orca_bin, os.X_OK):
+    parser.error(f"OrcaSlicer binary not found or not executable: {orca_bin}")
 
 def sha256_file(path):
     h = hashlib.sha256()
@@ -85,6 +83,15 @@ def sha256_file(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+def baseline_key(record):
+    return (
+        record["name"],
+        record["material"],
+        record["process"],
+        record.get("scenario", "default"),
+        tuple(record.get("hw_set", [])),
+    )
 
 baseline_data = {}
 if stage_diff:
@@ -94,7 +101,7 @@ if stage_diff:
         sys.exit(1)
     with open(bp) as f:
         raw_base = json.load(f)
-    baseline_data = {r["name"]: r for r in raw_base.get("results", [])}
+    baseline_data = {baseline_key(r): r for r in raw_base.get("results", [])}
 
 HIGH_STRESS_PREFIXES = (
     "xy_topbrace_",
@@ -137,9 +144,28 @@ if suite in ("all", "voron2.4"):
             "process": proc,
         })
 
+if args.model:
+    unknown_models = set(args.model) - {case["name"] for case in cases}
+    if unknown_models:
+        parser.error(f"unknown model in suite {suite}: {', '.join(sorted(unknown_models))}")
+    cases = [case for case in cases if case["name"] in args.model]
 if not cases:
-    print(f"[slice-benchmark] no models matched suite={suite}", file=sys.stderr)
-    sys.exit(1)
+    parser.error(f"no models matched suite={suite}")
+
+model_count = len(cases)
+cases = [
+    {**model, "scenario": scenario, "hw_set": hw_overrides[scenario]}
+    for scenario in scenario_names
+    for model in cases
+]
+
+def case_label(record):
+    name, scenario = record["name"], record["scenario"]
+    return f"{name} [{scenario}]" if scenario != "default" or len(scenario_names) > 1 else name
+
+build = subprocess.run(["./build.sh", "cli-release"], stdout=sys.stderr)
+if build.returncode:
+    sys.exit(build.returncode)
 
 def write_orca_profiles(tmpdir):
     machine = {
@@ -233,9 +259,6 @@ def write_orca_profiles(tmpdir):
     paths = {}
     for key, obj in [
         ("machine", machine),
-        ("0.20-standard", make_proc("0.20-standard", "0.42", 3, 4, "0.8", 15)),
-        ("voron-2.4-standard", make_proc("voron-2.4-standard", "0.4", 4, 5, "1.0", 40)),
-        ("voron-2.4-high-stress", make_proc("voron-2.4-high-stress", "0.4", 5, 8, "1.6", 50)),
         ("pla", fil_pla),
         ("abs", fil_abs),
     ]:
@@ -243,6 +266,17 @@ def write_orca_profiles(tmpdir):
         with open(p, "w") as f:
             json.dump(obj, f)
         paths[key] = p
+    processes = {
+        "0.20-standard": make_proc("0.20-standard", "0.42", 3, 4, "0.8", 15),
+        "voron-2.4-standard": make_proc("voron-2.4-standard", "0.4", 4, 5, "1.0", 40),
+        "voron-2.4-high-stress": make_proc("voron-2.4-high-stress", "0.4", 5, 8, "1.6", 50),
+    }
+    for process_name, scenario in dict.fromkeys((case["process"], case["scenario"]) for case in cases):
+        process = {**processes[process_name], **orca_overrides[scenario]}
+        path = os.path.join(tmpdir, f"orca_{process_name}_{scenario}.json")
+        with open(path, "w") as f:
+            json.dump(process, f)
+        paths[process_name, scenario] = path
     return paths
 
 results = []
@@ -272,14 +306,16 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
     orca_profiles = write_orca_profiles(tmpdir) if compare_orca else {}
 
     for idx, c in enumerate(cases, 1):
-        cmd = [
-            cli,
+        label = case_label(c)
+        scenario = c["scenario"]
+        slice_args = [
             f"--input={c['path']}",
             f"--printer={c['printer']}",
             f"--material={c['material']}",
             f"--process={c['process']}",
-            f"--out={out_gcode}",
+            *(f"--set={setting}" for setting in c["hw_set"]),
         ]
+        cmd = [cli, *slice_args, f"--out={out_gcode}"]
         if want_stages:
             cmd.append(f"--trace-json={trace_json}")
         if threads:
@@ -289,10 +325,7 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
         if ab_base:
             ab_base_cmd = [
                 ab_base,
-                f"--input={c['path']}",
-                f"--printer={c['printer']}",
-                f"--material={c['material']}",
-                f"--process={c['process']}",
+                *slice_args,
                 f"--out={ab_base_gcode}",
                 f"--trace-json={ab_base_trace}",
             ]
@@ -362,30 +395,22 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
         det_status = None
         if ok and verify_det:
             det_ok = True
-            for label, extra_flag in (("threads=1", "--threads=1"), ("no-gpu", "--no-gpu")):
-                dcmd = [
-                    cli,
-                    f"--input={c['path']}",
-                    f"--printer={c['printer']}",
-                    f"--material={c['material']}",
-                    f"--process={c['process']}",
-                    extra_flag,
-                    f"--out={det_gcode}",
-                ]
+            for variant, extra_flag in (("threads=1", "--threads=1"), ("no-gpu", "--no-gpu")):
+                dcmd = [cli, *slice_args, extra_flag, f"--out={det_gcode}"]
                 dp = subprocess.run(dcmd, capture_output=True, text=True)
                 if dp.returncode != 0:
                     ok = False
                     det_ok = False
-                    err_text = f"determinism {label} failed (exit {dp.returncode})"
+                    err_text = f"determinism {variant} failed (exit {dp.returncode})"
                     break
                 dsha = sha256_file(det_gcode)
                 if dsha != gcode_sha:
                     ok = False
                     det_ok = False
-                    err_text = f"determinism mismatch ({label}: {dsha[:12]} != {gcode_sha[:12]})"
+                    err_text = f"determinism mismatch ({variant}: {dsha[:12]} != {gcode_sha[:12]})"
                     break
-            if det_ok and c["name"] in baseline_data and baseline_data[c["name"]].get("gcode_sha256"):
-                bsha = baseline_data[c["name"]]["gcode_sha256"]
+            bsha = baseline_data.get(baseline_key(c), {}).get("gcode_sha256")
+            if det_ok and bsha:
                 if gcode_sha != bsha:
                     ok = False
                     det_ok = False
@@ -399,6 +424,8 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
         rec = {
             "suite": c["suite"],
             "name": c["name"],
+            "scenario": scenario,
+            "hw_set": c["hw_set"],
             "material": c["material"],
             "process": c["process"],
             "ok": ok,
@@ -462,11 +489,13 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
             suite_counts[c["suite"]] = suite_counts.get(c["suite"], 0) + 1
 
         if compare_orca:
+            rec["orca_set"] = orca_overrides[scenario]
+            orca_process = orca_profiles[c["process"], scenario]
             orca_cmd = [
                 orca_bin,
                 "--slice", "0",
                 "--arrange", "1",
-                "--load-settings", f"{orca_profiles['machine']};{orca_profiles[c['process']]}",
+                "--load-settings", f"{orca_profiles['machine']};{orca_process}",
                 "--load-filaments", orca_profiles[c["material"]],
                 "--outputdir", orca_out_dir,
                 c["path"],
@@ -500,13 +529,14 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
                     ratios.append(ratio)
                     if ratio >= 1.0:
                         hw_faster_count += 1
-                if ok and orca_cmp_mod is not None and os.path.exists(out_gcode):
+                if ok and os.path.exists(out_gcode):
                     gfiles = sorted(f for f in os.listdir(orca_out_dir) if f.endswith(".gcode"))
                     if gfiles:
                         hw_g = orca_cmp_mod.parse_gcode(out_gcode)
                         or_g = orca_cmp_mod.parse_gcode(os.path.join(orca_out_dir, gfiles[0]))
                         rec["orca_compare"] = orca_cmp_mod.compare_parsed(
-                            hw_g, or_g, orca_cmp_mod.parse_hw_time_seconds(best_stdout)
+                            hw_g, or_g, orca_cmp_mod.parse_hw_time_seconds(best_stdout),
+                            relaxed_geometry=scenarios[scenario]["relaxed_geometry"],
                         )
             else:
                 rec["orca_error"] = orca_err
@@ -515,25 +545,29 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
             if ab_base and "ab" in rec:
                 ab = rec["ab"]
                 hstr = "exact" if ab["gcode_exact"] else "DIFF "
-                print(f"[{idx:3d}/{len(cases)}] OK   base={ab['base_median_ms']:7.1f} ms  cand={ab['cand_median_ms']:7.1f} ms  ({ab['delta_ms']:+6.1f} ms, {ab['delta_pct']:+5.1f}%)  hash={hstr}  {c['name']}", flush=True)
+                print(f"[{idx:3d}/{len(cases)}] OK   base={ab['base_median_ms']:7.1f} ms  cand={ab['cand_median_ms']:7.1f} ms  ({ab['delta_ms']:+6.1f} ms, {ab['delta_pct']:+5.1f}%)  hash={hstr}  {label}", flush=True)
             elif compare_orca and rec.get("orca_ok"):
-                print(f"[{idx:3d}/{len(cases)}] OK   hw={best_ms:6.1f} ms  orca={rec['orca_ms']:7.1f} ms  ({rec['speedup_vs_orca']:5.2f}x)  {c['name']}", flush=True)
+                print(f"[{idx:3d}/{len(cases)}] OK   hw={best_ms:6.1f} ms  orca={rec['orca_ms']:7.1f} ms  ({rec['speedup_vs_orca']:5.2f}x)  {label}", flush=True)
             elif compare_orca:
-                print(f"[{idx:3d}/{len(cases)}] OK   hw={best_ms:6.1f} ms  orca=FAIL             {c['name']}", flush=True)
+                print(f"[{idx:3d}/{len(cases)}] OK   hw={best_ms:6.1f} ms  orca=FAIL             {label}", flush=True)
             else:
-                print(f"[{idx:3d}/{len(cases)}] OK   {best_ms:7.1f} ms  {c['process']:22s}  {c['name']}", flush=True)
+                print(f"[{idx:3d}/{len(cases)}] OK   {best_ms:7.1f} ms  {c['process']:22s}  {label}", flush=True)
         else:
             rec["error"] = err_text
             failures.append(rec)
-            print(f"[{idx:3d}/{len(cases)}] FAIL            {c['process']:22s}  {c['name']}  ({err_text})", flush=True)
+            print(f"[{idx:3d}/{len(cases)}] FAIL            {c['process']:22s}  {label}  ({err_text})", flush=True)
         results.append(rec)
 
 summary = {
     "suite": suite,
+    "scenarios": scenario_names,
+    "hw_set": args.hw_set,
+    "orca_set": args.orca_set,
     "runs_per_model": runs,
     "threads": threads or "default",
     "compare_orca": compare_orca,
-    "total_models": len(cases),
+    "total_models": model_count,
+    "total_cases": len(cases),
     "passed": len(cases) - len(failures),
     "failed": len(failures),
     "total_wall_ms": round(total_wall_ms, 2),
@@ -565,7 +599,13 @@ if ab_base and ab_paired_count > 0:
     }
 
 print("\n=== SUMMARY ===")
-print(f"Suite: {suite} | Passed: {summary['passed']}/{summary['total_models']} | Total hw_slicer wall: {total_wall_ms:.1f} ms ({total_wall_ms/1000.0:.2f} s)")
+print(f"Suite: {suite} | Passed: {summary['passed']}/{len(cases)} | Total hw_slicer wall: {total_wall_ms:.1f} ms ({total_wall_ms/1000.0:.2f} s)")
+if scenario_names != ["default"] or args.hw_set or args.orca_set:
+    print(f"Scenarios: {', '.join(scenario_names)} across {model_count} model(s)")
+    if args.hw_set:
+        print(f"hw_slicer overrides: {', '.join(args.hw_set)}")
+    if args.orca_set:
+        print(f"OrcaSlicer overrides: {', '.join(args.orca_set)}")
 if compare_orca and ratios:
     print(f"OrcaSlicer 2.5.1 total wall: {total_orca_ms:.1f} ms ({total_orca_ms/1000.0:.2f} s)")
     print(f"Overall speedup: {summary['overall_speedup']:.2f}x | Geomean: {summary['geomean_speedup']:.2f}x | Median: {summary['median_speedup']:.2f}x | hw_slicer faster on {hw_faster_count}/{len(ratios)} parts")
@@ -573,9 +613,9 @@ for k, v in sorted(suite_wall_ms.items()):
     cnt = suite_counts[k]
     if compare_orca and k in suite_orca_ms:
         ov = suite_orca_ms[k]
-        print(f"  {k:10s}: {cnt:3d} models  hw={v:8.1f} ms ({v/cnt:5.1f} avg)  orca={ov:8.1f} ms ({ov/cnt:5.1f} avg)  speedup={ov/v:.2f}x")
+        print(f"  {k:10s}: {cnt:3d} cases  hw={v:8.1f} ms ({v/cnt:5.1f} avg)  orca={ov:8.1f} ms ({ov/cnt:5.1f} avg)  speedup={ov/v:.2f}x")
     else:
-        print(f"  {k:10s}: {cnt:3d} models  {v:8.1f} ms total  ({v/cnt:6.1f} ms avg)")
+        print(f"  {k:10s}: {cnt:3d} cases  {v:8.1f} ms total  ({v/cnt:6.1f} ms avg)")
 
 if ab_base and ab_paired_count > 0:
     ab_s = summary["ab"]
@@ -592,18 +632,18 @@ if ab_base and ab_paired_count > 0:
             if abs(st["delta_ms"]) >= 0.5
         ]
         if st_diffs:
-            print(f"  {r['name']} stage medians:")
+            print(f"  {case_label(r)} stage medians:")
             for sn, st in st_diffs:
                 bm, cm, dm = st["base_median_ms"], st["cand_median_ms"], st["delta_ms"]
                 spct = (dm / bm * 100.0) if bm > 0 else 0.0
                 print(f"    {sn:24s} {bm:6.2f} -> {cm:6.2f} ms ({dm:+6.2f}, {spct:+5.1f}%)")
 
-if compare_orca and orca_cmp_mod is not None:
+if compare_orca:
     cmp_rows = [r for r in results if "orca_compare" in r]
     if cmp_rows:
         print("\n=== ORCASLICER RESULT COMPARISON (G-code geometry, filament, motion) ===")
         for r in cmp_rows:
-            orca_cmp_mod.print_comparison(r["name"], r["orca_compare"])
+            orca_cmp_mod.print_comparison(case_label(r), r["orca_compare"])
 
 if save_baseline:
     os.makedirs(save_baseline, exist_ok=True)
@@ -615,14 +655,14 @@ if save_baseline:
 if stage_diff and baseline_data:
     print("\n=== STAGE DIFF (min_ms / median_ms vs baseline) ===")
     for r in results:
-        b = baseline_data.get(r["name"])
+        b = baseline_data.get(baseline_key(r))
         if not b or not r.get("ok") or "stages" not in r or "stages" not in b:
             continue
         bw = b.get("wall_ms") or 0.0
         cw = r.get("wall_ms") or 0.0
         dw = cw - bw
         pct = (dw / bw * 100.0) if bw > 0 else 0.0
-        print(f"\n  {r['name']}  wall: {bw:.1f} -> {cw:.1f} ms ({dw:+.1f} ms, {pct:+.1f}%)")
+        print(f"\n  {case_label(r)}  wall: {bw:.1f} -> {cw:.1f} ms ({dw:+.1f} ms, {pct:+.1f}%)")
         for sn, cur_st in r["stages"].items():
             bst = b["stages"].get(sn)
             if not bst:
@@ -644,12 +684,28 @@ if out_json:
 if out_md:
     os.makedirs(os.path.dirname(os.path.abspath(out_md)), exist_ok=True)
     with open(out_md, "w") as f:
-        f.write("# Voron 2.4 Full-Printer Slicing Benchmark (`hw_slicer` vs. OrcaSlicer 2.5.1)\n\n")
-        f.write(f"End-to-end CLI wall-clock timings for all {summary['total_models']} models in suite `{suite}` (`runs={runs}`, matched Klipper 350 mm machine, ABS filament, `voron-2.4-standard` 0.20 mm / 0.40 mm / 4 walls / 5 top & bottom / 40% gyroid, and `voron-2.4-high-stress` 5 walls / 8 top & bottom / 50% gyroid for front idlers).\n\n")
+        f.write("# End-to-end slicing benchmark\n\n")
+        f.write(f"Suite `{suite}` covered {model_count} models and {len(cases)} cases with {runs} runs per case.\n\n")
+        f.write("Scenarios " + ", ".join(f"`{name}`" for name in scenario_names) + ".\n\n")
+        for name, overrides in (("hw_slicer", args.hw_set), ("OrcaSlicer", args.orca_set)):
+            if overrides:
+                f.write(f"{name} overrides " + ", ".join(f"`{value}`" for value in overrides) + ".\n\n")
+        if ab_base:
+            f.write("## A/B comparison\n\n")
+            f.write("| Case | Baseline median (ms) | Candidate median (ms) | Delta (%) | G-code |\n")
+            f.write("|---|---:|---:|---:|---|\n")
+            for r in results:
+                ab = r.get("ab")
+                if ab:
+                    exact = "Identical" if ab["gcode_exact"] else "Different"
+                    f.write(f"| `{case_label(r)}` | {ab['base_median_ms']:.1f} | {ab['cand_median_ms']:.1f} | {ab['delta_pct']:+.1f} | {exact} |\n")
+                else:
+                    f.write(f"| `{case_label(r)}` | — | — | — | Failed |\n")
+            f.write("\n")
         if compare_orca and ratios:
             f.write("## Summary\n\n")
             f.write("| Metric | Value |\n|---|---:|\n")
-            f.write(f"| Models sliced | {summary['passed']}/{summary['total_models']} |\n")
+            f.write(f"| Cases sliced | {summary['passed']}/{len(cases)} |\n")
             f.write(f"| `hw_slicer` total wall time | **{total_wall_ms/1000.0:.2f} s** ({total_wall_ms/len(ratios):.1f} ms avg) |\n")
             f.write(f"| OrcaSlicer 2.5.1 total wall time | **{total_orca_ms/1000.0:.2f} s** ({total_orca_ms/len(ratios):.1f} ms avg) |\n")
             f.write(f"| Overall wall-time speedup (`Orca / hw`) | **{summary['overall_speedup']:.2f}×** |\n")
@@ -663,12 +719,12 @@ if out_md:
                 hw_s = f"{r['wall_ms']:.1f}" if r.get("ok") else "FAIL"
                 or_s = f"{r['orca_ms']:.1f}" if r.get("orca_ok") else "FAIL"
                 sp_s = f"**{r['speedup_vs_orca']:.2f}×**" if r.get("speedup_vs_orca") is not None else "—"
-                f.write(f"| {i} | `{r['name']}` | `{r['process']}` | {r.get('tris', 0)} | {r.get('layers', 0)} | {hw_s} | {or_s} | {sp_s} |\n")
+                f.write(f"| {i} | `{case_label(r)}` | `{r['process']}` | {r.get('tris', 0)} | {r.get('layers', 0)} | {hw_s} | {or_s} | {sp_s} |\n")
     print(f"Wrote Markdown report: {out_md}")
 
 if failures:
     print("\n=== FAILURES ===")
     for f in failures:
-        print(f"  {f['name']}: {f['error']}")
+        print(f"  {case_label(f)}: {f['error']}")
     sys.exit(1)
 PY
