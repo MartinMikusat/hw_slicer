@@ -17,6 +17,10 @@ odin_offset :: proc(
 	limits := DEFAULT_POLYGON_LIMITS,
 	allocator := context.allocator,
 ) -> (Polygon_Set, Polygon_Error) {
+	assert(
+		allocator.procedure != context.temp_allocator.procedure || allocator.data != context.temp_allocator.data,
+		"odin_offset output allocator must not be context.temp_allocator (rewound internally)",
+	)
 	if err := polygon_set_validate(input, limits); err != .None {return {}, err}
 	if i64(delta) < -geometry.MAX_PLANAR_COORDINATE_UM ||
 	   i64(delta) > geometry.MAX_PLANAR_COORDINATE_UM {

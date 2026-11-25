@@ -76,6 +76,10 @@ odin_vatti_boolean :: proc(
 	limits := DEFAULT_POLYGON_LIMITS,
 	allocator := context.allocator,
 ) -> (Polygon_Set, Polygon_Error) {
+	assert(
+		allocator.procedure != context.temp_allocator.procedure || allocator.data != context.temp_allocator.data,
+		"odin_vatti_boolean output allocator must not be context.temp_allocator (rewound internally)",
+	)
 	if operation == .Invalid {return {}, .Invalid_Input}
 	if err := polygon_set_validate(subjects, limits); err != .None {return {}, err}
 	if err := polygon_set_validate(clips, limits); err != .None {return {}, err}
