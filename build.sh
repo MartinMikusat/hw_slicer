@@ -177,10 +177,6 @@ cp "$ROOT/resources/models/licenses/"*.txt \
 
 if [ "$MODE" != "release" ]; then
   xcrun dsymutil "$EXECUTABLE" -o "$APP.dSYM"
-  if command -v hw-odin-analyze >/dev/null 2>&1; then
-    hw-odin-analyze crash retain "$EXECUTABLE" "$APP.dSYM" ||
-      echo "[hw_slicer] debug symbols were not retained" >&2
-  fi
 fi
 
 codesign --force --deep --sign - "$APP"
