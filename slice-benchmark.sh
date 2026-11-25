@@ -7,7 +7,8 @@ set -euo pipefail
 # Usage:
 #   ./slice-benchmark.sh [--suite=all|core|voron2.4] [--runs=1] [--threads=0] \
 #                        [--compare-orca] [--out-json=PATH] [--out-md=PATH] \
-#                        [--save-baseline=DIR] [--verify-determinism] [--stage-diff=DIR]
+#                        [--save-baseline=DIR] [--verify-determinism] [--stage-diff=DIR] \
+#                        [--ab=BASELINE_CLI]
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -21,6 +22,7 @@ OUT_MD=""
 SAVE_BASELINE=""
 VERIFY_DET=0
 STAGE_DIFF=""
+AB_BASE=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -34,8 +36,9 @@ for arg in "$@"; do
     --verify-determinism) VERIFY_DET=1 ;;
     --verify-determinism=*) VERIFY_DET=1; STAGE_DIFF="${STAGE_DIFF:-${arg#--verify-determinism=}}" ;;
     --stage-diff=*) STAGE_DIFF="${arg#--stage-diff=}" ;;
+    --ab=*) AB_BASE="${arg#--ab=}" ;;
     -h|--help)
-      echo "Usage: $0 [--suite=all|core|voron2.4] [--runs=N] [--threads=N] [--compare-orca] [--out-json=PATH] [--out-md=PATH] [--save-baseline=DIR] [--verify-determinism[=DIR]] [--stage-diff=DIR]"
+      echo "Usage: $0 [--suite=all|core|voron2.4] [--runs=N] [--threads=N] [--compare-orca] [--out-json=PATH] [--out-md=PATH] [--save-baseline=DIR] [--verify-determinism[=DIR]] [--stage-diff=DIR] [--ab=BASELINE_CLI]"
       exit 0
       ;;
     *)
@@ -44,6 +47,11 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [ -n "$AB_BASE" ] && [ ! -x "$AB_BASE" ]; then
+  echo "[slice-benchmark] baseline CLI binary not found or not executable: $AB_BASE" >&2
+  exit 1
+fi
 
 ./build.sh cli-release >&2
 CLI="$ROOT/build/release/hw-slicer-cli"
@@ -54,14 +62,14 @@ if [ "$COMPARE_ORCA" = "1" ] && [ ! -x "$ORCA_BIN" ]; then
   exit 1
 fi
 
-python3 - "$ROOT" "$CLI" "$ORCA_BIN" "$SUITE" "$RUNS" "$THREADS" "$COMPARE_ORCA" "$OUT_JSON" "$OUT_MD" "$SAVE_BASELINE" "$VERIFY_DET" "$STAGE_DIFF" <<'PY'
+python3 - "$ROOT" "$CLI" "$ORCA_BIN" "$SUITE" "$RUNS" "$THREADS" "$COMPARE_ORCA" "$OUT_JSON" "$OUT_MD" "$SAVE_BASELINE" "$VERIFY_DET" "$STAGE_DIFF" "$AB_BASE" <<'PY'
 import hashlib, json, math, os, re, statistics, subprocess, sys, tempfile, time
 
-root, cli, orca_bin, suite, runs_s, threads, cmp_orca_s, out_json, out_md, save_baseline, verify_det_s, stage_diff = sys.argv[1:13]
+root, cli, orca_bin, suite, runs_s, threads, cmp_orca_s, out_json, out_md, save_baseline, verify_det_s, stage_diff, ab_base = sys.argv[1:14]
 runs = max(1, int(runs_s))
 compare_orca = cmp_orca_s == "1"
 verify_det = verify_det_s == "1"
-want_stages = bool(save_baseline or stage_diff)
+want_stages = bool(save_baseline or stage_diff or ab_base)
 
 def sha256_file(path):
     h = hashlib.sha256()
@@ -240,10 +248,16 @@ orca_paired_hw_ms = 0.0
 orca_paired_orca_ms = 0.0
 ratios = []
 hw_faster_count = 0
+ab_total_base_ms = 0.0
+ab_total_cand_ms = 0.0
+ab_exact_count = 0
+ab_paired_count = 0
 
 with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
     out_gcode = os.path.join(tmpdir, "out.gcode")
     trace_json = os.path.join(tmpdir, "trace.json")
+    ab_base_gcode = os.path.join(tmpdir, "ab_base.gcode")
+    ab_base_trace = os.path.join(tmpdir, "ab_base_trace.json")
     det_gcode = os.path.join(tmpdir, "det.gcode")
     orca_out_dir = os.path.join(tmpdir, "orca_out")
     os.makedirs(orca_out_dir, exist_ok=True)
@@ -263,35 +277,79 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
         if threads:
             cmd.append(f"--threads={threads}")
 
+        ab_base_cmd = None
+        if ab_base:
+            ab_base_cmd = [
+                ab_base,
+                f"--input={c['path']}",
+                f"--printer={c['printer']}",
+                f"--material={c['material']}",
+                f"--process={c['process']}",
+                f"--out={ab_base_gcode}",
+                f"--trace-json={ab_base_trace}",
+            ]
+            if threads:
+                ab_base_cmd.append(f"--threads={threads}")
+
         best_ms = None
         best_stdout = ""
         err_text = ""
         ok = True
+        cand_samples = []
+        base_samples = []
         stage_samples = {}
         stage_order = []
+        base_stage_samples = {}
         gcode_sha = None
-        for run_idx in range(runs):
+        base_gcode_sha = None
+
+        def run_one(run_cmd, t_json_path, s_samples, s_order):
             t0 = time.perf_counter()
-            p = subprocess.run(cmd, capture_output=True, text=True)
+            p = subprocess.run(run_cmd, capture_output=True, text=True)
             dt_ms = (time.perf_counter() - t0) * 1000.0
             if p.returncode != 0:
-                ok = False
-                err_text = (p.stderr or p.stdout).strip().splitlines()[-1] if (p.stderr or p.stdout).strip() else f"exit {p.returncode}"
-                break
-            if best_ms is None or dt_ms < best_ms:
-                best_ms = dt_ms
-                best_stdout = p.stdout
-            if run_idx == 0 and (verify_det or save_baseline):
-                gcode_sha = sha256_file(out_gcode)
-            if want_stages and os.path.exists(trace_json):
-                with open(trace_json) as tf:
+                msg = (p.stderr or p.stdout).strip().splitlines()[-1] if (p.stderr or p.stdout).strip() else f"exit {p.returncode}"
+                return False, dt_ms, p.stdout, msg
+            if want_stages and t_json_path and os.path.exists(t_json_path):
+                with open(t_json_path) as tf:
                     td = json.load(tf)
                 for st in td.get("stages", []):
                     sn = st["name"]
-                    if sn not in stage_samples:
-                        stage_samples[sn] = []
-                        stage_order.append(sn)
-                    stage_samples[sn].append(float(st["duration_ms"]))
+                    if sn not in s_samples:
+                        s_samples[sn] = []
+                        if s_order is not None:
+                            s_order.append(sn)
+                    s_samples[sn].append(float(st["duration_ms"]))
+            return True, dt_ms, p.stdout, ""
+
+        for run_idx in range(runs):
+            order = ("base", "cand") if (ab_base and run_idx % 2 == 0) else (("cand", "base") if ab_base else ("cand",))
+            for which in order:
+                if which == "base":
+                    rok, dt_ms, _, rerr = run_one(ab_base_cmd, ab_base_trace, base_stage_samples, None)
+                    if not rok:
+                        ok = False
+                        err_text = f"baseline failed: {rerr}"
+                        break
+                    base_samples.append(dt_ms)
+                    if run_idx == 0:
+                        base_gcode_sha = sha256_file(ab_base_gcode)
+                else:
+                    rok, dt_ms, rstdout, rerr = run_one(cmd, trace_json, stage_samples, stage_order)
+                    if not rok:
+                        ok = False
+                        err_text = rerr
+                        break
+                    cand_samples.append(dt_ms)
+                    if best_ms is None or dt_ms < best_ms:
+                        best_ms = dt_ms
+                        best_stdout = rstdout
+                    if run_idx == 0 and (verify_det or save_baseline or ab_base):
+                        gcode_sha = sha256_file(out_gcode)
+            if not ok:
+                break
+
+        ab_gcode_exact = (gcode_sha == base_gcode_sha) if (ok and ab_base and gcode_sha and base_gcode_sha) else None
 
         det_status = None
         if ok and verify_det:
@@ -324,6 +382,10 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
                     ok = False
                     det_ok = False
                     err_text = f"baseline hash mismatch ({gcode_sha[:12]} != {bsha[:12]})"
+            if det_ok and ab_base and ab_gcode_exact is False:
+                ok = False
+                det_ok = False
+                err_text = f"ab hash mismatch ({gcode_sha[:12]} != {base_gcode_sha[:12]})"
             det_status = "3-way exact" if det_ok else err_text
 
         rec = {
@@ -346,6 +408,34 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
                 }
                 for sn in stage_order
             }
+        if ok and ab_base and base_samples and cand_samples:
+            bmed = statistics.median(base_samples)
+            cmed = statistics.median(cand_samples)
+            dmed = cmed - bmed
+            dpct = (dmed / bmed * 100.0) if bmed > 0 else 0.0
+            rec["ab"] = {
+                "base_median_ms": round(bmed, 2),
+                "cand_median_ms": round(cmed, 2),
+                "base_min_ms": round(min(base_samples), 2),
+                "cand_min_ms": round(min(cand_samples), 2),
+                "delta_ms": round(dmed, 2),
+                "delta_pct": round(dpct, 2),
+                "gcode_exact": ab_gcode_exact,
+                "stages": {
+                    sn: {
+                        "base_median_ms": round(statistics.median(base_stage_samples[sn]), 2),
+                        "cand_median_ms": round(statistics.median(stage_samples[sn]), 2),
+                        "delta_ms": round(statistics.median(stage_samples[sn]) - statistics.median(base_stage_samples[sn]), 2),
+                    }
+                    for sn in stage_order
+                    if sn in base_stage_samples and base_stage_samples[sn]
+                },
+            }
+            ab_total_base_ms += bmed
+            ab_total_cand_ms += cmed
+            ab_paired_count += 1
+            if ab_gcode_exact:
+                ab_exact_count += 1
         if ok:
             m = re.search(r"tris=(\d+)\s+layers=(\d+)\s+repairs=(\d+)\s+extrude=(\d+)\s+travel=(\d+)\s+filament=([0-9.]+)\s+mm\s+est_time=([0-9:]+)\s+gcode=(\d+)\s+bytes", best_stdout)
             if m:
@@ -403,7 +493,11 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
                 rec["orca_error"] = orca_err
 
         if ok:
-            if compare_orca and rec.get("orca_ok"):
+            if ab_base and "ab" in rec:
+                ab = rec["ab"]
+                hstr = "exact" if ab["gcode_exact"] else "DIFF "
+                print(f"[{idx:3d}/{len(cases)}] OK   base={ab['base_median_ms']:7.1f} ms  cand={ab['cand_median_ms']:7.1f} ms  ({ab['delta_ms']:+6.1f} ms, {ab['delta_pct']:+5.1f}%)  hash={hstr}  {c['name']}", flush=True)
+            elif compare_orca and rec.get("orca_ok"):
                 print(f"[{idx:3d}/{len(cases)}] OK   hw={best_ms:6.1f} ms  orca={rec['orca_ms']:7.1f} ms  ({rec['speedup_vs_orca']:5.2f}x)  {c['name']}", flush=True)
             elif compare_orca:
                 print(f"[{idx:3d}/{len(cases)}] OK   hw={best_ms:6.1f} ms  orca=FAIL             {c['name']}", flush=True)
@@ -437,6 +531,20 @@ if compare_orca:
     summary["hw_faster_count"] = hw_faster_count
     summary["paired_count"] = len(ratios)
 
+if ab_base and ab_paired_count > 0:
+    ab_delta_ms = ab_total_cand_ms - ab_total_base_ms
+    ab_delta_pct = (ab_delta_ms / ab_total_base_ms * 100.0) if ab_total_base_ms > 0 else 0.0
+    summary["ab"] = {
+        "baseline_binary": ab_base,
+        "candidate_binary": cli,
+        "paired_count": ab_paired_count,
+        "gcode_exact_count": ab_exact_count,
+        "base_total_median_ms": round(ab_total_base_ms, 2),
+        "cand_total_median_ms": round(ab_total_cand_ms, 2),
+        "delta_ms": round(ab_delta_ms, 2),
+        "delta_pct": round(ab_delta_pct, 2),
+    }
+
 print("\n=== SUMMARY ===")
 print(f"Suite: {suite} | Passed: {summary['passed']}/{summary['total_models']} | Total hw_slicer wall: {total_wall_ms:.1f} ms ({total_wall_ms/1000.0:.2f} s)")
 if compare_orca and ratios:
@@ -449,6 +557,27 @@ for k, v in sorted(suite_wall_ms.items()):
         print(f"  {k:10s}: {cnt:3d} models  hw={v:8.1f} ms ({v/cnt:5.1f} avg)  orca={ov:8.1f} ms ({ov/cnt:5.1f} avg)  speedup={ov/v:.2f}x")
     else:
         print(f"  {k:10s}: {cnt:3d} models  {v:8.1f} ms total  ({v/cnt:6.1f} ms avg)")
+
+if ab_base and ab_paired_count > 0:
+    ab_s = summary["ab"]
+    print(f"\n=== A/B COMPARISON (interleaved, median of {runs} run{'s' if runs != 1 else ''}) ===")
+    print(f"Baseline:  {ab_base}")
+    print(f"Candidate: {cli}")
+    print(f"Combined median wall: {ab_s['base_total_median_ms']:.1f} -> {ab_s['cand_total_median_ms']:.1f} ms ({ab_s['delta_ms']:+.1f} ms, {ab_s['delta_pct']:+.1f}%) | G-code exact: {ab_exact_count}/{ab_paired_count}")
+    for r in results:
+        if not r.get("ok") or "ab" not in r:
+            continue
+        st_diffs = [
+            (sn, st)
+            for sn, st in r["ab"].get("stages", {}).items()
+            if abs(st["delta_ms"]) >= 0.5
+        ]
+        if st_diffs:
+            print(f"  {r['name']} stage medians:")
+            for sn, st in st_diffs:
+                bm, cm, dm = st["base_median_ms"], st["cand_median_ms"], st["delta_ms"]
+                spct = (dm / bm * 100.0) if bm > 0 else 0.0
+                print(f"    {sn:24s} {bm:6.2f} -> {cm:6.2f} ms ({dm:+6.2f}, {spct:+5.1f}%)")
 
 if save_baseline:
     os.makedirs(save_baseline, exist_ok=True)
