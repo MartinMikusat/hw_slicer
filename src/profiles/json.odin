@@ -28,7 +28,7 @@ Process_JSON_Extras :: struct {
 	brim_gap_mm:                   f64,
 	brim_inner:                    bool,
 	elephant_foot_compensation_mm: f64,
-	seam_position:                 string, // "aligned" | "rear" | "sharpest" | "nearest"
+	seam_position:                 string, // "aligned" | "rear" | "sharpest" | "nearest" | "random"
 	wipe_distance_mm:              f64,
 	overhang_slowdown_enabled:     bool,
 	overhang_speed_percent:        u32,
@@ -36,14 +36,97 @@ Process_JSON_Extras :: struct {
 	infill_pattern:                string, // "rectilinear"|"grid"|"triangles"|"gyroid"|"cubic"|"honeycomb"|"lightning"
 	monotonic_skin:                bool,
 	ironing_enabled:               bool,
+	ironing_type:                  string, // "none" | "top" | "topmost" | "all_solid"
 	ironing_spacing_mm:            f64,
 	ironing_flow_percent:          u32,
+	ironing_speed_mm_s:            f64,
+	ironing_inset_mm:              f64,
 	arc_fitting_enabled:           bool,
 	arc_tolerance_mm:              f64,
 	variable_walls_enabled:        bool,
 	// Milestone 4
 	support_style:                 string, // "tree" | "grid"
 	adaptive_layers:               bool,
+	// OrcaSlicer Quality parity
+	initial_layer_line_width_mm:         f64,
+	outer_wall_line_width_mm:            f64,
+	inner_wall_line_width_mm:            f64,
+	top_surface_line_width_mm:           f64,
+	internal_solid_infill_line_width_mm: f64,
+	sparse_infill_line_width_mm:         f64,
+	support_line_width_mm:               f64,
+	resolution_mm:                       f64,
+	xy_contour_compensation_mm:          f64,
+	xy_hole_compensation_mm:             f64,
+	precise_outer_wall:                  bool,
+	wall_sequence:                       string, // "inner_outer" | "outer_inner" | "inner_outer_inner"
+	infill_first:                        bool,
+	only_one_wall_top:                   bool,
+	only_one_wall_first_layer:           bool,
+	seam_gap_percent:                    f64,
+	staggered_inner_seams:               bool,
+	scarf_seam_enabled:                  bool,
+	scarf_length_mm:                     f64,
+	scarf_start_height_percent:          u32,
+	// OrcaSlicer Strength parity
+	ensure_vertical_shells:              bool,
+	detect_thin_wall:                    bool,
+	top_surface_pattern:                 string, // "monotonic" | "rectilinear" | "concentric"
+	bottom_surface_pattern:              string, // "monotonic" | "rectilinear" | "concentric"
+	top_surface_flow_ratio:              f64,
+	bottom_surface_flow_ratio:           f64,
+	bridge_flow_ratio:                   f64,
+	infill_direction_deg:                f64,
+	infill_wall_overlap_percent:         f64,
+	infill_combination_layers:           u32,
+	minimum_sparse_infill_area_mm2:      f64,
+	bridge_angle_deg:                    f64,
+	thick_bridges:                       bool,
+	gap_fill_target:                     string, // "everywhere" | "nowhere" | "top_bottom"
+	// OrcaSlicer Speed & Acceleration parity
+	initial_layer_speed_mm_s:            f64,
+	initial_layer_infill_speed_mm_s:     f64,
+	outer_wall_speed_mm_s:               f64,
+	inner_wall_speed_mm_s:               f64,
+	top_surface_speed_mm_s:              f64,
+	internal_solid_infill_speed_mm_s:    f64,
+	small_perimeter_speed_mm_s:          f64,
+	small_perimeter_threshold_mm:        f64,
+	overhang_1_4_speed_mm_s:             f64,
+	overhang_2_4_speed_mm_s:             f64,
+	overhang_3_4_speed_mm_s:             f64,
+	overhang_4_4_speed_mm_s:             f64,
+	initial_layer_accel_mm_s2:           f64,
+	initial_layer_travel_accel_mm_s2:    f64,
+	outer_wall_accel_mm_s2:              f64,
+	inner_wall_accel_mm_s2:              f64,
+	top_surface_accel_mm_s2:             f64,
+	internal_solid_accel_mm_s2:          f64,
+	bridge_accel_mm_s2:                  f64,
+	accel_to_decel_enable:               bool,
+	accel_to_decel_factor_percent:       f64,
+	// OrcaSlicer Support & Adhesion parity
+	enable_supports:                     bool,
+	support_expansion_mm:                f64,
+	tree_branch_angle_deg:               f64,
+	tree_tip_diameter_mm:                f64,
+	tree_branch_diameter_mm:             f64,
+	tree_branch_distance_mm:             f64,
+	brim_type:                           string, // "none" | "outer_only" | "inner_only" | "outer_and_inner"
+	min_skirt_length_mm:                 f64,
+	draft_shield:                        bool,
+	raft_layers:                         u32,
+	raft_contact_distance_mm:            f64,
+	raft_expansion_mm:                   f64,
+	// OrcaSlicer Others parity (Travel, Fuzzy, Spiral Vase)
+	reduce_crossing_wall:                bool,
+	max_travel_detour_distance_mm:       f64,
+	reduce_infill_retraction:            bool,
+	vase_mode:                           bool,
+	fuzzy_skin_mode:                     string, // "none" | "contour" | "all" | "all_walls"
+	fuzzy_skin_thickness_mm:             f64,
+	fuzzy_skin_point_distance_mm:        f64,
+	fuzzy_skin_first_layer:              bool,
 }
 
 @(private = "file")
@@ -135,14 +218,97 @@ Process_JSON :: struct {
 	infill_pattern:                string, // "rectilinear"|"grid"|"triangles"|"gyroid"|"cubic"|"honeycomb"|"lightning"
 	monotonic_skin:                bool,
 	ironing_enabled:               bool,
+	ironing_type:                  string, // "none" | "top" | "topmost" | "all_solid"
 	ironing_spacing_mm:            f64,
 	ironing_flow_percent:          u32,
+	ironing_speed_mm_s:            f64,
+	ironing_inset_mm:              f64,
 	arc_fitting_enabled:           bool,
 	arc_tolerance_mm:              f64,
 	variable_walls_enabled:        bool,
 	// Milestone 4
 	support_style:                 string, // "tree" | "grid"
 	adaptive_layers:               bool,
+	// OrcaSlicer Quality parity
+	initial_layer_line_width_mm:         f64,
+	outer_wall_line_width_mm:            f64,
+	inner_wall_line_width_mm:            f64,
+	top_surface_line_width_mm:           f64,
+	internal_solid_infill_line_width_mm: f64,
+	sparse_infill_line_width_mm:         f64,
+	support_line_width_mm:               f64,
+	resolution_mm:                       f64,
+	xy_contour_compensation_mm:          f64,
+	xy_hole_compensation_mm:             f64,
+	precise_outer_wall:                  bool,
+	wall_sequence:                       string, // "inner_outer" | "outer_inner" | "inner_outer_inner"
+	infill_first:                        bool,
+	only_one_wall_top:                   bool,
+	only_one_wall_first_layer:           bool,
+	seam_gap_percent:                    f64,
+	staggered_inner_seams:               bool,
+	scarf_seam_enabled:                  bool,
+	scarf_length_mm:                     f64,
+	scarf_start_height_percent:          u32,
+	// OrcaSlicer Strength parity
+	ensure_vertical_shells:              ^bool,
+	detect_thin_wall:                    ^bool,
+	top_surface_pattern:                 string, // "monotonic" | "rectilinear" | "concentric"
+	bottom_surface_pattern:              string, // "monotonic" | "rectilinear" | "concentric"
+	top_surface_flow_ratio:              f64,
+	bottom_surface_flow_ratio:           f64,
+	bridge_flow_ratio:                   f64,
+	infill_direction_deg:                ^f64,
+	infill_wall_overlap_percent:         f64,
+	infill_combination_layers:           u32,
+	minimum_sparse_infill_area_mm2:      f64,
+	bridge_angle_deg:                    f64,
+	thick_bridges:                       bool,
+	gap_fill_target:                     string, // "everywhere" | "nowhere" | "top_bottom"
+	// OrcaSlicer Speed & Acceleration parity
+	initial_layer_speed_mm_s:            f64,
+	initial_layer_infill_speed_mm_s:     f64,
+	outer_wall_speed_mm_s:               f64,
+	inner_wall_speed_mm_s:               f64,
+	top_surface_speed_mm_s:              f64,
+	internal_solid_infill_speed_mm_s:    f64,
+	small_perimeter_speed_mm_s:          f64,
+	small_perimeter_threshold_mm:        f64,
+	overhang_1_4_speed_mm_s:             f64,
+	overhang_2_4_speed_mm_s:             f64,
+	overhang_3_4_speed_mm_s:             f64,
+	overhang_4_4_speed_mm_s:             f64,
+	initial_layer_accel_mm_s2:           f64,
+	initial_layer_travel_accel_mm_s2:    f64,
+	outer_wall_accel_mm_s2:              f64,
+	inner_wall_accel_mm_s2:              f64,
+	top_surface_accel_mm_s2:             f64,
+	internal_solid_accel_mm_s2:          f64,
+	bridge_accel_mm_s2:                  f64,
+	accel_to_decel_enable:               bool,
+	accel_to_decel_factor_percent:       f64,
+	// OrcaSlicer Support & Adhesion parity
+	enable_supports:                     bool,
+	support_expansion_mm:                f64,
+	tree_branch_angle_deg:               f64,
+	tree_tip_diameter_mm:                f64,
+	tree_branch_diameter_mm:             f64,
+	tree_branch_distance_mm:             f64,
+	brim_type:                           string, // "none" | "outer_only" | "inner_only" | "outer_and_inner"
+	min_skirt_length_mm:                 f64,
+	draft_shield:                        bool,
+	raft_layers:                         u32,
+	raft_contact_distance_mm:            f64,
+	raft_expansion_mm:                   f64,
+	// OrcaSlicer Others parity (Travel, Fuzzy, Spiral Vase)
+	reduce_crossing_wall:                bool,
+	max_travel_detour_distance_mm:       f64,
+	reduce_infill_retraction:            bool,
+	vase_mode:                           bool,
+	fuzzy_skin_mode:                     string, // "none" | "contour" | "all" | "all_walls"
+	fuzzy_skin_thickness_mm:             f64,
+	fuzzy_skin_point_distance_mm:        f64,
+	fuzzy_skin_first_layer:              bool,
 }
 
 @(private = "file")
@@ -291,7 +457,7 @@ process_profile_load_json :: proc(
 		support_overhang_angle       = Angle_Millidegrees(i32(math.round(raw.support_overhang_angle_deg*1000.0))),
 		support_clearance_xy         = mm_to_um(raw.support_clearance_xy_mm),
 		support_clearance_z          = mm_to_um(raw.support_clearance_z_mm),
-		support_expansion            = 0,
+		support_expansion            = mm_to_um(max(0.0, raw.support_expansion_mm)),
 		support_density              = pct_to_ppm(raw.support_density_percent),
 		support_pattern              = .Rectilinear,
 		support_interface_layers     = raw.support_interface_layers,
@@ -331,9 +497,11 @@ process_profile_load_json :: proc(
 		seam_pos = "sharpest"
 	case strings.equal_fold(raw.seam_position, "nearest"):
 		seam_pos = "nearest"
+	case strings.equal_fold(raw.seam_position, "random"):
+		seam_pos = "random"
 	}
 	infill_pat := "gyroid"
-	for pat in ([?]string{"rectilinear", "grid", "triangles", "gyroid", "cubic", "honeycomb", "lightning"}) {
+	for pat in ([?]string{"rectilinear", "grid", "triangles", "gyroid", "cubic", "honeycomb", "lightning", "concentric", "aligned_rectilinear"}) {
 		if strings.equal_fold(raw.infill_pattern, pat) {
 			infill_pat = pat
 			break
@@ -342,6 +510,75 @@ process_profile_load_json :: proc(
 	support_style := "tree"
 	if strings.equal_fold(raw.support_style, "grid") || strings.equal_fold(raw.support_style, "rectilinear") {
 		support_style = "grid"
+	}
+	top_surf_pat := "monotonic" if raw.monotonic_skin else "rectilinear"
+	switch {
+	case strings.equal_fold(raw.top_surface_pattern, "monotonic"):
+		top_surf_pat = "monotonic"
+	case strings.equal_fold(raw.top_surface_pattern, "rectilinear"):
+		top_surf_pat = "rectilinear"
+	case strings.equal_fold(raw.top_surface_pattern, "concentric"):
+		top_surf_pat = "concentric"
+	}
+	bot_surf_pat := top_surf_pat
+	switch {
+	case strings.equal_fold(raw.bottom_surface_pattern, "monotonic"):
+		bot_surf_pat = "monotonic"
+	case strings.equal_fold(raw.bottom_surface_pattern, "rectilinear"):
+		bot_surf_pat = "rectilinear"
+	case strings.equal_fold(raw.bottom_surface_pattern, "concentric"):
+		bot_surf_pat = "concentric"
+	}
+	gap_target := "everywhere"
+	switch {
+	case strings.equal_fold(raw.gap_fill_target, "nowhere"):
+		gap_target = "nowhere"
+	case strings.equal_fold(raw.gap_fill_target, "top_bottom"), strings.equal_fold(raw.gap_fill_target, "topbottom"):
+		gap_target = "top_bottom"
+	}
+	if raw.bridge_flow_ratio > 0 {
+		p.bridge.flow_ratio = Ratio_Ppm(u32(math.round(clamp(raw.bridge_flow_ratio, 0.5, 2.0) * f64(RATIO_SCALE))))
+	}
+	if raw.infill_direction_deg != nil {
+		ang := math.mod(raw.infill_direction_deg^, 180.0)
+		if ang < 0 {ang += 180.0}
+		p.solid_infill_base_angle = Angle_Millidegrees(i32(math.round(ang * 1000.0)))
+	}
+	if raw.bridge_angle_deg > 0 {
+		ang := math.mod(raw.bridge_angle_deg, 180.0)
+		if ang < 0 {ang += 180.0}
+		p.bridge_angle_count = 1
+		p.bridge_angles = {}
+		p.bridge_angles[0] = Angle_Millidegrees(i32(math.round(ang * 1000.0)))
+	}
+	ensure_vert := raw.ensure_vertical_shells^ if raw.ensure_vertical_shells != nil else true
+	detect_thin := raw.detect_thin_wall^ if raw.detect_thin_wall != nil else true
+	infill_dir := raw.infill_direction_deg^ if raw.infill_direction_deg != nil else 0.0
+	ironing_type := "none"
+	switch {
+	case strings.equal_fold(raw.ironing_type, "top"):
+		ironing_type = "top"
+	case strings.equal_fold(raw.ironing_type, "topmost"):
+		ironing_type = "topmost"
+	case strings.equal_fold(raw.ironing_type, "all_solid"):
+		ironing_type = "all_solid"
+	case raw.ironing_enabled:
+		ironing_type = "top"
+	}
+	wall_seq := "inner_outer"
+	switch {
+	case strings.equal_fold(raw.wall_sequence, "outer_inner"):
+		wall_seq = "outer_inner"
+	case strings.equal_fold(raw.wall_sequence, "inner_outer_inner"):
+		wall_seq = "inner_outer_inner"
+	}
+	if raw.initial_layer_line_width_mm > 0 {
+		p.first_layer.line_width_enabled = true
+		p.first_layer.line_width = mm_to_um(raw.initial_layer_line_width_mm)
+	}
+	if raw.only_one_wall_first_layer {
+		p.first_layer.perimeter_count_enabled = true
+		p.first_layer.perimeter_count = 1
 	}
 	extras := Process_JSON_Extras{
 		infill_density_percent        = raw.infill_density_percent if raw.infill_density_percent > 0 else 15.0,
@@ -358,14 +595,92 @@ process_profile_load_json :: proc(
 		overhang_speed_percent        = raw.overhang_speed_percent if raw.overhang_speed_percent > 0 else 50,
 		infill_pattern                = infill_pat,
 		monotonic_skin                = raw.monotonic_skin,
-		ironing_enabled               = raw.ironing_enabled,
+		ironing_enabled               = ironing_type != "none",
+		ironing_type                  = ironing_type,
 		ironing_spacing_mm            = raw.ironing_spacing_mm if raw.ironing_spacing_mm > 0 else 0.15,
 		ironing_flow_percent          = raw.ironing_flow_percent if raw.ironing_flow_percent > 0 else 15,
+		ironing_speed_mm_s            = max(0.0, raw.ironing_speed_mm_s),
+		ironing_inset_mm              = max(0.0, raw.ironing_inset_mm),
 		arc_fitting_enabled           = raw.arc_fitting_enabled,
 		arc_tolerance_mm              = raw.arc_tolerance_mm if raw.arc_tolerance_mm > 0 else 0.02,
 		variable_walls_enabled        = raw.variable_walls_enabled,
 		support_style                 = support_style,
 		adaptive_layers               = raw.adaptive_layers,
+		initial_layer_line_width_mm         = max(0.0, raw.initial_layer_line_width_mm),
+		outer_wall_line_width_mm            = max(0.0, raw.outer_wall_line_width_mm),
+		inner_wall_line_width_mm            = max(0.0, raw.inner_wall_line_width_mm),
+		top_surface_line_width_mm           = max(0.0, raw.top_surface_line_width_mm),
+		internal_solid_infill_line_width_mm = max(0.0, raw.internal_solid_infill_line_width_mm),
+		sparse_infill_line_width_mm         = max(0.0, raw.sparse_infill_line_width_mm),
+		support_line_width_mm               = max(0.0, raw.support_line_width_mm),
+		resolution_mm                       = raw.resolution_mm if raw.resolution_mm > 0 else 0.012,
+		xy_contour_compensation_mm          = raw.xy_contour_compensation_mm,
+		xy_hole_compensation_mm             = raw.xy_hole_compensation_mm,
+		precise_outer_wall                  = raw.precise_outer_wall,
+		wall_sequence                       = wall_seq,
+		infill_first                        = raw.infill_first,
+		only_one_wall_top                   = raw.only_one_wall_top,
+		only_one_wall_first_layer           = raw.only_one_wall_first_layer,
+		seam_gap_percent                    = clamp(raw.seam_gap_percent, 0.0, 50.0),
+		staggered_inner_seams               = raw.staggered_inner_seams,
+		scarf_seam_enabled                  = raw.scarf_seam_enabled,
+		scarf_length_mm                     = raw.scarf_length_mm if raw.scarf_length_mm > 0 else 15.0,
+		scarf_start_height_percent          = raw.scarf_start_height_percent if raw.scarf_start_height_percent > 0 else 10,
+		ensure_vertical_shells              = ensure_vert,
+		detect_thin_wall                    = detect_thin,
+		top_surface_pattern                 = top_surf_pat,
+		bottom_surface_pattern              = bot_surf_pat,
+		top_surface_flow_ratio              = clamp(raw.top_surface_flow_ratio, 0.5, 2.0) if raw.top_surface_flow_ratio > 0 else 1.0,
+		bottom_surface_flow_ratio           = clamp(raw.bottom_surface_flow_ratio, 0.5, 2.0) if raw.bottom_surface_flow_ratio > 0 else 1.0,
+		bridge_flow_ratio                   = clamp(raw.bridge_flow_ratio, 0.5, 2.0) if raw.bridge_flow_ratio > 0 else 1.0,
+		infill_direction_deg                = infill_dir,
+		infill_wall_overlap_percent         = clamp(raw.infill_wall_overlap_percent, 0.0, 100.0),
+		infill_combination_layers           = raw.infill_combination_layers if raw.infill_combination_layers >= 1 else 1,
+		minimum_sparse_infill_area_mm2      = max(0.0, raw.minimum_sparse_infill_area_mm2),
+		bridge_angle_deg                    = max(0.0, raw.bridge_angle_deg),
+		thick_bridges                       = raw.thick_bridges,
+		gap_fill_target                     = gap_target,
+		initial_layer_speed_mm_s            = max(0.0, raw.initial_layer_speed_mm_s),
+		initial_layer_infill_speed_mm_s     = max(0.0, raw.initial_layer_infill_speed_mm_s),
+		outer_wall_speed_mm_s               = max(0.0, raw.outer_wall_speed_mm_s),
+		inner_wall_speed_mm_s               = max(0.0, raw.inner_wall_speed_mm_s),
+		top_surface_speed_mm_s              = max(0.0, raw.top_surface_speed_mm_s),
+		internal_solid_infill_speed_mm_s    = max(0.0, raw.internal_solid_infill_speed_mm_s),
+		small_perimeter_speed_mm_s          = max(0.0, raw.small_perimeter_speed_mm_s),
+		small_perimeter_threshold_mm        = raw.small_perimeter_threshold_mm if raw.small_perimeter_threshold_mm > 0 else 6.5,
+		overhang_1_4_speed_mm_s             = max(0.0, raw.overhang_1_4_speed_mm_s),
+		overhang_2_4_speed_mm_s             = max(0.0, raw.overhang_2_4_speed_mm_s),
+		overhang_3_4_speed_mm_s             = max(0.0, raw.overhang_3_4_speed_mm_s),
+		overhang_4_4_speed_mm_s             = max(0.0, raw.overhang_4_4_speed_mm_s),
+		initial_layer_accel_mm_s2           = max(0.0, raw.initial_layer_accel_mm_s2),
+		initial_layer_travel_accel_mm_s2    = max(0.0, raw.initial_layer_travel_accel_mm_s2),
+		outer_wall_accel_mm_s2              = max(0.0, raw.outer_wall_accel_mm_s2),
+		inner_wall_accel_mm_s2              = max(0.0, raw.inner_wall_accel_mm_s2),
+		top_surface_accel_mm_s2             = max(0.0, raw.top_surface_accel_mm_s2),
+		internal_solid_accel_mm_s2          = max(0.0, raw.internal_solid_accel_mm_s2),
+		bridge_accel_mm_s2                  = max(0.0, raw.bridge_accel_mm_s2),
+		accel_to_decel_enable               = raw.accel_to_decel_enable,
+		accel_to_decel_factor_percent       = clamp(raw.accel_to_decel_factor_percent, 10.0, 100.0) if raw.accel_to_decel_factor_percent > 0 else 50.0,
+		enable_supports                     = raw.enable_supports,
+		support_expansion_mm                = max(0.0, raw.support_expansion_mm),
+		tree_branch_angle_deg               = clamp(raw.tree_branch_angle_deg, 10.0, 70.0) if raw.tree_branch_angle_deg > 0 else 45.0,
+		tree_tip_diameter_mm                = max(0.4, raw.tree_tip_diameter_mm) if raw.tree_tip_diameter_mm > 0 else 1.6,
+		tree_branch_diameter_mm             = max(2.0, raw.tree_branch_diameter_mm) if raw.tree_branch_diameter_mm > 0 else 12.0,
+		tree_branch_distance_mm             = max(1.0, raw.tree_branch_distance_mm) if raw.tree_branch_distance_mm > 0 else 4.0,
+		brim_type                           = raw.brim_type,
+		min_skirt_length_mm                 = max(0.0, raw.min_skirt_length_mm),
+		draft_shield                        = raw.draft_shield,
+		raft_layers                         = min(raw.raft_layers, u32(10)),
+		raft_contact_distance_mm            = raw.raft_contact_distance_mm if raw.raft_contact_distance_mm > 0 else 0.1,
+		raft_expansion_mm                   = raw.raft_expansion_mm if raw.raft_expansion_mm > 0 else 2.0,
+		reduce_crossing_wall                = raw.reduce_crossing_wall,
+		max_travel_detour_distance_mm       = max(0.0, raw.max_travel_detour_distance_mm),
+		reduce_infill_retraction            = raw.reduce_infill_retraction,
+		vase_mode                           = raw.vase_mode,
+		fuzzy_skin_mode                     = raw.fuzzy_skin_mode if len(raw.fuzzy_skin_mode) > 0 else "none",
+		fuzzy_skin_thickness_mm             = raw.fuzzy_skin_thickness_mm if raw.fuzzy_skin_thickness_mm > 0 else 0.3,
+		fuzzy_skin_point_distance_mm        = raw.fuzzy_skin_point_distance_mm if raw.fuzzy_skin_point_distance_mm > 0 else 0.8,
+		fuzzy_skin_first_layer              = raw.fuzzy_skin_first_layer,
 	}
 	return p, extras, .None
 }
@@ -404,7 +719,74 @@ profile_apply_override :: proc(
 			extras.seam_position = "nearest"
 			return .None
 		}
+		if strings.equal_fold(val, "random") {
+			extras.seam_position = "random"
+			return .None
+		}
 		return .Invalid_Override_Value
+	}
+	if key == "wall_sequence" {
+		if strings.equal_fold(val, "inner_outer") {
+			extras.wall_sequence = "inner_outer"
+			return .None
+		}
+		if strings.equal_fold(val, "outer_inner") {
+			extras.wall_sequence = "outer_inner"
+			return .None
+		}
+		if strings.equal_fold(val, "inner_outer_inner") {
+			extras.wall_sequence = "inner_outer_inner"
+			return .None
+		}
+		return .Invalid_Override_Value
+	}
+	if key == "ironing_type" {
+		switch {
+		case strings.equal_fold(val, "none"), strings.equal_fold(val, "no_ironing"):
+			extras.ironing_type = "none"
+			extras.ironing_enabled = false
+			return .None
+		case strings.equal_fold(val, "top"):
+			extras.ironing_type = "top"
+			extras.ironing_enabled = true
+			return .None
+		case strings.equal_fold(val, "topmost"):
+			extras.ironing_type = "topmost"
+			extras.ironing_enabled = true
+			return .None
+		case strings.equal_fold(val, "all_solid"):
+			extras.ironing_type = "all_solid"
+			extras.ironing_enabled = true
+			return .None
+		}
+		return .Invalid_Override_Value
+	}
+	if key == "precise_outer_wall" {
+		extras.precise_outer_wall = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "infill_first" || key == "is_infill_first" {
+		extras.infill_first = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "only_one_wall_top" {
+		extras.only_one_wall_top = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "only_one_wall_first_layer" {
+		on := strings.equal_fold(val, "true") || val == "1"
+		extras.only_one_wall_first_layer = on
+		process.first_layer.perimeter_count_enabled = on
+		process.first_layer.perimeter_count = 1 if on else 0
+		return .None
+	}
+	if key == "staggered_inner_seams" {
+		extras.staggered_inner_seams = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "scarf_seam" || key == "scarf_seam_enabled" {
+		extras.scarf_seam_enabled = strings.equal_fold(val, "true") || val == "1"
+		return .None
 	}
 	if key == "brim_inner" {
 		extras.brim_inner = strings.equal_fold(val, "true") || val == "1"
@@ -415,7 +797,7 @@ profile_apply_override :: proc(
 		return .None
 	}
 	if key == "infill_pattern" {
-		pats := [?]string{"rectilinear", "grid", "triangles", "gyroid", "cubic", "honeycomb", "lightning"}
+		pats := [?]string{"rectilinear", "grid", "triangles", "gyroid", "cubic", "honeycomb", "lightning", "concentric", "aligned_rectilinear"}
 		for p in pats {
 			if strings.equal_fold(val, p) {
 				extras.infill_pattern = p
@@ -424,12 +806,128 @@ profile_apply_override :: proc(
 		}
 		return .Invalid_Override_Value
 	}
+	if key == "top_surface_pattern" {
+		for p in ([?]string{"monotonic", "rectilinear", "concentric"}) {
+			if strings.equal_fold(val, p) {
+				extras.top_surface_pattern = p
+				extras.monotonic_skin = p == "monotonic"
+				return .None
+			}
+		}
+		return .Invalid_Override_Value
+	}
+	if key == "bottom_surface_pattern" {
+		for p in ([?]string{"monotonic", "rectilinear", "concentric"}) {
+			if strings.equal_fold(val, p) {
+				extras.bottom_surface_pattern = p
+				return .None
+			}
+		}
+		return .Invalid_Override_Value
+	}
+	if key == "gap_fill_target" {
+		switch {
+		case strings.equal_fold(val, "everywhere"):
+			extras.gap_fill_target = "everywhere"
+			return .None
+		case strings.equal_fold(val, "nowhere"):
+			extras.gap_fill_target = "nowhere"
+			return .None
+		case strings.equal_fold(val, "top_bottom"), strings.equal_fold(val, "topbottom"):
+			extras.gap_fill_target = "top_bottom"
+			return .None
+		}
+		return .Invalid_Override_Value
+	}
+	if key == "ensure_vertical_shells" || key == "ensure_vertical_shell_thickness" {
+		extras.ensure_vertical_shells = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "detect_thin_wall" {
+		extras.detect_thin_wall = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "thick_bridges" {
+		extras.thick_bridges = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "accel_to_decel_enable" {
+		extras.accel_to_decel_enable = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "enable_supports" || key == "enable_support" {
+		extras.enable_supports = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "draft_shield" {
+		extras.draft_shield = strings.equal_fold(val, "true") || val == "1" || strings.equal_fold(val, "enabled")
+		return .None
+	}
+	if key == "reduce_crossing_wall" || key == "avoid_crossing_walls" {
+		extras.reduce_crossing_wall = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "reduce_infill_retraction" {
+		extras.reduce_infill_retraction = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "vase_mode" || key == "spiral_mode" {
+		extras.vase_mode = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "fuzzy_skin" || key == "fuzzy_skin_mode" {
+		switch {
+		case strings.equal_fold(val, "none"), strings.equal_fold(val, "false"), val == "0":
+			extras.fuzzy_skin_mode = "none"
+			return .None
+		case strings.equal_fold(val, "contour"), strings.equal_fold(val, "true"), val == "1":
+			extras.fuzzy_skin_mode = "contour"
+			return .None
+		case strings.equal_fold(val, "all"):
+			extras.fuzzy_skin_mode = "all"
+			return .None
+		case strings.equal_fold(val, "all_walls"):
+			extras.fuzzy_skin_mode = "all_walls"
+			return .None
+		}
+		return .Invalid_Override_Value
+	}
+	if key == "fuzzy_skin_first_layer" {
+		extras.fuzzy_skin_first_layer = strings.equal_fold(val, "true") || val == "1"
+		return .None
+	}
+	if key == "brim_type" {
+		switch {
+		case strings.equal_fold(val, "none"), strings.equal_fold(val, "no_brim"):
+			extras.brim_type = "none"
+			return .None
+		case strings.equal_fold(val, "outer_only"):
+			extras.brim_type = "outer_only"
+			extras.brim_inner = false
+			return .None
+		case strings.equal_fold(val, "inner_only"):
+			extras.brim_type = "inner_only"
+			extras.brim_inner = true
+			return .None
+		case strings.equal_fold(val, "outer_and_inner"):
+			extras.brim_type = "outer_and_inner"
+			extras.brim_inner = true
+			return .None
+		}
+		return .Invalid_Override_Value
+	}
 	if key == "monotonic_skin" {
 		extras.monotonic_skin = strings.equal_fold(val, "true") || val == "1"
 		return .None
 	}
 	if key == "ironing" || key == "ironing_enabled" {
-		extras.ironing_enabled = strings.equal_fold(val, "true") || val == "1"
+		on := strings.equal_fold(val, "true") || val == "1"
+		extras.ironing_enabled = on
+		if on && (len(extras.ironing_type) == 0 || extras.ironing_type == "none") {
+			extras.ironing_type = "top"
+		} else if !on {
+			extras.ironing_type = "none"
+		}
 		return .None
 	}
 	if key == "arc_fitting" || key == "arc_fitting_enabled" {
@@ -526,8 +1024,188 @@ profile_apply_override :: proc(
 		extras.ironing_spacing_mm = max(0.05, num)
 	case "ironing_flow", "ironing_flow_percent":
 		extras.ironing_flow_percent = u32(math.round(clamp(num, 5.0, 50.0)))
+	case "ironing_speed", "ironing_speed_mm_s":
+		extras.ironing_speed_mm_s = max(0.0, num)
+	case "ironing_inset", "ironing_inset_mm":
+		extras.ironing_inset_mm = max(0.0, num)
 	case "arc_tolerance", "arc_tolerance_mm":
 		extras.arc_tolerance_mm = max(0.005, num)
+	case "initial_layer_line_width", "initial_layer_line_width_mm":
+		extras.initial_layer_line_width_mm = max(0.0, num)
+		if num > 0 {
+			process.first_layer.line_width_enabled = true
+			process.first_layer.line_width = mm_to_um(num)
+		} else {
+			process.first_layer.line_width_enabled = false
+			process.first_layer.line_width = 0
+		}
+	case "outer_wall_line_width", "outer_wall_line_width_mm":
+		extras.outer_wall_line_width_mm = max(0.0, num)
+	case "inner_wall_line_width", "inner_wall_line_width_mm":
+		extras.inner_wall_line_width_mm = max(0.0, num)
+	case "top_surface_line_width", "top_surface_line_width_mm":
+		extras.top_surface_line_width_mm = max(0.0, num)
+	case "internal_solid_infill_line_width", "internal_solid_infill_line_width_mm":
+		extras.internal_solid_infill_line_width_mm = max(0.0, num)
+	case "sparse_infill_line_width", "sparse_infill_line_width_mm":
+		extras.sparse_infill_line_width_mm = max(0.0, num)
+	case "support_line_width", "support_line_width_mm":
+		extras.support_line_width_mm = max(0.0, num)
+	case "resolution", "resolution_mm":
+		extras.resolution_mm = max(0.0, num)
+	case "xy_contour_compensation", "xy_contour_compensation_mm":
+		extras.xy_contour_compensation_mm = clamp(num, -5.0, 5.0)
+	case "xy_hole_compensation", "xy_hole_compensation_mm":
+		extras.xy_hole_compensation_mm = clamp(num, -5.0, 5.0)
+	case "seam_gap", "seam_gap_percent":
+		extras.seam_gap_percent = clamp(num, 0.0, 50.0)
+	case "scarf_length", "scarf_length_mm":
+		extras.scarf_length_mm = max(1.0, num)
+	case "scarf_start_height", "scarf_start_height_percent":
+		extras.scarf_start_height_percent = u32(math.round(clamp(num, 5.0, 50.0)))
+	case "top_skin_layers", "top_shell_layers":
+		if num < 1 {return .Invalid_Override_Value}
+		process.top_skin.minimum_layers = u32(math.round(num))
+	case "top_skin_thickness", "top_skin_thickness_mm", "top_shell_thickness":
+		if num <= 0 {return .Invalid_Override_Value}
+		process.top_skin.thickness = mm_to_um(num)
+	case "bottom_skin_layers", "bottom_shell_layers":
+		if num < 1 {return .Invalid_Override_Value}
+		process.bottom_skin.minimum_layers = u32(math.round(num))
+	case "bottom_skin_thickness", "bottom_skin_thickness_mm", "bottom_shell_thickness":
+		if num <= 0 {return .Invalid_Override_Value}
+		process.bottom_skin.thickness = mm_to_um(num)
+	case "top_surface_flow_ratio", "top_solid_infill_flow_ratio":
+		extras.top_surface_flow_ratio = clamp(num, 0.5, 2.0)
+	case "bottom_surface_flow_ratio", "bottom_solid_infill_flow_ratio":
+		extras.bottom_surface_flow_ratio = clamp(num, 0.5, 2.0)
+	case "bridge_flow", "bridge_flow_ratio":
+		r := clamp(num, 0.5, 2.0)
+		extras.bridge_flow_ratio = r
+		process.bridge.flow_ratio = Ratio_Ppm(u32(math.round(r * f64(RATIO_SCALE))))
+	case "infill_direction", "infill_direction_deg":
+		ang := math.mod(num, 180.0)
+		if ang < 0 {ang += 180.0}
+		extras.infill_direction_deg = ang
+		process.solid_infill_base_angle = Angle_Millidegrees(i32(math.round(ang * 1000.0)))
+	case "infill_wall_overlap", "infill_wall_overlap_percent":
+		extras.infill_wall_overlap_percent = clamp(num, 0.0, 100.0)
+	case "infill_combination", "infill_combination_layers":
+		extras.infill_combination_layers = u32(math.round(clamp(num, 1.0, 8.0)))
+	case "minimum_sparse_infill_area", "minimum_sparse_infill_area_mm2":
+		extras.minimum_sparse_infill_area_mm2 = max(0.0, num)
+	case "bridge_angle", "bridge_angle_deg":
+		extras.bridge_angle_deg = max(0.0, num)
+		if num > 0 {
+			ang := math.mod(num, 180.0)
+			if ang < 0 {ang += 180.0}
+			process.bridge_angle_count = 1
+			process.bridge_angles = {}
+			process.bridge_angles[0] = Angle_Millidegrees(i32(math.round(ang * 1000.0)))
+		} else {
+			process.bridge_angle_count = 4
+			process.bridge_angles = {0, 45_000, 90_000, 135_000, 0, 0, 0, 0}
+		}
+	case "skin_speed", "skin_speed_mm_s":
+		process.skin.speed = mm_s_to_um_s(num)
+	case "gap_speed", "gap_speed_mm_s", "gap_infill_speed":
+		process.gap.speed = mm_s_to_um_s(num)
+	case "bridge_speed", "bridge_speed_mm_s":
+		process.bridge.speed = mm_s_to_um_s(num)
+	case "support_speed", "support_speed_mm_s":
+		process.support.speed = mm_s_to_um_s(num)
+	case "support_interface_speed", "support_interface_speed_mm_s":
+		process.support_interface.speed = mm_s_to_um_s(num)
+	case "min_print_speed", "min_print_speed_mm_s":
+		process.minimum_print_speed = mm_s_to_um_s(num)
+	case "perimeter_accel", "perimeter_accel_mm_s2":
+		a := mm_s2_to_um_s2(num)
+		process.perimeter.acceleration = a
+		process.skin.acceleration = a
+		process.gap.acceleration = a
+		process.bridge.acceleration = a
+		process.support_interface.acceleration = a
+	case "infill_accel", "infill_accel_mm_s2", "default_acceleration":
+		a := mm_s2_to_um_s2(num)
+		process.sparse_infill.acceleration = a
+		process.support.acceleration = a
+	case "travel_accel", "travel_accel_mm_s2", "travel_acceleration":
+		process.travel.acceleration = mm_s2_to_um_s2(num)
+	case "initial_layer_speed", "initial_layer_speed_mm_s":
+		extras.initial_layer_speed_mm_s = max(0.0, num)
+	case "initial_layer_infill_speed", "initial_layer_infill_speed_mm_s":
+		extras.initial_layer_infill_speed_mm_s = max(0.0, num)
+	case "outer_wall_speed", "outer_wall_speed_mm_s":
+		extras.outer_wall_speed_mm_s = max(0.0, num)
+	case "inner_wall_speed", "inner_wall_speed_mm_s":
+		extras.inner_wall_speed_mm_s = max(0.0, num)
+	case "top_surface_speed", "top_surface_speed_mm_s":
+		extras.top_surface_speed_mm_s = max(0.0, num)
+	case "internal_solid_infill_speed", "internal_solid_infill_speed_mm_s":
+		extras.internal_solid_infill_speed_mm_s = max(0.0, num)
+	case "small_perimeter_speed", "small_perimeter_speed_mm_s":
+		extras.small_perimeter_speed_mm_s = max(0.0, num)
+	case "small_perimeter_threshold", "small_perimeter_threshold_mm":
+		extras.small_perimeter_threshold_mm = max(0.0, num)
+	case "overhang_1_4_speed", "overhang_1_4_speed_mm_s":
+		extras.overhang_1_4_speed_mm_s = max(0.0, num)
+	case "overhang_2_4_speed", "overhang_2_4_speed_mm_s":
+		extras.overhang_2_4_speed_mm_s = max(0.0, num)
+	case "overhang_3_4_speed", "overhang_3_4_speed_mm_s":
+		extras.overhang_3_4_speed_mm_s = max(0.0, num)
+	case "overhang_4_4_speed", "overhang_4_4_speed_mm_s":
+		extras.overhang_4_4_speed_mm_s = max(0.0, num)
+	case "initial_layer_accel", "initial_layer_accel_mm_s2", "initial_layer_acceleration":
+		extras.initial_layer_accel_mm_s2 = max(0.0, num)
+	case "initial_layer_travel_accel", "initial_layer_travel_accel_mm_s2", "initial_layer_travel_acceleration":
+		extras.initial_layer_travel_accel_mm_s2 = max(0.0, num)
+	case "outer_wall_accel", "outer_wall_accel_mm_s2", "outer_wall_acceleration":
+		extras.outer_wall_accel_mm_s2 = max(0.0, num)
+	case "inner_wall_accel", "inner_wall_accel_mm_s2", "inner_wall_acceleration":
+		extras.inner_wall_accel_mm_s2 = max(0.0, num)
+	case "top_surface_accel", "top_surface_accel_mm_s2", "top_surface_acceleration":
+		extras.top_surface_accel_mm_s2 = max(0.0, num)
+	case "internal_solid_accel", "internal_solid_accel_mm_s2", "internal_solid_infill_acceleration":
+		extras.internal_solid_accel_mm_s2 = max(0.0, num)
+	case "bridge_accel", "bridge_accel_mm_s2", "bridge_acceleration":
+		extras.bridge_accel_mm_s2 = max(0.0, num)
+	case "accel_to_decel_factor", "accel_to_decel_factor_percent":
+		extras.accel_to_decel_factor_percent = clamp(num, 10.0, 100.0)
+	case "support_clearance_xy", "support_clearance_xy_mm", "support_object_xy_distance":
+		process.support_clearance_xy = mm_to_um(max(0.0, num))
+	case "support_clearance_z", "support_clearance_z_mm", "support_top_z_distance":
+		process.support_clearance_z = mm_to_um(max(0.0, num))
+	case "support_expansion", "support_expansion_mm":
+		extras.support_expansion_mm = max(0.0, num)
+		process.support_expansion = mm_to_um(max(0.0, num))
+	case "support_interface_layers", "support_interface_top_layers":
+		if num < 1 {return .Invalid_Override_Value}
+		process.support_interface_layers = u32(math.round(num))
+	case "support_interface_spacing", "support_interface_spacing_mm":
+		if num <= 0 {return .Invalid_Override_Value}
+		process.support_interface_spacing = mm_to_um(num)
+	case "tree_branch_angle", "tree_branch_angle_deg", "tree_support_branch_angle":
+		extras.tree_branch_angle_deg = clamp(num, 10.0, 70.0)
+	case "tree_tip_diameter", "tree_tip_diameter_mm", "tree_support_tip_diameter":
+		extras.tree_tip_diameter_mm = max(0.4, num)
+	case "tree_branch_diameter", "tree_branch_diameter_mm", "tree_support_branch_diameter":
+		extras.tree_branch_diameter_mm = max(2.0, num)
+	case "tree_branch_distance", "tree_branch_distance_mm", "tree_support_branch_distance":
+		extras.tree_branch_distance_mm = max(1.0, num)
+	case "min_skirt_length", "min_skirt_length_mm":
+		extras.min_skirt_length_mm = max(0.0, num)
+	case "raft_layers":
+		extras.raft_layers = u32(math.round(clamp(num, 0.0, 10.0)))
+	case "raft_contact_distance", "raft_contact_distance_mm":
+		extras.raft_contact_distance_mm = max(0.0, num)
+	case "raft_expansion", "raft_expansion_mm":
+		extras.raft_expansion_mm = max(0.0, num)
+	case "max_travel_detour_distance", "max_travel_detour_distance_mm":
+		extras.max_travel_detour_distance_mm = max(0.0, num)
+	case "fuzzy_skin_thickness", "fuzzy_skin_thickness_mm":
+		extras.fuzzy_skin_thickness_mm = clamp(num, 0.05, 2.0)
+	case "fuzzy_skin_point_distance", "fuzzy_skin_point_distance_mm":
+		extras.fuzzy_skin_point_distance_mm = clamp(num, 0.1, 5.0)
 	case:
 		return .Unknown_Override
 	}

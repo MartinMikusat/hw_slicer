@@ -1,5 +1,7 @@
 package features
 
+import "core:math"
+
 import contracts "../contracts"
 import geometry "../geometry"
 import gpu "../gpu"
@@ -59,12 +61,29 @@ Motion_Operation :: struct {
 }
 
 Motion_Plan_Options :: struct {
-	wipe_distance_um:          contracts.Micrometres,
-	overhang_slowdown_enabled: bool,
-	overhang_speed_percent:    u32,
-	use_gpu:                   bool,
-	worker_threads:            int, // <= 1 = single-core; > 1 = multi-core CPU overhang detection
-	skip_stable_ids:           bool, // true when evidence is disabled; skips per-operation FNV-1a ID derivation
+	wipe_distance_um:               contracts.Micrometres,
+	overhang_slowdown_enabled:      bool,
+	overhang_speed_percent:         u32,
+	overhang_tier_speeds_um_s:      [4]profiles.Speed_Um_Per_Second, // 0 = use overhang_speed_percent
+	ironing_speed_um_s:             profiles.Speed_Um_Per_Second,    // 0 = inherit skin speed
+	initial_layer_speed_um_s:       profiles.Speed_Um_Per_Second,    // 0 = inherit role speed
+	initial_layer_infill_speed_um_s: profiles.Speed_Um_Per_Second,   // 0 = inherit role speed
+	outer_wall_speed_um_s:          profiles.Speed_Um_Per_Second,    // 0 = inherit perimeter speed
+	inner_wall_speed_um_s:          profiles.Speed_Um_Per_Second,    // 0 = inherit perimeter speed
+	top_surface_speed_um_s:         profiles.Speed_Um_Per_Second,    // 0 = inherit skin speed
+	internal_solid_speed_um_s:      profiles.Speed_Um_Per_Second,    // 0 = inherit skin speed
+	small_perimeter_speed_um_s:     profiles.Speed_Um_Per_Second,    // 0 = disabled
+	initial_layer_accel_um_s2:      profiles.Acceleration_Um_Per_Second_Squared,
+	initial_layer_travel_accel_um_s2: profiles.Acceleration_Um_Per_Second_Squared,
+	outer_wall_accel_um_s2:         profiles.Acceleration_Um_Per_Second_Squared,
+	inner_wall_accel_um_s2:         profiles.Acceleration_Um_Per_Second_Squared,
+	top_surface_accel_um_s2:        profiles.Acceleration_Um_Per_Second_Squared,
+	internal_solid_accel_um_s2:     profiles.Acceleration_Um_Per_Second_Squared,
+	bridge_accel_um_s2:             profiles.Acceleration_Um_Per_Second_Squared,
+	reduce_infill_retraction:       bool,
+	use_gpu:                        bool,
+	worker_threads:                 int, // <= 1 = single-core; > 1 = multi-core CPU overhang detection
+	skip_stable_ids:                bool, // true when evidence is disabled; skips per-operation FNV-1a ID derivation
 }
 
 Motion_Plan_Result :: struct {
@@ -402,6 +421,9 @@ motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int)
 			source.extrusion_index = max(u32)
 			source.base_speed = process.travel.speed
 			source.acceleration = process.travel.acceleration
+			if layer_index == 0 && i64(ctx.options.initial_layer_travel_accel_um_s2) > 0 {
+				source.acceleration = min(ctx.options.initial_layer_travel_accel_um_s2, ctx.profile.printer.maximum_acceleration)
+			}
 			if ctx.precomputed_travels_ready {
 				source.crosses_exterior = ctx.precomputed_travels[move_index]
 			} else {
@@ -412,8 +434,18 @@ motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int)
 				)
 			}
 			retraction_threshold_nm := u128(i64(process.minimum_retraction_travel))*1_000
+			skip_infill_retract := false
+			if ctx.options.reduce_infill_retraction && move_index > move_start && move_index + 1 < move_end {
+				prev_m := ctx.plan.moves[move_index - 1]
+				next_m := ctx.plan.moves[move_index + 1]
+				if prev_m.kind == .Extrude && prev_m.role == .Sparse_Infill &&
+				   next_m.kind == .Extrude && next_m.role == .Sparse_Infill {
+					skip_infill_retract = true
+				}
+			}
 			source.retract_before =
 				has_extruded &&
+				!skip_infill_retract &&
 				i64(process.retraction_distance) > 0 &&
 				u128(length_nm) >= retraction_threshold_nm &&
 				source.crosses_exterior
@@ -480,11 +512,76 @@ motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int)
 			source.base_speed = target.speed
 			source.acceleration = target.acceleration
 			source.fan_ratio = target.fan_ratio
+			max_spd := ctx.profile.printer.maximum_speed
+			max_acc := ctx.profile.printer.maximum_acceleration
+			if .Ironing in move.flags && i64(ctx.options.ironing_speed_um_s) > 0 {
+				source.base_speed = clamp(ctx.options.ironing_speed_um_s, process.minimum_print_speed, max_spd)
+			} else {
+				if .Outer_Perimeter in move.flags {
+					if i64(ctx.options.outer_wall_speed_um_s) > 0 {
+						source.base_speed = clamp(ctx.options.outer_wall_speed_um_s, process.minimum_print_speed, max_spd)
+					}
+					if i64(ctx.options.outer_wall_accel_um_s2) > 0 {
+						source.acceleration = min(ctx.options.outer_wall_accel_um_s2, max_acc)
+					}
+				} else if .Inner_Perimeter in move.flags {
+					if i64(ctx.options.inner_wall_speed_um_s) > 0 {
+						source.base_speed = clamp(ctx.options.inner_wall_speed_um_s, process.minimum_print_speed, max_spd)
+					}
+					if i64(ctx.options.inner_wall_accel_um_s2) > 0 {
+						source.acceleration = min(ctx.options.inner_wall_accel_um_s2, max_acc)
+					}
+				} else if move.role == .Top_Skin || move.role == .Top_Bottom_Skin {
+					if i64(ctx.options.top_surface_speed_um_s) > 0 {
+						source.base_speed = clamp(ctx.options.top_surface_speed_um_s, process.minimum_print_speed, max_spd)
+					}
+					if i64(ctx.options.top_surface_accel_um_s2) > 0 {
+						source.acceleration = min(ctx.options.top_surface_accel_um_s2, max_acc)
+					}
+				} else if move.role == .Bottom_Skin {
+					if i64(ctx.options.internal_solid_speed_um_s) > 0 {
+						source.base_speed = clamp(ctx.options.internal_solid_speed_um_s, process.minimum_print_speed, max_spd)
+					}
+					if i64(ctx.options.internal_solid_accel_um_s2) > 0 {
+						source.acceleration = min(ctx.options.internal_solid_accel_um_s2, max_acc)
+					}
+				} else if move.role == .Bridge {
+					if i64(ctx.options.bridge_accel_um_s2) > 0 {
+						source.acceleration = min(ctx.options.bridge_accel_um_s2, max_acc)
+					}
+				}
+				if .Small_Perimeter in move.flags && i64(ctx.options.small_perimeter_speed_um_s) > 0 {
+					source.base_speed = min(source.base_speed, clamp(ctx.options.small_perimeter_speed_um_s, process.minimum_print_speed, max_spd))
+				}
+				if layer_index == 0 {
+					is_infill_or_skin := move.role == .Sparse_Infill || move.role == .Top_Skin || move.role == .Bottom_Skin || move.role == .Top_Bottom_Skin
+					if is_infill_or_skin && i64(ctx.options.initial_layer_infill_speed_um_s) > 0 {
+						source.base_speed = min(source.base_speed, clamp(ctx.options.initial_layer_infill_speed_um_s, process.minimum_print_speed, max_spd))
+					} else if i64(ctx.options.initial_layer_speed_um_s) > 0 {
+						source.base_speed = min(source.base_speed, clamp(ctx.options.initial_layer_speed_um_s, process.minimum_print_speed, max_spd))
+					}
+					if i64(ctx.options.initial_layer_accel_um_s2) > 0 {
+						source.acceleration = min(ctx.options.initial_layer_accel_um_s2, max_acc)
+					}
+				}
+			}
+			has_tiered_ov := i64(ctx.options.overhang_tier_speeds_um_s[0]) > 0 ||
+				i64(ctx.options.overhang_tier_speeds_um_s[1]) > 0 ||
+				i64(ctx.options.overhang_tier_speeds_um_s[2]) > 0 ||
+				i64(ctx.options.overhang_tier_speeds_um_s[3]) > 0
 			is_ov := false
+			ov_tier := 0
 			if ctx.options.overhang_slowdown_enabled &&
 			   layer_index > 0 &&
 			   (move.role == .Perimeter || move.role == .Thin_Wall) {
-				if ctx.precomputed_overhangs_ready {
+				if has_tiered_ov {
+					ov_tier = motion_segment_overhang_tier(
+						move.point_a,
+						move.point_b,
+						ctx.model_layers[layer_index-1],
+					)
+					is_ov = ov_tier > 0
+				} else if ctx.precomputed_overhangs_ready {
 					is_ov = ctx.precomputed_overhangs[move_index]
 				} else {
 					is_ov = motion_segment_is_overhang(
@@ -495,14 +592,19 @@ motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int)
 				}
 			}
 			if is_ov {
-				pct := ctx.options.overhang_speed_percent
-				if pct == 0 || pct > 100 {pct = 50}
-				ov_scale := u32((u64(pct)*u64(profiles.RATIO_SCALE))/100)
-				source.base_speed = motion_scaled_speed(
-					source.base_speed,
-					process.minimum_print_speed,
-					ov_scale,
-				)
+				tier_spd := ctx.options.overhang_tier_speeds_um_s[ov_tier-1] if (has_tiered_ov && ov_tier >= 1 && ov_tier <= 4) else 0
+				if i64(tier_spd) > 0 {
+					source.base_speed = min(source.base_speed, clamp(tier_spd, process.minimum_print_speed, max_spd))
+				} else {
+					pct := ctx.options.overhang_speed_percent
+					if pct == 0 || pct > 100 {pct = 50}
+					ov_scale := u32((u64(pct)*u64(profiles.RATIO_SCALE))/100)
+					source.base_speed = motion_scaled_speed(
+						source.base_speed,
+						process.minimum_print_speed,
+						ov_scale,
+					)
+				}
 				boost_fan := max(source.fan_ratio, process.bridge.fan_ratio)
 				source.fan_ratio = clamp(
 					boost_fan,
@@ -1190,6 +1292,26 @@ motion_gpu_compute_queries :: proc(
 	return
 }
 
+// Returns 0..4 unsupported sample count across 4 interior points (20%, 40%, 60%, 80%).
+motion_segment_overhang_tier :: proc(
+	a, b: polygon.Polygon_Point,
+	prev_layer: polygon.Polygon_Set,
+) -> int {
+	if len(prev_layer.paths) == 0 {return 0}
+	ax, ay := i64(a.x), i64(a.y)
+	bx, by := i64(b.x), i64(b.y)
+	unsupported := 0
+	// Exact doubled coordinates for t = 1/5, 2/5, 3/5, 4/5: 2*(a + t*(b-a)) = (2*(5-k)*a + 2*k*b)/5
+	for k in i64(1)..=i64(4) {
+		x2 := (2*(5-k)*ax + 2*k*bx) / 5
+		y2 := (2*(5-k)*ay + 2*k*by) / 5
+		if !bridge_polygon_contains_twice(prev_layer, x2, y2) {
+			unsupported += 1
+		}
+	}
+	return unsupported
+}
+
 motion_segment_is_overhang :: proc(
 	a, b: polygon.Polygon_Point,
 	prev_layer: polygon.Polygon_Set,
@@ -1211,6 +1333,163 @@ motion_segment_is_overhang :: proc(
 		unsupported += 1
 	}
 	return unsupported >= 2
+}
+
+// Detours exterior-crossing travel moves along the enclosing layer contour when both endpoints
+// belong to the same island and the detour stays within `max_detour_um` (0 = 3x direct distance).
+motion_plan_apply_combing :: proc(
+	motion: ^Motion_Plan_Result,
+	model_layers: []polygon.Polygon_Set,
+	max_detour_um: contracts.Micrometres,
+	allocator := context.allocator,
+) -> u64 {
+	if motion == nil || len(motion.layers) == 0 || len(motion.operations) == 0 {return 0}
+	out_ops := make([dynamic]Motion_Operation, 0, len(motion.operations) + 256, allocator)
+	detoured: u64
+	added_travels: u64
+
+	for &layer, li in motion.layers {
+		op_start := int(layer.operation_offset)
+		op_end := op_start + int(layer.operation_count)
+		new_start := u64(len(out_ops))
+		ml := model_layers[li] if li < len(model_layers) else polygon.Polygon_Set{}
+
+		for oi in op_start..<op_end {
+			op := motion.operations[oi]
+			if op.kind != .Travel || !op.crosses_exterior || len(ml.paths) == 0 {
+				append(&out_ops, op)
+				continue
+			}
+			a, b := op.point_a, op.point_b
+			direct_len := math.hypot(f64(i64(b.x)-i64(a.x)), f64(i64(b.y)-i64(a.y)))
+			if direct_len < 500.0 {
+				append(&out_ops, op)
+				continue
+			}
+			// Find an outer contour whose vertices are near both endpoints.
+			best_path_idx := -1
+			best_va, best_vb := 0, 0
+			best_detour := f64(max_detour_um) if i64(max_detour_um) > 0 else direct_len * 3.0
+			best_forward := true
+			for mp, mpi in ml.paths {
+				if mp.count < 3 {continue}
+				ring := ml.points[mp.offset:mp.offset+mp.count]
+				if polygon.polygon_path_area_2(ring) <= 0 {continue}
+				// Find nearest vertex to a and b.
+				va, vb := 0, 0
+				da_min := math.hypot(f64(i64(ring[0].x)-i64(a.x)), f64(i64(ring[0].y)-i64(a.y)))
+				db_min := math.hypot(f64(i64(ring[0].x)-i64(b.x)), f64(i64(ring[0].y)-i64(b.y)))
+				for vi in 1..<len(ring) {
+					da := math.hypot(f64(i64(ring[vi].x)-i64(a.x)), f64(i64(ring[vi].y)-i64(a.y)))
+					if da < da_min {da_min = da; va = vi}
+					db := math.hypot(f64(i64(ring[vi].x)-i64(b.x)), f64(i64(ring[vi].y)-i64(b.y)))
+					if db < db_min {db_min = db; vb = vi}
+				}
+				// Require endpoints to be near or inside this contour.
+				if da_min > 5_000.0 || db_min > 5_000.0 {continue}
+				if va == vb {continue}
+				n := len(ring)
+				fwd_len := da_min + db_min
+				for k := va; k != vb; k = (k + 1) % n {
+					nk := (k + 1) % n
+					fwd_len += math.hypot(f64(i64(ring[nk].x)-i64(ring[k].x)), f64(i64(ring[nk].y)-i64(ring[k].y)))
+				}
+				bwd_len := da_min + db_min
+				for k := va; k != vb; k = (k + n - 1) % n {
+					nk := (k + n - 1) % n
+					bwd_len += math.hypot(f64(i64(ring[nk].x)-i64(ring[k].x)), f64(i64(ring[nk].y)-i64(ring[k].y)))
+				}
+				if fwd_len <= bwd_len && fwd_len < best_detour {
+					best_detour = fwd_len
+					best_path_idx = mpi
+					best_va = va
+					best_vb = vb
+					best_forward = true
+				} else if bwd_len < fwd_len && bwd_len < best_detour {
+					best_detour = bwd_len
+					best_path_idx = mpi
+					best_va = va
+					best_vb = vb
+					best_forward = false
+				}
+			}
+			if best_path_idx < 0 {
+				append(&out_ops, op)
+				continue
+			}
+			mp := ml.paths[best_path_idx]
+			ring := ml.points[mp.offset:mp.offset+mp.count]
+			n := len(ring)
+			// Emit chained travel segments along contour (capped at 32 waypoints for speed).
+			step_count := (best_vb - best_va + n) % n if best_forward else (best_va - best_vb + n) % n
+			stride := max(1, (step_count + 31) / 32)
+			cur := a
+			emitted_here: u64 = 0
+			for s := 0; s <= step_count; s += stride {
+				idx := (best_va + s) % n if best_forward else (best_va + n - (s % n)) % n
+				nxt := ring[idx]
+				if nxt == cur {continue}
+				seg_op := op
+				seg_op.point_a = cur
+				seg_op.point_b = nxt
+				seg_op.crosses_exterior = false
+				seg_op.z_hop_um = 0
+				append(&out_ops, seg_op)
+				cur = nxt
+				emitted_here += 1
+			}
+			if cur != b {
+				seg_op := op
+				seg_op.point_a = cur
+				seg_op.point_b = b
+				seg_op.crosses_exterior = false
+				seg_op.z_hop_um = 0
+				append(&out_ops, seg_op)
+				emitted_here += 1
+			}
+			if emitted_here == 0 {
+				append(&out_ops, op)
+			} else {
+				// Recompute sub-travel durations cleanly so layer and total motion duration invariants stay exact.
+				old_dur := op.duration_us
+				new_dur: u64 = 0
+				sub_start := len(out_ops) - int(emitted_here)
+				spd := max(f64(1.0), f64(i64(op.speed)))
+				for si in sub_start..<len(out_ops) {
+					sub := &out_ops[si]
+					seg_um := math.hypot(f64(i64(sub.point_b.x)-i64(sub.point_a.x)), f64(i64(sub.point_b.y)-i64(sub.point_a.y)))
+					d_us := max(u64(1), u64(math.round(seg_um * 1_000_000.0 / spd)))
+					sub.duration_us = d_us
+					new_dur += d_us
+				}
+				if new_dur >= old_dur {
+					delta := new_dur - old_dur
+					layer.motion_duration_us += delta
+					layer.planned_duration_us += delta
+					motion.total_motion_duration_us += delta
+					motion.total_planned_duration_us += delta
+				} else {
+					delta := old_dur - new_dur
+					layer.motion_duration_us -= delta
+					layer.planned_duration_us -= delta
+					motion.total_motion_duration_us -= delta
+					motion.total_planned_duration_us -= delta
+				}
+				detoured += 1
+				added_travels += emitted_here - 1
+			}
+		}
+		layer.operation_offset = new_start
+		layer.operation_count = u32(u64(len(out_ops)) - new_start)
+	}
+	if detoured > 0 {
+		delete(motion.operations, allocator)
+		motion.operations = out_ops[:]
+		motion.travel_count += added_travels
+	} else {
+		delete(out_ops)
+	}
+	return detoured
 }
 
 motion_plan_result_destroy :: proc(

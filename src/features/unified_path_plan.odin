@@ -1,6 +1,7 @@
 package features
 
 import "base:runtime"
+import "core:math"
 import "core:slice"
 
 import contracts "../contracts"
@@ -24,26 +25,42 @@ Seam_Strategy :: enum u8 {
 	Aligned,
 	Sharpest_Corner,
 	Nearest,
+	Random,
 }
 
+Unified_Move_Flag :: enum u8 {
+	Outer_Perimeter,
+	Inner_Perimeter,
+	Ironing,
+	Small_Perimeter,
+}
+
+Unified_Move_Flags :: bit_set[Unified_Move_Flag; u8]
+
 Unified_Path_Source :: struct {
-	stable_id:    contracts.Stable_ID,
-	layer_id:     contracts.Stable_ID,
-	layer_index:  u32,
-	role:         profiles.Printable_Role,
-	source_kind:  Unified_Path_Source_Kind,
-	source_index: u32,
-	source_order: u64,
-	closed:       bool,
-	points:       []polygon.Polygon_Point,
-	line_widths:  []contracts.Micrometres,
+	stable_id:       contracts.Stable_ID,
+	layer_id:        contracts.Stable_ID,
+	layer_index:     u32,
+	role:            profiles.Printable_Role,
+	source_kind:     Unified_Path_Source_Kind,
+	source_index:    u32,
+	source_order:    u64,
+	perimeter_index: u32,
+	is_ironing:      bool,
+	closed:          bool,
+	points:          []polygon.Polygon_Point,
+	line_widths:     []contracts.Micrometres,
 }
 
 Unified_Path_Plan_Config :: struct {
-	start:           polygon.Polygon_Point,
-	seam:            profiles.Seam_Policy,
-	seam_visibility: profiles.Seam_Visibility_Policy,
-	seam_strategy:   Seam_Strategy,
+	start:                 polygon.Polygon_Point,
+	seam:                  profiles.Seam_Policy,
+	seam_visibility:       profiles.Seam_Visibility_Policy,
+	seam_strategy:         Seam_Strategy,
+	seam_gap_percent:      f64,
+	staggered_inner_seams: bool,
+	infill_first:          bool,
+	small_perimeter_um:    contracts.Micrometres, // perimeter circumference threshold; 0 = disabled
 }
 
 Unified_Planned_Layer :: struct {
@@ -76,6 +93,7 @@ Unified_Planned_Move :: struct {
 	path_id:           contracts.Stable_ID,
 	kind:              Planned_Move_Kind,
 	role:              profiles.Printable_Role,
+	flags:             Unified_Move_Flags,
 	source_edge_index: u32,
 	point_a:           polygon.Polygon_Point,
 	point_b:           polygon.Polygon_Point,
@@ -170,7 +188,7 @@ unified_path_plan_build :: proc(
 		}
 		if chunk_count == 1 {
 			for source, source_slice_index in sources {
-				priority, source_ok := unified_path_source_validate(source, layer_ids)
+				priority, source_ok := unified_path_source_validate(source, layer_ids, config.infill_first)
 				if !source_ok {return {}, .Invalid_Input}
 				edge_count := len(source.points)-1
 				if source.closed {edge_count = len(source.points)}
@@ -209,6 +227,7 @@ unified_path_plan_build :: proc(
 				chunk_counts = chunk_counts,
 				chunk_ok     = chunk_ok,
 				chunk_size   = chunk_size,
+				infill_first = config.infill_first,
 			}
 			parallel_for(chunk_count, &val_ctx, unified_path_validate_chunk, min_count = 2)
 			for c in 0..<chunk_count {
@@ -302,8 +321,15 @@ unified_path_plan_build :: proc(
 					config.seam_strategy,
 					has_last_seam,
 					last_seam,
+					source.layer_index,
+					source.stable_id,
 				)
-				if source.source_kind == .Perimeter {
+				if config.staggered_inner_seams && source.source_kind == .Perimeter && source.perimeter_index > 0 && len(source.points) >= 4 {
+					stagger := (len(source.points) * int(source.perimeter_index)) / 4
+					if stagger == 0 {stagger = 1}
+					start_index = (start_index + stagger) % len(source.points)
+				}
+				if source.source_kind == .Perimeter && source.perimeter_index == 0 {
 					has_last_seam = true
 					last_seam = source.points[start_index]
 				}
@@ -338,6 +364,24 @@ unified_path_plan_build :: proc(
 			path_write += 1
 			if source.closed {
 				current = start_point
+				if config.seam_gap_percent > 0.0 && source.source_kind == .Perimeter && len(source.points) >= 3 {
+					prev_idx := (start_index + len(source.points) - 1) % len(source.points)
+					a := source.points[prev_idx]
+					b := start_point
+					lw := f64(i64(source.line_widths[start_index]))
+					gap := lw * config.seam_gap_percent * 0.01
+					dx := f64(i64(b.x) - i64(a.x))
+					dy := f64(i64(b.y) - i64(a.y))
+					seg_len := math.hypot(dx, dy)
+					if seg_len > gap + 10.0 {
+						scale := (seg_len - gap) / seg_len
+						nb := polygon.Polygon_Point{
+							x = contracts.Micrometres(i64(a.x) + i64(math.round(dx * scale))),
+							y = contracts.Micrometres(i64(a.y) + i64(math.round(dy * scale))),
+						}
+						if nb != a {current = nb}
+					}
+				}
 			} else if reversed {
 				current = source.points[0]
 			} else {
@@ -376,13 +420,15 @@ unified_path_plan_build :: proc(
 	layer_ok := make([]bool, len(layer_ids), context.temp_allocator)
 
 	emit_ctx := Plan_Emit_Context{
-		sources         = sources,
-		emit_items      = emit_items,
-		layers          = result.layers,
-		paths           = result.paths,
-		moves           = result.moves,
-		layer_ok        = layer_ok,
-		record_move_ids = record_move_ids,
+		sources            = sources,
+		emit_items         = emit_items,
+		layers             = result.layers,
+		paths              = result.paths,
+		moves              = result.moves,
+		layer_ok           = layer_ok,
+		record_move_ids    = record_move_ids,
+		seam_gap_percent   = config.seam_gap_percent,
+		small_perimeter_um = config.small_perimeter_um,
 	}
 	parallel_for(len(layer_ids), &emit_ctx, unified_path_emit_layer)
 	for ok in layer_ok {
@@ -403,6 +449,7 @@ Plan_Validate_Context :: struct {
 	chunk_counts: []u64,
 	chunk_ok:     []bool,
 	chunk_size:   int,
+	infill_first: bool,
 }
 
 @(private = "file")
@@ -412,7 +459,7 @@ unified_path_validate_chunk :: proc(ctx: ^Plan_Validate_Context, chunk_index: in
 	total: u64
 	for source_slice_index in start..<end {
 		source := ctx.sources[source_slice_index]
-		priority, source_ok := unified_path_source_validate(source, ctx.layer_ids)
+		priority, source_ok := unified_path_source_validate(source, ctx.layer_ids, ctx.infill_first)
 		if !source_ok {
 			ctx.chunk_ok[chunk_index] = false
 			return
@@ -446,13 +493,15 @@ Plan_Emit_Item :: struct {
 
 @(private = "file")
 Plan_Emit_Context :: struct {
-	sources:    []Unified_Path_Source,
-	emit_items: []Plan_Emit_Item,
-	layers:     []Unified_Planned_Layer,
-	paths:      []Unified_Planned_Path,
-	moves:           []Unified_Planned_Move,
-	layer_ok:        []bool,
-	record_move_ids: bool,
+	sources:            []Unified_Path_Source,
+	emit_items:         []Plan_Emit_Item,
+	layers:             []Unified_Planned_Layer,
+	paths:              []Unified_Planned_Path,
+	moves:              []Unified_Planned_Move,
+	layer_ok:           []bool,
+	record_move_ids:    bool,
+	seam_gap_percent:   f64,
+	small_perimeter_um: contracts.Micrometres,
 }
 
 @(private = "file")
@@ -469,6 +518,29 @@ unified_path_emit_layer :: proc(ctx: ^Plan_Emit_Context, layer_index: int) {
 		move_id_prefix := contracts.stable_id_child_prefix(path_id, .Path) if want_ids else 0
 		move_write := int(item.move_offset)
 		start_index := int(item.start_index)
+		move_flags: Unified_Move_Flags
+		if source.source_kind == .Perimeter {
+			if source.perimeter_index == 0 {
+				move_flags += {.Outer_Perimeter}
+			} else {
+				move_flags += {.Inner_Perimeter}
+			}
+			if i64(ctx.small_perimeter_um) > 0 && source.closed {
+				perim_len := 0.0
+				npts := len(source.points)
+				for pi in 0..<npts {
+					pa := source.points[pi]
+					pb := source.points[(pi+1)%npts]
+					perim_len += math.hypot(f64(i64(pb.x)-i64(pa.x)), f64(i64(pb.y)-i64(pa.y)))
+				}
+				if perim_len < f64(i64(ctx.small_perimeter_um)) {
+					move_flags += {.Small_Perimeter}
+				}
+			}
+		}
+		if source.is_ironing {
+			move_flags += {.Ironing}
+		}
 		if item.has_travel {
 			ctx.moves[move_write] = {
 				stable_id         = contracts.stable_id_child_from_prefix(move_id_prefix, u64(1)<<63) if want_ids else contracts.INVALID_STABLE_ID,
@@ -501,11 +573,28 @@ unified_path_emit_layer :: proc(ctx: ^Plan_Emit_Context, layer_index: int) {
 				ctx.layer_ok[layer_index] = false
 				return
 			}
+			// Seam gap: shorten the final closing move of closed perimeter loops.
+			if ctx.seam_gap_percent > 0.0 && source.closed && source.source_kind == .Perimeter && local_edge_index == edge_count - 1 {
+				lw := f64(i64(source.line_widths[point_b_index]))
+				gap := lw * ctx.seam_gap_percent * 0.01
+				dx := f64(i64(b.x) - i64(a.x))
+				dy := f64(i64(b.y) - i64(a.y))
+				seg_len := math.hypot(dx, dy)
+				if seg_len > gap + 10.0 {
+					scale := (seg_len - gap) / seg_len
+					nb := polygon.Polygon_Point{
+						x = contracts.Micrometres(i64(a.x) + i64(math.round(dx * scale))),
+						y = contracts.Micrometres(i64(a.y) + i64(math.round(dy * scale))),
+					}
+					if nb != a {b = nb}
+				}
+			}
 			ctx.moves[move_write] = {
 				stable_id         = contracts.stable_id_child_from_prefix(move_id_prefix, u64(source_edge_index)) if want_ids else contracts.INVALID_STABLE_ID,
 				path_id           = path_id,
 				kind              = .Extrude,
 				role              = source.role,
+				flags             = move_flags,
 				source_edge_index = u32(source_edge_index),
 				point_a           = a,
 				point_b           = b,
@@ -541,9 +630,18 @@ unified_path_plan_seam_index :: proc(
 	strategy: Seam_Strategy = .Rear,
 	has_last_seam := false,
 	last_seam := polygon.Polygon_Point{},
+	layer_index: u32 = 0,
+	path_id: contracts.Stable_ID = 0,
 ) -> int {
 	best_index := 0
 	switch strategy {
+	case .Random:
+		// Deterministic per-layer + per-path FNV-1a hash so random seams stay 100% reproducible.
+		h := u64(14695981039346656037)
+		h = (h ~ u64(layer_index)) * 1099511628211
+		h = (h ~ u64(path_id)) * 1099511628211
+		h = (h ~ (h >> 33)) * 0xff51afd7ed558ccd
+		return int(h % u64(len(points)))
 	case .Rear:
 		best_y := i64(points[0].y)
 		best_computed := false
@@ -928,12 +1026,19 @@ unified_path_source_kind_valid :: proc(
 unified_path_source_validate :: proc(
 	source: Unified_Path_Source,
 	layer_ids: []contracts.Stable_ID,
+	infill_first := false,
 ) -> (u8, bool) {
 	priority, priority_ok :=
 		profiles.printable_role_priority(source.role)
 	if source.source_kind == .Adhesion {
 		priority = 0
 		priority_ok = true
+	} else if infill_first {
+		if source.role == .Sparse_Infill {
+			priority = 1
+		} else if source.role == .Perimeter {
+			priority = 5
+		}
 	}
 	if !priority_ok ||
 	   !unified_path_source_kind_valid(

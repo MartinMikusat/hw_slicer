@@ -41,43 +41,103 @@ setting_descriptors := [?]Setting_Descriptor {
 	{key = "first_layer_height", step = 0.04, label = "First layer height", unit = "mm", owner = .Layer_Schedule,
 		also_read = {.Solid_Paths, .Path_Plan, .Motion}, advanced = true},
 	{key = "adaptive_layers", label = "Adaptive layers", kind = .Toggle, owner = .Layer_Schedule},
+	{key = "resolution", step = 0.004, label = "Contour resolution", unit = "mm", owner = .Topology, advanced = true},
+	{key = "top_skin_layers", step = 1, label = "Top shell layers", owner = .Surfaces_Skin, also_read = {.Solid_Areas}},
+	{key = "top_skin_thickness", step = 0.2, label = "Top shell thickness", unit = "mm", owner = .Surfaces_Skin, advanced = true},
+	{key = "bottom_skin_layers", step = 1, label = "Bottom shell layers", owner = .Surfaces_Skin, also_read = {.Solid_Areas}},
+	{key = "bottom_skin_thickness", step = 0.2, label = "Bottom shell thickness", unit = "mm", owner = .Surfaces_Skin, advanced = true},
+	{key = "vase_mode", label = "Spiral vase mode", kind = .Toggle, owner = .Surfaces_Skin, also_read = {.Perimeters, .Motion}, advanced = true},
 	{key = "line_width", step = 0.02, label = "Line width", unit = "mm", owner = .Perimeters,
 		also_read = {.Solid_Areas, .Solid_Paths, .Sparse_Infill, .Gap_Fill, .Supports, .Path_Plan, .Motion}},
+	{key = "initial_layer_line_width", step = 0.02, label = "First layer line width", unit = "mm", owner = .Perimeters, advanced = true},
+	{key = "outer_wall_line_width", step = 0.02, label = "Outer wall line width", unit = "mm", owner = .Perimeters, advanced = true},
+	{key = "inner_wall_line_width", step = 0.02, label = "Inner wall line width", unit = "mm", owner = .Perimeters, advanced = true},
 	{key = "perimeters", step = 1, label = "Perimeters", owner = .Perimeters, also_read = {.Solid_Areas, .Sparse_Infill}},
+	{key = "only_one_wall_first_layer", label = "One wall on first layer", kind = .Toggle, owner = .Perimeters, advanced = true},
 	{key = "elephant_foot", step = 0.05, label = "Elephant foot compensation", unit = "mm", owner = .Perimeters, also_read = {.Supports}, advanced = true},
-	{key = "monotonic_skin", label = "Monotonic skin", kind = .Toggle, owner = .Solid_Paths},
-	{key = "ironing", label = "Ironing", kind = .Toggle, owner = .Solid_Paths},
+	{key = "xy_contour_compensation", step = 0.05, label = "XY contour compensation", unit = "mm", owner = .Perimeters, advanced = true},
+	{key = "xy_hole_compensation", step = 0.05, label = "XY hole compensation", unit = "mm", owner = .Perimeters, advanced = true},
+	{key = "precise_outer_wall", label = "Precise outer wall", kind = .Toggle, owner = .Perimeters, advanced = true},
+	{key = "bridge_angle", step = 15, label = "Bridge angle", unit = "°", owner = .Bridges, advanced = true},
+	{key = "bridge_flow", step = 0.05, label = "Bridge flow ratio", owner = .Bridges, also_read = {.Motion}, advanced = true},
+	{key = "thick_bridges", label = "Thick bridges", kind = .Toggle, owner = .Bridges, also_read = {.Path_Plan}, advanced = true},
+	{key = "ensure_vertical_shells", label = "Ensure vertical shells", kind = .Toggle, owner = .Solid_Areas, advanced = true},
+	{key = "top_surface_pattern", label = "Top surface pattern", kind = .Choice, owner = .Solid_Paths,
+		choices = {"monotonic", "rectilinear", "concentric"}},
+	{key = "bottom_surface_pattern", label = "Bottom surface pattern", kind = .Choice, owner = .Solid_Paths,
+		choices = {"monotonic", "rectilinear", "concentric"}, advanced = true},
+	{key = "top_surface_line_width", step = 0.02, label = "Top surface line width", unit = "mm", owner = .Solid_Paths, advanced = true},
+	{key = "monotonic_skin", label = "Monotonic skin", kind = .Toggle, owner = .Solid_Paths, advanced = true},
+	{key = "ironing_type", label = "Ironing type", kind = .Choice, owner = .Solid_Paths,
+		choices = {"none", "top", "topmost", "all_solid"}},
+	{key = "ironing", label = "Ironing", kind = .Toggle, owner = .Solid_Paths, advanced = true},
 	{key = "ironing_spacing", step = 0.05, label = "Ironing spacing", unit = "mm", owner = .Solid_Paths, advanced = true},
 	{key = "ironing_flow", step = 5, label = "Ironing flow", unit = "%", owner = .Solid_Paths, advanced = true},
+	{key = "ironing_inset", step = 0.05, label = "Ironing inset", unit = "mm", owner = .Solid_Paths, advanced = true},
 	{key = "infill_density", step = 5, label = "Infill density", unit = "%", owner = .Sparse_Infill},
 	{key = "infill_pattern", label = "Infill pattern", kind = .Choice, owner = .Sparse_Infill,
-		choices = {"rectilinear", "grid", "triangles", "gyroid", "cubic", "honeycomb", "lightning"}},
+		choices = {"rectilinear", "grid", "triangles", "gyroid", "cubic", "honeycomb", "lightning", "concentric", "aligned_rectilinear"}},
+	{key = "sparse_infill_line_width", step = 0.02, label = "Sparse infill line width", unit = "mm", owner = .Sparse_Infill, advanced = true},
+	{key = "infill_direction", step = 15, label = "Infill direction", unit = "°", owner = .Sparse_Infill, also_read = {.Solid_Paths}, advanced = true},
+	{key = "infill_wall_overlap", step = 5, label = "Infill/wall overlap", unit = "%", owner = .Sparse_Infill, advanced = true},
+	{key = "infill_combination", step = 1, label = "Infill combination", unit = "layers", owner = .Sparse_Infill, also_read = {.Motion}, advanced = true},
+	{key = "minimum_sparse_infill_area", step = 5, label = "Min sparse infill area", unit = "mm²", owner = .Sparse_Infill, advanced = true},
+	{key = "detect_thin_wall", label = "Detect thin walls", kind = .Toggle, owner = .Gap_Fill, advanced = true},
+	{key = "gap_fill_target", label = "Gap fill target", kind = .Choice, owner = .Gap_Fill,
+		choices = {"everywhere", "nowhere", "top_bottom"}, advanced = true},
+	{key = "enable_supports", label = "Enable supports", kind = .Toggle, owner = .Supports},
 	{key = "support_mode", label = "Support mode", kind = .Choice, owner = .Supports, choices = {"everywhere", "build_plate_only"}},
 	{key = "support_style", label = "Support style", kind = .Choice, owner = .Supports, choices = {"tree", "grid"}},
 	{key = "support_overhang_angle", step = 5, label = "Support overhang angle", unit = "°", owner = .Supports, advanced = true},
 	{key = "support_density", step = 5, label = "Support density", unit = "%", owner = .Supports},
+	{key = "support_expansion", step = 0.2, label = "Support expansion", unit = "mm", owner = .Supports, advanced = true},
+	{key = "tree_branch_angle", step = 5, label = "Tree branch angle", unit = "°", owner = .Supports, advanced = true},
 	{key = "skirt_loops", step = 1, label = "Skirt loops", owner = .Supports},
 	{key = "skirt_distance", step = 1, label = "Skirt distance", unit = "mm", owner = .Supports, advanced = true},
 	{key = "skirt_height", step = 1, label = "Skirt height", unit = "layers", owner = .Supports, advanced = true},
+	{key = "min_skirt_length", step = 10, label = "Min skirt length", unit = "mm", owner = .Supports, advanced = true},
+	{key = "draft_shield", label = "Draft shield", kind = .Toggle, owner = .Supports, advanced = true},
+	{key = "brim_type", label = "Brim type", kind = .Choice, owner = .Supports,
+		choices = {"none", "outer_only", "inner_only", "outer_and_inner"}, advanced = true},
 	{key = "brim_width", step = 1, label = "Brim width", unit = "mm", owner = .Supports},
 	{key = "brim_gap", step = 0.05, label = "Brim gap", unit = "mm", owner = .Supports, advanced = true},
 	{key = "brim_inner", label = "Inner brim", kind = .Toggle, owner = .Supports, advanced = true},
+	{key = "raft_layers", step = 1, label = "Raft layers", owner = .Model, also_read = {.Supports}, advanced = true},
+	{key = "wall_sequence", label = "Wall order", kind = .Choice, owner = .Path_Plan,
+		choices = {"inner_outer", "outer_inner", "inner_outer_inner"}, advanced = true},
+	{key = "infill_first", label = "Infill before walls", kind = .Toggle, owner = .Path_Plan, advanced = true},
+	{key = "only_one_wall_top", label = "One wall on top", kind = .Toggle, owner = .Path_Plan, advanced = true},
 	{key = "seam_position", label = "Seam position", kind = .Choice, owner = .Path_Plan,
-		choices = {"aligned", "rear", "sharpest", "nearest"}},
+		choices = {"aligned", "rear", "sharpest", "nearest", "random"}},
+	{key = "seam_gap", step = 5, label = "Seam gap", unit = "%", owner = .Path_Plan, advanced = true},
+	{key = "staggered_inner_seams", label = "Staggered inner seams", kind = .Toggle, owner = .Path_Plan, advanced = true},
 	{key = "variable_walls", label = "Variable walls", kind = .Toggle, owner = .Path_Plan},
+	{key = "fuzzy_skin_mode", label = "Fuzzy skin", kind = .Choice, owner = .Path_Plan,
+		choices = {"none", "contour", "all", "all_walls"}, advanced = true},
+	{key = "initial_layer_speed", step = 5, label = "First layer speed", unit = "mm/s", owner = .Motion, advanced = true},
+	{key = "outer_wall_speed", step = 5, label = "Outer wall speed", unit = "mm/s", owner = .Motion, advanced = true},
+	{key = "inner_wall_speed", step = 5, label = "Inner wall speed", unit = "mm/s", owner = .Motion, advanced = true},
 	{key = "perimeter_speed", step = 5, label = "Perimeter speed", unit = "mm/s", owner = .Motion},
+	{key = "top_surface_speed", step = 5, label = "Top surface speed", unit = "mm/s", owner = .Motion, advanced = true},
 	{key = "infill_speed", step = 5, label = "Infill speed", unit = "mm/s", owner = .Motion},
+	{key = "small_perimeter_speed", step = 5, label = "Small perimeter speed", unit = "mm/s", owner = .Motion, advanced = true},
+	{key = "ironing_speed", step = 5, label = "Ironing speed", unit = "mm/s", owner = .Motion, advanced = true},
 	{key = "travel_speed", step = 10, label = "Travel speed", unit = "mm/s", owner = .Motion},
+	{key = "top_surface_flow_ratio", step = 0.02, label = "Top surface flow", owner = .Motion, advanced = true},
 	{key = "fan", step = 10, label = "Fan", unit = "%", owner = .Motion},
 	{key = "min_layer_time", step = 1, label = "Minimum layer time", unit = "s", owner = .Motion, advanced = true},
 	{key = "nozzle_temp", step = 5, label = "Nozzle temperature", unit = "°C", owner = .Motion},
 	{key = "bed_temp", step = 5, label = "Bed temperature", unit = "°C", owner = .Motion},
 	{key = "z_hop", step = 0.1, label = "Z hop", unit = "mm", owner = .Motion},
 	{key = "wipe_distance", step = 0.5, label = "Wipe distance", unit = "mm", owner = .Motion, advanced = true},
+	{key = "reduce_crossing_wall", label = "Avoid crossing walls", kind = .Toggle, owner = .Motion, advanced = true},
+	{key = "reduce_infill_retraction", label = "Reduce infill retraction", kind = .Toggle, owner = .Motion, advanced = true},
+	{key = "scarf_seam", label = "Scarf seam", kind = .Toggle, owner = .Motion, advanced = true},
 	{key = "overhang_slowdown", label = "Overhang slowdown", kind = .Toggle, owner = .Motion},
 	{key = "overhang_speed", step = 5, label = "Overhang speed", unit = "%", owner = .Motion, advanced = true},
 	{key = "arc_fitting", label = "Arc fitting", kind = .Toggle, owner = .Motion},
 	{key = "arc_tolerance", step = 0.01, label = "Arc tolerance", unit = "mm", owner = .Motion, advanced = true},
+	{key = "accel_to_decel_enable", label = "Accel to decel", kind = .Toggle, owner = .Gcode, advanced = true},
 }
 
 // The current value of a setting in the units of its descriptor, as text.
@@ -124,6 +184,59 @@ slice_configuration_value :: proc(config: Slice_Configuration, key: string) -> s
 	case "overhang_speed":          return fmt.tprintf("%d", e.overhang_speed_percent)
 	case "arc_fitting":             return b(e.arc_fitting_enabled)
 	case "arc_tolerance":           return fmt.tprintf("%v", e.arc_tolerance_mm)
+	case "resolution":              return fmt.tprintf("%v", e.resolution_mm)
+	case "top_skin_layers":         return fmt.tprintf("%d", p.top_skin.minimum_layers)
+	case "top_skin_thickness":      return mm(i64(p.top_skin.thickness))
+	case "bottom_skin_layers":      return fmt.tprintf("%d", p.bottom_skin.minimum_layers)
+	case "bottom_skin_thickness":   return mm(i64(p.bottom_skin.thickness))
+	case "vase_mode":               return b(config.vase_mode || e.vase_mode)
+	case "initial_layer_line_width": return fmt.tprintf("%v", e.initial_layer_line_width_mm)
+	case "outer_wall_line_width":   return fmt.tprintf("%v", e.outer_wall_line_width_mm)
+	case "inner_wall_line_width":   return fmt.tprintf("%v", e.inner_wall_line_width_mm)
+	case "only_one_wall_first_layer": return b(e.only_one_wall_first_layer)
+	case "xy_contour_compensation": return fmt.tprintf("%v", e.xy_contour_compensation_mm)
+	case "xy_hole_compensation":    return fmt.tprintf("%v", e.xy_hole_compensation_mm)
+	case "precise_outer_wall":      return b(e.precise_outer_wall)
+	case "bridge_angle":            return fmt.tprintf("%v", e.bridge_angle_deg)
+	case "bridge_flow":             return fmt.tprintf("%v", e.bridge_flow_ratio)
+	case "thick_bridges":           return b(e.thick_bridges)
+	case "ensure_vertical_shells":  return b(e.ensure_vertical_shells)
+	case "top_surface_pattern":     return e.top_surface_pattern if len(e.top_surface_pattern) > 0 else "monotonic"
+	case "bottom_surface_pattern":  return e.bottom_surface_pattern if len(e.bottom_surface_pattern) > 0 else "monotonic"
+	case "top_surface_line_width":  return fmt.tprintf("%v", e.top_surface_line_width_mm)
+	case "ironing_type":            return e.ironing_type if len(e.ironing_type) > 0 else "none"
+	case "ironing_inset":           return fmt.tprintf("%v", e.ironing_inset_mm)
+	case "sparse_infill_line_width": return fmt.tprintf("%v", e.sparse_infill_line_width_mm)
+	case "infill_direction":        return fmt.tprintf("%v", e.infill_direction_deg)
+	case "infill_wall_overlap":     return fmt.tprintf("%v", e.infill_wall_overlap_percent)
+	case "infill_combination":      return fmt.tprintf("%d", e.infill_combination_layers)
+	case "minimum_sparse_infill_area": return fmt.tprintf("%v", e.minimum_sparse_infill_area_mm2)
+	case "detect_thin_wall":        return b(e.detect_thin_wall)
+	case "gap_fill_target":         return e.gap_fill_target if len(e.gap_fill_target) > 0 else "everywhere"
+	case "enable_supports":         return b(config.enable_supports || e.enable_supports)
+	case "support_expansion":       return fmt.tprintf("%v", e.support_expansion_mm)
+	case "tree_branch_angle":       return fmt.tprintf("%v", e.tree_branch_angle_deg)
+	case "min_skirt_length":        return fmt.tprintf("%v", e.min_skirt_length_mm)
+	case "draft_shield":            return b(e.draft_shield)
+	case "brim_type":               return e.brim_type if len(e.brim_type) > 0 else "outer_only"
+	case "raft_layers":             return fmt.tprintf("%d", e.raft_layers)
+	case "wall_sequence":           return e.wall_sequence if len(e.wall_sequence) > 0 else "inner_outer"
+	case "infill_first":            return b(e.infill_first)
+	case "only_one_wall_top":       return b(e.only_one_wall_top)
+	case "seam_gap":                return fmt.tprintf("%v", e.seam_gap_percent)
+	case "staggered_inner_seams":   return b(e.staggered_inner_seams)
+	case "fuzzy_skin_mode":         return e.fuzzy_skin_mode if len(e.fuzzy_skin_mode) > 0 else "none"
+	case "initial_layer_speed":     return fmt.tprintf("%v", e.initial_layer_speed_mm_s)
+	case "outer_wall_speed":        return fmt.tprintf("%v", e.outer_wall_speed_mm_s)
+	case "inner_wall_speed":        return fmt.tprintf("%v", e.inner_wall_speed_mm_s)
+	case "top_surface_speed":       return fmt.tprintf("%v", e.top_surface_speed_mm_s)
+	case "small_perimeter_speed":   return fmt.tprintf("%v", e.small_perimeter_speed_mm_s)
+	case "ironing_speed":           return fmt.tprintf("%v", e.ironing_speed_mm_s)
+	case "top_surface_flow_ratio":  return fmt.tprintf("%v", e.top_surface_flow_ratio)
+	case "reduce_crossing_wall":    return b(e.reduce_crossing_wall)
+	case "reduce_infill_retraction": return b(e.reduce_infill_retraction)
+	case "scarf_seam":              return b(config.scarf_seam || e.scarf_seam_enabled)
+	case "accel_to_decel_enable":   return b(e.accel_to_decel_enable)
 	}
 	return ""
 }

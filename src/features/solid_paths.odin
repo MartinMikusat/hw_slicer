@@ -74,12 +74,21 @@ Solid_Path_Error :: enum u8 {
 	Arithmetic,
 }
 
+Solid_Path_Options :: struct {
+	top_surface_line_width:    contracts.Micrometres, // 0 = inherit nominal
+	internal_solid_line_width: contracts.Micrometres, // 0 = inherit nominal
+	first_layer_line_width:    contracts.Micrometres, // 0 = inherit nominal
+	top_concentric:            bool,
+	bottom_concentric:         bool,
+}
+
 solid_paths_generate :: proc(
 	overlap: Role_Overlap_Result,
 	process: profiles.Resolved_Process_Profile,
 	provider: polygon.Polygon_Provider,
 	limits := DEFAULT_SOLID_PATH_LIMITS,
 	allocator := context.allocator,
+	options := Solid_Path_Options{},
 ) -> (Solid_Path_Result, Solid_Path_Error) {
 	line_width := process.source.nominal_line_width
 	spacing := process.source.solid_infill_spacing
@@ -279,6 +288,8 @@ solid_paths_generate :: proc(
 		overlap:        Role_Overlap_Result,
 		boundaries:     []polygon.Polygon_Set,
 		process:        profiles.Resolved_Process_Profile,
+		provider:       polygon.Polygon_Provider,
+		options:        Solid_Path_Options,
 		spacing:        contracts.Micrometres,
 		line_width:     contracts.Micrometres,
 		limits:         Solid_Path_Limits,
@@ -293,6 +304,8 @@ solid_paths_generate :: proc(
 		overlap        = overlap,
 		boundaries     = boundaries,
 		process        = process,
+		provider       = provider,
+		options        = options,
 		spacing        = spacing,
 		line_width     = line_width,
 		limits         = limits,
@@ -306,6 +319,28 @@ solid_paths_generate :: proc(
 	parallel_for(len(overlap.masks), &ssctx, proc(c: ^Solid_Scan_Par_Ctx, mask_index: int) {
 		mask := c.overlap.masks[mask_index]
 		if !solid_path_role_is_skin(mask.role) || len(c.boundaries[mask_index].paths) == 0 {return}
+		mask_lw := c.line_width
+		if mask.layer_index == 0 && i64(c.options.first_layer_line_width) > 0 {
+			mask_lw = c.options.first_layer_line_width
+		} else if (mask.role == .Top_Skin || mask.role == .Top_Bottom_Skin) && i64(c.options.top_surface_line_width) > 0 {
+			mask_lw = c.options.top_surface_line_width
+		} else if mask.role == .Bottom_Skin && i64(c.options.internal_solid_line_width) > 0 {
+			mask_lw = c.options.internal_solid_line_width
+		}
+		mask_spacing := mask_lw if mask_lw != c.line_width else c.spacing
+		use_concentric := ((mask.role == .Top_Skin || mask.role == .Top_Bottom_Skin) && c.options.top_concentric) ||
+			(mask.role == .Bottom_Skin && c.options.bottom_concentric)
+		if use_concentric && c.provider.offset != nil {
+			pbuf, hbuf, ws := solid_path_concentric_fill(
+				c.boundaries[mask_index], mask_spacing, mask_lw,
+				mask, u32(mask_index), c.provider, c.limits, c.allocator,
+			)
+			c.mask_path_bufs[mask_index] = pbuf
+			c.mask_hit_bufs[mask_index] = hbuf
+			c.mask_paths[mask_index] = u64(len(pbuf))
+			c.mask_scanlines[mask_index] = ws
+			return
+		}
 		angle := solid_path_layer_angle(c.process.source.solid_infill_base_angle, c.process.source.solid_infill_angle_step, mask.layer_index)
 		dx, dy, dir_ok := bridge_direction_vector(angle)
 		if !dir_ok {
@@ -313,7 +348,7 @@ solid_paths_generate :: proc(
 			return
 		}
 		pbuf, hbuf, ws, serr := solid_path_scan_boundary_sweep(
-			c.boundaries[mask_index], angle, dx, dy, c.spacing, c.line_width,
+			c.boundaries[mask_index], angle, dx, dy, mask_spacing, mask_lw,
 			mask, u32(mask_index), c.limits, c.allocator,
 		)
 		if serr != .None {
@@ -670,6 +705,75 @@ solid_path_overlap_error :: proc(
 	case .Arithmetic:        return .Arithmetic
 	}
 	return .Invalid_Input
+}
+
+@(private = "file")
+solid_path_concentric_fill :: proc(
+	boundary: polygon.Polygon_Set,
+	spacing: contracts.Micrometres,
+	line_width: contracts.Micrometres,
+	mask: Role_Overlap_Mask,
+	mask_index: u32,
+	provider: polygon.Polygon_Provider,
+	limits: Solid_Path_Limits,
+	allocator: mem.Allocator,
+) -> (paths: []Solid_Path, hits: []Bridge_Path_Hit, ring_count: u64) {
+	pbuf := make([dynamic]Solid_Path, 0, 64, allocator)
+	hbuf := make([dynamic]Bridge_Path_Hit, 0, 128, allocator)
+	path_set_id := contracts.stable_id_child(mask.stable_id, .Feature, 0)
+	step := max(i64(50), i64(spacing))
+	for ring_idx := u64(0); ring_idx < 512; ring_idx += 1 {
+		cur: polygon.Polygon_Set
+		owned := false
+		if ring_idx == 0 {
+			cur = boundary
+		} else {
+			delta := contracts.Micrometres(-i64(ring_idx) * step)
+			err: polygon.Polygon_Error
+			cur, err = provider.offset(boundary, delta, .Miter, 2.0, 0.0, limits.polygon, allocator)
+			if err != .None || len(cur.paths) == 0 {
+				polygon.polygon_set_destroy(&cur, allocator)
+				break
+			}
+			owned = true
+		}
+		ring_count += 1
+		for mp, mpi in cur.paths {
+			if mp.count < 3 {continue}
+			pts := cur.points[mp.offset:mp.offset+mp.count]
+			for pi in 0..<len(pts) {
+				pa := pts[pi]
+				pb := pts[(pi+1)%len(pts)]
+				if pa == pb {continue}
+				idx := u64(len(pbuf))
+				h_off := u64(len(hbuf))
+				append(&hbuf, Bridge_Path_Hit{point = pa})
+				append(&hbuf, Bridge_Path_Hit{point = pb})
+				append(&pbuf, Solid_Path{
+					stable_id              = contracts.stable_id_child(path_set_id, .Path, idx),
+					path_set_id            = path_set_id,
+					overlap_mask_id        = mask.stable_id,
+					overlap_mask_index     = mask_index,
+					layer_index            = mask.layer_index,
+					role                   = mask.role,
+					angle                  = 0,
+					direction_x            = BRIDGE_DIRECTION_SCALE,
+					direction_y            = 0,
+					mask_path_index        = idx,
+					scanline_index         = ring_idx,
+					line_coordinate_scaled = i128(ring_idx)*1000 + i128(mpi),
+					line_width             = line_width,
+					point_a                = pa,
+					point_b                = pb,
+					hit_offset             = h_off,
+				})
+			}
+		}
+		if owned {
+			polygon.polygon_set_destroy(&cur, allocator)
+		}
+	}
+	return pbuf[:], hbuf[:], ring_count
 }
 
 solid_path_result_destroy :: proc(

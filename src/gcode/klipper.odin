@@ -89,6 +89,7 @@ Klipper_Error :: enum u8 {
 
 Klipper_State :: struct {
 	acceleration:         i64, // mm/s²; -1 until set
+	accel_to_decel_pct:   i64, // 0 = omit ACCEL_TO_DECEL; 10..100 = emit ACCEL_TO_DECEL
 	fan_pwm:              i32,
 	positioned_xy:        bool,
 	x:                    contracts.Micrometres,
@@ -106,6 +107,7 @@ klipper_emit :: proc(
 	pause_layers: []u32 = nil,
 	color_change_layers: []u32 = nil,
 	record_commands := true,
+	accel_to_decel_pct: i64 = 0,
 ) -> (Klipper_Result, Klipper_Error) {
 	resolved, resolve_error := profiles.profiles_resolve(
 		profile.printer,
@@ -129,6 +131,7 @@ klipper_emit :: proc(
 			pause_layers,
 			color_change_layers,
 			record_commands,
+			accel_to_decel_pct,
 		)
 	}
 	object_name := klipper_object_name(object_name, context.temp_allocator) if len(object_name) > 0 else ""
@@ -170,8 +173,9 @@ klipper_emit :: proc(
 		motion_operation_count = u64(len(motion.operations)),
 	}
 	state := Klipper_State{
-		acceleration = -1,
-		fan_pwm = -1,
+		acceleration       = -1,
+		accel_to_decel_pct = accel_to_decel_pct,
+		fan_pwm            = -1,
 	}
 
 	area := klipper_extrusion_area(motion)
@@ -467,6 +471,7 @@ klipper_emit_parallel :: proc(
 	pause_layers: []u32 = nil,
 	color_change_layers: []u32 = nil,
 	record_commands := true,
+	accel_to_decel_pct: i64 = 0,
 ) -> (Klipper_Result, Klipper_Error) {
 	layer_count := len(motion.layers)
 	object_name_clean := klipper_object_name(object_name, context.temp_allocator) if len(object_name) > 0 else ""
@@ -580,8 +585,9 @@ klipper_emit_parallel :: proc(
 		delete(layer_emits, allocator)
 	}
 	cur_state := Klipper_State{
-		acceleration = -1,
-		fan_pwm      = 0,
+		acceleration       = -1,
+		accel_to_decel_pct = accel_to_decel_pct,
+		fan_pwm            = 0,
 	}
 	travel_accel := i64(profile.process.source.travel.acceleration)/1_000
 	for layer, li in motion.layers {
@@ -1189,7 +1195,12 @@ klipper_emit_acceleration :: proc(
 	current := &state.acceleration
 	if current^ == value {return true}
 	start := klipper_command_begin(builder^)
-	fmt.sbprintf(builder, "SET_VELOCITY_LIMIT ACCEL=%d\n", value)
+	if state.accel_to_decel_pct > 0 {
+		atd := max(i64(1), (value * state.accel_to_decel_pct) / 100)
+		fmt.sbprintf(builder, "SET_VELOCITY_LIMIT ACCEL=%d ACCEL_TO_DECEL=%d\n", value, atd)
+	} else {
+		fmt.sbprintf(builder, "SET_VELOCITY_LIMIT ACCEL=%d\n", value)
+	}
 	if !klipper_command_end(
 		builder^,
 		commands,

@@ -19,14 +19,19 @@ Infill_Pattern :: enum u8 {
 	Cubic,
 	Honeycomb,
 	Lightning,
+	Concentric,
+	Aligned_Rectilinear,
 }
 
 Infill_Pattern_Config :: struct {
-	pattern:        Infill_Pattern,
-	spacing_um:     contracts.Micrometres,
-	line_width_um:  contracts.Micrometres,
-	boundary_inset: contracts.Micrometres,
-	worker_threads: int, // <= 1 = single-core; > 1 = multi-core CPU threads
+	pattern:             Infill_Pattern,
+	spacing_um:          contracts.Micrometres,
+	line_width_um:       contracts.Micrometres,
+	boundary_inset:      contracts.Micrometres,
+	direction_deg:       f64, // base angle offset in degrees (0 = default pattern orientation)
+	combination_layers:  u32, // 0 or 1 = every layer; N > 1 = emit sparse infill every N layers
+	min_area_um2:        i64, // skip sparse infill boundaries with area < min_area_um2 (0 = disabled)
+	worker_threads:      int, // <= 1 = single-core; > 1 = multi-core CPU threads
 }
 
 Infill_Pattern_Path :: struct {
@@ -240,6 +245,7 @@ infill_pattern_generate :: proc(
 		config:          Infill_Pattern_Config,
 		canon_of:        []int,
 		prep_boundaries: []polygon.Polygon_Set,
+		provider:        polygon.Polygon_Provider,
 		lightning_boxes: [][4]i64,
 		has_lightning:   []bool,
 		S:               f64,
@@ -256,6 +262,7 @@ infill_pattern_generate :: proc(
 		config          = config,
 		canon_of        = canon_of,
 		prep_boundaries = prep_boundaries,
+		provider        = provider,
 		lightning_boxes = lightning_boxes,
 		has_lightning   = has_lightning,
 		S               = S,
@@ -272,8 +279,10 @@ infill_pattern_generate :: proc(
 			if li >= c.layer_count {break}
 			layer := c.regions.layers[li]
 			if layer.region_count == 0 {continue}
+			if c.config.combination_layers > 1 && (u32(li) % c.config.combination_layers) != 0 {continue}
 			if c.config.pattern == .Lightning && !c.has_lightning[li] {continue}
 			z_f := f64(i64(c.layer_z[li])) if li < len(c.layer_z) else f64(li) * 200.0
+			dir_rad := c.config.direction_deg * math.PI / 180.0
 
 			local_out := make([dynamic]Infill_Pattern_Path, 0, 32, c.out_allocator)
 			reg_start := int(layer.region_offset)
@@ -283,6 +292,13 @@ infill_pattern_generate :: proc(
 				if src < 0 {continue}
 				boundary := c.prep_boundaries[src]
 				if len(boundary.paths) == 0 {continue}
+				if c.config.min_area_um2 > 0 {
+					area_2: i128
+					for bp in boundary.paths {
+						area_2 += polygon.polygon_path_area_2(boundary.points[bp.offset:bp.offset+bp.count])
+					}
+					if area_2 < i128(c.config.min_area_um2) * 2 {continue}
+				}
 
 				min_x, min_y, max_x, max_y := infill_pat_bounds(boundary)
 				if max_x <= min_x || max_y <= min_y {
@@ -292,26 +308,60 @@ infill_pattern_generate :: proc(
 				region_start := len(local_out)
 				switch c.config.pattern {
 				case .Rectilinear:
-					ang := 0.0 if (li % 2 == 0) else math.PI * 0.5
+					ang := dir_rad + (0.0 if (li % 2 == 0) else math.PI * 0.5)
 					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, ang, c.S, 0.0, c.lw, c.out_allocator)
+				case .Aligned_Rectilinear:
+					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, dir_rad, c.S, 0.0, c.lw, c.out_allocator)
 				case .Grid:
-					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, 0.0, c.S * 2.0, 0.0, c.lw, c.out_allocator)
-					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, math.PI * 0.5, c.S * 2.0, 0.0, c.lw, c.out_allocator)
+					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, dir_rad, c.S * 2.0, 0.0, c.lw, c.out_allocator)
+					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, dir_rad + math.PI * 0.5, c.S * 2.0, 0.0, c.lw, c.out_allocator)
 				case .Triangles:
 					step := c.S * 3.0
-					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, 0.0, step, 0.0, c.lw, c.out_allocator)
-					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, math.PI / 3.0, step, 0.0, c.lw, c.out_allocator)
-					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, 2.0 * math.PI / 3.0, step, 0.0, c.lw, c.out_allocator)
+					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, dir_rad, step, 0.0, c.lw, c.out_allocator)
+					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, dir_rad + math.PI / 3.0, step, 0.0, c.lw, c.out_allocator)
+					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, dir_rad + 2.0 * math.PI / 3.0, step, 0.0, c.lw, c.out_allocator)
 				case .Cubic:
 					step := c.S * 3.0
 					phase := z_f * 0.7071067811865476
-					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, 0.0, step, phase, c.lw, c.out_allocator)
-					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, math.PI / 3.0, step, phase, c.lw, c.out_allocator)
-					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, 2.0 * math.PI / 3.0, step, phase, c.lw, c.out_allocator)
+					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, dir_rad, step, phase, c.lw, c.out_allocator)
+					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, dir_rad + math.PI / 3.0, step, phase, c.lw, c.out_allocator)
+					infill_pat_hatch(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, dir_rad + 2.0 * math.PI / 3.0, step, phase, c.lw, c.out_allocator)
 				case .Gyroid:
 					infill_pat_gyroid(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, z_f, c.S, c.lw, c.out_allocator)
 				case .Honeycomb:
 					infill_pat_honeycomb(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, c.S, c.lw, c.out_allocator)
+				case .Concentric:
+					step := max(i64(50), i64(math.round(c.S)))
+					for ring_idx := i64(0); ring_idx < 512; ring_idx += 1 {
+						cur: polygon.Polygon_Set
+						owned := false
+						if ring_idx == 0 {
+							cur = boundary
+						} else {
+							err: polygon.Polygon_Error
+							cur, err = c.provider.offset(boundary, contracts.Micrometres(-ring_idx * step), .Miter, 2.0, 0.0, polygon.DEFAULT_POLYGON_LIMITS, c.out_allocator)
+							if err != .None || len(cur.paths) == 0 {
+								polygon.polygon_set_destroy(&cur, c.out_allocator)
+								break
+							}
+							owned = true
+						}
+						for bp in cur.paths {
+							if bp.count < 3 {continue}
+							n := int(bp.count)
+							pts := make([]polygon.Polygon_Point, n + 1, c.out_allocator)
+							ws := make([]contracts.Micrometres, n + 1, c.out_allocator)
+							copy(pts[:n], cur.points[bp.offset:bp.offset+bp.count])
+							pts[n] = pts[0]
+							for wi in 0..=n {ws[wi] = c.lw}
+							append(&local_out, Infill_Pattern_Path{
+								layer_index = u32(li),
+								points      = pts,
+								line_widths = ws,
+							})
+						}
+						if owned {polygon.polygon_set_destroy(&cur, c.out_allocator)}
+					}
 				case .Lightning:
 					lb := c.lightning_boxes[li]
 					c_min_x := max(min_x, lb[0])
@@ -319,11 +369,13 @@ infill_pattern_generate :: proc(
 					c_max_x := min(max_x, lb[2])
 					c_max_y := min(max_y, lb[3])
 					if c_max_x > c_min_x && c_max_y > c_min_y {
-						ang := (math.PI * 0.25) if (li % 2 == 0) else (math.PI * 0.75)
+						ang := dir_rad + ((math.PI * 0.25) if (li % 2 == 0) else (math.PI * 0.75))
 						infill_pat_hatch(&local_out, boundary, u32(li), c_min_x, c_min_y, c_max_x, c_max_y, ang, c.S * 1.5, 0.0, c.lw, c.out_allocator)
 					}
 				}
-				infill_pat_connect(&local_out, region_start, boundary, min(3.0 * c.S, INFILL_CONNECT_MAX_UM), c.lw, c.out_allocator)
+				if c.config.pattern != .Concentric {
+					infill_pat_connect(&local_out, region_start, boundary, min(3.0 * c.S, INFILL_CONNECT_MAX_UM), c.lw, c.out_allocator)
+				}
 			}
 			c.per_layer_out[li] = local_out
 		}

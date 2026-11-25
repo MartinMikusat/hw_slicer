@@ -1017,8 +1017,14 @@ klipper_parse_extended :: proc(
 		ok = len(tokens) == 1
 	case "SET_VELOCITY_LIMIT":
 		result.kind = .Set_Velocity_Limit
-		ok = len(tokens) == 2
-		if ok {result.value, ok = integer(tokens[1], "ACCEL")}
+		if len(tokens) == 2 {
+			result.value, ok = integer(tokens[1], "ACCEL")
+		} else if len(tokens) == 3 {
+			a_val, a_ok := integer(tokens[1], "ACCEL")
+			_, atd_ok := integer(tokens[2], "ACCEL_TO_DECEL")
+			result.value = a_val
+			ok = a_ok && atd_ok
+		}
 	case "SET_PRINT_STATS_INFO":
 		ok = len(tokens) == 2
 		if !ok {break}

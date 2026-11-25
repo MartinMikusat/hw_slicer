@@ -6,10 +6,19 @@ import contracts "../contracts"
 import polygon "../polygon"
 import profiles "../profiles"
 
+Fuzzy_Skin_Mode :: enum u8 {
+	None,
+	Contour,   // outer contour outer wall only
+	All,       // outer walls of both outer contours and holes
+	All_Walls, // all perimeter walls (outer + inner)
+}
+
 Fuzzy_Skin_Config :: struct {
 	enabled:        bool,
+	mode:           Fuzzy_Skin_Mode,       // default .All when enabled
 	thickness_um:   contracts.Micrometres, // default 300 um (0.3 mm)
 	point_dist_um:  contracts.Micrometres, // default 800 um (0.8 mm)
+	first_layer:    bool,                  // default false (skip layer 0)
 }
 
 Fuzzy_Skin_Stats :: struct {
@@ -28,18 +37,35 @@ fuzzy_skin_apply :: proc(
 	owned_widths: ^[dynamic][]contracts.Micrometres,
 	allocator := context.allocator,
 ) -> Fuzzy_Skin_Stats {
-	if !config.enabled {return {}}
+	mode := config.mode
+	if mode == .None && config.enabled {
+		mode = .All
+	}
+	if mode == .None {return {}}
 	thick := f64(i64(config.thickness_um)) if i64(config.thickness_um) > 0 else 300.0
 	pdist := f64(i64(config.point_dist_um)) if i64(config.point_dist_um) > 0 else 800.0
 	stats := Fuzzy_Skin_Stats{}
 
 	for &src in sources {
-		if src.source_kind != .Perimeter || !src.closed || src.layer_index == 0 || len(src.points) < 3 {
+		if src.source_kind != .Perimeter || !src.closed || len(src.points) < 3 {
 			continue
 		}
-		if int(src.source_index) >= len(perimeters.paths) ||
-		   perimeters.paths[src.source_index].perimeter_index != 0 {
+		if src.layer_index == 0 && !config.first_layer {
 			continue
+		}
+		if int(src.source_index) >= len(perimeters.paths) {
+			continue
+		}
+		pp := perimeters.paths[src.source_index]
+		switch mode {
+		case .None:
+			continue
+		case .Contour:
+			if pp.perimeter_index != 0 || pp.winding != .Positive {continue}
+		case .All:
+			if pp.perimeter_index != 0 {continue}
+		case .All_Walls:
+			// perturb all perimeter walls
 		}
 		n := len(src.points)
 		new_pts := make([dynamic]polygon.Polygon_Point, 0, n * 2, allocator)

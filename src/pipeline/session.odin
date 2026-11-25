@@ -578,6 +578,13 @@ stage_model :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		s.mesh_repair_stats = repair.mesh_auto_repair(&work, a)
 	}
 	if s.options.center_on_bed {center_decoded_on_bed(&work, s.profile.printer)}
+	if s.options.raft_layers > 0 {
+		proc_src := s.profile.process.source
+		raft_z_mm := f64(i64(proc_src.first_layer_height) + i64(s.options.raft_layers-1)*i64(proc_src.layer_height) + i64(s.options.raft_contact_distance_um)) / 1000.0
+		for vi in 0..<len(work.vertex_z) {
+			work.vertex_z[vi] += raft_z_mm
+		}
+	}
 	mesh, err := geometry.mesh_normalize_units_consume(&work)
 	if err != .None {return spine_error(.Normalize)}
 	s.mesh = mesh
@@ -593,6 +600,9 @@ stage_layer_schedule :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	minimum_z, minimum_error := geometry.millimetres_to_micrometres_quantized(s.mesh.bounds.minimum.z, .Floor)
 	maximum_z, maximum_error := geometry.millimetres_to_micrometres_quantized(s.mesh.bounds.maximum.z, .Ceil)
 	if minimum_error != .None || maximum_error != .None {return spine_error(.Schedule)}
+	if s.options.raft_layers > 0 && i64(minimum_z) > 0 {
+		minimum_z = 0
+	}
 	schedule_error: slicing.Schedule_Error
 	if config.adaptive_layers {
 		min_ah := config.min_adaptive_height if i64(config.min_adaptive_height) > 0 else contracts.Micrometres(80)
@@ -795,18 +805,34 @@ stage_surfaces_skin :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 stage_perimeters :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	proc_src := s.profile.process.source
 	err: features.Perimeter_Error
+	first_layer_lw := s.options.initial_layer_line_width_um
+	if i64(first_layer_lw) == 0 && proc_src.first_layer.line_width_enabled {
+		first_layer_lw = proc_src.first_layer.line_width
+	}
+	first_layer_cnt: u32 = 1 if s.options.only_one_wall_first_layer else 0
+	if first_layer_cnt == 0 && proc_src.first_layer.perimeter_count_enabled {
+		first_layer_cnt = proc_src.first_layer.perimeter_count
+	}
 	s.perimeters, err = features.perimeters_generate(
 		session_active_topology(s),
 		s.regions,
 		session_provider(s),
 		{
-			count                = proc_src.perimeter_count,
-			line_width           = proc_src.nominal_line_width,
-			first_layer_inset_um = s.options.elephant_foot_compensation_um,
-			topology_policy      = .Diagnostic_Closed_Regions,
-			join_type            = .Miter,
-			miter_limit          = 2.0,
-			arc_tolerance        = 0.0,
+			count                      = proc_src.perimeter_count,
+			line_width                 = proc_src.nominal_line_width,
+			outer_line_width           = s.options.outer_wall_line_width_um,
+			inner_line_width           = s.options.inner_wall_line_width_um,
+			first_layer_line_width     = first_layer_lw,
+			first_layer_count          = first_layer_cnt,
+			first_layer_inset_um       = s.options.elephant_foot_compensation_um,
+			xy_contour_compensation_um = s.options.xy_contour_compensation_um,
+			xy_hole_compensation_um    = s.options.xy_hole_compensation_um,
+			precise_outer_wall         = s.options.precise_outer_wall,
+			layer_height_um            = proc_src.layer_height,
+			topology_policy            = .Diagnostic_Closed_Regions,
+			join_type                  = .Miter,
+			miter_limit                = 2.0,
+			arc_tolerance              = 0.0,
 		},
 		allocator = s.allocator,
 	)
@@ -919,7 +945,19 @@ stage_solid_paths :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	proc_src := process.source
 	provider := session_provider(s)
 	sol_err: features.Solid_Path_Error
-	s.solids, sol_err = features.solid_paths_generate(s.overlap, process, provider, allocator = a)
+	s.solids, sol_err = features.solid_paths_generate(
+		s.overlap,
+		process,
+		provider,
+		allocator = a,
+		options = {
+			top_surface_line_width    = s.options.top_surface_line_width_um,
+			internal_solid_line_width = s.options.internal_solid_infill_line_width_um,
+			first_layer_line_width    = s.options.initial_layer_line_width_um,
+			top_concentric            = s.options.top_surface_concentric,
+			bottom_concentric         = s.options.bottom_surface_concentric,
+		},
+	)
 	if sol_err != .None {return {stage = "solid_paths", detail = fmt.tprintf("solid paths error: %v", sol_err)}}
 	if s.options.monotonic_skin {
 		features.solid_paths_sort_monotonic(&s.solids)
@@ -932,10 +970,13 @@ stage_solid_paths :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		s.overlap,
 		{
 			enabled      = s.options.ironing_enabled,
+			ironing_type = s.options.ironing_type,
 			spacing_um   = s.options.ironing_spacing_um,
 			flow_percent = s.options.ironing_flow_percent,
+			inset_um     = s.options.ironing_inset_um,
 			line_width   = proc_src.nominal_line_width,
 			min_width_um = max_lh,
+			provider     = provider,
 		},
 		a,
 	)
@@ -952,10 +993,12 @@ stage_sparse_infill :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	// Density is a volume fraction. A line deposits a rounded cross-section of
 	// w*h - (1 - pi/4)*h^2, so rows of straight lines at spacing (w - (1 - pi/4)*h) / density fill
 	// that fraction. Patterns with longer rows (gyroid) widen this spacing themselves.
+	infill_lw := s.options.sparse_infill_line_width_um if i64(s.options.sparse_infill_line_width_um) > 0 else proc_src.nominal_line_width
 	density := clamp(s.options.infill_density_percent, 1.0, 100.0)
-	effective_width := f64(i64(proc_src.nominal_line_width)) - (1.0 - math.PI/4.0)*f64(i64(proc_src.layer_height))
-	infill_spacing := contracts.Micrometres(max(i64(proc_src.nominal_line_width), i64(math.round(effective_width*100.0/density))))
-	infill_inset := contracts.Micrometres(i64(proc_src.perimeter_count)*i64(proc_src.nominal_line_width))
+	effective_width := f64(i64(infill_lw)) - (1.0 - math.PI/4.0)*f64(i64(proc_src.layer_height))
+	infill_spacing := contracts.Micrometres(max(i64(infill_lw), i64(math.round(effective_width*100.0/density))))
+	overlap_um := i64(math.round(f64(i64(infill_lw)) * clamp(s.options.infill_wall_overlap_percent, 0.0, 100.0) * 0.01))
+	infill_inset := contracts.Micrometres(max(i64(0), i64(proc_src.perimeter_count)*i64(proc_src.nominal_line_width) - overlap_um))
 	// Sparse infill fills the region minus the solid (skin and bridge) areas of its layer.
 	solid_areas := role_overlap_layer_sets(s.overlap, layer_count, a)
 	defer {
@@ -972,11 +1015,14 @@ stage_sparse_infill :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			s.schedule.print_z,
 			session_provider(s),
 			{
-				pattern        = s.options.infill_pattern,
-				spacing_um     = infill_spacing,
-				line_width_um  = proc_src.nominal_line_width,
-				boundary_inset = infill_inset,
-				worker_threads = resolved_worker_threads(s.options.worker_threads),
+				pattern            = s.options.infill_pattern,
+				spacing_um         = infill_spacing,
+				line_width_um      = infill_lw,
+				boundary_inset     = infill_inset,
+				direction_deg      = s.options.infill_direction_deg,
+				combination_layers = s.options.infill_combination_layers,
+				min_area_um2       = s.options.minimum_sparse_infill_area_um2,
+				worker_threads     = resolved_worker_threads(s.options.worker_threads),
 			},
 			a,
 			solid_areas,
@@ -993,6 +1039,12 @@ stage_gap_fill :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	process := s.profile.process
 	proc_src := process.source
 	provider := session_provider(s)
+	if s.options.gap_fill_target == 1 || !s.options.detect_thin_wall {
+		s.gaps.layers = make([]features.Gap_Centerline_Layer, len(s.schedule.layer_ids), a)
+		s.slots[.Gap_Fill].count_a = 0
+		s.slots[.Gap_Fill].count_b = 0
+		return {}
+	}
 	gap_ev, gev_err := features.gap_evidence_build(
 		session_active_topology(s),
 		s.regions,
@@ -1049,13 +1101,13 @@ stage_supports :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			s.schedule.print_z,
 			{
 				overhang_angle_deg  = f64(i32(proc_src.support_overhang_angle)) / 1000.0,
-				branch_angle_deg    = 45.0,
-				tip_radius_um       = 800,
-				trunk_max_radius_um = 6_000,
-				tip_spacing_um      = 4_000,
+				branch_angle_deg    = options.tree_branch_angle_deg,
+				tip_radius_um       = options.tree_tip_radius_um,
+				trunk_max_radius_um = options.tree_trunk_max_radius_um,
+				tip_spacing_um      = options.tree_tip_spacing_um,
 				xy_clearance_um     = proc_src.support_clearance_xy,
 				interface_layers    = proc_src.support_interface_layers,
-				line_width_um       = proc_src.nominal_line_width,
+				line_width_um       = options.support_line_width_um if i64(options.support_line_width_um) > 0 else proc_src.nominal_line_width,
 				bed_min_x           = s.profile.printer.axis_minimum_x,
 				bed_max_x           = s.profile.printer.axis_maximum_x,
 				bed_min_y           = s.profile.printer.axis_minimum_y,
@@ -1133,11 +1185,16 @@ stage_supports :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			skirt_loops                   = options.skirt_loops,
 			skirt_distance_um             = options.skirt_distance_um,
 			skirt_height_layers           = options.skirt_height_layers,
+			min_skirt_length_um           = options.min_skirt_length_um,
+			draft_shield                  = options.draft_shield,
+			brim_type                     = options.brim_type,
 			brim_width_um                 = options.brim_width_um,
 			brim_gap_um                   = options.brim_gap_um,
 			brim_inner                    = options.brim_inner,
+			raft_layers                   = options.raft_layers,
+			raft_expansion_um             = options.raft_expansion_um,
 			elephant_foot_compensation_um = options.elephant_foot_compensation_um,
-			line_width_um                 = proc_src.nominal_line_width,
+			line_width_um                 = options.initial_layer_line_width_um if i64(options.initial_layer_line_width_um) > 0 else proc_src.nominal_line_width,
 			bed_min_x                     = s.profile.printer.axis_minimum_x,
 			bed_max_x                     = s.profile.printer.axis_maximum_x,
 			bed_min_y                     = s.profile.printer.axis_minimum_y,
@@ -1172,17 +1229,43 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		process,
 		options.inner_perimeters_first,
 		allocator = a,
+		wall_sequence = options.wall_sequence,
 	)
 	if us_err != .None {return {stage = "unified_sources", detail = fmt.tprintf("unified sources error: %v", us_err)}}
 	defer features.unified_path_source_result_destroy(&u_sources, a)
+	top_only_layers: []bool
+	if options.only_one_wall_top && len(layer_ids) > 0 {
+		top_only_layers = make([]bool, len(layer_ids), context.temp_allocator)
+		for sm in s.surfaces.masks {
+			if sm.kind == .Top_Exposed && int(sm.layer_index) < len(top_only_layers) && sm.path_count > 0 {
+				top_only_layers[sm.layer_index] = true
+			}
+		}
+	}
 	// Inject adhesion loops (skirt & brim), custom pattern infill, and top-surface ironing passes.
 	all_sources := make(
 		[dynamic]features.Unified_Path_Source,
 		0,
-		len(u_sources.sources) + len(s.adhesion.loops) + len(s.pattern_infill.paths) + len(s.ironing.paths),
+		len(u_sources.sources) + len(s.adhesion.loops) + len(s.adhesion.raft_paths) + len(s.pattern_infill.paths) + len(s.ironing.paths),
 		a,
 	)
 	defer delete(all_sources)
+	for rp, ri in s.adhesion.raft_paths {
+		if int(rp.layer_index) >= len(layer_ids) {continue}
+		layer_id := layer_ids[rp.layer_index]
+		append(&all_sources, features.Unified_Path_Source{
+			stable_id    = contracts.stable_id_child(layer_id, .Feature, u64(1)<<57 | u64(ri)),
+			layer_id     = layer_id,
+			layer_index  = rp.layer_index,
+			role         = .Support_Interface if rp.is_interface else .Support,
+			source_kind  = .Support,
+			source_index = u32(ri),
+			source_order = u64(ri),
+			closed       = false,
+			points       = rp.points,
+			line_widths  = rp.line_widths,
+		})
+	}
 	for loop, li in s.adhesion.loops {
 		if int(loop.layer_index) >= len(layer_ids) {continue}
 		layer_id := layer_ids[loop.layer_index]
@@ -1200,6 +1283,21 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		})
 	}
 	for src in u_sources.sources {
+		if options.only_one_wall_top && src.source_kind == .Perimeter && src.perimeter_index > 0 &&
+		   int(src.layer_index) < len(top_only_layers) && top_only_layers[src.layer_index] {
+			continue
+		}
+		if options.gap_fill_target == 2 && src.source_kind == .Gap_Centerline {
+			li := src.layer_index
+			is_tb := li == 0 || int(li) == len(layer_ids)-1 ||
+				(int(li) < len(s.skins.layers) && s.skins.layers[li].mask_count > 0)
+			if !is_tb {continue}
+		}
+		if options.thick_bridges && src.source_kind == .Bridge && i64(s.profile.printer.nozzle_diameter) > 0 {
+			for wi in 0..<len(src.line_widths) {
+				src.line_widths[wi] = s.profile.printer.nozzle_diameter
+			}
+		}
 		append(&all_sources, src)
 	}
 	for ip, pi in s.pattern_infill.paths {
@@ -1229,6 +1327,7 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			source_kind  = .Solid,
 			source_index = u32(ii),
 			source_order = (u64(1) << 40) + u64(ii),
+			is_ironing   = true,
 			closed       = false,
 			points       = ir.points,
 			line_widths  = ir.line_widths,
@@ -1267,14 +1366,16 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		delete(fuzzy_owned_ws)
 	}
 	s.fuzzy_skin_stats = {}
-	if options.fuzzy_skin_enabled {
+	if options.fuzzy_skin_enabled || options.fuzzy_skin_mode != .None {
 		s.fuzzy_skin_stats = features.fuzzy_skin_apply(
 			all_sources[:],
 			s.perimeters,
 			{
-				enabled       = true,
+				enabled       = options.fuzzy_skin_enabled,
+				mode          = options.fuzzy_skin_mode,
 				thickness_um  = options.fuzzy_thickness_um,
 				point_dist_um = options.fuzzy_point_dist_um,
+				first_layer   = options.fuzzy_first_layer,
 			},
 			s.profile.printer,
 			&fuzzy_owned_pts,
@@ -1297,10 +1398,14 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		layer_ids,
 		all_sources[:],
 		{
-			start           = options.plan_start if options.has_plan_start else {x = s.profile.printer.axis_minimum_x, y = s.profile.printer.axis_minimum_y},
-			seam            = proc_src.seam,
-			seam_visibility = proc_src.seam_visibility,
-			seam_strategy   = options.seam_strategy,
+			start                 = options.plan_start if options.has_plan_start else {x = s.profile.printer.axis_minimum_x, y = s.profile.printer.axis_minimum_y},
+			seam                  = proc_src.seam,
+			seam_visibility       = proc_src.seam_visibility,
+			seam_strategy         = options.seam_strategy,
+			seam_gap_percent      = options.seam_gap_percent,
+			staggered_inner_seams = options.staggered_inner_seams,
+			infill_first          = options.infill_first,
+			small_perimeter_um    = options.small_perimeter_threshold_um,
 		},
 		allocator = a,
 		record_move_ids = options.evidence_level != .Disabled,
@@ -1319,7 +1424,20 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	options := s.options
 	want_ids := options.evidence_level != .Disabled
 	ext_err: features.Extrusion_Error
-	s.extrusion, ext_err = features.extrusion_calculate(s.unified_plan, s.layer_heights, s.profile.material, process, allocator = a, record_audit = false, record_stable_ids = want_ids)
+	s.extrusion, ext_err = features.extrusion_calculate(
+		s.unified_plan,
+		s.layer_heights,
+		s.profile.material,
+		process,
+		allocator = a,
+		record_audit = false,
+		record_stable_ids = want_ids,
+		options = {
+			top_surface_flow_ppm      = options.top_surface_flow_ppm,
+			bottom_surface_flow_ppm   = options.bottom_surface_flow_ppm,
+			infill_combination_layers = options.infill_combination_layers,
+		},
+	)
 	if ext_err != .None {return {stage = "extrusion", detail = fmt.tprintf("extrusion error: %v", ext_err)}}
 	mot_err: features.Motion_Plan_Error
 	s.motion, mot_err = features.motion_plan_build(
@@ -1331,15 +1449,35 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		s.profile,
 		allocator = a,
 		options = {
-			wipe_distance_um          = options.wipe_distance_um,
-			overhang_slowdown_enabled = options.overhang_slowdown_enabled,
-			overhang_speed_percent    = options.overhang_speed_percent,
-			use_gpu                   = options.use_gpu,
-			worker_threads            = resolved_worker_threads(options.worker_threads),
-			skip_stable_ids           = !want_ids,
+			wipe_distance_um                 = options.wipe_distance_um,
+			overhang_slowdown_enabled        = options.overhang_slowdown_enabled,
+			overhang_speed_percent           = options.overhang_speed_percent,
+			overhang_tier_speeds_um_s        = options.overhang_tier_speeds_um_s,
+			ironing_speed_um_s               = options.ironing_speed_um_s,
+			initial_layer_speed_um_s         = options.initial_layer_speed_um_s,
+			initial_layer_infill_speed_um_s  = options.initial_layer_infill_speed_um_s,
+			outer_wall_speed_um_s            = options.outer_wall_speed_um_s,
+			inner_wall_speed_um_s            = options.inner_wall_speed_um_s,
+			top_surface_speed_um_s           = options.top_surface_speed_um_s,
+			internal_solid_speed_um_s        = options.internal_solid_speed_um_s,
+			small_perimeter_speed_um_s       = options.small_perimeter_speed_um_s,
+			initial_layer_accel_um_s2        = options.initial_layer_accel_um_s2,
+			initial_layer_travel_accel_um_s2 = options.initial_layer_travel_accel_um_s2,
+			outer_wall_accel_um_s2           = options.outer_wall_accel_um_s2,
+			inner_wall_accel_um_s2           = options.inner_wall_accel_um_s2,
+			top_surface_accel_um_s2          = options.top_surface_accel_um_s2,
+			internal_solid_accel_um_s2       = options.internal_solid_accel_um_s2,
+			bridge_accel_um_s2               = options.bridge_accel_um_s2,
+			reduce_infill_retraction         = options.reduce_infill_retraction,
+			use_gpu                          = options.use_gpu,
+			worker_threads                   = resolved_worker_threads(options.worker_threads),
+			skip_stable_ids                  = !want_ids,
 		},
 	)
 	if mot_err != .None {return {stage = "motion_plan", detail = fmt.tprintf("motion plan error: %v", mot_err)}}
+	if options.reduce_crossing_wall {
+		_ = features.motion_plan_apply_combing(&s.motion, s.model_layer_sets, options.max_travel_detour_distance_um, a)
+	}
 	// Scarf seam / spiral vase Z ramps run on linear segments before arc fitting, which leaves the
 	// ramped moves linear and fits arcs to the rest.
 	s.z_ramp_stats = {}
@@ -1347,7 +1485,7 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		s.z_ramp_stats = features.motion_plan_apply_z_ramps(
 			&s.motion,
 			s.layer_heights,
-			{enabled = options.scarf_seam_enabled, length_um = options.scarf_length_um, start_height_pct = 10},
+			{enabled = options.scarf_seam_enabled, length_um = options.scarf_length_um, start_height_pct = options.scarf_start_height_percent},
 			options.vase_mode,
 			proc_src.bottom_skin.minimum_layers,
 			proc_src,
@@ -1382,6 +1520,7 @@ stage_gcode :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		pause_layers = s.options.pause_layers,
 		color_change_layers = s.options.color_change_layers,
 		record_commands = s.options.evidence_level != .Disabled,
+		accel_to_decel_pct = s.options.accel_to_decel_pct,
 	)
 	if klip_err != .None {return {stage = "klipper_emit", detail = fmt.tprintf("klipper emit error: %v", klip_err)}}
 	s.slots[.Gcode].count_a = u64(len(s.klipper.bytes))

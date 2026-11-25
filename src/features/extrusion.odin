@@ -83,6 +83,12 @@ Extrusion_Error :: enum u8 {
 	Arithmetic,
 }
 
+Extrusion_Options :: struct {
+	top_surface_flow_ppm:      profiles.Ratio_Ppm, // 0 = inherit process.skin.flow_ratio
+	bottom_surface_flow_ppm:   profiles.Ratio_Ppm, // 0 = inherit process.skin.flow_ratio
+	infill_combination_layers: u32,                // 0 or 1 = normal; N > 1 = scale sparse infill flow by N
+}
+
 extrusion_calculate :: proc(
 	plan: Unified_Path_Plan_Result,
 	layer_heights: []contracts.Micrometres,
@@ -92,6 +98,7 @@ extrusion_calculate :: proc(
 	allocator := context.allocator,
 	record_audit := true,
 	record_stable_ids := true,
+	options := Extrusion_Options{},
 ) -> (Extrusion_Result, Extrusion_Error) {
 	if process.source.extrusion_accumulation !=
 		.Volume_Then_Fixed_Point_Length ||
@@ -264,6 +271,7 @@ extrusion_calculate :: proc(
 		compact_rems:                 []u128,
 		record_audit:                 bool,
 		record_stable_ids:            bool,
+		options:                      Extrusion_Options,
 	}
 	ectx := Ext_Par_Ctx{
 		plan                         = plan,
@@ -280,6 +288,7 @@ extrusion_calculate :: proc(
 		compact_rems                 = compact_rems,
 		record_audit                 = record_audit,
 		record_stable_ids            = record_stable_ids,
+		options                      = options,
 	}
 	parallel_for(len(plan.layers), &ectx, proc(c: ^Ext_Par_Ctx, layer_index: int) {
 		plan_layer := c.plan.layers[layer_index]
@@ -295,6 +304,13 @@ extrusion_calculate :: proc(
 			if !flow_ok {
 				c.layer_errors[layer_index] = .Invalid_Config
 				return
+			}
+			if (move.role == .Top_Skin || move.role == .Top_Bottom_Skin) && u32(c.options.top_surface_flow_ppm) > 0 && .Ironing not_in move.flags {
+				flow_ratio = c.options.top_surface_flow_ppm
+			} else if move.role == .Bottom_Skin && u32(c.options.bottom_surface_flow_ppm) > 0 {
+				flow_ratio = c.options.bottom_surface_flow_ppm
+			} else if move.role == .Sparse_Infill && c.options.infill_combination_layers > 1 {
+				flow_ratio = profiles.Ratio_Ppm(min(u64(max(u32)), u64(u32(flow_ratio)) * u64(c.options.infill_combination_layers)))
 			}
 			if i64(move.line_width_a) < i64(height) || i64(move.line_width_b) < i64(height) {
 				c.layer_errors[layer_index] = .Invalid_Input

@@ -41,6 +41,12 @@ Unified_Path_Source_Error :: enum u8 {
 	Arithmetic,
 }
 
+Wall_Sequence :: enum u8 {
+	Inner_Outer,
+	Outer_Inner,
+	Inner_Outer_Inner,
+}
+
 unified_path_sources_build :: proc(
 	layer_ids: []contracts.Stable_ID,
 	perimeters: Perimeter_Result,
@@ -53,6 +59,7 @@ unified_path_sources_build :: proc(
 	inner_perimeters_first: bool,
 	limits := DEFAULT_UNIFIED_PATH_SOURCE_LIMITS,
 	allocator := context.allocator,
+	wall_sequence: Wall_Sequence = .Inner_Outer,
 ) -> (Unified_Path_Source_Result, Unified_Path_Source_Error) {
 	layer_count := len(layer_ids)
 	if i64(process.source.nominal_line_width) <= 0 ||
@@ -156,11 +163,29 @@ unified_path_sources_build :: proc(
 				unified_path_source_result_destroy(&result, allocator)
 				return {}, .Invalid_Input
 			}
-			for local_group_index in 0..<int(perimeters.config.count) {
-				group_index := group_cursor+local_group_index
-				if inner_perimeters_first {
-					group_index =
-						region_group_end-1-local_group_index
+			eff_seq := wall_sequence
+			if !inner_perimeters_first && eff_seq == .Inner_Outer {
+				eff_seq = .Outer_Inner
+			}
+			n_walls := int(perimeters.config.count)
+			for local_group_index in 0..<n_walls {
+				group_index := group_cursor + local_group_index
+				switch eff_seq {
+				case .Inner_Outer:
+					group_index = region_group_end - 1 - local_group_index
+				case .Outer_Inner:
+					group_index = group_cursor + local_group_index
+				case .Inner_Outer_Inner:
+					// Emit inner wall 1 first, then outer wall 0, then remaining inner walls 2..N-1.
+					if n_walls >= 2 {
+						if local_group_index == 0 {
+							group_index = group_cursor + 1
+						} else if local_group_index == 1 {
+							group_index = group_cursor + 0
+						} else {
+							group_index = group_cursor + local_group_index
+						}
+					}
 				}
 				group := perimeters.groups[group_index]
 				if group.layer_index != u32(layer_index) {
@@ -172,6 +197,7 @@ unified_path_sources_build :: proc(
 				}
 				path_start := int(group.path_offset)
 				path_end := path_start+int(group.path_count)
+				perim_lw := perimeter_line_width_for(perimeters.config, u32(layer_index), group.perimeter_index)
 				for path_index in path_start..<path_end {
 					path := perimeters.paths[path_index]
 					if path.layer_index != u32(layer_index) ||
@@ -206,7 +232,7 @@ unified_path_sources_build :: proc(
 							points_start:points_end
 						],
 						nil,
-						perimeters.config.line_width,
+						perim_lw,
 					) {
 						unified_path_source_result_destroy(
 							&result,
@@ -214,6 +240,7 @@ unified_path_sources_build :: proc(
 						)
 						return {}, .Invalid_Input
 					}
+					result.sources[source_write-1].perimeter_index = path.perimeter_index
 					source_order += 1
 				}
 			}

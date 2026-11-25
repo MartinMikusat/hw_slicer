@@ -1,16 +1,31 @@
 package features
 
+import "core:math"
+
 import contracts "../contracts"
 import polygon "../polygon"
 import slicing "../slicing"
+
+Brim_Type :: enum u8 {
+	Default,         // legacy: outer if brim_width_um > 0, plus inner if brim_inner
+	None,
+	Outer_Only,
+	Inner_Only,
+	Outer_And_Inner,
+}
 
 Adhesion_Config :: struct {
 	skirt_loops:                   u32,
 	skirt_distance_um:             contracts.Micrometres,
 	skirt_height_layers:           u32,
+	min_skirt_length_um:           contracts.Micrometres,
+	draft_shield:                  bool,
+	brim_type:                     Brim_Type,
 	brim_width_um:                 contracts.Micrometres,
 	brim_gap_um:                   contracts.Micrometres,
 	brim_inner:                    bool,
+	raft_layers:                   u32,
+	raft_expansion_um:             contracts.Micrometres,
 	elephant_foot_compensation_um: contracts.Micrometres,
 	line_width_um:                 contracts.Micrometres,
 	bed_min_x:                     contracts.Micrometres,
@@ -26,8 +41,16 @@ Adhesion_Loop :: struct {
 	line_widths: []contracts.Micrometres,
 }
 
+Adhesion_Raft_Path :: struct {
+	layer_index:  u32,
+	is_interface: bool,
+	points:       []polygon.Polygon_Point,
+	line_widths:  []contracts.Micrometres,
+}
+
 Adhesion_Result :: struct {
-	loops: []Adhesion_Loop,
+	loops:      []Adhesion_Loop,
+	raft_paths: []Adhesion_Raft_Path,
 }
 
 adhesion_result_destroy :: proc(result: ^Adhesion_Result, allocator := context.allocator) {
@@ -36,6 +59,11 @@ adhesion_result_destroy :: proc(result: ^Adhesion_Result, allocator := context.a
 		delete(loop.line_widths, allocator)
 	}
 	delete(result.loops, allocator)
+	for rp in result.raft_paths {
+		delete(rp.points, allocator)
+		delete(rp.line_widths, allocator)
+	}
+	delete(result.raft_paths, allocator)
 	result^ = {}
 }
 
@@ -51,25 +79,69 @@ adhesion_build :: proc(
 	if provider.offset == nil || len(regions.layers) == 0 || i64(config.line_width_um) <= 0 {
 		return {}
 	}
-	layer0 := regions.layers[0]
-	if layer0.region_count == 0 {
+	// Find first layer with model geometry (layer 0 normally, or first model layer above raft).
+	base_layer_idx := -1
+	for layer, li in regions.layers {
+		if layer.region_count > 0 {
+			base_layer_idx = li
+			break
+		}
+	}
+	if base_layer_idx < 0 {
 		return {}
 	}
 	lw := i64(config.line_width_um)
 	loops := make([dynamic]Adhesion_Loop, 0, 16, allocator)
+	raft_paths := make([dynamic]Adhesion_Raft_Path, 0, 64, allocator)
 
-	// Extract layer-0 outer footprint and hole contours as valid Polygon_Sets.
-	outer_set := adhesion_extract_layer0_set(topology, regions, false, allocator)
+	// Extract base layer outer footprint as a valid Polygon_Set.
+	outer_set := adhesion_extract_layer_set(topology, regions, u32(base_layer_idx), false, allocator)
 	defer polygon.polygon_set_destroy(&outer_set, allocator)
 	if len(outer_set.paths) == 0 {
 		delete(loops)
+		delete(raft_paths)
 		return {}
 	}
 
-	// 1. Skirt loops (outermost-to-innermost, up to skirt_height_layers).
-	if config.skirt_loops > 0 {
+	// 0. Optional Raft layers (0 ..< raft_layers) below the model.
+	if config.raft_layers > 0 {
+		raft_exp := config.raft_expansion_um if i64(config.raft_expansion_um) > 0 else contracts.Micrometres(2_000)
+		raft_pad, pad_err := provider.offset(outer_set, raft_exp, .Round, 2.0, 25.0, polygon.DEFAULT_POLYGON_LIMITS, allocator)
+		defer polygon.polygon_set_destroy(&raft_pad, allocator)
+		if pad_err == .None && len(raft_pad.paths) > 0 {
+			min_x, min_y, max_x, max_y := infill_pat_bounds(raft_pad)
+			if max_x > min_x && max_y > min_y {
+				n_raft := min(config.raft_layers, u32(len(regions.layers)))
+				for rli in 0..<n_raft {
+					is_iface := rli == n_raft - 1
+					spacing := f64(lw) if is_iface else f64(lw) * 2.0
+					ang := 0.0 if (rli % 2 == 0) else math.PI * 0.5
+					tmp := make([dynamic]Infill_Pattern_Path, 0, 32, context.temp_allocator)
+					infill_pat_hatch(&tmp, raft_pad, rli, min_x, min_y, max_x, max_y, ang, spacing, 0.0, config.line_width_um, allocator)
+					for tp in tmp {
+						append(&raft_paths, Adhesion_Raft_Path{
+							layer_index  = tp.layer_index,
+							is_interface = is_iface,
+							points       = tp.points,
+							line_widths  = tp.line_widths,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	// 1. Skirt loops (outermost-to-innermost, up to skirt_height_layers; draft_shield spans all layers).
+	eff_skirt_loops := config.skirt_loops
+	if config.draft_shield && eff_skirt_loops == 0 {
+		eff_skirt_loops = 1
+	}
+	if eff_skirt_loops > 0 {
 		skirt_layers := config.skirt_height_layers
 		if skirt_layers == 0 {skirt_layers = 1}
+		if config.draft_shield {
+			skirt_layers = u32(len(regions.layers))
+		}
 		if skirt_layers > u32(len(regions.layers)) {
 			skirt_layers = u32(len(regions.layers))
 		}
@@ -109,11 +181,35 @@ adhesion_build :: proc(
 			}
 		}
 		base_dist := i64(config.skirt_distance_um)
-		if i64(config.brim_width_um) > 0 {
+		if i64(config.brim_width_um) > 0 && config.brim_type != .None {
 			base_dist = max(base_dist, i64(config.brim_width_um) + i64(config.brim_gap_um) + lw)
 		}
+		// Auto-increase layer-0 skirt loops to satisfy min_skirt_length_um.
+		layer0_skirt_loops := eff_skirt_loops
+		if i64(config.min_skirt_length_um) > 0 {
+			probe_off := contracts.Micrometres(base_dist + lw/2)
+			probe, perr := provider.offset(skirt_set, probe_off, .Round, 2.0, 25.0, polygon.DEFAULT_POLYGON_LIMITS, allocator)
+			if perr == .None && len(probe.paths) > 0 {
+				loop_len := 0.0
+				for pp in probe.paths {
+					ring := probe.points[pp.offset:pp.offset+pp.count]
+					if polygon.polygon_path_area_2(ring) <= 0 {continue}
+					for pi in 0..<len(ring) {
+						pa := ring[pi]
+						pb := ring[(pi+1)%len(ring)]
+						loop_len += math.hypot(f64(i64(pb.x)-i64(pa.x)), f64(i64(pb.y)-i64(pa.y)))
+					}
+				}
+				if loop_len > 1.0 {
+					needed := u32(math.ceil(f64(i64(config.min_skirt_length_um)) / loop_len))
+					layer0_skirt_loops = min(u32(32), max(layer0_skirt_loops, needed))
+				}
+			}
+			polygon.polygon_set_destroy(&probe, allocator)
+		}
 		for li in 0..<skirt_layers {
-			for k := int(config.skirt_loops) - 1; k >= 0; k -= 1 {
+			n_loops := layer0_skirt_loops if li == 0 else eff_skirt_loops
+			for k := int(n_loops) - 1; k >= 0; k -= 1 {
 				offset_um := contracts.Micrometres(base_dist + i64(k)*lw + lw/2)
 				expanded, err := provider.offset(
 					skirt_set,
@@ -143,32 +239,38 @@ adhesion_build :: proc(
 		}
 	}
 
-	// 2. Outer Brim loops on layer 0 (outermost-to-innermost).
-	if i64(config.brim_width_um) > 0 {
+	// 2. Outer and/or Inner Brim loops on layer 0 (skipped when raft is active or brim_type == .None).
+	want_outer_brim := i64(config.brim_width_um) > 0 && config.raft_layers == 0 &&
+		(config.brim_type == .Default || config.brim_type == .Outer_Only || config.brim_type == .Outer_And_Inner)
+	want_inner_brim := i64(config.brim_width_um) > 0 && config.raft_layers == 0 &&
+		((config.brim_type == .Default && config.brim_inner) || config.brim_type == .Inner_Only || config.brim_type == .Outer_And_Inner)
+	if want_outer_brim || want_inner_brim {
 		brim_count := int((i64(config.brim_width_um) + lw - 1) / lw)
 		if brim_count > 64 {brim_count = 64}
-		for k := brim_count - 1; k >= 0; k -= 1 {
-			offset_um := contracts.Micrometres(i64(config.brim_gap_um) + i64(k)*lw + lw/2)
-			expanded, err := provider.offset(
-				outer_set,
-				offset_um,
-				.Round,
-				2.0,
-				25.0,
-				polygon.DEFAULT_POLYGON_LIMITS,
-				allocator,
-			)
-			if err != .None {
+		if want_outer_brim {
+			for k := brim_count - 1; k >= 0; k -= 1 {
+				offset_um := contracts.Micrometres(i64(config.brim_gap_um) + i64(k)*lw + lw/2)
+				expanded, err := provider.offset(
+					outer_set,
+					offset_um,
+					.Round,
+					2.0,
+					25.0,
+					polygon.DEFAULT_POLYGON_LIMITS,
+					allocator,
+				)
+				if err != .None {
+					polygon.polygon_set_destroy(&expanded, allocator)
+					continue
+				}
+				adhesion_append_loops(&loops, expanded, 0, true, config, allocator)
 				polygon.polygon_set_destroy(&expanded, allocator)
-				continue
 			}
-			adhesion_append_loops(&loops, expanded, 0, true, config, allocator)
-			polygon.polygon_set_destroy(&expanded, allocator)
 		}
 
 		// 3. Optional Inner Brim loops inside layer-0 holes.
-		if config.brim_inner {
-			hole_set := adhesion_extract_layer0_set(topology, regions, true, allocator)
+		if want_inner_brim {
+			hole_set := adhesion_extract_layer_set(topology, regions, u32(base_layer_idx), true, allocator)
 			defer polygon.polygon_set_destroy(&hole_set, allocator)
 			if len(hole_set.paths) > 0 {
 				for k := 0; k < brim_count; k += 1 {
@@ -193,17 +295,18 @@ adhesion_build :: proc(
 		}
 	}
 
-	return Adhesion_Result{loops = loops[:]}
+	return Adhesion_Result{loops = loops[:], raft_paths = raft_paths[:]}
 }
 
 @(private)
-adhesion_extract_layer0_set :: proc(
+adhesion_extract_layer_set :: proc(
 	topology: slicing.Topology_Result,
 	regions: slicing.Region_Result,
+	layer_index: u32,
 	extract_holes: bool,
 	allocator := context.allocator,
 ) -> polygon.Polygon_Set {
-	layer0 := regions.layers[0]
+	layer0 := regions.layers[layer_index]
 	points := make([dynamic]polygon.Polygon_Point, 0, 256, allocator)
 	paths := make([dynamic]polygon.Polygon_Path, 0, 16, allocator)
 

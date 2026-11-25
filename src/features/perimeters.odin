@@ -15,13 +15,21 @@ Feature_Topology_Policy :: enum u32 {
 }
 
 Perimeter_Config :: struct {
-	count:                u32,
-	line_width:           contracts.Micrometres,
-	first_layer_inset_um: contracts.Micrometres,
-	topology_policy:      Feature_Topology_Policy,
-	join_type:            polygon.Polygon_Join_Type,
-	miter_limit:          f64,
-	arc_tolerance:        f64,
+	count:                      u32,
+	line_width:                 contracts.Micrometres,
+	outer_line_width:           contracts.Micrometres, // 0 = inherit line_width
+	inner_line_width:           contracts.Micrometres, // 0 = inherit line_width
+	first_layer_line_width:     contracts.Micrometres, // 0 = inherit line_width
+	first_layer_count:          u32,                   // 0 = inherit count
+	first_layer_inset_um:       contracts.Micrometres,
+	xy_contour_compensation_um: contracts.Micrometres, // + expands outer, - shrinks outer
+	xy_hole_compensation_um:    contracts.Micrometres, // + enlarges holes, - shrinks holes
+	precise_outer_wall:         bool,
+	layer_height_um:            contracts.Micrometres, // used by precise_outer_wall spacing
+	topology_policy:            Feature_Topology_Policy,
+	join_type:                  polygon.Polygon_Join_Type,
+	miter_limit:                f64,
+	arc_tolerance:              f64,
 }
 
 Perimeter_Limits :: struct {
@@ -164,7 +172,9 @@ perimeters_generate :: proc(
 		delete(unique_regions)
 	}
 	if region_count > 0 {
-		has_l0_inset := i64(config.first_layer_inset_um) > 0
+		has_l0_special := i64(config.first_layer_inset_um) > 0 ||
+			i64(config.first_layer_line_width) > 0 ||
+			config.first_layer_count > 0
 		cap_pow2 := 16
 		for cap_pow2 < region_count * 2 {cap_pow2 <<= 1}
 		ht_mask := u64(cap_pow2 - 1)
@@ -177,7 +187,7 @@ perimeters_generate :: proc(
 				return {}, inp_err
 			}
 			region_inputs[r_idx] = inp
-			is_l0 := has_l0_inset && regions.regions[r_idx].layer_index == 0
+			is_l0 := has_l0_special && regions.regions[r_idx].layer_index == 0
 			h := features_polygon_set_hash64(inp) ~ (u64(0x9e3779b97f4a7c15) if is_l0 else 0)
 			slot := h & ht_mask
 			found := -1
@@ -185,7 +195,7 @@ perimeters_generate :: proc(
 				entry := ht[slot]
 				if entry == 0 {break}
 				cand := entry - 1
-				cand_l0 := has_l0_inset && regions.regions[cand].layer_index == 0
+				cand_l0 := has_l0_special && regions.regions[cand].layer_index == 0
 				if cand_l0 == is_l0 && features_polygon_sets_equal(region_inputs[cand], inp) {
 					found = cand
 					break
@@ -230,9 +240,22 @@ perimeters_generate :: proc(
 		region_index := c.unique_regions[ui]
 		region := c.regions.regions[region_index]
 		input := c.region_inputs[region_index]
+		comp_owned: polygon.Polygon_Set
+		defer polygon.polygon_set_destroy(&comp_owned, c.allocator)
+		if i64(c.config.xy_contour_compensation_um) != 0 || i64(c.config.xy_hole_compensation_um) != 0 {
+			if compensated, comp_ok := perimeter_apply_xy_compensation(input, c.config, c.provider, c.limits.polygon, c.allocator); comp_ok {
+				comp_owned = compensated
+				input = comp_owned
+			}
+		}
+		if len(input.paths) == 0 {return}
 		base_slot := region_index * int(c.config.count)
-		for perimeter_index in 0..<c.config.count {
-			base_delta, delta_ok := perimeter_delta(c.config, perimeter_index)
+		eff_count := c.config.count
+		if region.layer_index == 0 && c.config.first_layer_count > 0 && c.config.first_layer_count < eff_count {
+			eff_count = c.config.first_layer_count
+		}
+		for perimeter_index in 0..<eff_count {
+			base_delta, delta_ok := perimeter_delta_for_layer(c.config, region.layer_index, perimeter_index)
 			if !delta_ok {
 				c.region_errors[region_index] = .Arithmetic
 				return
@@ -514,17 +537,135 @@ perimeter_region_input :: proc(
 	return result, .None
 }
 
+perimeter_line_width_for :: proc(
+	config: Perimeter_Config,
+	layer_index: u32,
+	perimeter_index: u32,
+) -> contracts.Micrometres {
+	if layer_index == 0 && i64(config.first_layer_line_width) > 0 {
+		return config.first_layer_line_width
+	}
+	if perimeter_index == 0 && i64(config.outer_line_width) > 0 {
+		return config.outer_line_width
+	}
+	if perimeter_index > 0 && i64(config.inner_line_width) > 0 {
+		return config.inner_line_width
+	}
+	return config.line_width
+}
+
+perimeter_delta_for_layer :: proc(
+	config: Perimeter_Config,
+	layer_index: u32,
+	perimeter_index: u32,
+) -> (contracts.Micrometres, bool) {
+	outer_w := i128(i64(perimeter_line_width_for(config, layer_index, 0)))
+	inner_w := i128(i64(perimeter_line_width_for(config, layer_index, 1)))
+	distance: i128
+	if perimeter_index == 0 {
+		distance = outer_w / 2
+	} else {
+		precise_extra := i128(i64(config.layer_height_um) / 4) if config.precise_outer_wall && i64(config.layer_height_um) > 0 else 0
+		distance = outer_w + precise_extra + inner_w/2 + i128(perimeter_index - 1)*inner_w
+	}
+	if distance <= 0 || distance > i128(geometry.MAX_PLANAR_COORDINATE_UM) {
+		return 0, false
+	}
+	return contracts.Micrometres(-i64(distance)), true
+}
+
+@(private = "file")
+perimeter_apply_xy_compensation :: proc(
+	input: polygon.Polygon_Set,
+	config: Perimeter_Config,
+	provider: polygon.Polygon_Provider,
+	limits: polygon.Polygon_Limits,
+	allocator: mem.Allocator,
+) -> (polygon.Polygon_Set, bool) {
+	if len(input.paths) == 0 || provider.offset == nil {return {}, false}
+	outer_comp := config.xy_contour_compensation_um
+	hole_comp := config.xy_hole_compensation_um
+	// Separate outer (CCW, area > 0) and holes (CW, area < 0).
+	outer_pts := make([dynamic]polygon.Polygon_Point, 0, len(input.points), context.temp_allocator)
+	outer_paths := make([dynamic]polygon.Polygon_Path, 0, 2, context.temp_allocator)
+	hole_pts := make([dynamic]polygon.Polygon_Point, 0, len(input.points), context.temp_allocator)
+	hole_paths := make([dynamic]polygon.Polygon_Path, 0, len(input.paths), context.temp_allocator)
+	for p in input.paths {
+		ring := input.points[p.offset:p.offset+p.count]
+		area := polygon.polygon_path_area_2(ring)
+		if area > 0 {
+			off := u64(len(outer_pts))
+			append(&outer_pts, ..ring)
+			append(&outer_paths, polygon.Polygon_Path{offset = off, count = p.count})
+		} else if area < 0 {
+			// Reverse CW hole to CCW so positive hole_comp expands the hole.
+			off := u64(len(hole_pts))
+			for k := len(ring) - 1; k >= 0; k -= 1 {
+				append(&hole_pts, ring[k])
+			}
+			append(&hole_paths, polygon.Polygon_Path{offset = off, count = p.count})
+		}
+	}
+	if len(outer_paths) == 0 {return {}, false}
+	outer_set := polygon.Polygon_Set{points = outer_pts[:], paths = outer_paths[:]}
+	comp_outer: polygon.Polygon_Set
+	outer_owned := false
+	defer if outer_owned {polygon.polygon_set_destroy(&comp_outer, allocator)}
+	if i64(outer_comp) != 0 {
+		err: polygon.Polygon_Error
+		comp_outer, err = provider.offset(outer_set, outer_comp, config.join_type, config.miter_limit, config.arc_tolerance, limits, allocator)
+		if err != .None {return {}, false}
+		outer_owned = true
+	} else {
+		comp_outer = outer_set
+	}
+	if len(hole_paths) == 0 {
+		if outer_owned {
+			outer_owned = false
+			return comp_outer, true
+		}
+		return {}, false
+	}
+	hole_set := polygon.Polygon_Set{points = hole_pts[:], paths = hole_paths[:]}
+	comp_holes: polygon.Polygon_Set
+	holes_owned := false
+	defer if holes_owned {polygon.polygon_set_destroy(&comp_holes, allocator)}
+	if i64(hole_comp) != 0 {
+		err: polygon.Polygon_Error
+		comp_holes, err = provider.offset(hole_set, hole_comp, config.join_type, config.miter_limit, config.arc_tolerance, limits, allocator)
+		if err != .None {return {}, false}
+		holes_owned = true
+	} else {
+		comp_holes = hole_set
+	}
+	if len(comp_holes.paths) == 0 {
+		if outer_owned {
+			outer_owned = false
+			return comp_outer, true
+		}
+		// Copy outer_set into allocator
+		res := polygon.Polygon_Set{
+			points = make([]polygon.Polygon_Point, len(comp_outer.points), allocator),
+			paths  = make([]polygon.Polygon_Path, len(comp_outer.paths), allocator),
+		}
+		copy(res.points, comp_outer.points)
+		copy(res.paths, comp_outer.paths)
+		return res, true
+	}
+	if provider.boolean == nil {return {}, false}
+	diff, diff_err := provider.boolean(comp_outer, comp_holes, .Difference, .Non_Zero, limits, allocator)
+	if diff_err != .None {
+		polygon.polygon_set_destroy(&diff, allocator)
+		return {}, false
+	}
+	return diff, true
+}
+
 perimeter_delta :: proc(
 	config: Perimeter_Config,
 	perimeter_index: u32,
 ) -> (contracts.Micrometres, bool) {
-	width := i128(i64(config.line_width))
-	distance := width/2+i128(perimeter_index)*width
-	if distance <= 0 ||
-	   distance > i128(geometry.MAX_PLANAR_COORDINATE_UM) {
-		return 0, false
-	}
-	return contracts.Micrometres(-i64(distance)), true
+	return perimeter_delta_for_layer(config, 1, perimeter_index)
 }
 
 perimeter_join_type_valid :: proc(
