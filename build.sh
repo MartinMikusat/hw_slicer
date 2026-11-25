@@ -71,12 +71,16 @@ EXECUTABLE="$APP/Contents/MacOS/hw_slicer"
 HOST_OBJECT="$BUILD_DIR/HWSlicerHost.o"
 METAL_COMPUTE_OBJECT="$BUILD_DIR/HWSlicerMetalCompute.o"
 MOONRAKER_OBJECT="$BUILD_DIR/HWSlicerMoonraker.o"
+ARM64_ASM_OBJECT="$BUILD_DIR/hw_slicer_arm64.o"
 FRAMEWORKS="-framework AppKit -framework Foundation -framework Metal -framework QuartzCore -framework UniformTypeIdentifiers -framework CoreText -framework CoreGraphics"
 CLI_FRAMEWORKS="-framework Foundation -framework Metal"
 MCP_FRAMEWORKS="-framework Foundation"
 ASAN_COMPAT_OBJECT=""
 
 mkdir -p "$BUILD_DIR"
+
+# Assemble Apple Silicon ARM64 SIMD/integer kernels (used by both GUI and CLI).
+"$CLANG" -c "$ROOT/host/hw_slicer_arm64.s" -o "$ARM64_ASM_OBJECT"
 
 # Compile headless Metal compute bridge (used by both GUI and CLI; no AppKit dependency).
 # shellcheck disable=SC2086
@@ -120,7 +124,7 @@ if [ "$MODE" != "cli-release" ]; then
       -collection:components="$COMPONENTS_ROOT" \
       -collection:neo="$NEO_ROOT" \
       -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$CLIPPER_MODE/libhw_clipper2.a" \
-      -extra-linker-flags:"$HOST_OBJECT $METAL_COMPUTE_OBJECT $MOONRAKER_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
+      -extra-linker-flags:"$HOST_OBJECT $METAL_COMPUTE_OBJECT $MOONRAKER_OBJECT $ARM64_ASM_OBJECT $ASAN_COMPAT_OBJECT -lc++ $FRAMEWORKS"
   )
 fi
 
@@ -137,7 +141,7 @@ fi
     $ODIN_FLAGS \
     -collection:devlog="$DEVLOG_ROOT" \
     -define:HW_CLIPPER2_LIBRARY="../../build/clipper2/$CLIPPER_MODE/libhw_clipper2.a" \
-    -extra-linker-flags:"$METAL_COMPUTE_OBJECT $ASAN_COMPAT_OBJECT -lc++ $CLI_FRAMEWORKS"
+    -extra-linker-flags:"$METAL_COMPUTE_OBJECT $ARM64_ASM_OBJECT $ASAN_COMPAT_OBJECT -lc++ $CLI_FRAMEWORKS"
 )
 
 MCP_EXECUTABLE="$ROOT/build/hw-slicer-printer-mcp"

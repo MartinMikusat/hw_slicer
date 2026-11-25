@@ -8,6 +8,18 @@ import "core:slice"
 import contracts "../contracts"
 import geometry "../geometry"
 
+@(private = "file", default_calling_convention = "c")
+foreign {
+	hw_vatti_snap_strip_pass1 :: proc(
+		st: rawptr,
+		n_st: i64,
+		s_u32: u64,
+		skip_same_set: i64,
+		out_pairs: [^]u64,
+		out_cap: i64,
+	) -> i64 ---
+}
+
 @(private = "file")
 Vatti_Seg :: struct {
 	ax, ay:  i64,
@@ -694,6 +706,7 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 					by:    i32,
 					meta:  u32,
 				}
+				#assert(size_of(Strip_Entry) == 32)
 				inv_span := f64(n_strips) / f64(y_span)
 				base_y := i64(g_min_y) - 1
 				counts: [64]int
@@ -753,9 +766,90 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 					t := (f64(hx - ax)*dx + f64(hy - ay)*dy) / (dx*dx + dy*dy)
 					append(snaps, Snap_Item{idx, t, hx, hy})
 				}
+				cand_pairs := make_temp_non_zeroed(u64, max(256, n_segs * 4))
+				skip_flag: i64 = 1 if skip_same_set else 0
 				for s in 0..<n_strips {
 					st := strip_data[offsets[s]:offsets[s + 1]]
 					n_st := len(st)
+					if n_st < 2 {continue}
+					n_cand := hw_vatti_snap_strip_pass1(
+						raw_data(st),
+						i64(n_st),
+						u64(s),
+						skip_flag,
+						raw_data(cand_pairs),
+						i64(len(cand_pairs)),
+					)
+					if n_cand >= 0 {
+						for ci in 0..<int(n_cand) {
+							pair := cand_pairs[ci]
+							ai := int(u32(pair))
+							aj := int(u32(pair >> 32))
+							ord_i := st[ai]
+							ord_j := st[aj]
+							i := int(ord_i.meta & 0x00ff_ffff)
+							i_clip := (ord_i.meta >> 30) & 1
+							a_ax, a_ay := i64(ord_i.ax), i64(ord_i.ay)
+							a_bx, a_by := i64(ord_i.bx), i64(ord_i.by)
+							a_min_x := i64(ord_i.min_x)
+							a_max_x := max(a_ax, a_bx)
+							a_min_y := i64(ord_i.min_y)
+							a_max_y := i64(ord_i.max_y)
+							dax := a_bx - a_ax
+							day := a_by - a_ay
+							adax := abs(dax)
+							aday := abs(day)
+							j := int(ord_j.meta & 0x00ff_ffff)
+							b_ax, b_ay := i64(ord_j.ax), i64(ord_j.ay)
+							b_bx, b_by := i64(ord_j.bx), i64(ord_j.by)
+							b_min_x := i64(ord_j.min_x)
+							b_max_x := max(b_ax, b_bx)
+							b_min_y := i64(ord_j.min_y)
+							b_max_y := i64(ord_j.max_y)
+							dbx := b_bx - b_ax
+							dby := b_by - b_ay
+							adbx := abs(dbx)
+							adby := abs(dby)
+							try_snap_i32(&snaps, i, a_ax, a_ay, a_bx, a_by, a_min_x, a_max_x, a_min_y, a_max_y, dax, day, adax, aday, b_ax, b_ay)
+							try_snap_i32(&snaps, i, a_ax, a_ay, a_bx, a_by, a_min_x, a_max_x, a_min_y, a_max_y, dax, day, adax, aday, b_bx, b_by)
+							try_snap_i32(&snaps, j, b_ax, b_ay, b_bx, b_by, b_min_x, b_max_x, b_min_y, b_max_y, dbx, dby, adbx, adby, a_ax, a_ay)
+							try_snap_i32(&snaps, j, b_ax, b_ay, b_bx, b_by, b_min_x, b_max_x, b_min_y, b_max_y, dbx, dby, adbx, adby, a_bx, a_by)
+							if b_min_x > a_max_x || b_max_y < a_min_y || b_min_y > a_max_y {continue}
+							if skip_same_set && i_clip == ((ord_j.meta >> 30) & 1) {continue}
+							shared := (a_ax == b_ax && a_ay == b_ay) || (a_ax == b_bx && a_ay == b_by) ||
+							          (a_bx == b_ax && a_by == b_ay) || (a_bx == b_bx && a_by == b_by)
+							if !shared {
+								denom := dax*dby - day*dbx
+								if denom != 0 {
+									rx := b_ax - a_ax
+									ry := b_ay - a_ay
+									num_a := rx*dby - ry*dbx
+									num_b := rx*day - ry*dax
+									hit := (num_a >= 0 && num_a <= denom && num_b >= 0 && num_b <= denom) if denom > 0 else
+									       (num_a <= 0 && num_a >= denom && num_b <= 0 && num_b >= denom)
+									if hit {
+										inv_d := 1.0 / f64(denom)
+										ta := f64(num_a) * inv_d
+										tb := f64(num_b) * inv_d
+										if (ta > 1e-9 && ta < 1.0 - 1e-9) || (tb > 1e-9 && tb < 1.0 - 1e-9) {
+											px := a_ax + i64(math.round(ta * f64(dax)))
+											py := a_ay + i64(math.round(ta * f64(day)))
+											append(&hot, [2]i64{px, py})
+											crossings += 1
+										}
+										continue
+									}
+								}
+							}
+							if dax*(b_ay - a_ay) - day*(b_ax - a_ax) == 0 &&
+							   dax*(b_by - a_ay) - day*(b_bx - a_ax) == 0 &&
+							   max(a_min_x, b_min_x) <= min(a_max_x, b_max_x) &&
+							   max(a_min_y, b_min_y) <= min(a_max_y, b_max_y) {
+								crossings += 1
+							}
+						}
+						continue
+					}
 					s_u32 := u32(s)
 					for ai in 0..<n_st {
 						ord_i := st[ai]
