@@ -793,8 +793,75 @@ klipper_expected_evidence :: proc(
 klipper_parse_command :: proc(
 	line: string,
 ) -> (Klipper_Parsed_Command, Klipper_Validation_Error) {
-	if len(line) == 0 {return {}, .Invalid_Syntax}
-	// Fast path: 99.8% of commands are G0/G1/G2/G3 motion commands.
+	n := len(line)
+	if n == 0 {return {}, .Invalid_Syntax}
+	// Single-pass fast path: 99.8% of commands are G0/G1/G2/G3 motion commands.
+	if n >= 5 && line[0] == 'G' && line[2] == ' ' && line[n-1] != ' ' {
+		c1 := line[1]
+		if c1 >= '0' && c1 <= '3' {
+			result := Klipper_Parsed_Command{}
+			switch c1 {
+			case '1': result.kind = .G1
+			case '0': result.kind = .G0
+			case '2': result.kind = .G2
+			case '3': result.kind = .G3
+			}
+			pos := 3
+			token_count := 1
+			for pos < n {
+				if token_count >= 8 {return {}, .Invalid_Syntax}
+				key := line[pos]
+				if key == ' ' {return {}, .Invalid_Syntax}
+				val_start := pos + 1
+				end := val_start
+				for end < n && line[end] != ' ' {end += 1}
+				if end == val_start {return {}, .Invalid_Syntax}
+				value := line[val_start:end]
+				token_ok := false
+				switch key {
+				case 'X':
+					if result.has_x {return {}, .Invalid_Syntax}
+					result.x, token_ok = klipper_parse_fixed_i64(value, 3)
+					result.has_x = true
+				case 'Y':
+					if result.has_y {return {}, .Invalid_Syntax}
+					result.y, token_ok = klipper_parse_fixed_i64(value, 3)
+					result.has_y = true
+				case 'Z':
+					if result.has_z {return {}, .Invalid_Syntax}
+					result.z, token_ok = klipper_parse_fixed_i64(value, 3)
+					result.has_z = true
+				case 'I':
+					if result.has_i {return {}, .Invalid_Syntax}
+					result.i, token_ok = klipper_parse_fixed_i64(value, 3)
+					result.has_i = true
+				case 'J':
+					if result.has_j {return {}, .Invalid_Syntax}
+					result.j, token_ok = klipper_parse_fixed_i64(value, 3)
+					result.has_j = true
+				case 'E':
+					if result.has_e {return {}, .Invalid_Syntax}
+					e_units: i64
+					e_units, token_ok = klipper_parse_fixed_i64(value, 5)
+					result.e_nm = i128(e_units) * 10
+					result.has_e = true
+				case 'F':
+					if result.has_f {return {}, .Invalid_Syntax}
+					result.f, token_ok = klipper_parse_i64(value)
+					result.has_f = true
+				case:
+					return {}, .Invalid_Syntax
+				}
+				if !token_ok {return {}, .Invalid_Syntax}
+				token_count += 1
+				pos = end + 1
+			}
+			if !klipper_command_parameters_valid(result, token_count) {
+				return {}, .Invalid_Syntax
+			}
+			return result, .None
+		}
+	}
 	if line[0] == ';' {
 		if line == KLIPPER_HEADER {
 			return {kind = .Header}, .None
