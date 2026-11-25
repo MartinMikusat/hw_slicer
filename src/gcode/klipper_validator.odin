@@ -153,9 +153,10 @@ klipper_validate :: proc(
 	bytes: []u8,
 	profile: profiles.Resolved_Profiles,
 	motion: features.Motion_Plan_Result,
+	require_stable_ids := true,
 ) -> (Klipper_Validation_Report, Klipper_Validation_Error) {
 	if len(bytes) == 0 || bytes[len(bytes)-1] != '\n' ||
-	   !klipper_motion_valid(motion, profile) {
+	   !klipper_motion_valid(motion, profile, require_stable_ids) {
 		return {}, .Invalid_Encoding
 	}
 	state := Klipper_Validation_State{

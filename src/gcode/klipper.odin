@@ -116,7 +116,7 @@ klipper_emit :: proc(
 	if resolve_error != .None || resolved != profile {
 		return {}, .Invalid_Profile
 	}
-	if !klipper_motion_valid(motion, profile) {
+	if !klipper_motion_valid(motion, profile, record_commands) {
 		return {}, .Invalid_Motion
 	}
 	if g_gcode_worker_threads > 1 && len(motion.layers) >= 4 {
@@ -410,7 +410,7 @@ klipper_emit :: proc(
 	result.final_y = state.y
 	result.final_z = state.z
 	report, validation_error :=
-		klipper_validate(result.bytes, profile, motion)
+		klipper_validate(result.bytes, profile, motion, record_commands)
 	if validation_error != .None ||
 	   report.command_count != u64(command_write) ||
 	   report.positive_filament_nm != result.positive_filament_nm ||
@@ -1208,23 +1208,20 @@ klipper_emit_acceleration :: proc(
 klipper_motion_valid :: proc(
 	motion: features.Motion_Plan_Result,
 	profile: profiles.Resolved_Profiles,
+	require_stable_ids := true,
 ) -> bool {
-	if len(motion.layers) == 0 || motion.extrusion_count == 0 {
+	n_layers := len(motion.layers)
+	if n_layers == 0 || motion.extrusion_count == 0 {
 		return false
 	}
 	expected_offset: u64
-	retraction_count: u64
-	travel_count: u64
-	extrusion_count: u64
-	dwell_count: u64
 	total_motion: u64
 	total_dwell: u64
 	total_planned: u64
 	previous_z := i64(profile.printer.axis_minimum_z)
 	for layer, layer_index in motion.layers {
 		layer_z := i64(layer.z)
-		operation_limit :=
-			layer.operation_offset+u64(layer.operation_count)
+		operation_limit := layer.operation_offset+u64(layer.operation_count)
 		duration_sum, duration_ok := klipper_checked_add_u64(
 			layer.motion_duration_us,
 			layer.dwell_duration_us,
@@ -1241,52 +1238,87 @@ klipper_motion_valid :: proc(
 			return false
 		}
 		previous_z = layer_z
+		total_motion, duration_ok = klipper_checked_add_u64(total_motion, layer.motion_duration_us)
+		if duration_ok {
+			total_dwell, duration_ok = klipper_checked_add_u64(total_dwell, layer.dwell_duration_us)
+		}
+		if duration_ok {
+			total_planned, duration_ok = klipper_checked_add_u64(total_planned, layer.planned_duration_us)
+		}
+		if !duration_ok {return false}
+		expected_offset += u64(layer.operation_count)
+	}
+	if expected_offset != u64(len(motion.operations)) ||
+	   total_motion != motion.total_motion_duration_us ||
+	   total_dwell != motion.total_dwell_duration_us ||
+	   total_planned != motion.total_planned_duration_us {
+		return false
+	}
+
+	Motion_Valid_Layer :: struct {
+		retraction_count: u64,
+		travel_count:     u64,
+		extrusion_count:  u64,
+		dwell_count:      u64,
+		ok:               bool,
+	}
+	Motion_Valid_Ctx :: struct {
+		motion:             features.Motion_Plan_Result,
+		profile:            profiles.Resolved_Profiles,
+		require_stable_ids: bool,
+		out:                []Motion_Valid_Layer,
+	}
+	out := make([]Motion_Valid_Layer, n_layers, context.temp_allocator)
+	vctx := Motion_Valid_Ctx{
+		motion             = motion,
+		profile            = profile,
+		require_stable_ids = require_stable_ids,
+		out                = out,
+	}
+	workers.parallel_for(n_layers, &vctx, proc(c: ^Motion_Valid_Ctx, layer_index: int) {
+		layer := c.motion.layers[layer_index]
 		operation_start := int(layer.operation_offset)
 		operation_end := operation_start+int(layer.operation_count)
 		layer_motion: u64
 		layer_dwell: u64
-		for operation in motion.operations[operation_start:operation_end] {
-			if operation.stable_id == contracts.INVALID_STABLE_ID ||
+		retraction_count: u64
+		travel_count: u64
+		extrusion_count: u64
+		dwell_count: u64
+		req_ids := c.require_stable_ids
+		for operation in c.motion.operations[operation_start:operation_end] {
+			if (req_ids && operation.stable_id == contracts.INVALID_STABLE_ID) ||
 			   operation.layer_index != u32(layer_index) ||
 			   operation.duration_us == 0 ||
-			   !klipper_operation_numeric_valid(operation, profile) {
-				return false
+			   !klipper_operation_numeric_valid(operation, c.profile) {
+				return
 			}
+			duration_ok: bool
 			if operation.kind == .Dwell {
-				layer_dwell, duration_ok = klipper_checked_add_u64(
-					layer_dwell,
-					operation.duration_us,
-				)
+				layer_dwell, duration_ok = klipper_checked_add_u64(layer_dwell, operation.duration_us)
 				dwell_count += 1
 			} else {
-				layer_motion, duration_ok = klipper_checked_add_u64(
-					layer_motion,
-					operation.duration_us,
-				)
+				layer_motion, duration_ok = klipper_checked_add_u64(layer_motion, operation.duration_us)
 			}
-			if !duration_ok {return false}
+			if !duration_ok {return}
 			switch operation.kind {
 			case .Retract:
-				if operation.filament_delta_nm >= 0 {
-					return false
-				}
+				if operation.filament_delta_nm >= 0 {return}
 				retraction_count += 1
 			case .Travel:
 				if operation.filament_delta_nm != 0 ||
 				   operation.role != .Invalid ||
 				   operation.point_a == operation.point_b {
-					return false
+					return
 				}
 				travel_count += 1
 			case .Recover:
-				if operation.filament_delta_nm <= 0 {
-					return false
-				}
+				if operation.filament_delta_nm <= 0 {return}
 			case .Extrude:
 				if operation.filament_delta_nm <= 0 ||
 				   operation.role == .Invalid ||
 				   operation.point_a == operation.point_b {
-					return false
+					return
 				}
 				extrusion_count += 1
 			case .Dwell:
@@ -1294,40 +1326,40 @@ klipper_motion_valid :: proc(
 				   operation.speed != 0 ||
 				   operation.acceleration != 0 ||
 				   operation.point_a != operation.point_b {
-					return false
+					return
 				}
 			case .Invalid:
-				return false
+				return
 			}
 		}
 		if layer.motion_duration_us != layer_motion ||
 		   layer.dwell_duration_us != layer_dwell {
-			return false
+			return
 		}
-		total_motion, duration_ok =
-			klipper_checked_add_u64(total_motion, layer_motion)
-		if duration_ok {
-			total_dwell, duration_ok =
-				klipper_checked_add_u64(total_dwell, layer_dwell)
+		c.out[layer_index] = {
+			retraction_count = retraction_count,
+			travel_count     = travel_count,
+			extrusion_count  = extrusion_count,
+			dwell_count      = dwell_count,
+			ok               = true,
 		}
-		if duration_ok {
-			total_planned, duration_ok =
-				klipper_checked_add_u64(
-					total_planned,
-					layer.planned_duration_us,
-				)
-		}
-		if !duration_ok {return false}
-		expected_offset += u64(layer.operation_count)
+	}, g_gcode_worker_threads)
+
+	retraction_count: u64
+	travel_count: u64
+	extrusion_count: u64
+	dwell_count: u64
+	for r in out {
+		if !r.ok {return false}
+		retraction_count += r.retraction_count
+		travel_count += r.travel_count
+		extrusion_count += r.extrusion_count
+		dwell_count += r.dwell_count
 	}
-	return expected_offset == u64(len(motion.operations)) &&
-		retraction_count == motion.retraction_count &&
+	return retraction_count == motion.retraction_count &&
 		travel_count == motion.travel_count &&
 		extrusion_count == motion.extrusion_count &&
-		dwell_count == motion.dwell_count &&
-		total_motion == motion.total_motion_duration_us &&
-		total_dwell == motion.total_dwell_duration_us &&
-		total_planned == motion.total_planned_duration_us
+		dwell_count == motion.dwell_count
 }
 
 klipper_operation_numeric_valid :: proc(

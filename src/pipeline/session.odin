@@ -1303,6 +1303,7 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			seam_strategy   = options.seam_strategy,
 		},
 		allocator = a,
+		record_move_ids = options.evidence_level != .Disabled,
 	)
 	if plan_err != .None {return {stage = "unified_path_plan", detail = fmt.tprintf("unified path plan error: %v", plan_err)}}
 	s.slots[.Path_Plan].count_a = s.unified_plan.extrude_move_count
@@ -1316,8 +1317,9 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	process := s.profile.process
 	proc_src := process.source
 	options := s.options
+	want_ids := options.evidence_level != .Disabled
 	ext_err: features.Extrusion_Error
-	s.extrusion, ext_err = features.extrusion_calculate(s.unified_plan, s.layer_heights, s.profile.material, process, allocator = a, record_audit = false)
+	s.extrusion, ext_err = features.extrusion_calculate(s.unified_plan, s.layer_heights, s.profile.material, process, allocator = a, record_audit = false, record_stable_ids = want_ids)
 	if ext_err != .None {return {stage = "extrusion", detail = fmt.tprintf("extrusion error: %v", ext_err)}}
 	mot_err: features.Motion_Plan_Error
 	s.motion, mot_err = features.motion_plan_build(
@@ -1334,6 +1336,7 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			overhang_speed_percent    = options.overhang_speed_percent,
 			use_gpu                   = options.use_gpu,
 			worker_threads            = resolved_worker_threads(options.worker_threads),
+			skip_stable_ids           = !want_ids,
 		},
 	)
 	if mot_err != .None {return {stage = "motion_plan", detail = fmt.tprintf("motion plan error: %v", mot_err)}}

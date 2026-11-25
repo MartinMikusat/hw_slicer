@@ -91,6 +91,7 @@ extrusion_calculate :: proc(
 	limits := DEFAULT_EXTRUSION_LIMITS,
 	allocator := context.allocator,
 	record_audit := true,
+	record_stable_ids := true,
 ) -> (Extrusion_Result, Extrusion_Error) {
 	if process.source.extrusion_accumulation !=
 		.Volume_Then_Fixed_Point_Length ||
@@ -100,19 +101,51 @@ extrusion_calculate :: proc(
 	}
 	if len(layer_heights) != len(plan.layers) ||
 	   u64(len(plan.moves)) > u64(max(u32)) ||
-	   !extrusion_plan_valid(plan) {
+	   !extrusion_plan_valid(plan, record_stable_ids) {
 		return {}, .Invalid_Input
 	}
 	for height in layer_heights {
 		if i64(height) <= 0 {return {}, .Invalid_Input}
 	}
-	extrude_move_count: u64
-	for move in plan.moves {
-		if move.kind == .Extrude {
-			extrude_move_count += 1
-		} else if move.kind != .Travel {
-			return {}, .Invalid_Input
+
+	// Single parallel pass over layers to validate move kinds and count per-layer extrusions
+	// (replaces two serial full-array scans of `plan.moves`).
+	layer_ext_offsets := make([]int, len(plan.layers), context.temp_allocator)
+	layer_ext_counts := make([]int, len(plan.layers), context.temp_allocator)
+	layer_vol_sums := make([]u128, len(plan.layers), context.temp_allocator)
+	layer_errors := make([]Extrusion_Error, len(plan.layers), context.temp_allocator)
+	Count_Ctx :: struct {
+		plan:             Unified_Path_Plan_Result,
+		layer_ext_counts: []int,
+		layer_errors:     []Extrusion_Error,
+	}
+	cctx := Count_Ctx{
+		plan             = plan,
+		layer_ext_counts = layer_ext_counts,
+		layer_errors     = layer_errors,
+	}
+	parallel_for(len(plan.layers), &cctx, proc(c: ^Count_Ctx, li: int) {
+		pl := c.plan.layers[li]
+		ms := int(pl.move_offset)
+		me := ms + int(pl.move_count)
+		cnt := 0
+		for mv in c.plan.moves[ms:me] {
+			if mv.kind == .Extrude {
+				cnt += 1
+			} else if mv.kind != .Travel {
+				c.layer_errors[li] = .Invalid_Input
+				return
+			}
 		}
+		c.layer_ext_counts[li] = cnt
+	})
+	extrude_move_count: u64
+	for li in 0..<len(plan.layers) {
+		if layer_errors[li] != .None {return {}, layer_errors[li]}
+		cnt := layer_ext_counts[li]
+		if cnt > int(max(u32)) {return {}, .Arithmetic}
+		layer_ext_offsets[li] = int(extrude_move_count)
+		extrude_move_count += u64(cnt)
 	}
 	if extrude_move_count != plan.extrude_move_count {
 		return {}, .Invalid_Input
@@ -206,40 +239,11 @@ extrusion_calculate :: proc(
 	}
 	defer delete(compact_rems, allocator)
 
-	// Compute per-layer extrude move offsets so each layer writes into a disjoint slice in parallel.
-	layer_ext_offsets := make([]int, len(plan.layers), allocator)
-	layer_ext_counts := make([]int, len(plan.layers), allocator)
-	layer_vol_sums := make([]u128, len(plan.layers), allocator)
-	layer_errors := make([]Extrusion_Error, len(plan.layers), allocator)
-	defer {
-		delete(layer_ext_offsets, allocator)
-		delete(layer_ext_counts, allocator)
-		delete(layer_vol_sums, allocator)
-		delete(layer_errors, allocator)
-	}
-	ext_cursor := 0
-	for plan_layer, layer_index in plan.layers {
-		layer_ext_offsets[layer_index] = ext_cursor
-		ms := int(plan_layer.move_offset)
-		me := ms + int(plan_layer.move_count)
-		cnt := 0
-		for pi in ms..<me {
-			if plan.moves[pi].kind == .Extrude {cnt += 1}
+	for li in 0..<len(plan.layers) {
+		result.layers[li] = {
+			move_offset = u64(layer_ext_offsets[li]),
+			move_count  = u32(layer_ext_counts[li]),
 		}
-		if cnt > int(max(u32)) {
-			extrusion_result_destroy(&result, allocator)
-			return {}, .Arithmetic
-		}
-		layer_ext_counts[layer_index] = cnt
-		result.layers[layer_index] = {
-			move_offset = u64(ext_cursor),
-			move_count  = u32(cnt),
-		}
-		ext_cursor += cnt
-	}
-	if ext_cursor != len(result.moves) {
-		extrusion_result_destroy(&result, allocator)
-		return {}, .Arithmetic
 	}
 
 	quantum := u128(result.length_quantum_nm)
@@ -259,6 +263,7 @@ extrusion_calculate :: proc(
 		out_audits:                   []Extrusion_Move_Audit,
 		compact_rems:                 []u128,
 		record_audit:                 bool,
+		record_stable_ids:            bool,
 	}
 	ectx := Ext_Par_Ctx{
 		plan                         = plan,
@@ -274,6 +279,7 @@ extrusion_calculate :: proc(
 		out_audits                   = result.move_audits,
 		compact_rems                 = compact_rems,
 		record_audit                 = record_audit,
+		record_stable_ids            = record_stable_ids,
 	}
 	parallel_for(len(plan.layers), &ectx, proc(c: ^Ext_Par_Ctx, layer_index: int) {
 		plan_layer := c.plan.layers[layer_index]
@@ -340,7 +346,7 @@ extrusion_calculate :: proc(
 			}
 			base_rem := volume_numerator % c.quantized_length_denominator
 			c.out_moves[w] = {
-				stable_id               = contracts.stable_id_child(move.stable_id, .Feature, 0),
+				stable_id               = contracts.stable_id_child(move.stable_id, .Feature, 0) if c.record_stable_ids else contracts.INVALID_STABLE_ID,
 				planned_move_id         = move.stable_id,
 				planned_move_index      = u32(planned_move_index),
 				path_id                 = move.path_id,
@@ -566,20 +572,48 @@ extrusion_role_flow_ratio :: proc(
 	return target.flow_ratio, true
 }
 
-extrusion_plan_valid :: proc(plan: Unified_Path_Plan_Result) -> bool {
+extrusion_plan_valid :: proc(plan: Unified_Path_Plan_Result, require_stable_ids := true) -> bool {
 	expected_move_offset: u64
-	extrude_count: u64
-	travel_count: u64
-	for layer, layer_index in plan.layers {
+	for layer in plan.layers {
 		if layer.move_offset != expected_move_offset ||
 		   layer.move_offset+u64(layer.move_count) >
 			u64(len(plan.moves)) {
 			return false
 		}
+		expected_move_offset += u64(layer.move_count)
+	}
+	if expected_move_offset != u64(len(plan.moves)) {return false}
+	n_layers := len(plan.layers)
+	if n_layers == 0 {
+		return plan.extrude_move_count == 0 && plan.travel_move_count == 0
+	}
+
+	Plan_Valid_Ctx :: struct {
+		plan:               Unified_Path_Plan_Result,
+		require_stable_ids: bool,
+		layer_ok:           []bool,
+		layer_ext:          []u64,
+		layer_trv:          []u64,
+	}
+	layer_ok := make([]bool, n_layers, context.temp_allocator)
+	layer_ext := make([]u64, n_layers, context.temp_allocator)
+	layer_trv := make([]u64, n_layers, context.temp_allocator)
+	vctx := Plan_Valid_Ctx{
+		plan               = plan,
+		require_stable_ids = require_stable_ids,
+		layer_ok           = layer_ok,
+		layer_ext          = layer_ext,
+		layer_trv          = layer_trv,
+	}
+	parallel_for(n_layers, &vctx, proc(c: ^Plan_Valid_Ctx, li: int) {
+		layer := c.plan.layers[li]
 		move_start := int(layer.move_offset)
 		move_end := move_start+int(layer.move_count)
-		for move in plan.moves[move_start:move_end] {
-			if move.stable_id == contracts.INVALID_STABLE_ID ||
+		ext_cnt: u64
+		trv_cnt: u64
+		req_ids := c.require_stable_ids
+		for move in c.plan.moves[move_start:move_end] {
+			if (req_ids && move.stable_id == contracts.INVALID_STABLE_ID) ||
 			   move.path_id == contracts.INVALID_STABLE_ID ||
 			   geometry.point_2_validate({
 				move.point_a.x,
@@ -590,32 +624,39 @@ extrusion_plan_valid :: proc(plan: Unified_Path_Plan_Result) -> bool {
 				move.point_b.y,
 			   }) != .None ||
 			   move.point_a == move.point_b {
-				return false
+				return
 			}
 			if move.kind == .Travel {
 				if move.role != .Invalid ||
 				   move.source_edge_index != max(u32) ||
 				   move.line_width_a != 0 ||
 				   move.line_width_b != 0 {
-					return false
+					return
 				}
-				travel_count += 1
+				trv_cnt += 1
 			} else if move.kind == .Extrude {
 				if move.role == .Invalid ||
 				   i64(move.line_width_a) <= 0 ||
 				   i64(move.line_width_b) <= 0 {
-					return false
+					return
 				}
-				extrude_count += 1
+				ext_cnt += 1
 			} else {
-				return false
+				return
 			}
 		}
-		expected_move_offset += u64(layer.move_count)
-		_ = layer_index
+		c.layer_ext[li] = ext_cnt
+		c.layer_trv[li] = trv_cnt
+		c.layer_ok[li] = true
+	})
+	extrude_count: u64
+	travel_count: u64
+	for li in 0..<n_layers {
+		if !layer_ok[li] {return false}
+		extrude_count += layer_ext[li]
+		travel_count += layer_trv[li]
 	}
-	return expected_move_offset == u64(len(plan.moves)) &&
-		extrude_count == plan.extrude_move_count &&
+	return extrude_count == plan.extrude_move_count &&
 		travel_count == plan.travel_move_count
 }
 

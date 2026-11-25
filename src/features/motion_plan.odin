@@ -64,6 +64,7 @@ Motion_Plan_Options :: struct {
 	overhang_speed_percent:    u32,
 	use_gpu:                   bool,
 	worker_threads:            int, // <= 1 = single-core; > 1 = multi-core CPU overhang detection
+	skip_stable_ids:           bool, // true when evidence is disabled; skips per-operation FNV-1a ID derivation
 }
 
 Motion_Plan_Result :: struct {
@@ -99,20 +100,25 @@ Motion_Plan_Error :: enum u8 {
 	Arithmetic,
 }
 
+// Hot per-move motion source (32 B, 2 per cache line; down from 72 B). Cold travel-only wipe/z-hop
+// fields live in sparse per-layer `Motion_Travel_Extra` slices indexed by `extrusion_index` on travels.
 Motion_Source_Move :: struct {
-	length_nm:          u64,
-	base_speed:         profiles.Speed_Um_Per_Second,
-	acceleration:       profiles.Acceleration_Um_Per_Second_Squared,
-	fan_ratio:          profiles.Ratio_Ppm,
-	extrusion_index:    u32,
-	is_extrusion:       bool,
-	retract_before:     bool,
-	crosses_exterior:   bool,
-	has_wipe:           bool,
-	wipe_point:         polygon.Polygon_Point,
-	wipe_length_nm:     u64,
-	travel_length_nm:   u64,
-	z_hop_um:           contracts.Micrometres,
+	length_nm:        u64,
+	base_speed:       profiles.Speed_Um_Per_Second,
+	acceleration:     profiles.Acceleration_Um_Per_Second_Squared,
+	fan_ratio:        profiles.Ratio_Ppm,
+	extrusion_index:  u32, // for Travel: index into layer's travel_extras, or max(u32) if none
+	is_extrusion:     bool,
+	retract_before:   bool,
+	crosses_exterior: bool,
+	has_wipe:         bool,
+}
+
+Motion_Travel_Extra :: struct {
+	wipe_point:       polygon.Polygon_Point,
+	wipe_length_nm:   u64,
+	travel_length_nm: u64,
+	z_hop_um:         contracts.Micrometres,
 }
 
 motion_plan_build :: proc(
@@ -138,7 +144,7 @@ motion_plan_build :: proc(
 	   len(layer_z) != len(plan.layers) ||
 	   len(model_layers) != len(plan.layers) ||
 	   len(extrusion.layers) != len(plan.layers) ||
-	   !extrusion_plan_valid(plan) {
+	   !extrusion_plan_valid(plan, !options.skip_stable_ids) {
 		return {}, .Invalid_Input
 	}
 	if u64(len(plan.moves)) > u64(max(u32)) {
@@ -166,6 +172,7 @@ motion_plan_build :: proc(
 		return {}, .Allocation_Failed
 	}
 	defer {
+		for &st in layer_states {delete(st.travel_extras)}
 		delete(sources, allocator)
 		delete(layer_states, allocator)
 	}
@@ -323,6 +330,7 @@ Motion_Layer_Build_State :: struct {
 	source_error:     Motion_Plan_Error,
 	timing_error:     Motion_Plan_Error,
 	emit_error:       Motion_Plan_Error,
+	travel_extras:    [dynamic]Motion_Travel_Extra,
 }
 
 @(private = "file")
@@ -391,7 +399,7 @@ motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int)
 				return
 			}
 			source.length_nm = length_nm
-			source.travel_length_nm = length_nm
+			source.extrusion_index = max(u32)
 			source.base_speed = process.travel.speed
 			source.acceleration = process.travel.acceleration
 			if ctx.precomputed_travels_ready {
@@ -411,10 +419,13 @@ motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int)
 				source.crosses_exterior
 			if source.retract_before {
 				st.retraction_count += 1
+				extra := Motion_Travel_Extra{travel_length_nm = length_nm}
+				need_extra := false
 				if process.z_hop_enabled && i64(process.z_hop_height) > 0 {
 					max_hop := i64(ctx.profile.printer.axis_maximum_z)-z
 					if max_hop > 0 {
-						source.z_hop_um = contracts.Micrometres(min(i64(process.z_hop_height), max_hop))
+						extra.z_hop_um = contracts.Micrometres(min(i64(process.z_hop_height), max_hop))
+						need_extra = true
 					}
 				}
 				if i64(ctx.options.wipe_distance_um) > 0 && move_index > move_start {
@@ -428,12 +439,17 @@ motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int)
 							ctx.profile.printer,
 						); w_ok {
 							source.has_wipe = true
-							source.wipe_point = wp
-							source.wipe_length_nm = w_len
-							source.travel_length_nm = t_len
+							extra.wipe_point = wp
+							extra.wipe_length_nm = w_len
+							extra.travel_length_nm = t_len
+							need_extra = true
 							st.wipe_count += 1
 						}
 					}
+				}
+				if need_extra {
+					source.extrusion_index = u32(len(st.travel_extras))
+					append(&st.travel_extras, extra)
 				}
 			}
 		case .Extrude:
@@ -448,7 +464,6 @@ motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int)
 				return
 			}
 			source.length_nm = length_nm
-			source.travel_length_nm = length_nm
 			if extrusion_move.planned_move_id != move.stable_id ||
 			   extrusion_move.planned_move_index != u32(move_index) ||
 			   extrusion_move.path_id != move.path_id ||
@@ -513,6 +528,7 @@ motion_build_layer_sources :: proc(ctx: ^Motion_Build_Context, layer_index: int)
 	scale, base_duration, motion_duration, dwell, timing_ok := motion_layer_timing(
 		layer,
 		ctx.sources,
+		st.travel_extras[:],
 		process,
 	)
 	if !timing_ok {
@@ -540,10 +556,15 @@ motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: in
 	extrusion_count: u64
 	dwell_count: u64
 
+	skip_ids := ctx.options.skip_stable_ids
+	travel_extras := st.travel_extras[:]
 	for move_index in move_start..<move_end {
 		move := ctx.plan.moves[move_index]
 		source := ctx.sources[move_index]
 		current_point = move.point_b
+		has_extra := !source.is_extrusion && source.extrusion_index != max(u32)
+		extra: Motion_Travel_Extra
+		if has_extra {extra = travel_extras[source.extrusion_index]}
 		if source.retract_before {
 			duration, duration_ok := motion_duration_for_distance_um(
 				process.retraction_distance,
@@ -554,7 +575,7 @@ motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: in
 				return
 			}
 			ctx.result_operations[operation_write] = {
-				stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 0),
+				stable_id         = contracts.INVALID_STABLE_ID if skip_ids else contracts.stable_id_child(move.stable_id, .Motion, 0),
 				source_move_id    = move.stable_id,
 				source_move_index = u32(move_index),
 				path_id           = move.path_id,
@@ -572,20 +593,20 @@ motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: in
 		}
 
 		if source.has_wipe {
-			wipe_dur, wipe_dur_ok := motion_duration_for_length(source.wipe_length_nm, source.base_speed)
+			wipe_dur, wipe_dur_ok := motion_duration_for_length(extra.wipe_length_nm, source.base_speed)
 			if !wipe_dur_ok {
 				st.emit_error = .Arithmetic
 				return
 			}
 			ctx.result_operations[operation_write] = {
-				stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 4),
+				stable_id         = contracts.INVALID_STABLE_ID if skip_ids else contracts.stable_id_child(move.stable_id, .Motion, 4),
 				source_move_id    = move.stable_id,
 				source_move_index = u32(move_index),
 				path_id           = move.path_id,
 				layer_index       = u32(layer_index),
 				kind              = .Travel,
 				point_a           = move.point_a,
-				point_b           = source.wipe_point,
+				point_b           = extra.wipe_point,
 				speed             = source.base_speed,
 				acceleration      = source.acceleration,
 				duration_us       = wipe_dur,
@@ -608,16 +629,16 @@ motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: in
 				filament_delta_nm = i128(max(u32(10), process.extrusion_length_quantum_nm))
 			}
 		} else if source.has_wipe {
-			move_point_a = source.wipe_point
-			move_len_nm = source.travel_length_nm
+			move_point_a = extra.wipe_point
+			move_len_nm = extra.travel_length_nm
 		}
 		duration, duration_ok := motion_duration_for_length(move_len_nm, speed)
 		if !duration_ok {
 			st.emit_error = .Arithmetic
 			return
 		}
-		if move.kind == .Travel && i64(source.z_hop_um) > 0 {
-			hop_dur, hop_ok := motion_duration_for_distance_um(source.z_hop_um, speed)
+		if move.kind == .Travel && i64(extra.z_hop_um) > 0 {
+			hop_dur, hop_ok := motion_duration_for_distance_um(extra.z_hop_um, speed)
 			if !hop_ok {
 				st.emit_error = .Arithmetic
 				return
@@ -632,7 +653,7 @@ motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: in
 			}
 		}
 		ctx.result_operations[operation_write] = {
-			stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 1),
+			stable_id         = contracts.INVALID_STABLE_ID if skip_ids else contracts.stable_id_child(move.stable_id, .Motion, 1),
 			source_move_id    = move.stable_id,
 			source_move_index = u32(move_index),
 			path_id           = move.path_id,
@@ -641,7 +662,7 @@ motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: in
 			role              = move.role,
 			point_a           = move_point_a,
 			point_b           = move.point_b,
-			z_hop_um          = source.z_hop_um if move.kind == .Travel else 0,
+			z_hop_um          = extra.z_hop_um if move.kind == .Travel else 0,
 			speed             = speed,
 			acceleration      = source.acceleration,
 			fan_ratio         = source.fan_ratio,
@@ -666,7 +687,7 @@ motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: in
 				return
 			}
 			ctx.result_operations[operation_write] = {
-				stable_id         = contracts.stable_id_child(move.stable_id, .Motion, 2),
+				stable_id         = contracts.INVALID_STABLE_ID if skip_ids else contracts.stable_id_child(move.stable_id, .Motion, 2),
 				source_move_id    = move.stable_id,
 				source_move_index = u32(move_index),
 				path_id           = move.path_id,
@@ -687,7 +708,7 @@ motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: in
 	dwell := st.dwell
 	if dwell > 0 {
 		ctx.result_operations[operation_write] = {
-			stable_id   = contracts.stable_id_child(ctx.layer_ids[layer_index], .Motion, 3),
+			stable_id   = contracts.INVALID_STABLE_ID if skip_ids else contracts.stable_id_child(ctx.layer_ids[layer_index], .Motion, 3),
 			layer_index = u32(layer_index),
 			kind        = .Dwell,
 			point_a     = current_point,
@@ -728,6 +749,7 @@ motion_emit_layer_operations :: proc(ctx: ^Motion_Build_Context, layer_index: in
 motion_layer_timing :: proc(
 	layer: Unified_Planned_Layer,
 	sources: []Motion_Source_Move,
+	travel_extras: []Motion_Travel_Extra,
 	process: profiles.Process_Profile,
 ) -> (
 	scale: u32,
@@ -746,7 +768,7 @@ motion_layer_timing :: proc(
 	}
 	base_ok: bool
 	base_duration, base_ok =
-		motion_layer_duration(layer, sources, process, profiles.RATIO_SCALE)
+		motion_layer_duration(layer, sources, travel_extras, process, profiles.RATIO_SCALE)
 	if !base_ok {return 0, 0, 0, 0, false}
 	if extrusion_count == 0 {
 		return profiles.RATIO_SCALE, base_duration, base_duration, 0, true
@@ -756,7 +778,7 @@ motion_layer_timing :: proc(
 		return profiles.RATIO_SCALE, base_duration, base_duration, 0, true
 	}
 	minimum_duration, minimum_ok :=
-		motion_layer_duration(layer, sources, process, 0)
+		motion_layer_duration(layer, sources, travel_extras, process, 0)
 	if !minimum_ok {return 0, 0, 0, 0, false}
 	if minimum_duration < target_us {
 		return 0, base_duration, minimum_duration,
@@ -767,7 +789,7 @@ motion_layer_timing :: proc(
 	for low+1 < high {
 		middle := low+(high-low)/2
 		duration, duration_ok :=
-			motion_layer_duration(layer, sources, process, middle)
+			motion_layer_duration(layer, sources, travel_extras, process, middle)
 		if !duration_ok {return 0, 0, 0, 0, false}
 		if duration >= target_us {
 			low = middle
@@ -777,7 +799,7 @@ motion_layer_timing :: proc(
 	}
 	duration_ok: bool
 	motion_duration, duration_ok =
-		motion_layer_duration(layer, sources, process, low)
+		motion_layer_duration(layer, sources, travel_extras, process, low)
 	if !duration_ok {return 0, 0, 0, 0, false}
 	return low, base_duration, motion_duration, 0, true
 }
@@ -785,6 +807,7 @@ motion_layer_timing :: proc(
 motion_layer_duration :: proc(
 	layer: Unified_Planned_Layer,
 	sources: []Motion_Source_Move,
+	travel_extras: []Motion_Travel_Extra,
 	process: profiles.Process_Profile,
 	scale: u32,
 ) -> (u64, bool) {
@@ -798,6 +821,9 @@ motion_layer_duration :: proc(
 	for source in sources[move_start:move_end] {
 		speed := source.base_speed
 		move_len_nm := source.length_nm
+		has_extra := !source.is_extrusion && source.extrusion_index != max(u32)
+		extra: Motion_Travel_Extra
+		if has_extra {extra = travel_extras[source.extrusion_index]}
 		if source.is_extrusion {
 			speed = motion_scaled_speed(
 				source.base_speed,
@@ -805,7 +831,7 @@ motion_layer_duration :: proc(
 				scale,
 			)
 		} else if source.has_wipe {
-			move_len_nm = source.travel_length_nm
+			move_len_nm = extra.travel_length_nm
 		}
 		duration, duration_ok :=
 			motion_duration_for_length(move_len_nm, speed)
@@ -813,13 +839,13 @@ motion_layer_duration :: proc(
 		total, duration_ok = motion_checked_add_u64(total, duration)
 		if !duration_ok {return 0, false}
 		if source.has_wipe {
-			wipe_dur, wipe_ok := motion_duration_for_length(source.wipe_length_nm, source.base_speed)
+			wipe_dur, wipe_ok := motion_duration_for_length(extra.wipe_length_nm, source.base_speed)
 			if !wipe_ok {return 0, false}
 			total, duration_ok = motion_checked_add_u64(total, wipe_dur)
 			if !duration_ok {return 0, false}
 		}
-		if !source.is_extrusion && i64(source.z_hop_um) > 0 {
-			hop_dur, hop_ok := motion_duration_for_distance_um(source.z_hop_um, speed)
+		if !source.is_extrusion && i64(extra.z_hop_um) > 0 {
+			hop_dur, hop_ok := motion_duration_for_distance_um(extra.z_hop_um, speed)
 			if !hop_ok {return 0, false}
 			total, duration_ok = motion_checked_add_u64(total, hop_dur)
 			if duration_ok {

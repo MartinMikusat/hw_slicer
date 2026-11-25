@@ -133,6 +133,7 @@ unified_path_plan_build :: proc(
 	config: Unified_Path_Plan_Config,
 	limits := DEFAULT_UNIFIED_PATH_PLAN_LIMITS,
 	allocator := context.allocator,
+	record_move_ids := true,
 ) -> (Unified_Path_Plan_Result, Unified_Path_Plan_Error) {
 	if geometry.point_2_validate({
 		config.start.x,
@@ -371,21 +372,17 @@ unified_path_plan_build :: proc(
 		return {}, .Allocation_Failed
 	}
 
-	// Pass 2 (parallel per layer): emit planned paths and moves (including per-move stable IDs).
-	layer_ok := make([]bool, len(layer_ids), allocator)
-	if len(layer_ids) > 0 && layer_ok == nil {
-		unified_path_plan_result_destroy(&result, allocator)
-		return {}, .Allocation_Failed
-	}
-	defer delete(layer_ok, allocator)
+	// Pass 2 (parallel per layer): emit planned paths and moves (including optional per-move stable IDs).
+	layer_ok := make([]bool, len(layer_ids), context.temp_allocator)
 
 	emit_ctx := Plan_Emit_Context{
-		sources    = sources,
-		emit_items = emit_items,
-		layers     = result.layers,
-		paths      = result.paths,
-		moves      = result.moves,
-		layer_ok   = layer_ok,
+		sources         = sources,
+		emit_items      = emit_items,
+		layers          = result.layers,
+		paths           = result.paths,
+		moves           = result.moves,
+		layer_ok        = layer_ok,
+		record_move_ids = record_move_ids,
 	}
 	parallel_for(len(layer_ids), &emit_ctx, unified_path_emit_layer)
 	for ok in layer_ok {
@@ -453,8 +450,9 @@ Plan_Emit_Context :: struct {
 	emit_items: []Plan_Emit_Item,
 	layers:     []Unified_Planned_Layer,
 	paths:      []Unified_Planned_Path,
-	moves:      []Unified_Planned_Move,
-	layer_ok:   []bool,
+	moves:           []Unified_Planned_Move,
+	layer_ok:        []bool,
+	record_move_ids: bool,
 }
 
 @(private = "file")
@@ -462,17 +460,18 @@ unified_path_emit_layer :: proc(ctx: ^Plan_Emit_Context, layer_index: int) {
 	layer := ctx.layers[layer_index]
 	path_start := int(layer.path_offset)
 	path_end := path_start+int(layer.path_count)
+	want_ids := ctx.record_move_ids
 	for path_index in path_start..<path_end {
 		item := ctx.emit_items[path_index]
 		source := ctx.sources[item.order.source_slice_index]
 		path_set_id := contracts.stable_id_child(source.stable_id, .Feature, 0)
 		path_id := contracts.stable_id_child(path_set_id, .Path, 0)
-		move_id_prefix := contracts.stable_id_child_prefix(path_id, .Path)
+		move_id_prefix := contracts.stable_id_child_prefix(path_id, .Path) if want_ids else 0
 		move_write := int(item.move_offset)
 		start_index := int(item.start_index)
 		if item.has_travel {
 			ctx.moves[move_write] = {
-				stable_id         = contracts.stable_id_child_from_prefix(move_id_prefix, u64(1)<<63),
+				stable_id         = contracts.stable_id_child_from_prefix(move_id_prefix, u64(1)<<63) if want_ids else contracts.INVALID_STABLE_ID,
 				path_id           = path_id,
 				kind              = .Travel,
 				source_edge_index = max(u32),
@@ -503,7 +502,7 @@ unified_path_emit_layer :: proc(ctx: ^Plan_Emit_Context, layer_index: int) {
 				return
 			}
 			ctx.moves[move_write] = {
-				stable_id         = contracts.stable_id_child_from_prefix(move_id_prefix, u64(source_edge_index)),
+				stable_id         = contracts.stable_id_child_from_prefix(move_id_prefix, u64(source_edge_index)) if want_ids else contracts.INVALID_STABLE_ID,
 				path_id           = path_id,
 				kind              = .Extrude,
 				role              = source.role,
