@@ -1,5 +1,7 @@
 package gcode
 
+import "base:intrinsics"
+import "core:simd"
 import "core:strings"
 
 import contracts "../contracts"
@@ -118,6 +120,35 @@ Klipper_Validation_State :: struct {
 	z_hop_stage:          u8, // 0 = none, 1 = hopped up awaiting XY, 2 = XY done awaiting un-hop
 }
 
+// 16-byte ARM64 NEON scanner: validates printable ASCII [0x20..0x7e] 16 bytes at a time and
+// returns the index of the terminating '\n' (or ok=false on empty line, invalid byte, or EOF).
+@(private = "file")
+klipper_scan_line_end :: #force_inline proc(bytes: []u8, start: int) -> (end: int, ok: bool) {
+	n := len(bytes)
+	i := start
+	v_lo := #simd[16]u8{0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20}
+	v_hi := #simd[16]u8{0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e}
+	for i + 16 <= n {
+		v := intrinsics.unaligned_load((^#simd[16]u8)(&bytes[i]))
+		bad := simd.lanes_lt(v, v_lo) | simd.lanes_gt(v, v_hi)
+		if simd.reduce_or(bad) == 0 {
+			i += 16
+			continue
+		}
+		break
+	}
+	for ; i < n; i += 1 {
+		b := bytes[i]
+		if b == '\n' {
+			return i, i > start
+		}
+		if b < 0x20 || b > 0x7e {
+			return i, false
+		}
+	}
+	return n, false
+}
+
 klipper_validate :: proc(
 	bytes: []u8,
 	profile: profiles.Resolved_Profiles,
@@ -135,14 +166,9 @@ klipper_validate :: proc(
 	}
 	report := Klipper_Validation_Report{}
 	line_start := 0
-	for byte, byte_index in bytes {
-		if byte == '\r' || byte == 0 ||
-		   byte < 0x20 && byte != '\n' ||
-		   byte > 0x7e {
-			return {}, .Invalid_Encoding
-		}
-		if byte != '\n' {continue}
-		if byte_index == line_start {
+	for line_start < len(bytes) {
+		byte_index, line_ok := klipper_scan_line_end(bytes, line_start)
+		if !line_ok {
 			return {}, .Invalid_Encoding
 		}
 		line := string(bytes[line_start:byte_index])
@@ -231,12 +257,9 @@ klipper_validate_layer_slice :: proc(
 		final_fan_pwm = init.fan_pwm,
 	}
 	line_start := 0
-	for b, byte_index in bytes {
-		if b == '\r' || b == 0 || (b < 0x20 && b != '\n') || b > 0x7e {
-			return {}, {}, .Invalid_Encoding
-		}
-		if b != '\n' {continue}
-		if byte_index == line_start {
+	for line_start < len(bytes) {
+		byte_index, line_ok := klipper_scan_line_end(bytes, line_start)
+		if !line_ok {
 			return {}, {}, .Invalid_Encoding
 		}
 		line := string(bytes[line_start:byte_index])

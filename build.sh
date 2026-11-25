@@ -44,7 +44,7 @@ case "$MODE" in
     ;;
   release|cli-release)
     APP="$ROOT/build/release/hw_slicer.app"
-    ODIN_FLAGS="-o:speed"
+    ODIN_FLAGS="-o:speed -microarch:native"
     CLANG_FLAGS="-O2"
     ;;
   *)

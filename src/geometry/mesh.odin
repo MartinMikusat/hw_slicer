@@ -1,6 +1,7 @@
 package geometry
 
 import "core:math"
+import "core:simd"
 
 import contracts "../contracts"
 import formats "../formats"
@@ -146,35 +147,114 @@ mesh_normalize_units_consume :: proc(
 	if !scale_ok {return {}, .Unsupported_Units}
 
 	bounds: Mesh_Bounds
-	for vertex_index in 0 ..< vertex_count {
-		x := decoded.vertex_x[vertex_index] * scale
-		y := decoded.vertex_y[vertex_index] * scale
-		z := decoded.vertex_z[vertex_index] * scale
-		if math.is_nan(x) || math.is_inf(x) ||
-		   math.is_nan(y) || math.is_inf(y) ||
-		   math.is_nan(z) || math.is_inf(z) {
+	vx_min, vx_max: f64
+	vy_min, vy_max: f64
+	vz_min, vz_max: f64
+	{
+		// 2-wide NEON f64 SIMD pass over SoA vertex arrays (checks NaN/Inf via abs(v) < +Inf,
+		// canonicalizes -0.0 via +0.0, scales, and reduces min/max).
+		x0 := decoded.vertex_x[0] * scale
+		y0 := decoded.vertex_y[0] * scale
+		z0 := decoded.vertex_z[0] * scale
+		if math.is_nan(x0) || math.is_inf(x0) ||
+		   math.is_nan(y0) || math.is_inf(y0) ||
+		   math.is_nan(z0) || math.is_inf(z0) {
 			return {}, .Non_Finite
 		}
-		if x == 0 {x = 0}
-		if y == 0 {y = 0}
-		if z == 0 {z = 0}
-		decoded.vertex_x[vertex_index] = x
-		decoded.vertex_y[vertex_index] = y
-		decoded.vertex_z[vertex_index] = z
-		if vertex_index == 0 {
-			bounds.minimum = {
-				contracts.Millimetres(x),
-				contracts.Millimetres(y),
-				contracts.Millimetres(z),
+		x0 += 0.0; y0 += 0.0; z0 += 0.0
+		decoded.vertex_x[0] = x0
+		decoded.vertex_y[0] = y0
+		decoded.vertex_z[0] = z0
+
+		vscale := #simd[2]f64{scale, scale}
+		vzero := #simd[2]f64{0.0, 0.0}
+		vinf := #simd[2]f64{math.inf_f64(1), math.inf_f64(1)}
+		vmin_x := #simd[2]f64{x0, x0}
+		vmax_x := #simd[2]f64{x0, x0}
+		vmin_y := #simd[2]f64{y0, y0}
+		vmax_y := #simd[2]f64{y0, y0}
+		vmin_z := #simd[2]f64{z0, z0}
+		vmax_z := #simd[2]f64{z0, z0}
+
+		vi := 1
+		if scale == 1.0 {
+			for ; vi + 1 < vertex_count; vi += 2 {
+				vx := #simd[2]f64{decoded.vertex_x[vi], decoded.vertex_x[vi+1]}
+				vy := #simd[2]f64{decoded.vertex_y[vi], decoded.vertex_y[vi+1]}
+				vz := #simd[2]f64{decoded.vertex_z[vi], decoded.vertex_z[vi+1]}
+				ok_x := simd.lanes_lt(simd.abs(vx), vinf)
+				ok_y := simd.lanes_lt(simd.abs(vy), vinf)
+				ok_z := simd.lanes_lt(simd.abs(vz), vinf)
+				if simd.reduce_and(ok_x & ok_y & ok_z) == 0 {
+					return {}, .Non_Finite
+				}
+				vx = vx + vzero
+				vy = vy + vzero
+				vz = vz + vzero
+				decoded.vertex_x[vi]   = simd.extract(vx, 0)
+				decoded.vertex_x[vi+1] = simd.extract(vx, 1)
+				decoded.vertex_y[vi]   = simd.extract(vy, 0)
+				decoded.vertex_y[vi+1] = simd.extract(vy, 1)
+				decoded.vertex_z[vi]   = simd.extract(vz, 0)
+				decoded.vertex_z[vi+1] = simd.extract(vz, 1)
+				vmin_x = simd.min(vmin_x, vx); vmax_x = simd.max(vmax_x, vx)
+				vmin_y = simd.min(vmin_y, vy); vmax_y = simd.max(vmax_y, vy)
+				vmin_z = simd.min(vmin_z, vz); vmax_z = simd.max(vmax_z, vz)
 			}
-			bounds.maximum = bounds.minimum
 		} else {
-			bounds.minimum.x = contracts.Millimetres(min(f64(bounds.minimum.x), x))
-			bounds.minimum.y = contracts.Millimetres(min(f64(bounds.minimum.y), y))
-			bounds.minimum.z = contracts.Millimetres(min(f64(bounds.minimum.z), z))
-			bounds.maximum.x = contracts.Millimetres(max(f64(bounds.maximum.x), x))
-			bounds.maximum.y = contracts.Millimetres(max(f64(bounds.maximum.y), y))
-			bounds.maximum.z = contracts.Millimetres(max(f64(bounds.maximum.z), z))
+			for ; vi + 1 < vertex_count; vi += 2 {
+				vx := #simd[2]f64{decoded.vertex_x[vi], decoded.vertex_x[vi+1]} * vscale
+				vy := #simd[2]f64{decoded.vertex_y[vi], decoded.vertex_y[vi+1]} * vscale
+				vz := #simd[2]f64{decoded.vertex_z[vi], decoded.vertex_z[vi+1]} * vscale
+				ok_x := simd.lanes_lt(simd.abs(vx), vinf)
+				ok_y := simd.lanes_lt(simd.abs(vy), vinf)
+				ok_z := simd.lanes_lt(simd.abs(vz), vinf)
+				if simd.reduce_and(ok_x & ok_y & ok_z) == 0 {
+					return {}, .Non_Finite
+				}
+				vx = vx + vzero
+				vy = vy + vzero
+				vz = vz + vzero
+				decoded.vertex_x[vi]   = simd.extract(vx, 0)
+				decoded.vertex_x[vi+1] = simd.extract(vx, 1)
+				decoded.vertex_y[vi]   = simd.extract(vy, 0)
+				decoded.vertex_y[vi+1] = simd.extract(vy, 1)
+				decoded.vertex_z[vi]   = simd.extract(vz, 0)
+				decoded.vertex_z[vi+1] = simd.extract(vz, 1)
+				vmin_x = simd.min(vmin_x, vx); vmax_x = simd.max(vmax_x, vx)
+				vmin_y = simd.min(vmin_y, vy); vmax_y = simd.max(vmax_y, vy)
+				vmin_z = simd.min(vmin_z, vz); vmax_z = simd.max(vmax_z, vz)
+			}
+		}
+		vx_min = simd.reduce_min(vmin_x); vx_max = simd.reduce_max(vmax_x)
+		vy_min = simd.reduce_min(vmin_y); vy_max = simd.reduce_max(vmax_y)
+		vz_min = simd.reduce_min(vmin_z); vz_max = simd.reduce_max(vmax_z)
+		for ; vi < vertex_count; vi += 1 {
+			x := decoded.vertex_x[vi] * scale
+			y := decoded.vertex_y[vi] * scale
+			z := decoded.vertex_z[vi] * scale
+			if math.is_nan(x) || math.is_inf(x) ||
+			   math.is_nan(y) || math.is_inf(y) ||
+			   math.is_nan(z) || math.is_inf(z) {
+				return {}, .Non_Finite
+			}
+			x += 0.0; y += 0.0; z += 0.0
+			decoded.vertex_x[vi] = x
+			decoded.vertex_y[vi] = y
+			decoded.vertex_z[vi] = z
+			vx_min = min(vx_min, x); vx_max = max(vx_max, x)
+			vy_min = min(vy_min, y); vy_max = max(vy_max, y)
+			vz_min = min(vz_min, z); vz_max = max(vz_max, z)
+		}
+		bounds.minimum = {
+			contracts.Millimetres(vx_min),
+			contracts.Millimetres(vy_min),
+			contracts.Millimetres(vz_min),
+		}
+		bounds.maximum = {
+			contracts.Millimetres(vx_max),
+			contracts.Millimetres(vy_max),
+			contracts.Millimetres(vz_max),
 		}
 	}
 
