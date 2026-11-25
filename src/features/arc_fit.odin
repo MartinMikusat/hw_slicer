@@ -241,16 +241,24 @@ arc_fit_slice :: proc(
 	fx := f64(icx)
 	fy := f64(icy)
 
-	r := math.hypot(ax - fx, ay - fy)
+	dx0, dy0 := ax - fx, ay - fy
+	r := math.sqrt(dx0*dx0 + dy0*dy0)
 	if r < min_r_um || r > max_r_um {return {}, .None, false}
 	// Endpoint radius must match start radius closely so Klipper accepts G2/G3 without radius error.
-	r_end := math.hypot(cx - fx, cy - fy)
+	dxe, dye := cx - fx, cy - fy
+	r_end := math.sqrt(dxe*dxe + dye*dye)
 	if math.abs(r - r_end) > min(max_err_um, 10.0) {return {}, .None, false}
 
 	// Check orientation (CW vs CCW) and sweep angle (< 170 deg).
 	cross0 := (bx - ax)*(cy - by) - (by - ay)*(cx - bx)
 	if math.abs(cross0) < 1.0 {return {}, .None, false}
 	arc_kind := Motion_Arc_Kind.CCW if cross0 > 0 else Motion_Arc_Kind.CW
+
+	// Conservative squared-radius bounds reject most non-circular vertices before sqrt/atan2.
+	r_lo := max(0.0, r - max_err_um - 1e-6)
+	r_hi := r + max_err_um + 1e-6
+	r_lo_sq := r_lo * r_lo
+	r_hi_sq := r_hi * r_hi
 
 	// Verify every intermediate vertex & chord midpoint lies within max_err_um and turns monotonically.
 	total_sweep := 0.0
@@ -260,17 +268,23 @@ arc_fit_slice :: proc(
 		x1 := f64(i64(op.point_b.x)) - fx
 		y1 := f64(i64(op.point_b.y)) - fy
 
-		r1 := math.hypot(x1, y1)
+		r1_sq := x1*x1 + y1*y1
+		if r1_sq < r_lo_sq || r1_sq > r_hi_sq {return {}, .None, false}
+		r1 := math.sqrt(r1_sq)
 		if math.abs(r1 - r) > max_err_um {return {}, .None, false}
 
 		// Chord midpoint sagitta error check.
 		mx := 0.5 * (x0 + x1)
 		my := 0.5 * (y0 + y1)
-		rm := math.hypot(mx, my)
+		rm_sq := mx*mx + my*my
+		if rm_sq < r_lo_sq || rm_sq > r_hi_sq {return {}, .None, false}
+		rm := math.sqrt(rm_sq)
 		if math.abs(rm - r) > max_err_um {return {}, .None, false}
 
-		// Signed step angle must match arc_kind.
+		// Signed step angle must match arc_kind (reject wrong sign before libm atan2).
 		cr := x0*y1 - y0*x1
+		if arc_kind == .CCW && cr < 0 {return {}, .None, false}
+		if arc_kind == .CW && cr > 0 {return {}, .None, false}
 		dt := x0*x1 + y0*y1
 		ang := math.atan2(cr, dt)
 		if arc_kind == .CCW && ang <= 0 {return {}, .None, false}

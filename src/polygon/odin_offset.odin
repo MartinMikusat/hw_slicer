@@ -71,7 +71,7 @@ odin_offset :: proc(
 			b := ring[(i + 1) % n]
 			dx := f64(i64(b.x) - i64(a.x))
 			dy := f64(i64(b.y) - i64(a.y))
-			l := math.hypot(dx, dy)
+			l := math.sqrt(dx*dx + dy*dy)
 			if l < 1e-9 {
 				normals[i] = {0, 0}
 			} else {
