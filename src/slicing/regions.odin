@@ -822,19 +822,70 @@ region_paths_intersect :: proc(
 	topology: Topology_Result,
 	left, right: Topology_Path,
 ) -> (bool, u32, u32, Region_Error) {
-	for left_index in 0..<int(left.vertex_count) {
+	nl := int(left.vertex_count)
+	nr := int(right.vertex_count)
+	if nl * nr >= 512 {
+		// O((N+M) log (N+M)) X-sweep fast path for multi-contour layers; falls through to exact
+		// lexical scan only when an intersection or error is detected.
+		Pair_Sweep_Edge :: struct {
+			min_x, max_x: i64,
+			min_y, max_y: i64,
+			a, b:         Snapped_Point,
+			is_right:     bool,
+		}
+		total := nl + nr
+		edges := make([]Pair_Sweep_Edge, total, context.temp_allocator)
+		for i in 0..<nl {
+			ni := i + 1 if i + 1 < nl else 0
+			a := region_path_point(topology, left, i)
+			b := region_path_point(topology, left, ni)
+			ax, ay := i64(a.x), i64(a.y)
+			bx, by := i64(b.x), i64(b.y)
+			edges[i] = {min_x = min(ax, bx), max_x = max(ax, bx), min_y = min(ay, by), max_y = max(ay, by), a = a, b = b, is_right = false}
+		}
+		for i in 0..<nr {
+			ni := i + 1 if i + 1 < nr else 0
+			a := region_path_point(topology, right, i)
+			b := region_path_point(topology, right, ni)
+			ax, ay := i64(a.x), i64(a.y)
+			bx, by := i64(b.x), i64(b.y)
+			edges[nl + i] = {min_x = min(ax, bx), max_x = max(ax, bx), min_y = min(ay, by), max_y = max(ay, by), a = a, b = b, is_right = true}
+		}
+		slicing_fast_sort(edges, proc(a, b: Pair_Sweep_Edge) -> bool {
+			return a.min_x < b.min_x
+		})
+		found_any := false
+		outer: for i in 0..<total {
+			ei := edges[i]
+			for j in i+1..<total {
+				ej := edges[j]
+				if ej.min_x > ei.max_x {break}
+				if ei.is_right == ej.is_right {continue}
+				if ej.max_y < ei.min_y || ej.min_y > ei.max_y {continue}
+				intersects, error := region_segments_intersect(ei.a, ei.b, ej.a, ej.b)
+				if error != .None || intersects {
+					found_any = true
+					break outer
+				}
+			}
+		}
+		if !found_any {
+			return false, REGION_INVALID_INDEX, REGION_INVALID_INDEX, .None
+		}
+	}
+	for left_index in 0..<nl {
 		a := region_path_point(topology, left, left_index)
 		b := region_path_point(
 			topology,
 			left,
-			(left_index+1)%int(left.vertex_count),
+			(left_index+1)%nl,
 		)
-		for right_index in 0..<int(right.vertex_count) {
+		for right_index in 0..<nr {
 			c := region_path_point(topology, right, right_index)
 			d := region_path_point(
 				topology,
 				right,
-				(right_index+1)%int(right.vertex_count),
+				(right_index+1)%nr,
 			)
 			intersects, error := region_segments_intersect(a, b, c, d)
 			if error != .None {
