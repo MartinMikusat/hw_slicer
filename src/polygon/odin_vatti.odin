@@ -1443,7 +1443,7 @@ vatti_trace_loops :: proc(edges: []Vatti_Dir_Edge, allocator: mem.Allocator) -> 
 	for cap_pow2 < n * 2 {cap_pow2 <<= 1}
 	mask := u64(cap_pow2 - 1)
 	table := make([]i32, cap_pow2, context.temp_allocator)
-	next_same := make([]i32, n, context.temp_allocator)
+	next_same := make_temp_non_zeroed(i32, n)
 
 	hash_pt :: #force_inline proc(x, y: i64) -> u64 {
 		h := u64(x) * 0x9e3779b97f4a7c15
@@ -1458,6 +1458,7 @@ vatti_trace_loops :: proc(edges: []Vatti_Dir_Edge, allocator: mem.Allocator) -> 
 		for {
 			head := table[slot]
 			if head == 0 {
+				next_same[idx] = 0
 				table[slot] = i32(idx + 1)
 				break
 			}
@@ -1484,9 +1485,10 @@ vatti_trace_loops :: proc(edges: []Vatti_Dir_Edge, allocator: mem.Allocator) -> 
 	}
 
 	loops := make([dynamic][dynamic]Polygon_Point, 0, 16, allocator)
+	init_cap := clamp(n, 32, 256)
 	for start_idx in 0..<n {
 		if edges[start_idx].used {continue}
-		loop := make([dynamic]Polygon_Point, 0, 32, allocator)
+		loop := make([dynamic]Polygon_Point, 0, init_cap, allocator)
 		cur_idx := start_idx
 		start_x, start_y := edges[start_idx].ax, edges[start_idx].ay
 		closed := false
