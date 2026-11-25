@@ -58,6 +58,8 @@ Job :: struct {
 	// Threads other than the caller currently inside `work`, and how many may join.
 	helpers:     int,
 	max_helpers: int,
+	// The caller's assertion handler, so a failure on a pool thread is recorded like one on the caller.
+	assertion_failure_proc: runtime.Assertion_Failure_Proc,
 }
 
 // Runs `body(ctx, index)` for every index in 0..<count on up to `limit` threads, the caller
@@ -113,6 +115,7 @@ parallel_for :: proc(count: int, ctx: ^$T, body: proc(ctx: ^T, index: int), limi
 @(private = "file")
 run :: proc(job: ^Job, threads_wanted: int) {
 	p := &g_pool
+	job.assertion_failure_proc = context.assertion_failure_proc
 	sync.mutex_lock(&p.mutex)
 	// The job list outlives every caller, so it must not use a caller's (possibly arena) allocator.
 	if p.jobs == nil {p.jobs = make([dynamic]^Job, 0, 32, runtime.heap_allocator())}
@@ -150,6 +153,7 @@ worker_main :: proc(p: ^Pool) {
 		}
 		job.helpers += 1
 		sync.mutex_unlock(&p.mutex)
+		context.assertion_failure_proc = job.assertion_failure_proc
 		job.work(job)
 		free_all(context.temp_allocator)
 		sync.mutex_lock(&p.mutex)
