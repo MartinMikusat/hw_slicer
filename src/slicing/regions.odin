@@ -853,6 +853,57 @@ region_path_self_intersects :: proc(
 	path: Topology_Path,
 ) -> (bool, u32, u32, Region_Error) {
 	vertex_count := int(path.vertex_count)
+	if vertex_count >= 32 {
+		// O(N log N) X-sweep fast path; falls through to exact lexical scan only if an intersection
+		// or error is detected so reported edge indices remain 100% deterministic.
+		Region_Sweep_Edge :: struct {
+			min_x, max_x: i64,
+			min_y, max_y: i64,
+			a, b:         Snapped_Point,
+			idx:          u32,
+		}
+		edges := make([]Region_Sweep_Edge, vertex_count, context.temp_allocator)
+		for i in 0..<vertex_count {
+			ni := i + 1 if i + 1 < vertex_count else 0
+			a := region_path_point(topology, path, i)
+			b := region_path_point(topology, path, ni)
+			ax, ay := i64(a.x), i64(a.y)
+			bx, by := i64(b.x), i64(b.y)
+			edges[i] = {
+				min_x = min(ax, bx),
+				max_x = max(ax, bx),
+				min_y = min(ay, by),
+				max_y = max(ay, by),
+				a     = a,
+				b     = b,
+				idx   = u32(i),
+			}
+		}
+		slicing_fast_sort(edges, proc(a, b: Region_Sweep_Edge) -> bool {
+			return a.min_x < b.min_x
+		})
+		last_idx := u32(vertex_count - 1)
+		found_any := false
+		outer: for i in 0..<vertex_count {
+			ei := edges[i]
+			for j in i+1..<vertex_count {
+				ej := edges[j]
+				if ej.min_x > ei.max_x {break}
+				if ej.max_y < ei.min_y || ej.min_y > ei.max_y {continue}
+				lo := min(ei.idx, ej.idx)
+				hi := max(ei.idx, ej.idx)
+				if hi == lo + 1 || (lo == 0 && hi == last_idx) {continue}
+				intersects, error := region_segments_intersect(ei.a, ei.b, ej.a, ej.b)
+				if error != .None || intersects {
+					found_any = true
+					break outer
+				}
+			}
+		}
+		if !found_any {
+			return false, REGION_INVALID_INDEX, REGION_INVALID_INDEX, .None
+		}
+	}
 	for left_index in 0..<vertex_count {
 		left_next := (left_index+1)%vertex_count
 		a := region_path_point(topology, path, left_index)
