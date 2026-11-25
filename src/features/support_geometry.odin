@@ -7,6 +7,7 @@ import geometry "../geometry"
 import polygon "../polygon"
 import profiles "../profiles"
 import slicing "../slicing"
+import workers "../workers"
 
 Support_Geometry_Kind :: enum u8 {
 	Invalid,
@@ -102,6 +103,7 @@ support_geometry_build :: proc(
 	provider: polygon.Polygon_Provider,
 	limits := DEFAULT_SUPPORT_GEOMETRY_LIMITS,
 	allocator := context.allocator,
+	record_sources := true,
 ) -> (Support_Geometry_Result, Support_Geometry_Error) {
 	if !profiles.process_support_targets_valid(process.source) ||
 	   process.source.support_mode == .Invalid ||
@@ -114,12 +116,11 @@ support_geometry_build :: proc(
 	   len(schedule.layer_z) != len(topology.layers) ||
 	   len(schedule.layer_z) != len(regions.layers) ||
 	   len(schedule.layer_z) != len(demand.layers) ||
-	   !support_geometry_demand_valid(schedule, demand) {
+	   !support_geometry_demand_valid(schedule, demand) ||
+	   !slicing.fixed_layer_schedule_valid(schedule) ||
+	   !slicing.region_result_valid(topology, regions) {
 		return {}, .Invalid_Input
 	}
-	_, schedule_ok := slicing.fixed_layer_schedule_hash(schedule)
-	_, regions_ok := slicing.region_result_hash({}, topology, regions)
-	if !schedule_ok || !regions_ok {return {}, .Invalid_Input}
 
 	layer_count := len(schedule.layer_z)
 	region_inputs := make(
@@ -251,28 +252,10 @@ support_geometry_build :: proc(
 	if layer_error != .None {
 		return {}, support_geometry_bridge_error(layer_error)
 	}
-	for layer_input, layer_index in model_layers {
-		if len(layer_input.paths) == 0 {continue}
-		if process.source.support_clearance_xy == 0 {
-			cloned, clone_ok := skin_polygon_clone(layer_input, allocator)
-			if !clone_ok {return {}, .Allocation_Failed}
-			model_clearances[layer_index] = cloned
-		} else {
-			clearance, clearance_error := provider.offset(
-				layer_input,
-				process.source.support_clearance_xy,
-				demand.config.join_type,
-				demand.config.miter_limit,
-				demand.config.arc_tolerance,
-				limits.polygon,
-				allocator,
-			)
-			model_clearances[layer_index] = clearance
-			if clearance_error != .None {return {}, .Provider}
-		}
-	}
-
+	mask_targets := make([]int, len(demand.masks), allocator)
+	defer delete(mask_targets, allocator)
 	unresolved_demand_count: u64
+	max_target_layer := -1
 	for mask, mask_index in demand.masks {
 		target_layer, target_ok := support_geometry_top_target(
 			schedule,
@@ -280,119 +263,354 @@ support_geometry_build :: proc(
 			process.source.support_clearance_z,
 		)
 		if !target_ok {
+			mask_targets[mask_index] = -1
 			unresolved_demand_count += 1
 			continue
 		}
-		source, source_error := support_demand_mask_input(
-			demand,
-			u32(mask_index),
-			allocator,
-		)
-		if source_error != .None {
-			return {}, support_geometry_demand_error(source_error)
+		mask_targets[mask_index] = int(target_layer)
+		if int(target_layer) > max_target_layer {
+			max_target_layer = int(target_layer)
 		}
-		expanded: polygon.Polygon_Set
-		if process.source.support_expansion == 0 {
-			cloned, clone_ok := skin_polygon_clone(source, allocator)
-			polygon.polygon_set_destroy(&source, allocator)
-			if !clone_ok {return {}, .Allocation_Failed}
-			expanded = cloned
-		} else {
-			expansion_error: polygon.Polygon_Error
-			expanded, expansion_error = provider.offset(
-				source,
-				process.source.support_expansion,
-				demand.config.join_type,
-				demand.config.miter_limit,
-				demand.config.arc_tolerance,
-				limits.polygon,
-				allocator,
-			)
-			polygon.polygon_set_destroy(&source, allocator)
-			if expansion_error != .None {
-				polygon.polygon_set_destroy(&expanded, allocator)
-				return {}, .Provider
+	}
+
+	if max_target_layer >= 0 {
+		active_layers := max_target_layer + 1
+
+		canon_layer := make([]int, active_layers, allocator)
+		unique_layers := make([dynamic]int, 0, active_layers, allocator)
+		defer delete(canon_layer, allocator)
+		defer delete(unique_layers)
+		{
+			cap_pow2 := 16
+			for cap_pow2 < active_layers * 2 {cap_pow2 <<= 1}
+			ht_mask := u64(cap_pow2 - 1)
+			ht := make([]int, cap_pow2, allocator)
+			defer delete(ht, allocator)
+			for li in 0..<active_layers {
+				ml := model_layers[li]
+				if len(ml.paths) == 0 {
+					canon_layer[li] = li
+					continue
+				}
+				h := features_polygon_set_hash64(ml)
+				slot := h & ht_mask
+				found := -1
+				for {
+					entry := ht[slot]
+					if entry == 0 {break}
+					cand := entry - 1
+					if features_polygon_sets_equal(model_layers[cand], ml) {
+						found = cand
+						break
+					}
+					slot = (slot + 1) & ht_mask
+				}
+				if found >= 0 {
+					canon_layer[li] = found
+				} else {
+					ht[slot] = li + 1
+					canon_layer[li] = li
+					append(&unique_layers, li)
+				}
 			}
 		}
-		for target := int(target_layer); target >= 0; target -= 1 {
-			contribution, contribution_error := provider.boolean(
-				expanded,
-				model_clearances[target],
-				.Difference,
-				demand.config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			if contribution_error != .None {
-				polygon.polygon_set_destroy(&contribution, allocator)
-				polygon.polygon_set_destroy(&expanded, allocator)
-				return {}, .Provider
+
+		Clear_Par_Ctx :: struct {
+			model_layers:     []polygon.Polygon_Set,
+			unique_layers:    []int,
+			model_clearances: []polygon.Polygon_Set,
+			clearance_xy:     contracts.Micrometres,
+			config:           Support_Demand_Config,
+			provider:         polygon.Polygon_Provider,
+			limits:           Support_Geometry_Limits,
+			errors:           []Support_Geometry_Error,
+			allocator:        mem.Allocator,
+		}
+		clear_errors := make([]Support_Geometry_Error, active_layers, allocator)
+		defer delete(clear_errors, allocator)
+		cctx := Clear_Par_Ctx{
+			model_layers     = model_layers,
+			unique_layers    = unique_layers[:],
+			model_clearances = model_clearances,
+			clearance_xy     = process.source.support_clearance_xy,
+			config           = demand.config,
+			provider         = provider,
+			limits           = limits,
+			errors           = clear_errors,
+			allocator        = allocator,
+		}
+		parallel_for(len(unique_layers), &cctx, proc(c: ^Clear_Par_Ctx, ui: int) {
+			li := c.unique_layers[ui]
+			ml := c.model_layers[li]
+			if len(ml.paths) == 0 {return}
+			if c.clearance_xy == 0 {
+				cloned, clone_ok := skin_polygon_clone(ml, c.allocator)
+				if !clone_ok {c.errors[li] = .Allocation_Failed; return}
+				c.model_clearances[li] = cloned
+			} else {
+				clearance, cerr := c.provider.offset(
+					ml,
+					c.clearance_xy,
+					c.config.join_type,
+					c.config.miter_limit,
+					c.config.arc_tolerance,
+					c.limits.polygon,
+					c.allocator,
+				)
+				c.model_clearances[li] = clearance
+				if cerr != .None {c.errors[li] = .Provider}
 			}
-			if len(contribution.paths) == 0 {
-				polygon.polygon_set_destroy(&contribution, allocator)
+		})
+		for ui in unique_layers {
+			if clear_errors[ui] != .None {return {}, clear_errors[ui]}
+		}
+		for li in 0..<active_layers {
+			if canon_layer[li] != li && len(model_clearances[canon_layer[li]].paths) > 0 {
+				cloned, ok := skin_polygon_clone(model_clearances[canon_layer[li]], allocator)
+				if !ok {return {}, .Allocation_Failed}
+				model_clearances[li] = cloned
+			}
+		}
+
+		expanded_masks := make([]polygon.Polygon_Set, len(demand.masks), allocator)
+		expand_errors := make([]Support_Geometry_Error, len(demand.masks), allocator)
+		defer {
+			for &em in expanded_masks {polygon.polygon_set_destroy(&em, allocator)}
+			delete(expanded_masks, allocator)
+			delete(expand_errors, allocator)
+		}
+		Expand_Par_Ctx :: struct {
+			demand:         Support_Demand_Result,
+			mask_targets:   []int,
+			expansion:      contracts.Micrometres,
+			provider:       polygon.Polygon_Provider,
+			limits:         Support_Geometry_Limits,
+			expanded_masks: []polygon.Polygon_Set,
+			errors:         []Support_Geometry_Error,
+			allocator:      mem.Allocator,
+		}
+		ectx := Expand_Par_Ctx{
+			demand         = demand,
+			mask_targets   = mask_targets,
+			expansion      = process.source.support_expansion,
+			provider       = provider,
+			limits         = limits,
+			expanded_masks = expanded_masks,
+			errors         = expand_errors,
+			allocator      = allocator,
+		}
+		parallel_for(len(demand.masks), &ectx, proc(c: ^Expand_Par_Ctx, mi: int) {
+			if c.mask_targets[mi] < 0 {return}
+			source, source_error := support_demand_mask_input(c.demand, u32(mi), workers.scratch_allocator())
+			if source_error != .None {
+				c.errors[mi] = support_geometry_demand_error(source_error)
+				return
+			}
+			if c.expansion == 0 {
+				cloned, ok := skin_polygon_clone(source, c.allocator)
+				if !ok {c.errors[mi] = .Allocation_Failed; return}
+				c.expanded_masks[mi] = cloned
+			} else {
+				exp, eerr := c.provider.offset(
+					source,
+					c.expansion,
+					c.demand.config.join_type,
+					c.demand.config.miter_limit,
+					c.demand.config.arc_tolerance,
+					c.limits.polygon,
+					c.allocator,
+				)
+				if eerr != .None {
+					polygon.polygon_set_destroy(&exp, c.allocator)
+					c.errors[mi] = .Provider
+					return
+				}
+				c.expanded_masks[mi] = exp
+			}
+		})
+		for err in expand_errors {
+			if err != .None {return {}, err}
+		}
+
+		masks_at_target := make([][dynamic]u32, active_layers, allocator)
+		defer {
+			for &m in masks_at_target {delete(m)}
+			delete(masks_at_target, allocator)
+		}
+		for mi in 0..<len(demand.masks) {
+			tl := mask_targets[mi]
+			if tl >= 0 && len(expanded_masks[mi].paths) > 0 {
+				append(&masks_at_target[tl], u32(mi))
+				if record_sources {
+					for target := tl; target >= 0; target -= 1 {
+						append(&source_candidates[target], u32(mi))
+					}
+				}
+			}
+		}
+
+		cum_demand := make([]polygon.Polygon_Set, active_layers, allocator)
+		cum_owned := make([]bool, active_layers, allocator)
+		defer {
+			for &cd, ci in cum_demand {
+				if cum_owned[ci] {polygon.polygon_set_destroy(&cd, allocator)}
+			}
+			delete(cum_demand, allocator)
+			delete(cum_owned, allocator)
+		}
+		for li := max_target_layer; li >= 0; li -= 1 {
+			above := cum_demand[li + 1] if li + 1 < active_layers else polygon.Polygon_Set{}
+			if len(masks_at_target[li]) == 0 {
+				cum_demand[li] = above
 				continue
 			}
-			interface_copy: polygon.Polygon_Set
-			interface_rank := int(target_layer)-target
-			if interface_rank <
-			   int(process.source.support_interface_layers) {
-				cloned, clone_ok := skin_polygon_clone(
-					contribution,
-					allocator,
-				)
-				if !clone_ok {
-					polygon.polygon_set_destroy(
-						&contribution,
-						allocator,
-					)
-					polygon.polygon_set_destroy(
-						&expanded,
-						allocator,
-					)
-					return {}, .Allocation_Failed
-				}
-				interface_copy = cloned
+			total_pts := len(above.points)
+			total_p := len(above.paths)
+			for mi in masks_at_target[li] {
+				total_pts += len(expanded_masks[mi].points)
+				total_p += len(expanded_masks[mi].paths)
 			}
-			accumulate_error := skin_polygon_accumulate(
-				&support_accumulators[target],
-				&contribution,
-				provider,
-				demand.config.fill_rule,
+			batch_pts := make([]polygon.Polygon_Point, total_pts, context.temp_allocator)
+			batch_paths := make([]polygon.Polygon_Path, total_p, context.temp_allocator)
+			pw, path_w := 0, 0
+			if len(above.paths) > 0 {
+				copy(batch_pts[pw:pw+len(above.points)], above.points)
+				for p in above.paths {
+					batch_paths[path_w] = {offset = u64(pw) + p.offset, count = p.count}
+					path_w += 1
+				}
+				pw += len(above.points)
+			}
+			for mi in masks_at_target[li] {
+				em := expanded_masks[mi]
+				copy(batch_pts[pw:pw+len(em.points)], em.points)
+				for p in em.paths {
+					batch_paths[path_w] = {offset = u64(pw) + p.offset, count = p.count}
+					path_w += 1
+				}
+				pw += len(em.points)
+			}
+			unioned, uerr := provider.boolean(
+				polygon.Polygon_Set{points = batch_pts, paths = batch_paths},
+				{},
+				.Union,
+				.Non_Zero,
 				limits.polygon,
 				allocator,
 			)
-			if accumulate_error != .None {
-				polygon.polygon_set_destroy(&interface_copy, allocator)
-				polygon.polygon_set_destroy(&expanded, allocator)
-				return {}, support_geometry_skin_error(
-					accumulate_error,
-				)
+			if uerr != .None {
+				polygon.polygon_set_destroy(&unioned, allocator)
+				return {}, .Provider
 			}
-			if len(interface_copy.paths) > 0 {
-				interface_error := skin_polygon_accumulate(
-					&interface_accumulators[target],
-					&interface_copy,
-					provider,
-					demand.config.fill_rule,
-					limits.polygon,
-					allocator,
-				)
-				if interface_error != .None {
-					polygon.polygon_set_destroy(
-						&expanded,
-						allocator,
+			cum_demand[li] = unioned
+			cum_owned[li] = true
+		}
+
+		Sub_Par_Ctx :: struct {
+			cum_demand:             []polygon.Polygon_Set,
+			model_clearances:       []polygon.Polygon_Set,
+			masks_at_target:        [][dynamic]u32,
+			expanded_masks:         []polygon.Polygon_Set,
+			interface_layers:       int,
+			fill_rule:              polygon.Polygon_Fill_Rule,
+			provider:               polygon.Polygon_Provider,
+			limits:                 Support_Geometry_Limits,
+			support_accumulators:   []polygon.Polygon_Set,
+			interface_accumulators: []polygon.Polygon_Set,
+			errors:                 []Support_Geometry_Error,
+			allocator:              mem.Allocator,
+		}
+		sub_errors := make([]Support_Geometry_Error, active_layers, allocator)
+		defer delete(sub_errors, allocator)
+		sctx := Sub_Par_Ctx{
+			cum_demand             = cum_demand,
+			model_clearances       = model_clearances,
+			masks_at_target        = masks_at_target,
+			expanded_masks         = expanded_masks,
+			interface_layers       = int(process.source.support_interface_layers),
+			fill_rule              = demand.config.fill_rule,
+			provider               = provider,
+			limits                 = limits,
+			support_accumulators   = support_accumulators,
+			interface_accumulators = interface_accumulators,
+			errors                 = sub_errors,
+			allocator              = allocator,
+		}
+		parallel_for(active_layers, &sctx, proc(c: ^Sub_Par_Ctx, li: int) {
+			cd := c.cum_demand[li]
+			if len(cd.paths) == 0 {return}
+			mc := c.model_clearances[li]
+			if len(mc.paths) == 0 {
+				cloned, ok := skin_polygon_clone(cd, c.allocator)
+				if !ok {c.errors[li] = .Allocation_Failed; return}
+				c.support_accumulators[li] = cloned
+			} else {
+				diff, derr := c.provider.boolean(cd, mc, .Difference, c.fill_rule, c.limits.polygon, c.allocator)
+				if derr != .None {
+					polygon.polygon_set_destroy(&diff, c.allocator)
+					c.errors[li] = .Provider
+					return
+				}
+				c.support_accumulators[li] = diff
+			}
+			if c.interface_layers > 0 && len(c.support_accumulators[li].paths) > 0 {
+				hi_t := min(len(c.masks_at_target) - 1, li + c.interface_layers - 1)
+				total_pts, total_p := 0, 0
+				for tl in li..=hi_t {
+					for mi in c.masks_at_target[tl] {
+						total_pts += len(c.expanded_masks[mi].points)
+						total_p += len(c.expanded_masks[mi].paths)
+					}
+				}
+				if total_p > 0 {
+					scratch := workers.scratch_allocator()
+					bpts := make([]polygon.Polygon_Point, total_pts, scratch)
+					bpaths := make([]polygon.Polygon_Path, total_p, scratch)
+					pw, path_w := 0, 0
+					for tl in li..=hi_t {
+						for mi in c.masks_at_target[tl] {
+							em := c.expanded_masks[mi]
+							copy(bpts[pw:pw+len(em.points)], em.points)
+							for p in em.paths {
+								bpaths[path_w] = {offset = u64(pw) + p.offset, count = p.count}
+								path_w += 1
+							}
+							pw += len(em.points)
+						}
+					}
+					raw_if, uerr := c.provider.boolean(
+						polygon.Polygon_Set{points = bpts, paths = bpaths},
+						{},
+						.Union,
+						.Non_Zero,
+						c.limits.polygon,
+						scratch,
 					)
-					return {}, support_geometry_skin_error(
-						interface_error,
-					)
+					if uerr != .None {
+						c.errors[li] = .Provider
+						return
+					}
+					if len(raw_if.paths) > 0 {
+						if len(mc.paths) == 0 {
+							cloned, ok := skin_polygon_clone(raw_if, c.allocator)
+							if !ok {c.errors[li] = .Allocation_Failed; return}
+							c.interface_accumulators[li] = cloned
+						} else {
+							idiff, ierr := c.provider.boolean(raw_if, mc, .Difference, c.fill_rule, c.limits.polygon, c.allocator)
+							if ierr != .None {
+								polygon.polygon_set_destroy(&idiff, c.allocator)
+								c.errors[li] = .Provider
+								return
+							}
+							c.interface_accumulators[li] = idiff
+						}
+					}
 				}
 			}
-			support_geometry_append_unique(
-				&source_candidates[target],
-				u32(mask_index),
-			)
+		})
+		for err in sub_errors {
+			if err != .None {return {}, err}
 		}
-		polygon.polygon_set_destroy(&expanded, allocator)
 	}
 
 	if process.source.support_mode == .Everywhere {
@@ -454,87 +672,123 @@ support_geometry_build :: proc(
 		}
 	}
 
-	for support, layer_index in final_supports {
-		if len(support.paths) == 0 {continue}
-		interface_output, interface_error := provider.boolean(
+	Split_Par_Ctx :: struct {
+		final_supports:         []polygon.Polygon_Set,
+		interface_accumulators: []polygon.Polygon_Set,
+		outputs:                []polygon.Polygon_Set,
+		fill_rule:              polygon.Polygon_Fill_Rule,
+		provider:               polygon.Polygon_Provider,
+		limits:                 Support_Geometry_Limits,
+		errors:                 []Support_Geometry_Error,
+		allocator:              mem.Allocator,
+	}
+	split_errors := make([]Support_Geometry_Error, layer_count, allocator)
+	defer delete(split_errors, allocator)
+	spctx := Split_Par_Ctx{
+		final_supports         = final_supports,
+		interface_accumulators = interface_accumulators,
+		outputs                = outputs,
+		fill_rule              = demand.config.fill_rule,
+		provider               = provider,
+		limits                 = limits,
+		errors                 = split_errors,
+		allocator              = allocator,
+	}
+	parallel_for(layer_count, &spctx, proc(c: ^Split_Par_Ctx, layer_index: int) {
+		support := c.final_supports[layer_index]
+		if len(support.paths) == 0 {return}
+		iface_acc := c.interface_accumulators[layer_index]
+		if len(iface_acc.paths) == 0 {
+			c.outputs[layer_index*2] = support
+			c.final_supports[layer_index] = {}
+			return
+		}
+		interface_output, interface_error := c.provider.boolean(
 			support,
-			interface_accumulators[layer_index],
+			iface_acc,
 			.Intersection,
-			demand.config.fill_rule,
-			limits.polygon,
-			allocator,
+			c.fill_rule,
+			c.limits.polygon,
+			c.allocator,
 		)
 		if interface_error != .None {
-			polygon.polygon_set_destroy(&interface_output, allocator)
-			return {}, .Provider
+			polygon.polygon_set_destroy(&interface_output, c.allocator)
+			c.errors[layer_index] = .Provider
+			return
 		}
-		regular_output, regular_error := provider.boolean(
+		if len(interface_output.paths) == 0 {
+			polygon.polygon_set_destroy(&interface_output, c.allocator)
+			c.outputs[layer_index*2] = support
+			c.final_supports[layer_index] = {}
+			return
+		}
+		regular_output, regular_error := c.provider.boolean(
 			support,
 			interface_output,
 			.Difference,
-			demand.config.fill_rule,
-			limits.polygon,
-			allocator,
+			c.fill_rule,
+			c.limits.polygon,
+			c.allocator,
 		)
 		if regular_error != .None {
-			polygon.polygon_set_destroy(&interface_output, allocator)
-			polygon.polygon_set_destroy(&regular_output, allocator)
-			return {}, .Provider
+			polygon.polygon_set_destroy(&interface_output, c.allocator)
+			polygon.polygon_set_destroy(&regular_output, c.allocator)
+			c.errors[layer_index] = .Provider
+			return
 		}
-		outputs[layer_index*2] = regular_output
-		outputs[layer_index*2+1] = interface_output
+		c.outputs[layer_index*2] = regular_output
+		c.outputs[layer_index*2+1] = interface_output
+	})
+	for err in split_errors {
+		if err != .None {return {}, err}
 	}
 
-	for output, output_index in outputs {
-		if len(output.paths) == 0 {continue}
-		layer_index := output_index/2
-		kind := Support_Geometry_Kind.Regular
-		if output_index&1 != 0 {kind = .Interface}
-		for mask_index in source_candidates[layer_index] {
-			contribution, contributes, contribution_error :=
-				support_geometry_source_contribution(
-					schedule,
-					demand,
-					model_clearances,
-					process,
-					provider,
-					limits,
-					mask_index,
-					u32(layer_index),
-					kind,
+	if record_sources {
+		for output, output_index in outputs {
+			if len(output.paths) == 0 {continue}
+			layer_index := output_index/2
+			kind := Support_Geometry_Kind.Regular
+			if output_index&1 != 0 {kind = .Interface}
+			for mask_index in source_candidates[layer_index] {
+				contribution, contributes, contribution_error :=
+					support_geometry_source_contribution(
+						schedule,
+						demand,
+						model_clearances,
+						process,
+						provider,
+						limits,
+						mask_index,
+						u32(layer_index),
+						kind,
+						allocator,
+					)
+				if contribution_error != .None {
+					polygon.polygon_set_destroy(&contribution, allocator)
+					return {}, contribution_error
+				}
+				if !contributes {
+					polygon.polygon_set_destroy(&contribution, allocator)
+					continue
+				}
+				overlap, overlap_error := provider.boolean(
+					output,
+					contribution,
+					.Intersection,
+					demand.config.fill_rule,
+					limits.polygon,
 					allocator,
 				)
-			if contribution_error != .None {
-				polygon.polygon_set_destroy(
-					&contribution,
-					allocator,
-				)
-				return {}, contribution_error
-			}
-			if !contributes {
-				polygon.polygon_set_destroy(
-					&contribution,
-					allocator,
-				)
-				continue
-			}
-			overlap, overlap_error := provider.boolean(
-				output,
-				contribution,
-				.Intersection,
-				demand.config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			polygon.polygon_set_destroy(&contribution, allocator)
-			if overlap_error != .None {
+				polygon.polygon_set_destroy(&contribution, allocator)
+				if overlap_error != .None {
+					polygon.polygon_set_destroy(&overlap, allocator)
+					return {}, .Provider
+				}
+				if len(overlap.paths) > 0 {
+					append(&output_sources[output_index], mask_index)
+				}
 				polygon.polygon_set_destroy(&overlap, allocator)
-				return {}, .Provider
 			}
-			if len(overlap.paths) > 0 {
-				append(&output_sources[output_index], mask_index)
-			}
-			polygon.polygon_set_destroy(&overlap, allocator)
 		}
 	}
 
@@ -834,15 +1088,6 @@ support_geometry_top_target :: proc(
 	return 0, false
 }
 
-support_geometry_append_unique :: proc(
-	values: ^[dynamic]u32,
-	value: u32,
-) {
-	for existing in values^ {
-		if existing == value {return}
-	}
-	append(values, value)
-}
 
 support_geometry_mask_input :: proc(
 	geometry: Support_Geometry_Result,
@@ -981,15 +1226,6 @@ support_geometry_demand_error :: proc(
 	return .Invalid_Input
 }
 
-support_geometry_skin_error :: proc(
-	error: Skin_Error,
-) -> Support_Geometry_Error {
-	#partial switch error {
-	case .Allocation_Failed: return .Allocation_Failed
-	case .Arithmetic:        return .Arithmetic
-	}
-	return .Provider
-}
 
 support_geometry_result_destroy :: proc(
 	result: ^Support_Geometry_Result,

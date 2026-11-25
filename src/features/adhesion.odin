@@ -1,6 +1,7 @@
 package features
 
 import "core:math"
+import "core:mem"
 
 import contracts "../contracts"
 import polygon "../polygon"
@@ -186,55 +187,79 @@ adhesion_build :: proc(
 		}
 		// Auto-increase layer-0 skirt loops to satisfy min_skirt_length_um.
 		layer0_skirt_loops := eff_skirt_loops
+		probe_k0: polygon.Polygon_Set
+		has_probe_k0 := false
+		defer if has_probe_k0 {polygon.polygon_set_destroy(&probe_k0, allocator)}
 		if i64(config.min_skirt_length_um) > 0 {
 			probe_off := contracts.Micrometres(base_dist + lw/2)
 			probe, perr := provider.offset(skirt_set, probe_off, .Round, 2.0, 25.0, polygon.DEFAULT_POLYGON_LIMITS, allocator)
 			if perr == .None && len(probe.paths) > 0 {
+				outer_kept := 0
 				loop_len := 0.0
 				for pp in probe.paths {
 					ring := probe.points[pp.offset:pp.offset+pp.count]
 					if polygon.polygon_path_area_2(ring) <= 0 {continue}
+					probe.paths[outer_kept] = pp
+					outer_kept += 1
 					for pi in 0..<len(ring) {
 						pa := ring[pi]
 						pb := ring[(pi+1)%len(ring)]
 						loop_len += math.hypot(f64(i64(pb.x)-i64(pa.x)), f64(i64(pb.y)-i64(pa.y)))
 					}
 				}
+				probe.paths = probe.paths[:outer_kept]
+				probe_k0 = probe
+				has_probe_k0 = true
 				if loop_len > 1.0 {
 					needed := u32(math.ceil(f64(i64(config.min_skirt_length_um)) / loop_len))
 					layer0_skirt_loops = min(u32(32), max(layer0_skirt_loops, needed))
 				}
+			} else {
+				polygon.polygon_set_destroy(&probe, allocator)
 			}
-			polygon.polygon_set_destroy(&probe, allocator)
+		}
+		max_k := int(max(layer0_skirt_loops, eff_skirt_loops))
+		cached_skirts := make([]polygon.Polygon_Set, max_k, allocator)
+		defer {
+			for &cs in cached_skirts {polygon.polygon_set_destroy(&cs, allocator)}
+			delete(cached_skirts, allocator)
+		}
+		for k in 0..<max_k {
+			if k == 0 && has_probe_k0 {
+				cached_skirts[0] = probe_k0
+				probe_k0 = {}
+				has_probe_k0 = false
+				continue
+			}
+			offset_um := contracts.Micrometres(base_dist + i64(k)*lw + lw/2)
+			expanded, err := provider.offset(
+				skirt_set,
+				offset_um,
+				.Round,
+				2.0,
+				25.0,
+				polygon.DEFAULT_POLYGON_LIMITS,
+				allocator,
+			)
+			if err != .None {
+				polygon.polygon_set_destroy(&expanded, allocator)
+				continue
+			}
+			outer_kept := 0
+			for path in expanded.paths {
+				if polygon.polygon_path_area_2(expanded.points[path.offset:path.offset+path.count]) > 0 {
+					expanded.paths[outer_kept] = path
+					outer_kept += 1
+				}
+			}
+			expanded.paths = expanded.paths[:outer_kept]
+			cached_skirts[k] = expanded
 		}
 		for li in 0..<skirt_layers {
 			n_loops := layer0_skirt_loops if li == 0 else eff_skirt_loops
 			for k := int(n_loops) - 1; k >= 0; k -= 1 {
-				offset_um := contracts.Micrometres(base_dist + i64(k)*lw + lw/2)
-				expanded, err := provider.offset(
-					skirt_set,
-					offset_um,
-					.Round,
-					2.0,
-					25.0,
-					polygon.DEFAULT_POLYGON_LIMITS,
-					allocator,
-				)
-				if err != .None {
-					polygon.polygon_set_destroy(&expanded, allocator)
-					continue
-				}
-				// A skirt is the outer boundary only: merging islands can leave holes in the offset.
-				outer_kept := 0
-				for path in expanded.paths {
-					if polygon.polygon_path_area_2(expanded.points[path.offset:path.offset+path.count]) > 0 {
-						expanded.paths[outer_kept] = path
-						outer_kept += 1
-					}
-				}
-				expanded.paths = expanded.paths[:outer_kept]
-				adhesion_append_loops(&loops, expanded, li, false, config, allocator)
-				polygon.polygon_set_destroy(&expanded, allocator)
+				if len(cached_skirts[k].paths) == 0 {continue}
+				adhesion_append_loops(&loops, cached_skirts[k], li, false, config, allocator)
 			}
 		}
 	}
@@ -248,54 +273,67 @@ adhesion_build :: proc(
 		brim_count := int((i64(config.brim_width_um) + lw - 1) / lw)
 		if brim_count > 64 {brim_count = 64}
 		if want_outer_brim {
-			for k := brim_count - 1; k >= 0; k -= 1 {
-				offset_um := contracts.Micrometres(i64(config.brim_gap_um) + i64(k)*lw + lw/2)
-				expanded, err := provider.offset(
-					outer_set,
-					offset_um,
-					.Round,
-					2.0,
-					25.0,
-					polygon.DEFAULT_POLYGON_LIMITS,
-					allocator,
-				)
-				if err != .None {
-					polygon.polygon_set_destroy(&expanded, allocator)
-					continue
-				}
-				adhesion_append_loops(&loops, expanded, 0, true, config, allocator)
-				polygon.polygon_set_destroy(&expanded, allocator)
-			}
+			adhesion_append_brim(&loops, provider, outer_set, config, brim_count, false, allocator)
 		}
-
-		// 3. Optional Inner Brim loops inside layer-0 holes.
 		if want_inner_brim {
 			hole_set := adhesion_extract_layer_set(topology, regions, u32(base_layer_idx), true, allocator)
 			defer polygon.polygon_set_destroy(&hole_set, allocator)
-			if len(hole_set.paths) > 0 {
-				for k := 0; k < brim_count; k += 1 {
-					offset_um := contracts.Micrometres(-(i64(config.brim_gap_um) + i64(k)*lw + lw/2))
-					inset, err := provider.offset(
-						hole_set,
-						offset_um,
-						.Round,
-						2.0,
-						25.0,
-						polygon.DEFAULT_POLYGON_LIMITS,
-						allocator,
-					)
-					if err != .None || len(inset.paths) == 0 {
-						polygon.polygon_set_destroy(&inset, allocator)
-						break
-					}
-					adhesion_append_loops(&loops, inset, 0, true, config, allocator)
-					polygon.polygon_set_destroy(&inset, allocator)
-				}
-			}
+			adhesion_append_brim(&loops, provider, hole_set, config, brim_count, true, allocator)
 		}
 	}
 
 	return Adhesion_Result{loops = loops[:], raft_paths = raft_paths[:]}
+}
+
+@(private = "file")
+adhesion_append_brim :: proc(
+	loops: ^[dynamic]Adhesion_Loop,
+	provider: polygon.Polygon_Provider,
+	boundary: polygon.Polygon_Set,
+	config: Adhesion_Config,
+	count: int,
+	inner: bool,
+	allocator: mem.Allocator,
+) {
+	if len(boundary.paths) == 0 {return}
+	rings: [64]polygon.Polygon_Set
+	assert(count > 0 && count <= len(rings))
+	Brim_Job :: struct {
+		provider: polygon.Polygon_Provider,
+		boundary: polygon.Polygon_Set,
+		rings: []polygon.Polygon_Set,
+		first_distance, step: i64,
+		allocator: mem.Allocator,
+	}
+	width := i64(config.line_width_um)
+	sign := i64(-1) if inner else i64(1)
+	job := Brim_Job{
+		provider = provider,
+		boundary = boundary,
+		rings = rings[:count],
+		first_distance = sign * (i64(config.brim_gap_um) + width/2),
+		step = sign * width,
+		allocator = allocator,
+	}
+	parallel_for(count, &job, proc(c: ^Brim_Job, i: int) {
+		distance := contracts.Micrometres(c.first_distance + i64(i)*c.step)
+		ring, err := c.provider.offset(
+			c.boundary, distance, .Round, 2.0, 25.0, polygon.DEFAULT_POLYGON_LIMITS, c.allocator,
+		)
+		if err == .None {
+			c.rings[i] = ring
+		} else {
+			polygon.polygon_set_destroy(&ring, c.allocator)
+		}
+	})
+	defer for &ring in rings[:count] {
+		polygon.polygon_set_destroy(&ring, allocator)
+	}
+	for i in 0..<count {
+		index := i if inner else count-1-i
+		if inner && len(rings[index].paths) == 0 {break}
+		adhesion_append_loops(loops, rings[index], 0, true, config, allocator)
+	}
 }
 
 @(private)

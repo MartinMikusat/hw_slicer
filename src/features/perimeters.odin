@@ -295,6 +295,9 @@ perimeters_generate :: proc(
 				c.region_errors[region_index] = .Provider
 				return
 			}
+			if len(c.temporary_outputs[slot].paths) == 0 {
+				break
+			}
 		}
 	})
 
@@ -362,6 +365,7 @@ perimeters_generate :: proc(
 	point_write := 0
 	for group, group_index in result.groups {
 		src_slot := canon_of[int(group.region_index)] * int(config.count) + int(group.perimeter_index)
+		assert(src_slot <= group_index)
 		output := temporary_outputs[src_slot]
 		for output_path, output_path_index in output.paths {
 			if output_path.count > u64(max(u32)) {
@@ -371,7 +375,8 @@ perimeters_generate :: proc(
 			source_start := int(output_path.offset)
 			source_end := source_start+int(output_path.count)
 			points := output.points[source_start:source_end]
-			area := polygon.polygon_path_area_2(points)
+			area := polygon.polygon_path_area_2(points) if src_slot == group_index else
+				result.paths[int(result.groups[src_slot].path_offset)+output_path_index].signed_area_2
 			if area == 0 {
 				perimeter_result_destroy(&result, allocator)
 				return {}, .Provider

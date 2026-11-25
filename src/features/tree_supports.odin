@@ -2,6 +2,7 @@ package features
 
 import "base:runtime"
 import "core:math"
+import "core:mem"
 
 import contracts "../contracts"
 import polygon "../polygon"
@@ -92,55 +93,83 @@ tree_supports_generate :: proc(
 	model_cx := cx_sum / f64(c_cnt) if c_cnt > 0 else 0.5 * f64(i64(config.bed_min_x) + i64(config.bed_max_x))
 	model_cy := cy_sum / f64(c_cnt) if c_cnt > 0 else 0.5 * f64(i64(config.bed_min_y) + i64(config.bed_max_y))
 
-	// Step 1: Detect overhang tip clusters per layer (sampling outer contour vertices unsupported by layer-1).
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
-	tips_per_layer := make([][dynamic][2]f64, layer_count, context.temp_allocator)
-	total_tips: u64
-	for li := 1; li < layer_count; li += 1 {
-		prev_model := model_layers[li - 1]
-		reg_layer := regions.layers[li]
+	tips_per_layer := make([][dynamic][2]f64, layer_count, allocator)
+	defer {
+		for &tl in tips_per_layer {delete(tl)}
+		delete(tips_per_layer, allocator)
+	}
+	Tip_Par_Ctx :: struct {
+		topology:       slicing.Topology_Result,
+		regions:        slicing.Region_Result,
+		model_layers:   []polygon.Polygon_Set,
+		layer_z:        []contracts.Micrometres,
+		tan_overhang:   f64,
+		spacing_sq:     f64,
+		tips_per_layer: [][dynamic][2]f64,
+		allocator:      mem.Allocator,
+	}
+	tctx := Tip_Par_Ctx{
+		topology       = topology,
+		regions        = regions,
+		model_layers   = model_layers,
+		layer_z        = layer_z,
+		tan_overhang   = tan_overhang,
+		spacing_sq     = spacing * spacing,
+		tips_per_layer = tips_per_layer,
+		allocator      = allocator,
+	}
+	parallel_for(layer_count - 1, &tctx, proc(c: ^Tip_Par_Ctx, idx: int) {
+		li := idx + 1
+		prev_model := c.model_layers[li - 1]
+		reg_layer := c.regions.layers[li]
+		if reg_layer.region_count == 0 {return}
+		layer_dz := f64(i64(c.layer_z[li]) - i64(c.layer_z[li - 1]))
+		allowed_um := max(0.0, layer_dz) * c.tan_overhang
+		allowed_sq := allowed_um * allowed_um
+		local_tips := make([dynamic][2]f64, 0, 8, c.allocator)
 		r_start := int(reg_layer.region_offset)
 		r_end := r_start + int(reg_layer.region_count)
 		for ri in r_start..<r_end {
-			reg := regions.regions[ri]
+			reg := c.regions.regions[ri]
 			if reg.contour_count == 0 {continue}
-			ci := regions.region_contour_indices[reg.contour_offset]
-			contour := regions.contours[ci]
-			path := topology.paths[contour.path_index]
+			ci := c.regions.region_contour_indices[reg.contour_offset]
+			contour := c.regions.contours[ci]
+			path := c.topology.paths[contour.path_index]
 			vc := int(path.vertex_count)
 			if vc < 3 {continue}
-			// Sample along contour vertices.
 			stride := max(1, vc / 64)
-			// A point overhangs when it lies farther outside the layer below than the overhang
-			// angle allows: layer height * tan(angle), with the angle measured from vertical.
-			layer_dz := f64(i64(layer_z[li]) - i64(layer_z[li - 1]))
-			allowed_um := max(0.0, layer_dz) * tan_overhang
 			for vi := 0; vi < vc; vi += stride {
-				pt := slicing.region_path_point(topology, path, vi)
+				pt := slicing.region_path_point(c.topology, path, vi)
 				if bridge_polygon_contains_twice(prev_model, i64(pt.x)*2, i64(pt.y)*2) {
 					continue
 				}
-				if tree_support_boundary_distance(prev_model, f64(i64(pt.x)), f64(i64(pt.y))) <= allowed_um {
+				px, py := f64(i64(pt.x)), f64(i64(pt.y))
+				if tree_support_within_distance_sq(prev_model, px, py, allowed_sq) {
 					continue
 				}
-				// Cluster against existing tips on this layer.
-				px, py := f64(i64(pt.x)), f64(i64(pt.y))
 				too_close := false
-				for existing in tips_per_layer[li] {
-					if math.hypot(px - existing[0], py - existing[1]) < spacing {
+				for existing in local_tips {
+					dx, dy := px - existing[0], py - existing[1]
+					if dx*dx + dy*dy < c.spacing_sq {
 						too_close = true
 						break
 					}
 				}
 				if !too_close {
-					if tips_per_layer[li].allocator.procedure == nil {
-						tips_per_layer[li] = make([dynamic][2]f64, 0, 8, context.temp_allocator)
-					}
-					append(&tips_per_layer[li], [2]f64{px, py})
-					total_tips += 1
+					append(&local_tips, [2]f64{px, py})
 				}
 			}
 		}
+		if len(local_tips) > 0 {
+			c.tips_per_layer[li] = local_tips
+		} else {
+			delete(local_tips)
+		}
+	})
+	total_tips: u64
+	for tl in tips_per_layer {
+		total_tips += u64(len(tl))
 	}
 
 	if total_tips == 0 {
@@ -279,13 +308,32 @@ tree_supports_generate :: proc(
 			fits := !inside && ring_r >= f64(i64(lw))
 
 			sides :: 16
+			@(static, rodata)
+			ring_16_lut := [sides][2]f64{
+				{ 1.0000000000000000,  0.0000000000000000},
+				{ 0.9238795325112867,  0.3826834323650898},
+				{ 0.7071067811865476,  0.7071067811865475},
+				{ 0.3826834323650898,  0.9238795325112867},
+				{ 0.0000000000000000,  1.0000000000000000},
+				{-0.3826834323650898,  0.9238795325112867},
+				{-0.7071067811865475,  0.7071067811865476},
+				{-0.9238795325112867,  0.3826834323650898},
+				{-1.0000000000000000,  0.0000000000000000},
+				{-0.9238795325112867, -0.3826834323650898},
+				{-0.7071067811865476, -0.7071067811865475},
+				{-0.3826834323650898, -0.9238795325112867},
+				{ 0.0000000000000000, -1.0000000000000000},
+				{ 0.3826834323650898, -0.9238795325112867},
+				{ 0.7071067811865475, -0.7071067811865476},
+				{ 0.9238795325112867, -0.3826834323650898},
+			}
 			pts: []polygon.Polygon_Point
 			if fits {
 				pts = make([]polygon.Polygon_Point, sides, allocator)
 				for s in 0..<sides {
-					ang := (2.0 * math.PI * f64(s)) / f64(sides)
-					px := contracts.Micrometres(i64(math.round(b.x + ring_r * math.cos(ang))))
-					py := contracts.Micrometres(i64(math.round(b.y + ring_r * math.sin(ang))))
+					c_s := ring_16_lut[s]
+					px := contracts.Micrometres(i64(math.round(b.x + ring_r * c_s[0])))
+					py := contracts.Micrometres(i64(math.round(b.y + ring_r * c_s[1])))
 					if i64(px) < i64(config.bed_min_x) || i64(px) > i64(config.bed_max_x) ||
 					   i64(py) < i64(config.bed_min_y) || i64(py) > i64(config.bed_max_y) {
 						fits = false
@@ -386,10 +434,9 @@ tree_support_nearest_boundary :: proc(set: polygon.Polygon_Set, x, y: f64) -> (d
 	return math.sqrt(best_sq), near_x, near_y
 }
 
-// The distance from (x, y) to the nearest edge of any path in `set`, or +Inf for an empty set.
 @(private = "file")
-tree_support_boundary_distance :: proc(set: polygon.Polygon_Set, x, y: f64) -> f64 {
-	best_sq := math.INF_F64
+tree_support_within_distance_sq :: proc(set: polygon.Polygon_Set, x, y, allowed_sq: f64) -> bool {
+	allowed_r := math.sqrt(allowed_sq)
 	for path in set.paths {
 		n := int(path.count)
 		if n < 2 || path.offset+path.count > u64(len(set.points)) {continue}
@@ -398,14 +445,18 @@ tree_support_boundary_distance :: proc(set: polygon.Polygon_Set, x, y: f64) -> f
 		for i in 0..<n {
 			cur := set.points[start + i]
 			ax, ay := f64(i64(prev.x)), f64(i64(prev.y))
-			dx, dy := f64(i64(cur.x)) - ax, f64(i64(cur.y)) - ay
-			len_sq := dx*dx + dy*dy
-			t := 0.0
-			if len_sq > 0 {t = clamp(((x - ax)*dx + (y - ay)*dy) / len_sq, 0.0, 1.0)}
-			ex, ey := x - (ax + t*dx), y - (ay + t*dy)
-			best_sq = min(best_sq, ex*ex + ey*ey)
+			bx, by := f64(i64(cur.x)), f64(i64(cur.y))
+			if x >= min(ax, bx) - allowed_r && x <= max(ax, bx) + allowed_r &&
+			   y >= min(ay, by) - allowed_r && y <= max(ay, by) + allowed_r {
+				dx, dy := bx - ax, by - ay
+				len_sq := dx*dx + dy*dy
+				t := 0.0
+				if len_sq > 0 {t = clamp(((x - ax)*dx + (y - ay)*dy) / len_sq, 0.0, 1.0)}
+				ex, ey := x - (ax + t*dx), y - (ay + t*dy)
+				if ex*ex + ey*ey <= allowed_sq {return true}
+			}
 			prev = cur
 		}
 	}
-	return math.sqrt(best_sq)
+	return false
 }

@@ -176,32 +176,25 @@ vertical_shells_build :: proc(
 
 		top: polygon.Polygon_Set
 		if !top_identical {
-			top = vertical_shell_band(c.model_layers, c.inner, c.pair, li, li + 1, li + c.top_layers, c.provider, c.allocator)
+			top = vertical_shell_band(c.model_layers, c.inner, c.pair, li, li + 1, li + c.top_layers, c.provider, workers.scratch_allocator())
 		}
 		bottom: polygon.Polygon_Set
 		if !bottom_identical {
-			bottom = vertical_shell_band(c.model_layers, c.inner, c.pair, li, li - c.bottom_layers, li - 1, c.provider, c.allocator)
+			bottom = vertical_shell_band(c.model_layers, c.inner, c.pair, li, li - c.bottom_layers, li - 1, c.provider, workers.scratch_allocator())
 		}
-		defer polygon.polygon_set_destroy(&top, c.allocator)
-		defer polygon.polygon_set_destroy(&bottom, c.allocator)
 		if len(top.paths) == 0 && len(bottom.paths) == 0 {return}
 
-		object_volume: polygon.Polygon_Set
-		object_volume_owned := false
-		if li > 0 && li + 1 < len(c.model_layers) {
-			if c.canon_layer[li - 1] == c.canon_layer[li + 1] {
-				object_volume = c.model_layers[li - 1]
-			} else {
-				object_volume, _ = c.provider.boolean(c.model_layers[li - 1], c.model_layers[li + 1], .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, c.allocator)
-				object_volume_owned = true
-			}
+		ov_state := Lazy_Object_Volume{
+			model_layers = c.model_layers,
+			canon_layer  = c.canon_layer,
+			li           = li,
+			provider     = c.provider,
 		}
-		defer if object_volume_owned {polygon.polygon_set_destroy(&object_volume, c.allocator)}
 		if len(top.paths) > 0 {
-			c.top[li] = vertical_shell_regularize(top, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
+			c.top[li] = vertical_shell_regularize(top, c.inner[li], &ov_state, c.spacing, c.provider, c.allocator)
 		}
 		if len(bottom.paths) > 0 {
-			c.bottom[li] = vertical_shell_regularize(bottom, c.inner[li], object_volume, c.spacing, c.provider, c.allocator)
+			c.bottom[li] = vertical_shell_regularize(bottom, c.inner[li], &ov_state, c.spacing, c.provider, c.allocator)
 		}
 	})
 	return result
@@ -258,13 +251,46 @@ vertical_shell_band :: proc(
 	return band
 }
 
+@(private = "file")
+Lazy_Object_Volume :: struct {
+	model_layers: []polygon.Polygon_Set,
+	canon_layer:  []int,
+	li:           int,
+	provider:     polygon.Polygon_Provider,
+	computed:     bool,
+	value:        polygon.Polygon_Set,
+}
+
+@(private = "file")
+lazy_object_volume_get :: proc(ov: ^Lazy_Object_Volume, scratch: mem.Allocator) -> polygon.Polygon_Set {
+	if !ov.computed {
+		ov.computed = true
+		if ov.li > 0 && ov.li + 1 < len(ov.model_layers) {
+			if ov.canon_layer[ov.li - 1] == ov.canon_layer[ov.li + 1] {
+				ov.value = ov.model_layers[ov.li - 1]
+			} else {
+				ov.value, _ = ov.provider.boolean(
+					ov.model_layers[ov.li - 1],
+					ov.model_layers[ov.li + 1],
+					.Intersection,
+					.Non_Zero,
+					polygon.DEFAULT_POLYGON_LIMITS,
+					scratch,
+				)
+			}
+		}
+	}
+	return ov.value
+}
+
 // Orca's regularization of the shell: open away parts narrower than about 0.65 spacing, close
 // gaps narrower than 1.2 spacing, shrink back to a 0.2 spacing overlap, drop small pieces
 // (smaller than spacing * 1.5 mm, or smaller than spacing * 8 mm and enclosed by the layers
 // below and above), and keep only what lies inside the infill area. `spacing` is in micrometres.
 @(private = "file")
 vertical_shell_regularize :: proc(
-	band, inner, object_volume: polygon.Polygon_Set,
+	band, inner: polygon.Polygon_Set,
+	ov: ^Lazy_Object_Volume,
 	spacing: f64,
 	provider: polygon.Polygon_Provider,
 	allocator: mem.Allocator,
@@ -297,10 +323,13 @@ vertical_shell_regularize :: proc(
 		area := f64(polygon.polygon_path_area_2(ring))
 		if area <= 0 {continue}
 		drop := area < small_area_2
-		if !drop && area < wrapped_area_2 && len(object_volume.paths) > 0 {
-			piece := polygon.Polygon_Set{points = ring, paths = []polygon.Polygon_Path{{offset = 0, count = path.count}}}
-			outside, err := provider.boolean(piece, object_volume, .Difference, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, scratch)
-			drop = err == .None && len(outside.paths) == 0
+		if !drop && area < wrapped_area_2 {
+			object_volume := lazy_object_volume_get(ov, scratch)
+			if len(object_volume.paths) > 0 {
+				piece := polygon.Polygon_Set{points = ring, paths = []polygon.Polygon_Path{{offset = 0, count = path.count}}}
+				outside, err := provider.boolean(piece, object_volume, .Difference, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, scratch)
+				drop = err == .None && len(outside.paths) == 0
+			}
 		}
 		keep[pi] = !drop
 	}

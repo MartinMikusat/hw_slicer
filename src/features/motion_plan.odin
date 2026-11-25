@@ -1,6 +1,7 @@
 package features
 
 import "core:math"
+import "core:mem"
 
 import contracts "../contracts"
 import geometry "../geometry"
@@ -1344,83 +1345,160 @@ motion_plan_apply_combing :: proc(
 	allocator := context.allocator,
 ) -> u64 {
 	if motion == nil || len(motion.layers) == 0 || len(motion.operations) == 0 {return 0}
-	out_ops := make([dynamic]Motion_Operation, 0, len(motion.operations) + 256, allocator)
-	detoured: u64
-	added_travels: u64
+	layer_count := len(motion.layers)
 
-	for &layer, li in motion.layers {
+	Layer_Comb_Result :: struct {
+		ops:           []Motion_Operation,
+		owned:         bool,
+		detoured:      u64,
+		added_travels: u64,
+		dur_delta:     i64,
+	}
+	results := make([]Layer_Comb_Result, layer_count, allocator)
+	defer {
+		for r in results {
+			if r.owned {delete(r.ops, allocator)}
+		}
+		delete(results, allocator)
+	}
+
+	Comb_Par_Ctx :: struct {
+		motion:        ^Motion_Plan_Result,
+		model_layers:  []polygon.Polygon_Set,
+		max_detour_um: contracts.Micrometres,
+		results:       []Layer_Comb_Result,
+		allocator:     mem.Allocator,
+	}
+	cctx := Comb_Par_Ctx{
+		motion        = motion,
+		model_layers  = model_layers,
+		max_detour_um = max_detour_um,
+		results       = results,
+		allocator     = allocator,
+	}
+
+	parallel_for(layer_count, &cctx, proc(c: ^Comb_Par_Ctx, li: int) {
+		layer := c.motion.layers[li]
 		op_start := int(layer.operation_offset)
 		op_end := op_start + int(layer.operation_count)
-		new_start := u64(len(out_ops))
-		ml := model_layers[li] if li < len(model_layers) else polygon.Polygon_Set{}
+		orig := c.motion.operations[op_start:op_end]
+		ml := c.model_layers[li] if li < len(c.model_layers) else polygon.Polygon_Set{}
+		if len(ml.paths) == 0 || len(orig) == 0 {
+			c.results[li] = {ops = orig}
+			return
+		}
+		has_cand := false
+		for op in orig {
+			if op.kind == .Travel && op.crosses_exterior {
+				has_cand = true
+				break
+			}
+		}
+		if !has_cand {
+			c.results[li] = {ops = orig}
+			return
+		}
 
-		for oi in op_start..<op_end {
-			op := motion.operations[oi]
-			if op.kind != .Travel || !op.crosses_exterior || len(ml.paths) == 0 {
+		Outer_Ring :: struct {
+			ring:      []polygon.Polygon_Point,
+			cum:       []f64, // len == len(ring), cum[0] = 0
+			total_len: f64,
+		}
+		outer_rings := make([dynamic]Outer_Ring, 0, len(ml.paths), context.temp_allocator)
+		for mp in ml.paths {
+			if mp.count < 3 {continue}
+			ring := ml.points[mp.offset:mp.offset+mp.count]
+			if polygon.polygon_path_area_2(ring) <= 0 {continue}
+			n := len(ring)
+			cum := make([]f64, n, context.temp_allocator)
+			total := 0.0
+			for k in 0..<n {
+				cum[k] = total
+				a := ring[k]
+				b := ring[(k + 1) % n]
+				edx := f64(i64(b.x) - i64(a.x))
+				edy := f64(i64(b.y) - i64(a.y))
+				total += math.sqrt(edx*edx + edy*edy)
+			}
+			append(&outer_rings, Outer_Ring{ring = ring, cum = cum, total_len = total})
+		}
+		if len(outer_rings) == 0 {
+			c.results[li] = {ops = orig}
+			return
+		}
+
+		out_ops := make([dynamic]Motion_Operation, 0, len(orig) + 32, c.allocator)
+		detoured: u64
+		added_travels: u64
+		dur_delta: i64
+
+		MAX_NEAR_SQ :: 5_000.0 * 5_000.0
+		for op in orig {
+			if op.kind != .Travel || !op.crosses_exterior {
 				append(&out_ops, op)
 				continue
 			}
 			a, b := op.point_a, op.point_b
-			direct_len := math.hypot(f64(i64(b.x)-i64(a.x)), f64(i64(b.y)-i64(a.y)))
-			if direct_len < 500.0 {
+			adx := f64(i64(b.x) - i64(a.x))
+			ady := f64(i64(b.y) - i64(a.y))
+			direct_sq := adx*adx + ady*ady
+			if direct_sq < 500.0 * 500.0 {
 				append(&out_ops, op)
 				continue
 			}
-			// Find an outer contour whose vertices are near both endpoints.
-			best_path_idx := -1
+			direct_len := math.sqrt(direct_sq)
+			best_ring_idx := -1
 			best_va, best_vb := 0, 0
-			best_detour := f64(max_detour_um) if i64(max_detour_um) > 0 else direct_len * 3.0
+			best_detour := f64(c.max_detour_um) if i64(c.max_detour_um) > 0 else direct_len * 3.0
 			best_forward := true
-			for mp, mpi in ml.paths {
-				if mp.count < 3 {continue}
-				ring := ml.points[mp.offset:mp.offset+mp.count]
-				if polygon.polygon_path_area_2(ring) <= 0 {continue}
-				// Find nearest vertex to a and b.
+			ax_f, ay_f := f64(i64(a.x)), f64(i64(a.y))
+			bx_f, by_f := f64(i64(b.x)), f64(i64(b.y))
+
+			for oring, ridx in outer_rings {
+				ring := oring.ring
 				va, vb := 0, 0
-				da_min := math.hypot(f64(i64(ring[0].x)-i64(a.x)), f64(i64(ring[0].y)-i64(a.y)))
-				db_min := math.hypot(f64(i64(ring[0].x)-i64(b.x)), f64(i64(ring[0].y)-i64(b.y)))
+				dx0a := f64(i64(ring[0].x)) - ax_f
+				dy0a := f64(i64(ring[0].y)) - ay_f
+				da_sq := dx0a*dx0a + dy0a*dy0a
+				dx0b := f64(i64(ring[0].x)) - bx_f
+				dy0b := f64(i64(ring[0].y)) - by_f
+				db_sq := dx0b*dx0b + dy0b*dy0b
 				for vi in 1..<len(ring) {
-					da := math.hypot(f64(i64(ring[vi].x)-i64(a.x)), f64(i64(ring[vi].y)-i64(a.y)))
-					if da < da_min {da_min = da; va = vi}
-					db := math.hypot(f64(i64(ring[vi].x)-i64(b.x)), f64(i64(ring[vi].y)-i64(b.y)))
-					if db < db_min {db_min = db; vb = vi}
+					rx := f64(i64(ring[vi].x))
+					ry := f64(i64(ring[vi].y))
+					dxa, dya := rx - ax_f, ry - ay_f
+					dsqa := dxa*dxa + dya*dya
+					if dsqa < da_sq {da_sq = dsqa; va = vi}
+					dxb, dyb := rx - bx_f, ry - by_f
+					dsqb := dxb*dxb + dyb*dyb
+					if dsqb < db_sq {db_sq = dsqb; vb = vi}
 				}
-				// Require endpoints to be near or inside this contour.
-				if da_min > 5_000.0 || db_min > 5_000.0 {continue}
-				if va == vb {continue}
-				n := len(ring)
-				fwd_len := da_min + db_min
-				for k := va; k != vb; k = (k + 1) % n {
-					nk := (k + 1) % n
-					fwd_len += math.hypot(f64(i64(ring[nk].x)-i64(ring[k].x)), f64(i64(ring[nk].y)-i64(ring[k].y)))
-				}
-				bwd_len := da_min + db_min
-				for k := va; k != vb; k = (k + n - 1) % n {
-					nk := (k + n - 1) % n
-					bwd_len += math.hypot(f64(i64(ring[nk].x)-i64(ring[k].x)), f64(i64(ring[nk].y)-i64(ring[k].y)))
-				}
+				if da_sq > MAX_NEAR_SQ || db_sq > MAX_NEAR_SQ || va == vb {continue}
+				ends_len := math.sqrt(da_sq) + math.sqrt(db_sq)
+				arc_fwd := (oring.cum[vb] - oring.cum[va]) if vb >= va else (oring.total_len - (oring.cum[va] - oring.cum[vb]))
+				arc_bwd := oring.total_len - arc_fwd
+				fwd_len := ends_len + arc_fwd
+				bwd_len := ends_len + arc_bwd
 				if fwd_len <= bwd_len && fwd_len < best_detour {
 					best_detour = fwd_len
-					best_path_idx = mpi
+					best_ring_idx = ridx
 					best_va = va
 					best_vb = vb
 					best_forward = true
 				} else if bwd_len < fwd_len && bwd_len < best_detour {
 					best_detour = bwd_len
-					best_path_idx = mpi
+					best_ring_idx = ridx
 					best_va = va
 					best_vb = vb
 					best_forward = false
 				}
 			}
-			if best_path_idx < 0 {
+			if best_ring_idx < 0 {
 				append(&out_ops, op)
 				continue
 			}
-			mp := ml.paths[best_path_idx]
-			ring := ml.points[mp.offset:mp.offset+mp.count]
+			ring := outer_rings[best_ring_idx].ring
 			n := len(ring)
-			// Emit chained travel segments along contour (capped at 32 waypoints for speed).
 			step_count := (best_vb - best_va + n) % n if best_forward else (best_va - best_vb + n) % n
 			stride := max(1, (step_count + 31) / 32)
 			cur := a
@@ -1450,46 +1528,77 @@ motion_plan_apply_combing :: proc(
 			if emitted_here == 0 {
 				append(&out_ops, op)
 			} else {
-				// Recompute sub-travel durations cleanly so layer and total motion duration invariants stay exact.
 				old_dur := op.duration_us
 				new_dur: u64 = 0
 				sub_start := len(out_ops) - int(emitted_here)
 				spd := max(f64(1.0), f64(i64(op.speed)))
 				for si in sub_start..<len(out_ops) {
 					sub := &out_ops[si]
-					seg_um := math.hypot(f64(i64(sub.point_b.x)-i64(sub.point_a.x)), f64(i64(sub.point_b.y)-i64(sub.point_a.y)))
+					sdx := f64(i64(sub.point_b.x) - i64(sub.point_a.x))
+					sdy := f64(i64(sub.point_b.y) - i64(sub.point_a.y))
+					seg_um := math.sqrt(sdx*sdx + sdy*sdy)
 					d_us := max(u64(1), u64(math.round(seg_um * 1_000_000.0 / spd)))
 					sub.duration_us = d_us
 					new_dur += d_us
 				}
-				if new_dur >= old_dur {
-					delta := new_dur - old_dur
-					layer.motion_duration_us += delta
-					layer.planned_duration_us += delta
-					motion.total_motion_duration_us += delta
-					motion.total_planned_duration_us += delta
-				} else {
-					delta := old_dur - new_dur
-					layer.motion_duration_us -= delta
-					layer.planned_duration_us -= delta
-					motion.total_motion_duration_us -= delta
-					motion.total_planned_duration_us -= delta
-				}
+				dur_delta += i64(new_dur) - i64(old_dur)
 				detoured += 1
 				added_travels += emitted_here - 1
 			}
 		}
-		layer.operation_offset = new_start
-		layer.operation_count = u32(u64(len(out_ops)) - new_start)
+		if detoured > 0 {
+			c.results[li] = {
+				ops           = out_ops[:],
+				owned         = true,
+				detoured      = detoured,
+				added_travels = added_travels,
+				dur_delta     = dur_delta,
+			}
+		} else {
+			delete(out_ops)
+			c.results[li] = {ops = orig}
+		}
+	})
+
+	total_detoured: u64
+	total_added: u64
+	total_ops := 0
+	for r in results {
+		total_detoured += r.detoured
+		total_added += r.added_travels
+		total_ops += len(r.ops)
 	}
-	if detoured > 0 {
-		delete(motion.operations, allocator)
-		motion.operations = out_ops[:]
-		motion.travel_count += added_travels
-	} else {
-		delete(out_ops)
+	if total_detoured == 0 {return 0}
+
+	new_ops := features_make_non_zeroed([]Motion_Operation, total_ops, allocator)
+	if new_ops == nil {return 0}
+	write := 0
+	for r, li in results {
+		layer := &motion.layers[li]
+		layer.operation_offset = u64(write)
+		layer.operation_count = u32(len(r.ops))
+		if len(r.ops) > 0 {
+			copy(new_ops[write:write+len(r.ops)], r.ops)
+			write += len(r.ops)
+		}
+		if r.dur_delta >= 0 {
+			d := u64(r.dur_delta)
+			layer.motion_duration_us += d
+			layer.planned_duration_us += d
+			motion.total_motion_duration_us += d
+			motion.total_planned_duration_us += d
+		} else {
+			d := u64(-r.dur_delta)
+			layer.motion_duration_us -= d
+			layer.planned_duration_us -= d
+			motion.total_motion_duration_us -= d
+			motion.total_planned_duration_us -= d
+		}
 	}
-	return detoured
+	delete(motion.operations, allocator)
+	motion.operations = new_ops
+	motion.travel_count += total_added
+	return total_detoured
 }
 
 motion_plan_result_destroy :: proc(

@@ -1,5 +1,7 @@
 package features
 
+import "core:mem"
+
 import contracts "../contracts"
 import geometry "../geometry"
 import polygon "../polygon"
@@ -102,194 +104,264 @@ support_paths_generate :: proc(
 	base_axis := Infill_Axis.Vertical
 	alternate_each_layer := true
 
-	boundaries := make(
-		[]polygon.Polygon_Set,
-		len(support_geometry.masks),
-		allocator,
-	)
-	if len(support_geometry.masks) > 0 && boundaries == nil {
+	mask_count := len(support_geometry.masks)
+	boundaries := make([]polygon.Polygon_Set, mask_count, allocator)
+	mask_inputs := make([]polygon.Polygon_Set, mask_count, allocator)
+	canon_of := make([]int, mask_count, allocator)
+	unique_masks := make([dynamic]int, 0, mask_count, allocator)
+	if mask_count > 0 && (boundaries == nil || mask_inputs == nil || canon_of == nil) {
+		delete(boundaries, allocator)
+		delete(mask_inputs, allocator)
+		delete(canon_of, allocator)
+		delete(unique_masks)
 		return {}, .Allocation_Failed
 	}
 	defer {
-		for &boundary in boundaries {
-			polygon.polygon_set_destroy(&boundary, allocator)
+		for &b, bi in boundaries {
+			if canon_of[bi] == bi {polygon.polygon_set_destroy(&b, allocator)}
 		}
+		for &inp in mask_inputs {polygon.polygon_set_destroy(&inp, allocator)}
 		delete(boundaries, allocator)
+		delete(mask_inputs, allocator)
+		delete(canon_of, allocator)
+		delete(unique_masks)
 	}
-	maximum_boundary_points := 0
-	for mask, mask_index in support_geometry.masks {
-		input, input_error := support_geometry_mask_input(
-			support_geometry,
-			u32(mask_index),
-			allocator,
-		)
-		if input_error != .None {
-			return {}, support_path_geometry_error(input_error)
+	if mask_count > 0 {
+		cap_pow2 := 16
+		for cap_pow2 < mask_count * 2 {cap_pow2 <<= 1}
+		ht_mask := u64(cap_pow2 - 1)
+		ht := make([]int, cap_pow2, allocator)
+		defer delete(ht, allocator)
+		for mi in 0..<mask_count {
+			inp, input_error := support_geometry_mask_input(support_geometry, u32(mi), allocator)
+			if input_error != .None {
+				return {}, support_path_geometry_error(input_error)
+			}
+			mask_inputs[mi] = inp
+			h := features_polygon_set_hash64(inp)
+			slot := h & ht_mask
+			found := -1
+			for {
+				entry := ht[slot]
+				if entry == 0 {break}
+				cand := entry - 1
+				if features_polygon_sets_equal(mask_inputs[cand], inp) {
+					found = cand
+					break
+				}
+				slot = (slot + 1) & ht_mask
+			}
+			if found >= 0 {
+				canon_of[mi] = found
+			} else {
+				ht[slot] = mi + 1
+				canon_of[mi] = mi
+				append(&unique_masks, mi)
+			}
 		}
-		provider_error: polygon.Polygon_Error
-		boundaries[mask_index], provider_error = provider.offset(
-			input,
-			-contracts.Micrometres(i64(boundary_inset)),
-			support_geometry.config.join_type,
-			support_geometry.config.miter_limit,
-			support_geometry.config.arc_tolerance,
-			limits.polygon,
-			allocator,
+	}
+
+	Sup_Off_Ctx :: struct {
+		mask_inputs:      []polygon.Polygon_Set,
+		unique_masks:     []int,
+		boundaries:       []polygon.Polygon_Set,
+		mask_errors:      []Support_Path_Error,
+		boundary_inset:   contracts.Micrometres,
+		config:           Support_Demand_Config,
+		provider:         polygon.Polygon_Provider,
+		limits:           Support_Path_Limits,
+		allocator:        mem.Allocator,
+	}
+	mask_errors := make([]Support_Path_Error, mask_count, allocator)
+	defer delete(mask_errors, allocator)
+	octx := Sup_Off_Ctx{
+		mask_inputs    = mask_inputs,
+		unique_masks   = unique_masks[:],
+		boundaries     = boundaries,
+		mask_errors    = mask_errors,
+		boundary_inset = boundary_inset,
+		config         = support_geometry.config,
+		provider       = provider,
+		limits         = limits,
+		allocator      = allocator,
+	}
+	parallel_for(len(unique_masks), &octx, proc(c: ^Sup_Off_Ctx, ui: int) {
+		mi := c.unique_masks[ui]
+		perr: polygon.Polygon_Error
+		c.boundaries[mi], perr = c.provider.offset(
+			c.mask_inputs[mi],
+			-contracts.Micrometres(i64(c.boundary_inset)),
+			c.config.join_type,
+			c.config.miter_limit,
+			c.config.arc_tolerance,
+			c.limits.polygon,
+			c.allocator,
 		)
-		polygon.polygon_set_destroy(&input, allocator)
-		if provider_error != .None {
-			return {}, .Provider
+		if perr != .None {
+			c.mask_errors[mi] = .Provider
 		}
-		maximum_boundary_points = max(
-			maximum_boundary_points,
-			len(boundaries[mask_index].points),
+	})
+	for ui in unique_masks {
+		if mask_errors[ui] != .None {return {}, mask_errors[ui]}
+	}
+	for mi in 0..<mask_count {
+		if canon_of[mi] != mi {
+			boundaries[mi] = boundaries[canon_of[mi]]
+		}
+	}
+
+	mask_paths := make([]u64, mask_count, allocator)
+	mask_scanlines := make([]u64, mask_count, allocator)
+	mask_path_offsets := make([]u64, mask_count, allocator)
+	defer delete(mask_paths, allocator)
+	defer delete(mask_scanlines, allocator)
+	defer delete(mask_path_offsets, allocator)
+
+	Sup_Scan_Ctx :: struct {
+		support_geometry:     Support_Geometry_Result,
+		boundaries:           []polygon.Polygon_Set,
+		base_axis:            Infill_Axis,
+		alternate_each_layer: bool,
+		regular_spacing:      contracts.Micrometres,
+		interface_spacing:    contracts.Micrometres,
+		phase:                contracts.Micrometres,
+		line_width:           contracts.Micrometres,
+		limits:               Support_Path_Limits,
+		mask_paths:           []u64,
+		mask_scanlines:       []u64,
+		mask_path_offsets:    []u64,
+		mask_errors:          []Support_Path_Error,
+		out_paths:            []Support_Path,
+		out_hits:             []Infill_Boundary_Hit,
+	}
+	sctx := Sup_Scan_Ctx{
+		support_geometry     = support_geometry,
+		boundaries           = boundaries,
+		base_axis            = base_axis,
+		alternate_each_layer = alternate_each_layer,
+		regular_spacing      = regular_spacing,
+		interface_spacing    = interface_spacing,
+		phase                = phase,
+		line_width           = line_width,
+		limits               = limits,
+		mask_paths           = mask_paths,
+		mask_scanlines       = mask_scanlines,
+		mask_path_offsets    = mask_path_offsets,
+		mask_errors          = mask_errors,
+	}
+	parallel_for(mask_count, &sctx, proc(c: ^Sup_Scan_Ctx, mi: int) {
+		b := c.boundaries[mi]
+		if len(b.points) == 0 {return}
+		mask := c.support_geometry.masks[mi]
+		axis := support_path_layer_axis(c.base_axis, c.alternate_each_layer, mask.layer_index)
+		spacing := c.interface_spacing if mask.kind == .Interface else c.regular_spacing
+		scratch_hits := make([]Infill_Rational_Hit, len(b.points), context.temp_allocator)
+		wp, ws, serr := support_path_scan_boundary(
+			b, axis, spacing, c.phase, c.line_width,
+			scratch_hits, nil, nil, mask, u32(mi), 0, c.limits,
 		)
-	}
-	scratch_hits := make(
-		[]Infill_Rational_Hit,
-		maximum_boundary_points,
-		allocator,
-	)
-	if maximum_boundary_points > 0 && scratch_hits == nil {
-		return {}, .Allocation_Failed
-	}
-	defer delete(scratch_hits, allocator)
+		c.mask_paths[mi] = wp
+		c.mask_scanlines[mi] = ws
+		c.mask_errors[mi] = serr
+	})
 
 	path_count: u64
 	scanline_count: u64
 	regular_path_count: u64
 	interface_path_count: u64
-	for mask, mask_index in support_geometry.masks {
-		axis := support_path_layer_axis(
-			base_axis,
-			alternate_each_layer,
-			mask.layer_index,
-		)
-		spacing := regular_spacing
-		if mask.kind == .Interface {spacing = interface_spacing}
-		written_paths, written_scanlines, scan_error :=
-			support_path_scan_boundary(
-				boundaries[mask_index],
-				axis,
-				spacing,
-				phase,
-				line_width,
-				scratch_hits,
-				nil,
-				nil,
-				mask,
-				u32(mask_index),
-				0,
-				limits,
-			)
-		if scan_error != .None {return {}, scan_error}
-		if path_count > limits.max_paths ||
-		   written_paths > limits.max_paths-path_count {
+	for mask, mi in support_geometry.masks {
+		if mask_errors[mi] != .None {return {}, mask_errors[mi]}
+		wp := mask_paths[mi]
+		ws := mask_scanlines[mi]
+		if path_count > limits.max_paths || wp > limits.max_paths - path_count {
 			return {}, .Path_Limit
 		}
-		if scanline_count > limits.max_scanlines ||
-		   written_scanlines > limits.max_scanlines-scanline_count {
+		if scanline_count > limits.max_scanlines || ws > limits.max_scanlines - scanline_count {
 			return {}, .Scanline_Limit
 		}
-		path_count += written_paths
-		scanline_count += written_scanlines
+		mask_path_offsets[mi] = path_count
+		path_count += wp
+		scanline_count += ws
 		if mask.kind == .Regular {
-			regular_path_count += written_paths
+			regular_path_count += wp
 		} else {
-			interface_path_count += written_paths
+			interface_path_count += wp
 		}
 	}
-	if path_count > u64(max(int)) ||
-	   path_count > u64(max(int))/2 {
+	if path_count > u64(max(int)) || path_count > u64(max(int))/2 {
 		return {}, .Arithmetic
 	}
 
 	result := Support_Path_Result{
-		pattern = process.source.support_pattern,
-		line_width = line_width,
-		regular_spacing = regular_spacing,
-		interface_spacing = interface_spacing,
-		boundary_inset = boundary_inset,
-		phase = phase,
-		base_axis = base_axis,
+		pattern              = process.source.support_pattern,
+		line_width           = line_width,
+		regular_spacing      = regular_spacing,
+		interface_spacing    = interface_spacing,
+		boundary_inset       = boundary_inset,
+		phase                = phase,
+		base_axis            = base_axis,
 		alternate_each_layer = alternate_each_layer,
-		scanline_count = scanline_count,
-		regular_path_count = regular_path_count,
+		scanline_count       = scanline_count,
+		regular_path_count   = regular_path_count,
 		interface_path_count = interface_path_count,
 	}
-	result.layers = make(
-		[]Support_Path_Layer,
-		len(support_geometry.layers),
-		allocator,
-	)
-	result.paths = make([]Support_Path, int(path_count), allocator)
-	result.hits = make(
-		[]Infill_Boundary_Hit,
-		int(path_count*2),
-		allocator,
-	)
+	result.layers = make([]Support_Path_Layer, len(support_geometry.layers), allocator)
+	result.paths = features_make_non_zeroed([]Support_Path, int(path_count), allocator)
+	result.hits = features_make_non_zeroed([]Infill_Boundary_Hit, int(path_count*2), allocator)
 	if len(result.layers) > 0 && result.layers == nil ||
-	   path_count > 0 &&
-		(result.paths == nil || result.hits == nil) {
+	   path_count > 0 && (result.paths == nil || result.hits == nil) {
 		support_path_result_destroy(&result, allocator)
 		return {}, .Allocation_Failed
+	}
+
+	sctx.out_paths = result.paths
+	sctx.out_hits = result.hits
+	parallel_for(mask_count, &sctx, proc(c: ^Sup_Scan_Ctx, mi: int) {
+		if c.mask_paths[mi] == 0 {return}
+		b := c.boundaries[mi]
+		mask := c.support_geometry.masks[mi]
+		axis := support_path_layer_axis(c.base_axis, c.alternate_each_layer, mask.layer_index)
+		spacing := c.interface_spacing if mask.kind == .Interface else c.regular_spacing
+		scratch_hits := make([]Infill_Rational_Hit, len(b.points), context.temp_allocator)
+		limits := c.limits
+		limits.max_paths = c.mask_paths[mi]
+		written, _, serr := support_path_scan_boundary(
+			b, axis, spacing, c.phase, c.line_width,
+			scratch_hits, c.out_paths, c.out_hits,
+			mask, u32(mi), c.mask_path_offsets[mi], limits,
+		)
+		c.mask_errors[mi] = serr if serr != .None else
+			(.Arithmetic if written != c.mask_paths[mi] else .None)
+	})
+	for mi in 0..<mask_count {
+		if mask_errors[mi] != .None {
+			support_path_result_destroy(&result, allocator)
+			return {}, mask_errors[mi]
+		}
 	}
 
 	path_write: u64
 	mask_cursor := 0
 	for geometry_layer, layer_index in support_geometry.layers {
 		layer_path_start := path_write
-		mask_end :=
-			int(geometry_layer.mask_offset)+
-			int(geometry_layer.mask_count)
+		mask_end := int(geometry_layer.mask_offset) + int(geometry_layer.mask_count)
 		for mask_cursor < mask_end {
-			mask := support_geometry.masks[mask_cursor]
-			axis := support_path_layer_axis(
-				base_axis,
-				alternate_each_layer,
-				mask.layer_index,
-			)
-			spacing := regular_spacing
-			if mask.kind == .Interface {
-				spacing = interface_spacing
-			}
-			written_paths, _, scan_error :=
-				support_path_scan_boundary(
-					boundaries[mask_cursor],
-					axis,
-					spacing,
-					phase,
-					line_width,
-					scratch_hits,
-					result.paths,
-					result.hits,
-					mask,
-					u32(mask_cursor),
-					path_write,
-					limits,
-				)
-			if scan_error != .None {
-				support_path_result_destroy(&result, allocator)
-				return {}, scan_error
-			}
-			path_write += written_paths
+			path_write += mask_paths[mask_cursor]
 			mask_cursor += 1
 		}
-		layer_path_count := path_write-layer_path_start
-		if layer_path_count > u64(max(u32)) ||
-		   layer_path_count > u64(max(u32))/2 {
+		layer_path_count := path_write - layer_path_start
+		if layer_path_count > u64(max(u32)) || layer_path_count > u64(max(u32))/2 {
 			support_path_result_destroy(&result, allocator)
 			return {}, .Arithmetic
 		}
 		result.layers[layer_index] = {
 			path_offset = layer_path_start,
-			path_count = u32(layer_path_count),
-			hit_offset = layer_path_start*2,
-			hit_count = u32(layer_path_count*2),
+			path_count  = u32(layer_path_count),
+			hit_offset  = layer_path_start*2,
+			hit_count   = u32(layer_path_count*2),
 		}
 	}
-	if path_write != path_count ||
-	   mask_cursor != len(support_geometry.masks) {
+	if path_write != path_count || mask_cursor != len(support_geometry.masks) {
 		support_path_result_destroy(&result, allocator)
 		return {}, .Arithmetic
 	}

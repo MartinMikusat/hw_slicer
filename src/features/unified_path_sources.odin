@@ -60,6 +60,7 @@ unified_path_sources_build :: proc(
 	limits := DEFAULT_UNIFIED_PATH_SOURCE_LIMITS,
 	allocator := context.allocator,
 	wall_sequence: Wall_Sequence = .Inner_Outer,
+	skip_final_validate := false,
 ) -> (Unified_Path_Source_Result, Unified_Path_Source_Error) {
 	layer_count := len(layer_ids)
 	if i64(process.source.nominal_line_width) <= 0 ||
@@ -119,17 +120,17 @@ unified_path_sources_build :: proc(
 		layer_count,
 		allocator,
 	)
-	result.sources = make(
+	result.sources = features_make_non_zeroed(
 		[]Unified_Path_Source,
 		source_count,
 		allocator,
 	)
-	result.points = make(
+	result.points = features_make_non_zeroed(
 		[]polygon.Polygon_Point,
 		point_count,
 		allocator,
 	)
-	result.line_widths = make(
+	result.line_widths = features_make_non_zeroed(
 		[]contracts.Micrometres,
 		point_count,
 		allocator,
@@ -142,32 +143,160 @@ unified_path_sources_build :: proc(
 		return {}, .Allocation_Failed
 	}
 
-	source_write := 0
-	point_write := 0
-	for layer_id, layer_index in layer_ids {
-		if layer_id == contracts.INVALID_STABLE_ID {
+	Layer_Budget :: struct {
+		src_base:   int,
+		src_cap:    int,
+		pt_base:    int,
+		pt_cap:     int,
+		src_actual: int,
+		pt_actual:  int,
+		err:        Unified_Path_Source_Error,
+	}
+	budgets := make([]Layer_Budget, layer_count, allocator)
+	defer delete(budgets, allocator)
+	if layer_count > 0 && budgets == nil {
+		unified_path_source_result_destroy(&result, allocator)
+		return {}, .Allocation_Failed
+	}
+	src_cur := 0
+	pt_cur := 0
+	for li in 0..<layer_count {
+		pl := perimeters.layers[li]
+		bl := bridges.layers[li]
+		gl := gaps.layers[li]
+		sl := solids.layers[li]
+		il := infill.layers[li]
+		supl := supports.layers[li]
+
+		l_src := int(pl.path_count) + int(bl.path_count) + int(gl.path_count) +
+			int(sl.path_count) + int(il.segment_count) + int(supl.path_count)
+		layer_points := 2 * (u128(bl.path_count) + u128(sl.path_count) +
+			u128(il.segment_count) + u128(supl.path_count))
+		for pi in int(pl.path_offset)..<int(pl.path_offset)+int(pl.path_count) {
+			layer_points += u128(perimeters.paths[pi].point_count)
+		}
+		for gi in int(gl.path_offset)..<int(gl.path_offset)+int(gl.path_count) {
+			layer_points += u128(gaps.paths[gi].vertex_count)
+		}
+		if l_src > source_count-src_cur || layer_points > u128(point_count-pt_cur) {
 			unified_path_source_result_destroy(&result, allocator)
 			return {}, .Invalid_Input
 		}
-		layer_source_start := source_write
-		layer_point_start := point_write
+		l_pt := int(layer_points)
+		budgets[li] = {
+			src_base = src_cur,
+			src_cap  = l_src,
+			pt_base  = pt_cur,
+			pt_cap   = l_pt,
+		}
+		src_cur += l_src
+		pt_cur += l_pt
+	}
+
+	Unified_Source_Par_Ctx :: struct {
+		layer_ids:              []contracts.Stable_ID,
+		perimeters:             Perimeter_Result,
+		bridges:                Bridge_Path_Result,
+		gaps:                   Gap_Centerline_Result,
+		solids:                 Solid_Path_Result,
+		infill:                 Infill_Result,
+		supports:               Support_Path_Result,
+		process:                profiles.Resolved_Process_Profile,
+		inner_perimeters_first: bool,
+		wall_sequence:          Wall_Sequence,
+		result:                 ^Unified_Path_Source_Result,
+		budgets:                []Layer_Budget,
+	}
+	uctx := Unified_Source_Par_Ctx{
+		layer_ids              = layer_ids,
+		perimeters             = perimeters,
+		bridges                = bridges,
+		gaps                   = gaps,
+		solids                 = solids,
+		infill                 = infill,
+		supports               = supports,
+		process                = process,
+		inner_perimeters_first = inner_perimeters_first,
+		wall_sequence          = wall_sequence,
+		result                 = &result,
+		budgets                = budgets,
+	}
+
+	parallel_for(layer_count, &uctx, proc(c: ^Unified_Source_Par_Ctx, layer_index: int) {
+		layer_id := c.layer_ids[layer_index]
+		b := &c.budgets[layer_index]
+		if layer_id == contracts.INVALID_STABLE_ID {
+			b.err = .Invalid_Input
+			return
+		}
+		src_end_cap := b.src_base + b.src_cap
+		pt_end_cap := b.pt_base + b.pt_cap
+		source_write := b.src_base
+		point_write := b.pt_base
 		source_order: u64
 
-		perimeter_layer := perimeters.layers[layer_index]
-		group_cursor := int(perimeter_layer.group_offset)
-		group_end := group_cursor+int(perimeter_layer.group_count)
-		for group_cursor < group_end {
-			region_group_end :=
-				group_cursor+int(perimeters.config.count)
-			if region_group_end > group_end {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+		append_local :: proc(
+			result: ^Unified_Path_Source_Result,
+			source_write, point_write: ^int,
+			src_limit, pt_limit: int,
+			stable_id, layer_id: contracts.Stable_ID,
+			layer_index: u32,
+			role: profiles.Printable_Role,
+			source_kind: Unified_Path_Source_Kind,
+			source_index: u32,
+			source_order: u64,
+			closed: bool,
+			points: []polygon.Polygon_Point,
+			widths: []contracts.Micrometres,
+			uniform_width: contracts.Micrometres,
+		) -> bool {
+			if source_write^ >= src_limit ||
+			   point_write^ > pt_limit ||
+			   len(points) > pt_limit - point_write^ ||
+			   widths != nil && len(widths) != len(points) ||
+			   widths == nil && i64(uniform_width) <= 0 {
+				return false
 			}
-			eff_seq := wall_sequence
-			if !inner_perimeters_first && eff_seq == .Inner_Outer {
+			point_start := point_write^
+			copy(result.points[point_start:point_start+len(points)], points)
+			if widths == nil {
+				for &width in result.line_widths[point_start:point_start+len(points)] {
+					width = uniform_width
+				}
+			} else {
+				copy(result.line_widths[point_start:point_start+len(points)], widths)
+			}
+			point_write^ += len(points)
+			result.sources[source_write^] = {
+				stable_id   = stable_id,
+				layer_id    = layer_id,
+				layer_index = layer_index,
+				role        = role,
+				source_kind = source_kind,
+				source_index = source_index,
+				source_order = source_order,
+				closed      = closed,
+				points      = result.points[point_start:point_write^],
+				line_widths = result.line_widths[point_start:point_write^],
+			}
+			source_write^ += 1
+			return true
+		}
+
+		perimeter_layer := c.perimeters.layers[layer_index]
+		group_cursor := int(perimeter_layer.group_offset)
+		group_end := group_cursor + int(perimeter_layer.group_count)
+		for group_cursor < group_end {
+			region_group_end := group_cursor + int(c.perimeters.config.count)
+			if region_group_end > group_end {
+				b.err = .Invalid_Input
+				return
+			}
+			eff_seq := c.wall_sequence
+			if !c.inner_perimeters_first && eff_seq == .Inner_Outer {
 				eff_seq = .Outer_Inner
 			}
-			n_walls := int(perimeters.config.count)
+			n_walls := int(c.perimeters.config.count)
 			for local_group_index in 0..<n_walls {
 				group_index := group_cursor + local_group_index
 				switch eff_seq {
@@ -176,7 +305,6 @@ unified_path_sources_build :: proc(
 				case .Outer_Inner:
 					group_index = group_cursor + local_group_index
 				case .Inner_Outer_Inner:
-					// Emit inner wall 1 first, then outer wall 0, then remaining inner walls 2..N-1.
 					if n_walls >= 2 {
 						if local_group_index == 0 {
 							group_index = group_cursor + 1
@@ -187,230 +315,172 @@ unified_path_sources_build :: proc(
 						}
 					}
 				}
-				group := perimeters.groups[group_index]
+				group := c.perimeters.groups[group_index]
 				if group.layer_index != u32(layer_index) {
-					unified_path_source_result_destroy(
-						&result,
-						allocator,
-					)
-					return {}, .Invalid_Input
+					b.err = .Invalid_Input
+					return
+				}
+				layer_path_end := perimeter_layer.path_offset + u64(perimeter_layer.path_count)
+				if group.path_offset < perimeter_layer.path_offset ||
+				   group.path_offset > layer_path_end ||
+				   u64(group.path_count) > layer_path_end - group.path_offset {
+					b.err = .Invalid_Input
+					return
 				}
 				path_start := int(group.path_offset)
-				path_end := path_start+int(group.path_count)
-				perim_lw := perimeter_line_width_for(perimeters.config, u32(layer_index), group.perimeter_index)
+				path_end := path_start + int(group.path_count)
+				perim_lw := perimeter_line_width_for(c.perimeters.config, u32(layer_index), group.perimeter_index)
 				for path_index in path_start..<path_end {
-					path := perimeters.paths[path_index]
+					path := c.perimeters.paths[path_index]
 					if path.layer_index != u32(layer_index) ||
 					   path.region_id != group.region_id ||
 					   path.region_index != group.region_index ||
-					   path.perimeter_index !=
-						group.perimeter_index ||
-					   path.point_offset+u64(path.point_count) >
-						u64(len(perimeters.points)) {
-						unified_path_source_result_destroy(
-							&result,
-							allocator,
-						)
-						return {}, .Invalid_Input
+					   path.perimeter_index != group.perimeter_index ||
+					   path.point_offset + u64(path.point_count) > u64(len(c.perimeters.points)) {
+						b.err = .Invalid_Input
+						return
 					}
 					points_start := int(path.point_offset)
-					points_end :=
-						points_start+int(path.point_count)
-					if !unified_path_source_append(
-						&result,
-						&source_write,
-						&point_write,
-						path.stable_id,
-						layer_id,
-						u32(layer_index),
-						.Perimeter,
-						.Perimeter,
-						u32(path_index),
-						source_order,
-						true,
-						perimeters.points[
-							points_start:points_end
-						],
-						nil,
-						perim_lw,
+					points_end := points_start + int(path.point_count)
+					if !append_local(
+						c.result, &source_write, &point_write, src_end_cap, pt_end_cap,
+						path.stable_id, layer_id, u32(layer_index),
+						.Perimeter, .Perimeter, u32(path_index), source_order, true,
+						c.perimeters.points[points_start:points_end], nil, perim_lw,
 					) {
-						unified_path_source_result_destroy(
-							&result,
-							allocator,
-						)
-						return {}, .Invalid_Input
+						b.err = .Invalid_Input
+						return
 					}
-					result.sources[source_write-1].perimeter_index = path.perimeter_index
+					c.result.sources[source_write-1].perimeter_index = path.perimeter_index
 					source_order += 1
 				}
 			}
 			group_cursor = region_group_end
 		}
 
-		bridge_layer := bridges.layers[layer_index]
+		bridge_layer := c.bridges.layers[layer_index]
 		path_start := int(bridge_layer.path_offset)
-		path_end := path_start+int(bridge_layer.path_count)
+		path_end := path_start + int(bridge_layer.path_count)
 		source_order = 0
 		for path_index in path_start..<path_end {
-			path := bridges.paths[path_index]
-			if path.layer_index != u32(layer_index) ||
-			   path.role != .Bridge {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+			path := c.bridges.paths[path_index]
+			if path.layer_index != u32(layer_index) || path.role != .Bridge {
+				b.err = .Invalid_Input
+				return
 			}
-			points := [2]polygon.Polygon_Point{
-				path.point_a,
-				path.point_b,
-			}
-			if !unified_path_source_append(
-				&result,
-				&source_write,
-				&point_write,
-				path.stable_id,
-				layer_id,
-				u32(layer_index),
-				.Bridge,
-				.Bridge,
-				u32(path_index),
-				source_order,
-				false,
-				points[:],
-				nil,
-				path.line_width,
+			points := [2]polygon.Polygon_Point{path.point_a, path.point_b}
+			if !append_local(
+				c.result, &source_write, &point_write, src_end_cap, pt_end_cap,
+				path.stable_id, layer_id, u32(layer_index),
+				.Bridge, .Bridge, u32(path_index), source_order, false,
+				points[:], nil, path.line_width,
 			) {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+				b.err = .Invalid_Input
+				return
 			}
 			source_order += 1
 		}
 
-		gap_layer := gaps.layers[layer_index]
+		gap_layer := c.gaps.layers[layer_index]
 		path_start = int(gap_layer.path_offset)
-		path_end = path_start+int(gap_layer.path_count)
+		path_end = path_start + int(gap_layer.path_count)
 		source_order = 0
 		for path_index in path_start..<path_end {
-			path := gaps.paths[path_index]
+			path := c.gaps.paths[path_index]
 			if path.layer_index != u32(layer_index) ||
-			   path.vertex_offset+u64(path.vertex_count) >
-				u64(len(gaps.vertices)) {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+			   path.vertex_offset + u64(path.vertex_count) > u64(len(c.gaps.vertices)) {
+				b.err = .Invalid_Input
+				return
 			}
 			vertex_start := int(path.vertex_offset)
-			vertex_end := vertex_start+int(path.vertex_count)
-			if !unified_path_source_append_gap(
-				&result,
-				&source_write,
-				&point_write,
-				path,
-				layer_id,
-				u32(path_index),
-				source_order,
-				gaps.vertices[vertex_start:vertex_end],
-			) {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+			vertex_end := vertex_start + int(path.vertex_count)
+			vertices := c.gaps.vertices[vertex_start:vertex_end]
+			if len(vertices) < 2 || source_write >= src_end_cap || len(vertices) > pt_end_cap - point_write {
+				b.err = .Invalid_Input
+				return
 			}
+			p_start := point_write
+			for vertex in vertices {
+				if i64(vertex.line_width) <= 0 {
+					b.err = .Invalid_Input
+					return
+				}
+				c.result.points[point_write] = vertex.point
+				c.result.line_widths[point_write] = vertex.line_width
+				point_write += 1
+			}
+			c.result.sources[source_write] = {
+				stable_id    = path.stable_id,
+				layer_id     = layer_id,
+				layer_index  = path.layer_index,
+				role         = path.role,
+				source_kind  = .Gap_Centerline,
+				source_index = u32(path_index),
+				source_order = source_order,
+				closed       = false,
+				points       = c.result.points[p_start:point_write],
+				line_widths  = c.result.line_widths[p_start:point_write],
+			}
+			source_write += 1
 			source_order += 1
 		}
 
-		// Consecutive scanlines of one mask are joined into a zig-zag when the connector between
-		// their ends is at most two line spacings, so solid skin prints without a travel between
-		// every line.
-		solid_layer := solids.layers[layer_index]
+		solid_layer := c.solids.layers[layer_index]
 		path_start = int(solid_layer.path_offset)
-		path_end = path_start+int(solid_layer.path_count)
+		path_end = path_start + int(solid_layer.path_count)
 		source_order = 0
-		connect_limit := 2*i128(i64(solids.spacing))
+		connect_limit := 2 * i128(i64(c.solids.spacing))
+		connect_limit_sq := connect_limit * connect_limit
 		chain := make([dynamic]polygon.Polygon_Point, 0, 64, context.temp_allocator)
-		chain_first := -1
-		flush_chain :: proc(
-			result: ^Unified_Path_Source_Result,
-			source_write, point_write: ^int,
-			solids: Solid_Path_Result,
-			chain: ^[dynamic]polygon.Polygon_Point,
-			chain_first: int,
-			layer_id: contracts.Stable_ID,
-			layer_index: int,
-			source_order: ^u64,
-		) -> bool {
-			if chain_first < 0 {return true}
-			first := solids.paths[chain_first]
-			ok := unified_path_source_append(
-				result,
-				source_write,
-				point_write,
-				first.stable_id,
-				layer_id,
-				u32(layer_index),
-				first.role,
-				.Solid,
-				u32(chain_first),
-				source_order^,
-				false,
-				chain[:],
-				nil,
-				first.line_width,
-			)
-			source_order^ += 1
-			clear(chain)
-			return ok
-		}
 		for path_index in path_start..<path_end {
-			path := solids.paths[path_index]
-			if path.layer_index != u32(layer_index) ||
-			   !solid_path_role_is_skin(path.role) {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+			path := c.solids.paths[path_index]
+			if path.layer_index != u32(layer_index) || !solid_path_role_is_skin(path.role) {
+				b.err = .Invalid_Input
+				return
 			}
 		}
-		// Within each run of paths sharing mask, role, angle and width (emitted in scanline
-		// order), a chain extends to the nearest unused path on the next scanline whose end is
-		// within the connect limit and whose connector stays inside the mask.
-		used := make([]bool, path_end-path_start, context.temp_allocator)
+		used := make([]bool, path_end - path_start, context.temp_allocator)
 		group_start := path_start
 		for group_start < path_end {
-			g0 := solids.paths[group_start]
-			group_end := group_start+1
+			g0 := c.solids.paths[group_start]
+			group_end := group_start + 1
 			for group_end < path_end {
-				q := solids.paths[group_end]
+				q := c.solids.paths[group_end]
 				if q.overlap_mask_index != g0.overlap_mask_index || q.role != g0.role ||
 				   q.angle != g0.angle || q.line_width != g0.line_width {break}
 				group_end += 1
 			}
 			for seed in group_start..<group_end {
-				if used[seed-path_start] {continue}
-				used[seed-path_start] = true
-				seed_path := solids.paths[seed]
+				if used[seed - path_start] {continue}
+				used[seed - path_start] = true
+				seed_path := c.solids.paths[seed]
+				clear(&chain)
 				append(&chain, seed_path.point_a, seed_path.point_b)
-				chain_first = seed
 				last := seed
 				for {
 					end := chain[len(chain)-1]
-					// Fast path for contiguous polylines/rings (e.g. concentric skin): consecutive
-					// segments on the same scanline/ring that share an endpoint extend in O(1).
 					if last+1 < group_end && !used[last+1-path_start] {
-						nxt := solids.paths[last+1]
-						if nxt.scanline_index == solids.paths[last].scanline_index && nxt.point_a == end {
+						nxt := c.solids.paths[last+1]
+						if nxt.scanline_index == c.solids.paths[last].scanline_index && nxt.point_a == end {
 							used[last+1-path_start] = true
 							append(&chain, nxt.point_b)
 							last += 1
 							continue
 						}
 					}
-					next_scanline := solids.paths[last].scanline_index+1
+					next_scanline := c.solids.paths[last].scanline_index + 1
 					best := -1
 					best_d: u128
 					best_a := true
-					for k in seed+1..<group_end {
-						cand := solids.paths[k]
+					for k in last+1..<group_end {
+						cand := c.solids.paths[k]
 						if cand.scanline_index > next_scanline {break}
 						if used[k-path_start] || cand.scanline_index != next_scanline {continue}
 						da := path_plan_distance_2(end, cand.point_a)
 						db := path_plan_distance_2(end, cand.point_b)
 						d := min(da, db)
-						if i128(d) > connect_limit*connect_limit {continue}
-						if !solid_connector_inside(solids, cand.overlap_mask_index, end, cand.point_a if da <= db else cand.point_b) {continue}
+						if i128(d) > connect_limit_sq {continue}
+						if !solid_connector_inside(c.solids, cand.overlap_mask_index, end, cand.point_a if da <= db else cand.point_b) {continue}
 						if best < 0 || d < best_d {
 							best = k
 							best_d = d
@@ -418,8 +488,8 @@ unified_path_sources_build :: proc(
 						}
 					}
 					if best < 0 {break}
-					used[best-path_start] = true
-					cand := solids.paths[best]
+					used[best - path_start] = true
+					cand := c.solids.paths[best]
 					if best_a {
 						append(&chain, cand.point_a, cand.point_b)
 					} else {
@@ -427,102 +497,108 @@ unified_path_sources_build :: proc(
 					}
 					last = best
 				}
-				if !flush_chain(&result, &source_write, &point_write, solids, &chain, chain_first, layer_id, layer_index, &source_order) {
-					unified_path_source_result_destroy(&result, allocator)
-					return {}, .Invalid_Input
+				if !append_local(
+					c.result, &source_write, &point_write, src_end_cap, pt_end_cap,
+					seed_path.stable_id, layer_id, u32(layer_index),
+					seed_path.role, .Solid, u32(seed), source_order, false,
+					chain[:], nil, seed_path.line_width,
+				) {
+					b.err = .Invalid_Input
+					return
 				}
-				chain_first = -1
+				source_order += 1
 			}
 			group_start = group_end
 		}
 
-		infill_layer := infill.layers[layer_index]
+		infill_layer := c.infill.layers[layer_index]
 		segment_start := int(infill_layer.segment_offset)
-		segment_end := segment_start+int(infill_layer.segment_count)
+		segment_end := segment_start + int(infill_layer.segment_count)
 		source_order = 0
 		for segment_index in segment_start..<segment_end {
-			segment := infill.segments[segment_index]
+			segment := c.infill.segments[segment_index]
 			if segment.layer_index != u32(layer_index) {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+				b.err = .Invalid_Input
+				return
 			}
-			points := [2]polygon.Polygon_Point{
-				segment.point_a,
-				segment.point_b,
-			}
-			if !unified_path_source_append(
-				&result,
-				&source_write,
-				&point_write,
-				segment.stable_id,
-				layer_id,
-				u32(layer_index),
-				.Sparse_Infill,
-				.Sparse_Infill,
-				u32(segment_index),
-				source_order,
-				false,
-				points[:],
-				nil,
-				process.source.nominal_line_width,
+			points := [2]polygon.Polygon_Point{segment.point_a, segment.point_b}
+			if !append_local(
+				c.result, &source_write, &point_write, src_end_cap, pt_end_cap,
+				segment.stable_id, layer_id, u32(layer_index),
+				.Sparse_Infill, .Sparse_Infill, u32(segment_index), source_order, false,
+				points[:], nil, c.process.source.nominal_line_width,
 			) {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+				b.err = .Invalid_Input
+				return
 			}
 			source_order += 1
 		}
 
-		support_layer := supports.layers[layer_index]
+		support_layer := c.supports.layers[layer_index]
 		path_start = int(support_layer.path_offset)
-		path_end = path_start+int(support_layer.path_count)
+		path_end = path_start + int(support_layer.path_count)
 		source_order = 0
 		for path_index in path_start..<path_end {
-			path := supports.paths[path_index]
+			path := c.supports.paths[path_index]
 			if path.layer_index != u32(layer_index) ||
-			   path.role != .Support &&
-				path.role != .Support_Interface {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+			   path.role != .Support && path.role != .Support_Interface {
+				b.err = .Invalid_Input
+				return
 			}
-			points := [2]polygon.Polygon_Point{
-				path.point_a,
-				path.point_b,
-			}
-			if !unified_path_source_append(
-				&result,
-				&source_write,
-				&point_write,
-				path.stable_id,
-				layer_id,
-				u32(layer_index),
-				path.role,
-				.Support,
-				u32(path_index),
-				source_order,
-				false,
-				points[:],
-				nil,
-				path.line_width,
+			points := [2]polygon.Polygon_Point{path.point_a, path.point_b}
+			if !append_local(
+				c.result, &source_write, &point_write, src_end_cap, pt_end_cap,
+				path.stable_id, layer_id, u32(layer_index),
+				path.role, .Support, u32(path_index), source_order, false,
+				points[:], nil, path.line_width,
 			) {
-				unified_path_source_result_destroy(&result, allocator)
-				return {}, .Invalid_Input
+				b.err = .Invalid_Input
+				return
 			}
 			source_order += 1
 		}
 
-		layer_source_count := source_write-layer_source_start
-		layer_point_count := point_write-layer_point_start
-		if layer_source_count > int(max(u32)) ||
-		   layer_point_count > int(max(u32)) {
+		b.src_actual = source_write - b.src_base
+		b.pt_actual = point_write - b.pt_base
+	})
+
+	source_write := 0
+	point_write := 0
+	need_pt_compact := false
+	for b in budgets {
+		if b.err != .None {
+			unified_path_source_result_destroy(&result, allocator)
+			return {}, b.err
+		}
+		if b.pt_actual != b.pt_cap {need_pt_compact = true}
+	}
+	for b, layer_index in budgets {
+		if b.src_actual > int(max(u32)) || b.pt_actual > int(max(u32)) {
 			unified_path_source_result_destroy(&result, allocator)
 			return {}, .Arithmetic
 		}
-		result.layers[layer_index] = {
-			source_offset = u64(layer_source_start),
-			source_count = u32(layer_source_count),
-			point_offset = u64(layer_point_start),
-			point_count = u32(layer_point_count),
+		if b.src_actual > 0 && source_write != b.src_base {
+			copy(result.sources[source_write:source_write+b.src_actual], result.sources[b.src_base:b.src_base+b.src_actual])
 		}
+		if need_pt_compact && b.pt_actual > 0 && point_write != b.pt_base {
+			copy(result.points[point_write:point_write+b.pt_actual], result.points[b.pt_base:b.pt_base+b.pt_actual])
+			copy(result.line_widths[point_write:point_write+b.pt_actual], result.line_widths[b.pt_base:b.pt_base+b.pt_actual])
+			pt_cursor := point_write
+			for si in source_write..<source_write+b.src_actual {
+				n := len(result.sources[si].points)
+				result.sources[si].points = result.points[pt_cursor:pt_cursor+n]
+				result.sources[si].line_widths = result.line_widths[pt_cursor:pt_cursor+n]
+				pt_cursor += n
+			}
+		}
+		result.layers[layer_index] = {
+			source_offset = u64(source_write),
+			source_count  = u32(b.src_actual),
+			point_offset  = u64(point_write),
+			point_count   = u32(b.pt_actual),
+		}
+		source_write += b.src_actual
+		point_write += b.pt_actual
 	}
 	if source_write > len(result.sources) ||
 	   point_write > len(result.points) {
@@ -533,111 +609,19 @@ unified_path_sources_build :: proc(
 	result.sources = result.sources[:source_write]
 	result.points = result.points[:point_write]
 	result.line_widths = result.line_widths[:point_write]
-	for source in result.sources {
-		_, source_ok := unified_path_source_validate(source, layer_ids)
-		if !source_ok {
-			unified_path_source_result_destroy(&result, allocator)
-			return {}, .Invalid_Input
+	if !skip_final_validate {
+		for source in result.sources {
+			_, source_ok := unified_path_source_validate(source, layer_ids)
+			if !source_ok {
+				unified_path_source_result_destroy(&result, allocator)
+				return {}, .Invalid_Input
+			}
 		}
 	}
 	return result, .None
 }
 
-unified_path_source_append :: proc(
-	result: ^Unified_Path_Source_Result,
-	source_write, point_write: ^int,
-	stable_id, layer_id: contracts.Stable_ID,
-	layer_index: u32,
-	role: profiles.Printable_Role,
-	source_kind: Unified_Path_Source_Kind,
-	source_index: u32,
-	source_order: u64,
-	closed: bool,
-	points: []polygon.Polygon_Point,
-	widths: []contracts.Micrometres,
-	uniform_width: contracts.Micrometres,
-) -> bool {
-	if source_write^ >= len(result.sources) ||
-	   point_write^ > len(result.points) ||
-	   len(points) > len(result.points)-point_write^ ||
-	   widths != nil && len(widths) != len(points) ||
-	   widths == nil && i64(uniform_width) <= 0 {
-		return false
-	}
-	point_start := point_write^
-	copy(
-		result.points[point_start:point_start+len(points)],
-		points,
-	)
-	if widths == nil {
-		for &width in result.line_widths[
-		    point_start:point_start+len(points)] {
-			width = uniform_width
-		}
-	} else {
-		copy(
-			result.line_widths[
-				point_start:point_start+len(points)
-			],
-			widths,
-		)
-	}
-	point_write^ += len(points)
-	result.sources[source_write^] = {
-		stable_id = stable_id,
-		layer_id = layer_id,
-		layer_index = layer_index,
-		role = role,
-		source_kind = source_kind,
-		source_index = source_index,
-		source_order = source_order,
-		closed = closed,
-		points = result.points[point_start:point_write^],
-		line_widths =
-			result.line_widths[point_start:point_write^],
-	}
-	source_write^ += 1
-	return true
-}
 
-unified_path_source_append_gap :: proc(
-	result: ^Unified_Path_Source_Result,
-	source_write, point_write: ^int,
-	path: Gap_Centerline_Path,
-	layer_id: contracts.Stable_ID,
-	source_index: u32,
-	source_order: u64,
-	vertices: []Gap_Centerline_Vertex,
-) -> bool {
-	if len(vertices) < 2 ||
-	   source_write^ >= len(result.sources) ||
-	   point_write^ > len(result.points) ||
-	   len(vertices) > len(result.points)-point_write^ {
-		return false
-	}
-	point_start := point_write^
-	for vertex in vertices {
-		if i64(vertex.line_width) <= 0 {return false}
-		result.points[point_write^] = vertex.point
-		result.line_widths[point_write^] = vertex.line_width
-		point_write^ += 1
-	}
-	result.sources[source_write^] = {
-		stable_id = path.stable_id,
-		layer_id = layer_id,
-		layer_index = path.layer_index,
-		role = path.role,
-		source_kind = .Gap_Centerline,
-		source_index = source_index,
-		source_order = source_order,
-		closed = false,
-		points = result.points[point_start:point_write^],
-		line_widths =
-			result.line_widths[point_start:point_write^],
-	}
-	source_write^ += 1
-	return true
-}
 
 unified_path_source_ranges_valid :: proc(
 	perimeters: Perimeter_Result,

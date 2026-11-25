@@ -282,6 +282,7 @@ stage_settings_hash :: proc(
 		hash_pod(&h, options.ironing_spacing_um)
 		hash_pod(&h, options.ironing_flow_percent)
 		hash_pod(&h, options.ironing_inset_um)
+		hash_pod(&h, pr.nozzle_diameter)
 		hash_pod(&h, options.top_surface_line_width_um)
 		hash_pod(&h, options.internal_solid_infill_line_width_um)
 		hash_pod(&h, options.initial_layer_line_width_um)

@@ -183,7 +183,7 @@ odin_offset :: proc(
 @(private = "file")
 odin_offset_square :: proc(pts: ^[dynamic]Polygon_Point, added: ^int, prev, v, n0, n1: [2]f64, d: f64) {
 	vec := [2]f64{-n0[1] + n1[1], n0[0] - n1[0]}
-	vl := math.hypot(vec[0], vec[1])
+	vl := math.sqrt(vec[0]*vec[0] + vec[1]*vec[1])
 	if vl < 1e-12 {
 		odin_offset_push(pts, added, {x = contracts.Micrometres(i64(math.round(v[0] + d*n0[0]))), y = contracts.Micrometres(i64(math.round(v[1] + d*n0[1])))})
 		odin_offset_push(pts, added, {x = contracts.Micrometres(i64(math.round(v[0] + d*n1[0]))), y = contracts.Micrometres(i64(math.round(v[1] + d*n1[1])))})

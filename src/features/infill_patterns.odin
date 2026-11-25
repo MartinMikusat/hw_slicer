@@ -432,7 +432,9 @@ infill_pat_connect :: proc(
 			cum[cum_base + k] = total
 			a := boundary.points[off + k]
 			b := boundary.points[off + (k + 1) % cnt]
-			total += math.hypot(f64(i64(b.x) - i64(a.x)), f64(i64(b.y) - i64(a.y)))
+			edx := f64(i64(b.x) - i64(a.x))
+			edy := f64(i64(b.y) - i64(a.y))
+			total += math.sqrt(edx*edx + edy*edy)
 		}
 		loops[li] = {cum_base, cnt, total}
 		cum_base += cnt + 1
@@ -442,7 +444,8 @@ infill_pat_connect :: proc(
 	for piece, pi in pieces {
 		for side in 0..<2 {
 			p := piece.points[0] if side == 0 else piece.points[len(piece.points) - 1]
-			px, py := f64(i64(p.x)), f64(i64(p.y))
+			px_i, py_i := i64(p.x), i64(p.y)
+			px, py := f64(px_i), f64(py_i)
 			best_d := 25.0 // within 5 um of the boundary
 			best_loop := -1
 			best_s := 0.0
@@ -452,8 +455,14 @@ infill_pat_connect :: proc(
 				for k in 0..<cnt {
 					a := boundary.points[off + k]
 					b := boundary.points[off + (k + 1) % cnt]
-					ax, ay := f64(i64(a.x)), f64(i64(a.y))
-					dx, dy := f64(i64(b.x)) - ax, f64(i64(b.y)) - ay
+					ax_i, ay_i := i64(a.x), i64(a.y)
+					bx_i, by_i := i64(b.x), i64(b.y)
+					if px_i < min(ax_i, bx_i) - 5 || px_i > max(ax_i, bx_i) + 5 ||
+					   py_i < min(ay_i, by_i) - 5 || py_i > max(ay_i, by_i) + 5 {
+						continue
+					}
+					ax, ay := f64(ax_i), f64(ay_i)
+					dx, dy := f64(bx_i) - ax, f64(by_i) - ay
 					l2 := dx*dx + dy*dy
 					if l2 == 0 {continue}
 					t := clamp(((px - ax)*dx + (py - ay)*dy) / l2, 0, 1)
@@ -470,7 +479,7 @@ infill_pat_connect :: proc(
 		}
 	}
 	if len(ends) < 2 {return}
-	slice.sort_by(ends[:], proc(a, b: End) -> bool {
+	features_fast_sort(ends[:], proc(a, b: End) -> bool {
 		if a.loop != b.loop {return a.loop < b.loop}
 		if a.s != b.s {return a.s < b.s}
 		if a.piece != b.piece {return a.piece < b.piece}
@@ -494,7 +503,7 @@ infill_pat_connect :: proc(
 		if arc > max_arc {continue}
 		append(&joins, Join{i, j, arc})
 	}
-	slice.sort_by(joins[:], proc(a, b: Join) -> bool {
+	features_fast_sort(joins[:], proc(a, b: Join) -> bool {
 		if a.arc != b.arc {return a.arc < b.arc}
 		return a.a < b.a
 	})
@@ -536,25 +545,36 @@ infill_pat_connect :: proc(
 	// Boundary points strictly between arc positions s0 and s1 walking forward (or backward).
 	arc_points :: proc(dst: ^[dynamic]polygon.Polygon_Point, boundary: polygon.Polygon_Set, loop: Loop, cum: []f64, path_offset: int, s0, s1: f64, forward: bool) {
 		cnt := loop.count
+		if cnt == 0 {return}
+		c := cum[loop.offset:loop.offset + cnt]
 		if forward {
 			s_end := s1 if s1 >= s0 else s1 + loop.length
-			for k in 0..<2 * cnt {
-				idx := k % cnt
-				s := cum[loop.offset + idx] + (loop.length if k >= cnt else 0)
-				if s > s0 && s < s_end {
-					pt := boundary.points[path_offset + idx]
-					if len(dst) == 0 || dst[len(dst) - 1] != pt {append(dst, pt)}
-				}
+			lo, hi := 0, cnt
+			for lo < hi {
+				mid := (lo + hi) >> 1
+				if c[mid] <= s0 {lo = mid + 1} else {hi = mid}
+			}
+			for k := lo; k < 2 * cnt; k += 1 {
+				idx := k if k < cnt else k - cnt
+				s := c[idx] + (loop.length if k >= cnt else 0)
+				if s >= s_end {break}
+				pt := boundary.points[path_offset + idx]
+				if len(dst) == 0 || dst[len(dst) - 1] != pt {append(dst, pt)}
 			}
 		} else {
 			s_end := s1 if s1 <= s0 else s1 - loop.length
-			for k := 2 * cnt - 1; k >= 0; k -= 1 {
-				idx := k % cnt
-				s := cum[loop.offset + idx] - (loop.length if k < cnt else 0)
-				if s < s0 && s > s_end {
-					pt := boundary.points[path_offset + idx]
-					if len(dst) == 0 || dst[len(dst) - 1] != pt {append(dst, pt)}
-				}
+			lo, hi := 0, cnt
+			for lo < hi {
+				mid := (lo + hi) >> 1
+				if c[mid] < s0 {lo = mid + 1} else {hi = mid}
+			}
+			start_k := cnt + lo - 1
+			for k := start_k; k >= 0; k -= 1 {
+				idx := k - cnt if k >= cnt else k
+				s := c[idx] - (loop.length if k < cnt else 0)
+				if s <= s_end {break}
+				pt := boundary.points[path_offset + idx]
+				if len(dst) == 0 || dst[len(dst) - 1] != pt {append(dst, pt)}
 			}
 		}
 	}
@@ -627,7 +647,6 @@ infill_pat_bounds :: proc(set: polygon.Polygon_Set) -> (min_x, min_y, max_x, max
 	return
 }
 
-// Clips a line family at angle `angle_rad` and perpendicular spacing `spacing` against `boundary`.
 @(private)
 infill_pat_hatch :: proc(
 	out: ^[dynamic]Infill_Pattern_Path,
@@ -646,56 +665,104 @@ infill_pat_hatch :: proc(
 	nx := -dy
 	ny := dx
 
-	// Project AABB corners onto normal axis (nx, ny).
-	corners := [4][2]f64{
-		{f64(min_x), f64(min_y)},
-		{f64(max_x), f64(min_y)},
-		{f64(max_x), f64(max_y)},
-		{f64(min_x), f64(max_y)},
+	Hatch_Edge :: struct {
+		n_lo:   f64,
+		n_hi:   f64,
+		na:     f64,
+		ta:     f64,
+		slope:  f64, // (tb - ta) / (nb - na)
 	}
-	n_min := corners[0][0]*nx + corners[0][1]*ny
-	n_max := n_min
-	for c in corners[1:] {
-		v := c[0]*nx + c[1]*ny
-		if v < n_min {n_min = v}
-		if v > n_max {n_max = v}
+	edges := make([dynamic]Hatch_Edge, 0, len(boundary.points), context.temp_allocator)
+	n_min := max(f64)
+	n_max := min(f64)
+	for path in boundary.paths {
+		start := int(path.offset)
+		cnt := int(path.count)
+		if cnt < 3 {continue}
+		pa := boundary.points[start + cnt - 1]
+		ax, ay := f64(i64(pa.x)), f64(i64(pa.y))
+		na := ax*nx + ay*ny
+		ta := ax*dx + ay*dy
+		for ei in 0..<cnt {
+			pb := boundary.points[start + ei]
+			bx, by := f64(i64(pb.x)), f64(i64(pb.y))
+			nb := bx*nx + by*ny
+			tb := bx*dx + by*dy
+			if na < n_min {n_min = na}
+			if na > n_max {n_max = na}
+			dn := nb - na
+			if dn != 0.0 {
+				append(&edges, Hatch_Edge{
+					n_lo  = min(na, nb),
+					n_hi  = max(na, nb),
+					na    = na,
+					ta    = ta,
+					slope = (tb - ta) / dn,
+				})
+			}
+			na, ta = nb, tb
+		}
 	}
+	if len(edges) == 0 || n_max <= n_min {return}
+
+	features_fast_sort(edges[:], proc(a, b: Hatch_Edge) -> bool {
+		return a.n_lo < b.n_lo
+	})
 
 	k_start := i64(math.floor((n_min - phase) / spacing))
 	k_end := i64(math.ceil((n_max - phase) / spacing))
 	if k_end - k_start > 4096 {k_end = k_start + 4096}
 
+	active := make([dynamic]int, 0, 32, context.temp_allocator)
 	hits := make([dynamic]f64, 0, 32, context.temp_allocator)
+	next_edge := 0
 	for k := k_start; k <= k_end; k += 1 {
 		c_val := f64(k)*spacing + phase
-		clear(&hits)
-		for path in boundary.paths {
-			start := int(path.offset)
-			cnt := int(path.count)
-			if cnt < 3 {continue}
-			for ei in 0..<cnt {
-				pa := boundary.points[start + ei]
-				pb := boundary.points[start + (ei + 1) % cnt]
-				da := f64(i64(pa.x))*nx + f64(i64(pa.y))*ny - c_val
-				db := f64(i64(pb.x))*nx + f64(i64(pb.y))*ny - c_val
-				if (da <= 0 && db > 0) || (db <= 0 && da > 0) {
-					t := da / (da - db)
-					ix := f64(i64(pa.x)) + t * f64(i64(pb.x) - i64(pa.x))
-					iy := f64(i64(pa.y)) + t * f64(i64(pb.y) - i64(pa.y))
-					append(&hits, ix*dx + iy*dy)
-				}
+		aw := 0
+		for ei in active {
+			if edges[ei].n_hi > c_val {
+				active[aw] = ei
+				aw += 1
 			}
 		}
-		if len(hits) < 2 {continue}
-		slice.sort(hits[:])
-		for hi := 0; hi + 1 < len(hits); hi += 2 {
+		resize(&active, aw)
+		for next_edge < len(edges) && edges[next_edge].n_lo <= c_val {
+			if edges[next_edge].n_hi > c_val {
+				append(&active, next_edge)
+			}
+			next_edge += 1
+		}
+		if len(active) < 2 {continue}
+
+		clear(&hits)
+		for ei in active {
+			e := edges[ei]
+			append(&hits, e.ta + (c_val - e.na)*e.slope)
+		}
+		hcnt := len(hits)
+		if hcnt <= 16 {
+			for a := 1; a < hcnt; a += 1 {
+				key := hits[a]
+				b := a - 1
+				for b >= 0 && key < hits[b] {
+					hits[b + 1] = hits[b]
+					b -= 1
+				}
+				hits[b + 1] = key
+			}
+		} else {
+			features_fast_sort(hits[:], proc(a, b: f64) -> bool {return a < b})
+		}
+		cx := c_val * nx
+		cy := c_val * ny
+		for hi := 0; hi + 1 < hcnt; hi += 2 {
 			t0 := hits[hi]
 			t1 := hits[hi + 1]
 			if t1 - t0 < 50.0 {continue}
-			ax := contracts.Micrometres(i64(math.round(c_val*nx + t0*dx)))
-			ay := contracts.Micrometres(i64(math.round(c_val*ny + t0*dy)))
-			bx := contracts.Micrometres(i64(math.round(c_val*nx + t1*dx)))
-			by := contracts.Micrometres(i64(math.round(c_val*ny + t1*dy)))
+			ax := contracts.Micrometres(i64(math.round(cx + t0*dx)))
+			ay := contracts.Micrometres(i64(math.round(cy + t0*dy)))
+			bx := contracts.Micrometres(i64(math.round(cx + t1*dx)))
+			by := contracts.Micrometres(i64(math.round(cy + t1*dy)))
 			if ax == bx && ay == by {continue}
 			pts := make([]polygon.Polygon_Point, 2, allocator)
 			pts[0] = {x = ax, y = ay}
@@ -1017,7 +1084,6 @@ infill_pat_gyroid :: proc(
 	}
 }
 
-// Regular hexagonal honeycomb zig-zag polylines clipped to boundary.
 @(private)
 infill_pat_honeycomb :: proc(
 	out: ^[dynamic]Infill_Pattern_Path,
@@ -1035,7 +1101,23 @@ infill_pat_honeycomb :: proc(
 	row_step := h_half * 2.0
 	col_step := side * 3.0
 
+	all_edges := make([dynamic]Band_Edge_2, 0, len(boundary.points), context.temp_allocator)
+	for path in boundary.paths {
+		n := int(path.count)
+		if n < 3 {continue}
+		s := int(path.offset)
+		prev := boundary.points[s + n - 1]
+		for ei in 0..<n {
+			cur := boundary.points[s + ei]
+			append(&all_edges, Band_Edge_2{i64(prev.x)*2, i64(prev.y)*2, i64(cur.x)*2, i64(cur.y)*2})
+			prev = cur
+		}
+	}
+	if len(all_edges) == 0 {return}
+
+	band := make([dynamic]Band_Edge_2, 0, 32, context.temp_allocator)
 	raw := make([dynamic]polygon.Polygon_Point, 0, 128, context.temp_allocator)
+	run := make([dynamic]polygon.Polygon_Point, 0, 128, context.temp_allocator)
 	row_start := i64(math.floor(f64(min_y) / row_step)) - 1
 	row_end := i64(math.ceil(f64(max_y) / row_step)) + 1
 	col_start := i64(math.floor(f64(min_x) / col_step)) - 1
@@ -1043,10 +1125,19 @@ infill_pat_honeycomb :: proc(
 
 	for row := row_start; row <= row_end; row += 1 {
 		base_y := f64(row) * row_step
+		band_lo := i64(math.floor(base_y * 2.0)) - 4
+		band_hi := i64(math.ceil((base_y + h_half) * 2.0)) + 4
+		clear(&band)
+		for e in all_edges {
+			if max(e.ay2, e.by2) >= band_lo && min(e.ay2, e.by2) <= band_hi {
+				append(&band, e)
+			}
+		}
+		if len(band) == 0 {continue}
+
 		clear(&raw)
 		for col := col_start; col <= col_end; col += 1 {
 			bx := f64(col) * col_step
-			// Upper zig-zag of hexagon row: (bx, y) -> (bx+side, y) -> (bx+1.5*side, y+h) -> (bx+2.5*side, y+h) -> (bx+3*side, y)
 			pts_hex := [4][2]f64{
 				{bx, base_y},
 				{bx + side, base_y},
@@ -1060,6 +1151,43 @@ infill_pat_honeycomb :: proc(
 				})
 			}
 		}
-		infill_pat_emit_clipped_polyline(out, boundary, layer_index, raw[:], line_width, allocator)
+		clear(&run)
+		previous_x, previous_y: i64
+		inside := false
+		have_previous := false
+		for i in 0..<len(raw)-1 {
+			a := raw[i]
+			b := raw[i + 1]
+			if a == b {continue}
+			x := i64(a.x) + i64(b.x)
+			y := i64(a.y) + i64(b.y)
+			needs_query := !have_previous
+			if have_previous {
+				min_x, max_x := min(previous_x, x), max(previous_x, x)
+				min_y, max_y := min(previous_y, y), max(previous_y, y)
+				for edge in band {
+					if max(edge.ax2, edge.bx2) >= min_x && min(edge.ax2, edge.bx2) <= max_x &&
+					   max(edge.ay2, edge.by2) >= min_y && min(edge.ay2, edge.by2) <= max_y {
+						needs_query = true
+						break
+					}
+				}
+			}
+			if needs_query {inside = band_edges_contains_twice(band[:], x, y)}
+			previous_x, previous_y = x, y
+			have_previous = true
+			if inside {
+				if len(run) == 0 {append(&run, a)}
+				if run[len(run)-1] != b {append(&run, b)}
+			} else if len(run) >= 2 {
+				infill_pat_flush_run(out, layer_index, run[:], line_width, allocator)
+				clear(&run)
+			} else {
+				clear(&run)
+			}
+		}
+		if len(run) >= 2 {
+			infill_pat_flush_run(out, layer_index, run[:], line_width, allocator)
+		}
 	}
 }

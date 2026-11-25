@@ -8,6 +8,7 @@ import geometry "../geometry"
 import polygon "../polygon"
 import profiles "../profiles"
 import slicing "../slicing"
+import workers "../workers"
 
 Support_Demand_Config :: struct {
 	fill_rule:     polygon.Polygon_Fill_Rule,
@@ -101,6 +102,7 @@ support_demand_build :: proc(
 	config: Support_Demand_Config,
 	limits := DEFAULT_SUPPORT_DEMAND_LIMITS,
 	allocator := context.allocator,
+	record_sources := true,
 ) -> (Support_Demand_Result, Support_Demand_Error) {
 	direction_x, direction_y, direction_ok :=
 		bridge_direction_vector(process.source.support_overhang_angle)
@@ -117,14 +119,9 @@ support_demand_build :: proc(
 	   !support_face_result_basic_valid(faces, process) {
 		return {}, .Invalid_Input
 	}
-	_, schedule_ok := slicing.fixed_layer_schedule_hash(schedule)
-	_, regions_ok := slicing.region_result_hash({}, topology, regions)
-	if !schedule_ok || !regions_ok {return {}, .Invalid_Input}
-	for layer_index in 1..<len(schedule.layer_z) {
-		if schedule.layer_z[layer_index] <=
-		   schedule.layer_z[layer_index-1] {
-			return {}, .Invalid_Input
-		}
+	if !slicing.fixed_layer_schedule_valid(schedule) ||
+	   !slicing.region_result_valid(topology, regions) {
+		return {}, .Invalid_Input
 	}
 
 	region_inputs := make(
@@ -208,167 +205,214 @@ support_demand_build :: proc(
 		return {}, support_demand_bridge_error(layer_error)
 	}
 
+	layer_count := len(layer_inputs)
+	layer_faces := make([][dynamic]u32, layer_count, allocator)
+	if layer_faces == nil {return {}, .Allocation_Failed}
+	defer {
+		for &lf in layer_faces {delete(lf)}
+		delete(layer_faces, allocator)
+	}
+	if layer_count > 1 {
+		for face, face_index in faces.faces {
+			if face.kind != .Downward_Overhang {continue}
+			lo, hi := 1, layer_count
+			for lo < hi {
+				mid := (lo + hi) >> 1
+				if schedule.layer_z[mid] < face.minimum_z {lo = mid + 1} else {hi = mid}
+			}
+			for li := lo; li < layer_count; li += 1 {
+				if schedule.layer_z[li - 1] >= face.maximum_z {break}
+				append(&layer_faces[li], u32(face_index))
+			}
+		}
+	}
+
+	layer_errors := make([]Support_Demand_Error, layer_count, allocator)
+	if layer_errors == nil {return {}, .Allocation_Failed}
+	defer delete(layer_errors, allocator)
+
+	Sup_Dem_Par_Ctx :: struct {
+		schedule:       slicing.Fixed_Layer_Schedule,
+		layer_inputs:   []polygon.Polygon_Set,
+		layer_faces:    [][dynamic]u32,
+		faces:          Support_Face_Result,
+		direction_x:    i64,
+		direction_y:    i64,
+		provider:       polygon.Polygon_Provider,
+		config:         Support_Demand_Config,
+		limits:         Support_Demand_Limits,
+		record_sources: bool,
+		allowed_margins: []contracts.Micrometres,
+		outputs:        []polygon.Polygon_Set,
+		output_sources: [][dynamic]u32,
+		layer_errors:   []Support_Demand_Error,
+		allocator:      mem.Allocator,
+	}
+	sdctx := Sup_Dem_Par_Ctx{
+		schedule        = schedule,
+		layer_inputs    = layer_inputs,
+		layer_faces     = layer_faces,
+		faces           = faces,
+		direction_x     = direction_x,
+		direction_y     = direction_y,
+		provider        = provider,
+		config          = config,
+		limits          = limits,
+		record_sources  = record_sources,
+		allowed_margins = allowed_margins,
+		outputs         = outputs,
+		output_sources  = output_sources,
+		layer_errors    = layer_errors,
+		allocator       = allocator,
+	}
+
+	if layer_count > 1 {
+		parallel_for(layer_count - 1, &sdctx, proc(c: ^Sup_Dem_Par_Ctx, idx: int) {
+			layer_index := idx + 1
+			margin, margin_ok := support_demand_allowed_margin(
+				c.schedule.layer_z[layer_index] - c.schedule.layer_z[layer_index-1],
+				c.direction_x,
+				c.direction_y,
+			)
+			if !margin_ok {
+				c.layer_errors[layer_index] = .Arithmetic
+				return
+			}
+			c.allowed_margins[layer_index] = margin
+			cand_faces := c.layer_faces[layer_index]
+			if len(cand_faces) == 0 || len(c.layer_inputs[layer_index].paths) == 0 {return}
+			if features_polygon_sets_equal(c.layer_inputs[layer_index], c.layer_inputs[layer_index-1]) {
+				return
+			}
+
+			scratch := workers.scratch_allocator()
+			expanded_below: polygon.Polygon_Set
+			if len(c.layer_inputs[layer_index-1].paths) > 0 {
+				if margin == 0 {
+					expanded_below = c.layer_inputs[layer_index-1]
+				} else {
+					expand_error: polygon.Polygon_Error
+					expanded_below, expand_error = c.provider.offset(
+						c.layer_inputs[layer_index-1],
+						margin,
+						c.config.join_type,
+						c.config.miter_limit,
+						c.config.arc_tolerance,
+						c.limits.polygon,
+						scratch,
+					)
+					if expand_error != .None {
+						c.layer_errors[layer_index] = .Provider
+						return
+					}
+				}
+			}
+			unsupported, unsupported_error := c.provider.boolean(
+				c.layer_inputs[layer_index],
+				expanded_below,
+				.Difference,
+				c.config.fill_rule,
+				c.limits.polygon,
+				scratch,
+			)
+			if unsupported_error != .None {
+				c.layer_errors[layer_index] = .Provider
+				return
+			}
+			if len(unsupported.paths) == 0 {return}
+
+			triangle_count := u64(len(cand_faces))
+			if triangle_count > c.limits.polygon.max_input_paths ||
+			   triangle_count > c.limits.polygon.max_input_points/3 ||
+			   triangle_count > u64(max(int))/3 {
+				c.layer_errors[layer_index] = .Provider
+				return
+			}
+			tri_pts := make([]polygon.Polygon_Point, len(cand_faces) * 3, scratch)
+			tri_paths := make([]polygon.Polygon_Path, len(cand_faces), scratch)
+			if tri_pts == nil || tri_paths == nil {
+				c.layer_errors[layer_index] = .Allocation_Failed
+				return
+			}
+			for fi, k in cand_faces {
+				face := c.faces.faces[fi]
+				start := int(face.point_offset)
+				copy(tri_pts[k*3:k*3+3], c.faces.points[start:start+3])
+				tri_paths[k] = {offset = u64(k * 3), count = 3}
+			}
+			raw_overhangs := polygon.Polygon_Set{points = tri_pts, paths = tri_paths}
+			overhang_union, union_err := c.provider.boolean(
+				raw_overhangs,
+				{},
+				.Union,
+				.Non_Zero,
+				c.limits.polygon,
+				scratch,
+			)
+			if union_err != .None {
+				c.layer_errors[layer_index] = .Provider
+				return
+			}
+			if len(overhang_union.paths) == 0 {return}
+
+			demand, demand_error := c.provider.boolean(
+				unsupported,
+				overhang_union,
+				.Intersection,
+				c.config.fill_rule,
+				c.limits.polygon,
+				c.allocator,
+			)
+			if demand_error != .None {
+				polygon.polygon_set_destroy(&demand, c.allocator)
+				c.layer_errors[layer_index] = .Provider
+				return
+			}
+			if len(demand.paths) == 0 {
+				polygon.polygon_set_destroy(&demand, c.allocator)
+				return
+			}
+			if c.record_sources {
+				for face_index in cand_faces {
+					face := c.faces.faces[face_index]
+					start := int(face.point_offset)
+					proj_path := [1]polygon.Polygon_Path{{offset = 0, count = 3}}
+					projection := polygon.Polygon_Set{
+						points = c.faces.points[start:start+3],
+						paths  = proj_path[:],
+					}
+					contribution, contribution_error := c.provider.boolean(
+						demand,
+						projection,
+						.Intersection,
+						c.config.fill_rule,
+						c.limits.polygon,
+						scratch,
+					)
+					if contribution_error != .None {
+						polygon.polygon_set_destroy(&demand, c.allocator)
+						c.layer_errors[layer_index] = .Provider
+						return
+					}
+					if len(contribution.paths) > 0 {
+						append(&c.output_sources[layer_index], face_index)
+					}
+				}
+			}
+			c.outputs[layer_index] = demand
+		})
+	}
+
 	total_masks: u64
 	total_paths: u64
 	total_points: u64
 	total_source_references: u64
-	for layer_index in 1..<len(layer_inputs) {
-		margin, margin_ok := support_demand_allowed_margin(
-			schedule.layer_z[layer_index]-
-				schedule.layer_z[layer_index-1],
-			direction_x,
-			direction_y,
-		)
-		if !margin_ok {return {}, .Arithmetic}
-		allowed_margins[layer_index] = margin
-		expanded_below: polygon.Polygon_Set
-		if len(layer_inputs[layer_index-1].paths) > 0 {
-			if margin == 0 {
-				cloned, clone_ok := skin_polygon_clone(
-					layer_inputs[layer_index-1],
-					allocator,
-				)
-				if !clone_ok {return {}, .Allocation_Failed}
-				expanded_below = cloned
-			} else {
-				expand_error: polygon.Polygon_Error
-				expanded_below, expand_error = provider.offset(
-					layer_inputs[layer_index-1],
-					margin,
-					config.join_type,
-					config.miter_limit,
-					config.arc_tolerance,
-					limits.polygon,
-					allocator,
-				)
-				if expand_error != .None {
-					polygon.polygon_set_destroy(
-						&expanded_below,
-						allocator,
-					)
-					return {}, .Provider
-				}
-			}
+	for layer_index in 1..<layer_count {
+		if layer_errors[layer_index] != .None {
+			return {}, layer_errors[layer_index]
 		}
-		unsupported, unsupported_error := provider.boolean(
-			layer_inputs[layer_index],
-			expanded_below,
-			.Difference,
-			config.fill_rule,
-			limits.polygon,
-			allocator,
-		)
-		polygon.polygon_set_destroy(&expanded_below, allocator)
-		if unsupported_error != .None {
-			polygon.polygon_set_destroy(&unsupported, allocator)
-			return {}, .Provider
-		}
-		if len(unsupported.paths) == 0 {
-			polygon.polygon_set_destroy(&unsupported, allocator)
-			continue
-		}
-
-		overhang_union: polygon.Polygon_Set
-		candidate_faces := make([dynamic]u32, allocator)
-		previous_z := schedule.layer_z[layer_index-1]
-		current_z := schedule.layer_z[layer_index]
-		for face, face_index in faces.faces {
-			if face.kind != .Downward_Overhang ||
-			   face.maximum_z <= previous_z ||
-			   face.minimum_z > current_z {
-				continue
-			}
-			projection, projection_error :=
-				support_face_projection_input(
-					faces,
-					u32(face_index),
-					allocator,
-				)
-			if projection_error != .None {
-				delete(candidate_faces)
-				polygon.polygon_set_destroy(&unsupported, allocator)
-				polygon.polygon_set_destroy(&overhang_union, allocator)
-				return {}, projection_error
-			}
-			accumulate_error := skin_polygon_accumulate(
-				&overhang_union,
-				&projection,
-				provider,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			if accumulate_error != .None {
-				delete(candidate_faces)
-				polygon.polygon_set_destroy(&unsupported, allocator)
-				polygon.polygon_set_destroy(&overhang_union, allocator)
-				return {}, support_demand_skin_error(
-					accumulate_error,
-				)
-			}
-			append(&candidate_faces, u32(face_index))
-		}
-		if len(overhang_union.paths) == 0 {
-			delete(candidate_faces)
-			polygon.polygon_set_destroy(&unsupported, allocator)
-			polygon.polygon_set_destroy(&overhang_union, allocator)
-			continue
-		}
-		demand, demand_error := provider.boolean(
-			unsupported,
-			overhang_union,
-			.Intersection,
-			config.fill_rule,
-			limits.polygon,
-			allocator,
-		)
-		polygon.polygon_set_destroy(&unsupported, allocator)
-		polygon.polygon_set_destroy(&overhang_union, allocator)
-		if demand_error != .None {
-			delete(candidate_faces)
-			polygon.polygon_set_destroy(&demand, allocator)
-			return {}, .Provider
-		}
-		if len(demand.paths) == 0 {
-			delete(candidate_faces)
-			polygon.polygon_set_destroy(&demand, allocator)
-			continue
-		}
-		for face_index in candidate_faces {
-			projection, projection_error :=
-				support_face_projection_input(
-					faces,
-					face_index,
-					allocator,
-				)
-			if projection_error != .None {
-				delete(candidate_faces)
-				polygon.polygon_set_destroy(&demand, allocator)
-				return {}, projection_error
-			}
-			contribution, contribution_error := provider.boolean(
-				demand,
-				projection,
-				.Intersection,
-				config.fill_rule,
-				limits.polygon,
-				allocator,
-			)
-			polygon.polygon_set_destroy(&projection, allocator)
-			if contribution_error != .None {
-				delete(candidate_faces)
-				polygon.polygon_set_destroy(&contribution, allocator)
-				polygon.polygon_set_destroy(&demand, allocator)
-				return {}, .Provider
-			}
-			contributes := len(contribution.paths) > 0
-			polygon.polygon_set_destroy(&contribution, allocator)
-			if contributes {
-				append(&output_sources[layer_index], face_index)
-			}
-		}
-		delete(candidate_faces)
-		outputs[layer_index] = demand
+		demand := outputs[layer_index]
+		if len(demand.paths) == 0 {continue}
 		total_masks += 1
 		if total_masks > limits.max_masks {return {}, .Mask_Limit}
 		if total_paths > limits.max_paths ||
@@ -379,17 +423,14 @@ support_demand_build :: proc(
 		   u64(len(demand.points)) > limits.max_points-total_points {
 			return {}, .Point_Limit
 		}
-		if total_source_references >
-		   limits.max_source_face_references ||
+		if total_source_references > limits.max_source_face_references ||
 		   u64(len(output_sources[layer_index])) >
-		    limits.max_source_face_references-
-		    total_source_references {
+		    limits.max_source_face_references-total_source_references {
 			return {}, .Source_Reference_Limit
 		}
 		total_paths += u64(len(demand.paths))
 		total_points += u64(len(demand.points))
-		total_source_references +=
-			u64(len(output_sources[layer_index]))
+		total_source_references += u64(len(output_sources[layer_index]))
 	}
 	if total_masks > u64(max(int)) ||
 	   total_paths > u64(max(int)) ||
@@ -659,33 +700,6 @@ support_face_result_basic_valid :: proc(
 		overhang_count == faces.overhang_count
 }
 
-support_face_projection_input :: proc(
-	faces: Support_Face_Result,
-	face_index: u32,
-	allocator: mem.Allocator,
-) -> (polygon.Polygon_Set, Support_Demand_Error) {
-	if u64(face_index) >= u64(len(faces.faces)) {
-		return {}, .Invalid_Input
-	}
-	face := faces.faces[face_index]
-	if face.kind != .Downward_Overhang ||
-	   face.point_count != 3 ||
-	   face.point_offset+3 > u64(len(faces.points)) {
-		return {}, .Invalid_Input
-	}
-	result := polygon.Polygon_Set{
-		paths = make([]polygon.Polygon_Path, 1, allocator),
-		points = make([]polygon.Polygon_Point, 3, allocator),
-	}
-	if result.paths == nil || result.points == nil {
-		polygon.polygon_set_destroy(&result, allocator)
-		return {}, .Allocation_Failed
-	}
-	result.paths[0] = {offset = 0, count = 3}
-	start := int(face.point_offset)
-	copy(result.points, faces.points[start:start+3])
-	return result, .None
-}
 
 support_demand_config_valid :: proc(config: Support_Demand_Config) -> bool {
 	fill_valid := config.fill_rule == .Even_Odd ||
@@ -721,15 +735,6 @@ support_demand_bridge_error :: proc(
 	return .Invalid_Input
 }
 
-support_demand_skin_error :: proc(
-	error: Skin_Error,
-) -> Support_Demand_Error {
-	#partial switch error {
-	case .Allocation_Failed: return .Allocation_Failed
-	case .Arithmetic:        return .Arithmetic
-	}
-	return .Provider
-}
 
 support_demand_result_destroy :: proc(
 	result: ^Support_Demand_Result,

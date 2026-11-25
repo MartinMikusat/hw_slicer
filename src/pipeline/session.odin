@@ -968,12 +968,15 @@ stage_solid_paths :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	}
 	s.ironing = features.ironing_paths_generate(
 		s.overlap,
+		s.surfaces,
+		s.model_layer_sets,
 		{
 			enabled      = s.options.ironing_enabled,
 			ironing_type = s.options.ironing_type,
 			spacing_um   = s.options.ironing_spacing_um,
 			flow_percent = s.options.ironing_flow_percent,
 			inset_um     = s.options.ironing_inset_um,
+			nozzle_diameter = s.profile.printer.nozzle_diameter,
 			line_width   = proc_src.nominal_line_width,
 			min_width_um = max_lh,
 			provider     = provider,
@@ -1119,6 +1122,7 @@ stage_supports :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		sup_faces, sf_err := features.support_faces_classify(s.mesh, process, allocator = a)
 		if sf_err != .None {return {stage = "support_faces", detail = fmt.tprintf("support faces error: %v", sf_err)}}
 		defer features.support_face_result_destroy(&sup_faces, a)
+		want_sup_sources := options.evidence_level != .Disabled
 		sup_demand, sd_err := features.support_demand_build(
 			s.schedule,
 			active,
@@ -1128,6 +1132,7 @@ stage_supports :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			provider,
 			{fill_rule = .Non_Zero, join_type = .Miter, miter_limit = 2.0, arc_tolerance = 0.0},
 			allocator = a,
+			record_sources = want_sup_sources,
 		)
 		if sd_err != .None {return {stage = "support_demand", detail = fmt.tprintf("support demand error: %v", sd_err)}}
 		defer features.support_demand_result_destroy(&sup_demand, a)
@@ -1139,6 +1144,7 @@ stage_supports :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 			process,
 			provider,
 			allocator = a,
+			record_sources = want_sup_sources,
 		)
 		if sg_err != .None {return {stage = "support_geometry", detail = fmt.tprintf("support geometry error: %v", sg_err)}}
 		defer features.support_geometry_result_destroy(&sup_geom, a)
@@ -1230,6 +1236,7 @@ stage_path_plan :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		options.inner_perimeters_first,
 		allocator = a,
 		wall_sequence = options.wall_sequence,
+		skip_final_validate = true,
 	)
 	if us_err != .None {return {stage = "unified_sources", detail = fmt.tprintf("unified sources error: %v", us_err)}}
 	defer features.unified_path_source_result_destroy(&u_sources, a)

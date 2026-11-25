@@ -447,8 +447,8 @@ solid_paths_generate :: proc(
 		collapsed_count = collapsed_count,
 	}
 	result.layers = make([]Solid_Path_Layer, len(overlap.layers), allocator)
-	result.paths = make([]Solid_Path, int(path_count), allocator)
-	result.hits = make([]Bridge_Path_Hit, int(path_count*2), allocator)
+	result.paths = features_make_non_zeroed([]Solid_Path, int(path_count), allocator)
+	result.hits = features_make_non_zeroed([]Bridge_Path_Hit, int(path_count*2), allocator)
 	if len(result.layers) > 0 && result.layers == nil ||
 	   path_count > 0 && (result.paths == nil || result.hits == nil) {
 		solid_path_result_destroy(&result, allocator)
@@ -563,7 +563,7 @@ solid_path_scan_boundary_sweep :: proc(
 	line, line_ok := bridge_path_first_scanline(minimum, 0, step)
 	if !line_ok {error = .Arithmetic; return}
 
-	slice.sort_by(edges[:], proc(x, y: Scan_Edge) -> bool {
+	features_fast_sort(edges[:], proc(x, y: Scan_Edge) -> bool {
 		return x.proj_lo < y.proj_lo
 	})
 
@@ -642,9 +642,7 @@ solid_path_scan_boundary_sweep :: proc(
 			error = .Odd_Intersection_Count
 			return
 		}
-		if hit_count > 1 {
-			slice.sort_by(scratch_hits[:], bridge_path_hit_less)
-		}
+		features_fast_sort(scratch_hits[:], bridge_path_hit_less)
 		for hit_index := 0; hit_index < hit_count; hit_index += 2 {
 			first := scratch_hits[hit_index]
 			second := scratch_hits[hit_index+1]

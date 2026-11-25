@@ -13,14 +13,12 @@ SCHEMA_VERSION_TOPOLOGY_HASH :: u32(1)
 SCHEMA_VERSION_PLANAR_OWNERSHIP_HASH :: u32(1)
 SCHEMA_VERSION_REGION_HASH :: u32(2)
 
-fixed_layer_schedule_hash :: proc(
-	schedule: Fixed_Layer_Schedule,
-) -> (contracts.Content_Hash, bool) {
+fixed_layer_schedule_valid :: proc(schedule: Fixed_Layer_Schedule) -> bool {
 	layer_count := len(schedule.layer_z)
 	if layer_count == 0 ||
 	   len(schedule.layer_ids) != layer_count ||
 	   len(schedule.print_z) != layer_count {
-		return {}, false
+		return false
 	}
 	minimum_z := i64(schedule.minimum_z)
 	maximum_z := i64(schedule.maximum_z)
@@ -30,7 +28,7 @@ fixed_layer_schedule_hash :: proc(
 	   first_layer_height <= 0 ||
 	   layer_step <= 0 ||
 	   schedule.first_plane_z != schedule.layer_z[0] {
-		return {}, false
+		return false
 	}
 	schedule_root_id :=
 		contracts.stable_id_root(schedule.request_hash, .Layer)
@@ -48,13 +46,13 @@ fixed_layer_schedule_hash :: proc(
 			   i64(layer_z) >= print_z ||
 			   i64(layer_z) >= maximum_z ||
 			   schedule.layer_ids[layer_index] != expected_id {
-				return {}, false
+				return false
 			}
 			prev_print = print_z
 		}
 	} else {
 		expected_count := fixed_layer_count(minimum_z, maximum_z, first_layer_height, layer_step)
-		if expected_count != i128(layer_count) {return {}, false}
+		if expected_count != i128(layer_count) {return false}
 		for layer_z, layer_index in schedule.layer_z {
 			expected_section, expected_print := fixed_layer_planes(
 				minimum_z,
@@ -71,10 +69,18 @@ fixed_layer_schedule_hash :: proc(
 			   i128(i64(layer_z)) != expected_section ||
 			   i128(i64(schedule.print_z[layer_index])) != expected_print ||
 			   schedule.layer_ids[layer_index] != expected_id {
-				return {}, false
+				return false
 			}
 		}
 	}
+	return true
+}
+
+fixed_layer_schedule_hash :: proc(
+	schedule: Fixed_Layer_Schedule,
+) -> (contracts.Content_Hash, bool) {
+	if !fixed_layer_schedule_valid(schedule) {return {}, false}
+	layer_count := len(schedule.layer_z)
 	hash: contracts.Canonical_Hash
 	contracts.canonical_hash_init(
 		&hash,
@@ -581,13 +587,9 @@ topology_result_hash :: proc(
 	return contracts.canonical_hash_final(&hash), true
 }
 
-region_result_hash :: proc(
-	topology_hash: contracts.Content_Hash,
-	topology: Topology_Result,
-	result: Region_Result,
-) -> (contracts.Content_Hash, bool) {
+region_result_valid :: proc(topology: Topology_Result, result: Region_Result) -> bool {
 	if len(result.layers) != len(topology.layers) {
-		return {}, false
+		return false
 	}
 	expected_contour_offset: u64
 	expected_region_offset: u64
@@ -598,7 +600,7 @@ region_result_hash :: proc(
 		   	u64(len(result.contours)) ||
 		   layer.region_offset+u64(layer.region_count) >
 		   	u64(len(result.regions)) {
-			return {}, false
+			return false
 		}
 		contour_start := int(layer.contour_offset)
 		contour_end := contour_start+int(layer.contour_count)
@@ -606,14 +608,14 @@ region_result_hash :: proc(
 			if u64(contour.path_index) >= u64(len(topology.paths)) ||
 			   topology.paths[contour.path_index].layer_index !=
 			   	u32(layer_index) {
-				return {}, false
+				return false
 			}
 		}
 		region_start := int(layer.region_offset)
 		region_end := region_start+int(layer.region_count)
 		for region in result.regions[region_start:region_end] {
 			if region.layer_index != u32(layer_index) {
-				return {}, false
+				return false
 			}
 		}
 		expected_contour_offset += u64(layer.contour_count)
@@ -621,13 +623,13 @@ region_result_hash :: proc(
 	}
 	if expected_contour_offset != u64(len(result.contours)) ||
 	   expected_region_offset != u64(len(result.regions)) {
-		return {}, false
+		return false
 	}
 	hole_count: u64
 	for contour, contour_index in result.contours {
 		if u64(contour.path_index) >= u64(len(topology.paths)) ||
 		   u64(contour.region_index) >= u64(len(result.regions)) {
-			return {}, false
+			return false
 		}
 		path := topology.paths[contour.path_index]
 		if path.kind != .Loop ||
@@ -646,37 +648,37 @@ region_result_hash :: proc(
 			}) != .None ||
 		   contour.bounds.minimum.x > contour.bounds.maximum.x ||
 		   contour.bounds.minimum.y > contour.bounds.maximum.y {
-			return {}, false
+			return false
 		}
 		if contour.parent_contour == REGION_INVALID_INDEX {
 			if contour.depth != 0 || contour.role != .Outer {
-				return {}, false
+				return false
 			}
 		} else {
 			if u64(contour.parent_contour) >=
 			   	u64(len(result.contours)) ||
 			   contour.parent_contour == u32(contour_index) {
-				return {}, false
+				return false
 			}
 			parent := result.contours[contour.parent_contour]
 			if contour.depth != parent.depth+1 {
-				return {}, false
+				return false
 			}
 		}
 		if contour.depth&1 == 0 {
-			if contour.role != .Outer {return {}, false}
+			if contour.role != .Outer {return false}
 		} else {
-			if contour.role != .Hole {return {}, false}
+			if contour.role != .Hole {return false}
 			hole_count += 1
 		}
 		expected_reverse :=
 			contour.role == .Outer && path.winding == .Negative ||
 			contour.role == .Hole && path.winding == .Positive
 		if contour.reverse_path != expected_reverse {
-			return {}, false
+			return false
 		}
 	}
-	if hole_count != result.hole_count {return {}, false}
+	if hole_count != result.hole_count {return false}
 
 	expected_member_offset: u64
 	previous_outer := REGION_INVALID_INDEX
@@ -687,11 +689,11 @@ region_result_hash :: proc(
 		   	u64(len(result.region_contour_indices)) ||
 		   u64(region.outer_contour_index) >=
 		   	u64(len(result.contours)) {
-			return {}, false
+			return false
 		}
 		if previous_outer != REGION_INVALID_INDEX &&
 		   region.outer_contour_index <= previous_outer {
-			return {}, false
+			return false
 		}
 		previous_outer = region.outer_contour_index
 		outer := result.contours[region.outer_contour_index]
@@ -705,13 +707,13 @@ region_result_hash :: proc(
 				0,
 			) ||
 		   region.bounds != outer.bounds {
-			return {}, false
+			return false
 		}
 		start := int(region.contour_offset)
 		end := start+int(region.contour_count)
 		if result.region_contour_indices[start] !=
 		   region.outer_contour_index {
-			return {}, false
+			return false
 		}
 		expected_area := region_area_magnitude(path.signed_area_2)
 		previous_hole := REGION_INVALID_INDEX
@@ -721,30 +723,40 @@ region_result_hash :: proc(
 			if u64(contour_index) >= u64(len(result.contours)) ||
 			   previous_hole != REGION_INVALID_INDEX &&
 			   	contour_index <= previous_hole {
-				return {}, false
+				return false
 			}
 			previous_hole = contour_index
 			contour := result.contours[contour_index]
 			if contour.role != .Hole ||
 			   contour.region_index != u32(region_index) ||
 			   contour.parent_contour != region.outer_contour_index {
-				return {}, false
+				return false
 			}
 			hole_path := topology.paths[contour.path_index]
 			hole_area := region_area_magnitude(
 				hole_path.signed_area_2,
 			)
-			if hole_area >= expected_area {return {}, false}
+			if hole_area >= expected_area {return false}
 			expected_area -= hole_area
 		}
-		if region.filled_area_2 != expected_area {return {}, false}
+		if region.filled_area_2 != expected_area {return false}
 		expected_member_offset += u64(region.contour_count)
 	}
 	if expected_member_offset !=
 	   u64(len(result.region_contour_indices)) ||
 	   expected_member_offset != u64(len(result.contours)) {
-		return {}, false
+		return false
 	}
+
+	return true
+}
+
+region_result_hash :: proc(
+	topology_hash: contracts.Content_Hash,
+	topology: Topology_Result,
+	result: Region_Result,
+) -> (contracts.Content_Hash, bool) {
+	if !region_result_valid(topology, result) {return {}, false}
 
 	hash: contracts.Canonical_Hash
 	contracts.canonical_hash_init(
