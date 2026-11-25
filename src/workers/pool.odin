@@ -58,7 +58,6 @@ Job :: struct {
 	// Threads other than the caller currently inside `work`, and how many may join.
 	helpers:     int,
 	max_helpers: int,
-	// The caller's assertion handler, so a failure on a pool thread is recorded like one on the caller.
 	assertion_failure_proc: runtime.Assertion_Failure_Proc,
 }
 
