@@ -287,6 +287,7 @@ solid_paths_generate :: proc(
 	Solid_Scan_Par_Ctx :: struct {
 		overlap:        Role_Overlap_Result,
 		boundaries:     []polygon.Polygon_Set,
+		canon_of:       []int,
 		process:        profiles.Resolved_Process_Profile,
 		provider:       polygon.Polygon_Provider,
 		options:        Solid_Path_Options,
@@ -303,6 +304,7 @@ solid_paths_generate :: proc(
 	ssctx := Solid_Scan_Par_Ctx{
 		overlap        = overlap,
 		boundaries     = boundaries,
+		canon_of       = canon_of,
 		process        = process,
 		provider       = provider,
 		options        = options,
@@ -316,21 +318,38 @@ solid_paths_generate :: proc(
 		mask_hit_bufs  = mask_hit_bufs,
 		mask_errors    = mask_errors,
 	}
+	solid_mask_lw_and_concentric :: proc(
+		mask: Role_Overlap_Mask,
+		base_lw, base_spacing: contracts.Micrometres,
+		opts: Solid_Path_Options,
+	) -> (mask_lw, mask_spacing: contracts.Micrometres, use_concentric: bool) {
+		mask_lw = base_lw
+		if mask.layer_index == 0 && i64(opts.first_layer_line_width) > 0 {
+			mask_lw = opts.first_layer_line_width
+		} else if (mask.role == .Top_Skin || mask.role == .Top_Bottom_Skin) && i64(opts.top_surface_line_width) > 0 {
+			mask_lw = opts.top_surface_line_width
+		} else if mask.role == .Bottom_Skin && i64(opts.internal_solid_line_width) > 0 {
+			mask_lw = opts.internal_solid_line_width
+		}
+		mask_spacing = mask_lw if mask_lw != base_lw else base_spacing
+		use_concentric = ((mask.role == .Top_Skin || mask.role == .Top_Bottom_Skin) && opts.top_concentric) ||
+			(mask.role == .Bottom_Skin && opts.bottom_concentric)
+		return
+	}
+	// Pass A (parallel): run scanlines for rectilinear masks, and concentric fill for canonical concentric masks.
 	parallel_for(len(overlap.masks), &ssctx, proc(c: ^Solid_Scan_Par_Ctx, mask_index: int) {
 		mask := c.overlap.masks[mask_index]
 		if !solid_path_role_is_skin(mask.role) || len(c.boundaries[mask_index].paths) == 0 {return}
-		mask_lw := c.line_width
-		if mask.layer_index == 0 && i64(c.options.first_layer_line_width) > 0 {
-			mask_lw = c.options.first_layer_line_width
-		} else if (mask.role == .Top_Skin || mask.role == .Top_Bottom_Skin) && i64(c.options.top_surface_line_width) > 0 {
-			mask_lw = c.options.top_surface_line_width
-		} else if mask.role == .Bottom_Skin && i64(c.options.internal_solid_line_width) > 0 {
-			mask_lw = c.options.internal_solid_line_width
-		}
-		mask_spacing := mask_lw if mask_lw != c.line_width else c.spacing
-		use_concentric := ((mask.role == .Top_Skin || mask.role == .Top_Bottom_Skin) && c.options.top_concentric) ||
-			(mask.role == .Bottom_Skin && c.options.bottom_concentric)
+		mask_lw, mask_spacing, use_concentric := solid_mask_lw_and_concentric(mask, c.line_width, c.spacing, c.options)
 		if use_concentric && c.provider.offset != nil {
+			// Deduplicate identical concentric masks across layers when canonical mask has identical width/spacing.
+			src := c.canon_of[mask_index]
+			if src >= 0 && src != mask_index {
+				src_lw, src_sp, src_conc := solid_mask_lw_and_concentric(c.overlap.masks[src], c.line_width, c.spacing, c.options)
+				if src_conc && src_lw == mask_lw && src_sp == mask_spacing {
+					return // Cloned in Pass B below.
+				}
+			}
 			pbuf, hbuf, ws := solid_path_concentric_fill(
 				c.boundaries[mask_index], mask_spacing, mask_lw,
 				mask, u32(mask_index), c.provider, c.limits, c.allocator,
@@ -362,6 +381,39 @@ solid_paths_generate :: proc(
 		c.mask_paths[mask_index] = u64(len(pbuf))
 		c.mask_scanlines[mask_index] = ws
 	})
+	// Pass B: clone deduplicated concentric masks from their canonical mask in O(N) without re-offsetting.
+	if (options.top_concentric || options.bottom_concentric) && provider.offset != nil {
+		for mask_index in 0..<len(overlap.masks) {
+			src := canon_of[mask_index]
+			if src < 0 || src == mask_index || len(mask_path_bufs[mask_index]) > 0 {continue}
+			mask := overlap.masks[mask_index]
+			if !solid_path_role_is_skin(mask.role) || len(boundaries[mask_index].paths) == 0 {continue}
+			mask_lw, mask_spacing, use_concentric := solid_mask_lw_and_concentric(mask, line_width, spacing, options)
+			if !use_concentric {continue}
+			src_lw, src_sp, src_conc := solid_mask_lw_and_concentric(overlap.masks[src], line_width, spacing, options)
+			if !src_conc || src_lw != mask_lw || src_sp != mask_spacing {continue}
+			src_p := mask_path_bufs[src]
+			src_h := mask_hit_bufs[src]
+			if len(src_p) == 0 {continue}
+			pbuf := make([]Solid_Path, len(src_p), allocator)
+			hbuf := make([]Bridge_Path_Hit, len(src_h), allocator)
+			copy(pbuf, src_p)
+			copy(hbuf, src_h)
+			path_set_id := contracts.stable_id_child(mask.stable_id, .Feature, 0)
+			for &sp, idx in pbuf {
+				sp.stable_id = contracts.stable_id_child(path_set_id, .Path, u64(idx))
+				sp.path_set_id = path_set_id
+				sp.overlap_mask_id = mask.stable_id
+				sp.overlap_mask_index = u32(mask_index)
+				sp.layer_index = mask.layer_index
+				sp.role = mask.role
+			}
+			mask_path_bufs[mask_index] = pbuf
+			mask_hit_bufs[mask_index] = hbuf
+			mask_paths[mask_index] = u64(len(pbuf))
+			mask_scanlines[mask_index] = mask_scanlines[src]
+		}
+	}
 
 	path_count: u64
 	scanline_count: u64
@@ -722,20 +774,22 @@ solid_path_concentric_fill :: proc(
 	hbuf := make([dynamic]Bridge_Path_Hit, 0, 128, allocator)
 	path_set_id := contracts.stable_id_child(mask.stable_id, .Feature, 0)
 	step := max(i64(50), i64(spacing))
+	cur := boundary
+	cur_owned := false
+	defer if cur_owned {polygon.polygon_set_destroy(&cur, allocator)}
 	for ring_idx := u64(0); ring_idx < 512; ring_idx += 1 {
-		cur: polygon.Polygon_Set
-		owned := false
-		if ring_idx == 0 {
-			cur = boundary
-		} else {
-			delta := contracts.Micrometres(-i64(ring_idx) * step)
-			err: polygon.Polygon_Error
-			cur, err = provider.offset(boundary, delta, .Miter, 2.0, 0.0, limits.polygon, allocator)
-			if err != .None || len(cur.paths) == 0 {
+		if ring_idx > 0 {
+			next, err := provider.offset(cur, contracts.Micrometres(-step), .Miter, 2.0, 0.0, limits.polygon, allocator)
+			if cur_owned {
 				polygon.polygon_set_destroy(&cur, allocator)
+				cur_owned = false
+			}
+			if err != .None || len(next.paths) == 0 {
+				polygon.polygon_set_destroy(&next, allocator)
 				break
 			}
-			owned = true
+			cur = next
+			cur_owned = true
 		}
 		ring_count += 1
 		for mp, mpi in cur.paths {
@@ -768,9 +822,6 @@ solid_path_concentric_fill :: proc(
 					hit_offset             = h_off,
 				})
 			}
-		}
-		if owned {
-			polygon.polygon_set_destroy(&cur, allocator)
 		}
 	}
 	return pbuf[:], hbuf[:], ring_count

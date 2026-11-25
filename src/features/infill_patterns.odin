@@ -332,19 +332,21 @@ infill_pattern_generate :: proc(
 					infill_pat_honeycomb(&local_out, boundary, u32(li), min_x, min_y, max_x, max_y, c.S, c.lw, c.out_allocator)
 				case .Concentric:
 					step := max(i64(50), i64(math.round(c.S)))
+					cur := boundary
+					cur_owned := false
 					for ring_idx := i64(0); ring_idx < 512; ring_idx += 1 {
-						cur: polygon.Polygon_Set
-						owned := false
-						if ring_idx == 0 {
-							cur = boundary
-						} else {
-							err: polygon.Polygon_Error
-							cur, err = c.provider.offset(boundary, contracts.Micrometres(-ring_idx * step), .Miter, 2.0, 0.0, polygon.DEFAULT_POLYGON_LIMITS, c.out_allocator)
-							if err != .None || len(cur.paths) == 0 {
+						if ring_idx > 0 {
+							next, err := c.provider.offset(cur, contracts.Micrometres(-step), .Miter, 2.0, 0.0, polygon.DEFAULT_POLYGON_LIMITS, c.out_allocator)
+							if cur_owned {
 								polygon.polygon_set_destroy(&cur, c.out_allocator)
+								cur_owned = false
+							}
+							if err != .None || len(next.paths) == 0 {
+								polygon.polygon_set_destroy(&next, c.out_allocator)
 								break
 							}
-							owned = true
+							cur = next
+							cur_owned = true
 						}
 						for bp in cur.paths {
 							if bp.count < 3 {continue}
@@ -360,8 +362,8 @@ infill_pattern_generate :: proc(
 								line_widths = ws,
 							})
 						}
-						if owned {polygon.polygon_set_destroy(&cur, c.out_allocator)}
 					}
+					if cur_owned {polygon.polygon_set_destroy(&cur, c.out_allocator)}
 				case .Lightning:
 					lb := c.lightning_boxes[li]
 					c_min_x := max(min_x, lb[0])

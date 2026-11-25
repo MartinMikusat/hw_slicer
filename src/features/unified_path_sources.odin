@@ -387,6 +387,17 @@ unified_path_sources_build :: proc(
 				last := seed
 				for {
 					end := chain[len(chain)-1]
+					// Fast path for contiguous polylines/rings (e.g. concentric skin): consecutive
+					// segments on the same scanline/ring that share an endpoint extend in O(1).
+					if last+1 < group_end && !used[last+1-path_start] {
+						nxt := solids.paths[last+1]
+						if nxt.scanline_index == solids.paths[last].scanline_index && nxt.point_a == end {
+							used[last+1-path_start] = true
+							append(&chain, nxt.point_b)
+							last += 1
+							continue
+						}
+					}
 					next_scanline := solids.paths[last].scanline_index+1
 					best := -1
 					best_d: u128
