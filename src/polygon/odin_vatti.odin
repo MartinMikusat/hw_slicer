@@ -18,6 +18,13 @@ foreign {
 		out_pairs: [^]u64,
 		out_cap: i64,
 	) -> i64 ---
+	hw_vatti_snap_strip_pass2 :: proc(
+		st: rawptr,
+		n_st: i64,
+		s_u32: u64,
+		out_pairs: [^]u64,
+		out_cap: i64,
+	) -> i64 ---
 }
 
 @(private = "file")
@@ -1147,9 +1154,35 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 					cursors[s] += 1
 				}
 			}
+			#assert(size_of(RStrip_Entry) == 32)
+			cand_p2 := make_temp_non_zeroed(u64, max(256, n_routed * 2))
 			for s in 0..<n_strips {
 				st := strip_data[offsets[s]:offsets[s + 1]]
 				n_st := len(st)
+				if n_st < 2 {continue}
+				n_cand := hw_vatti_snap_strip_pass2(
+					raw_data(st),
+					i64(n_st),
+					u64(s),
+					raw_data(cand_p2),
+					i64(len(cand_p2)),
+				)
+				if n_cand >= 0 {
+					for ci in 0..<int(n_cand) {
+						pair := cand_p2[ci]
+						ord_i := st[int(u32(pair))]
+						ord_j := st[int(u32(pair >> 32))]
+						i := int(ord_i.meta & 0x00ff_ffff)
+						j := int(ord_j.meta & 0x00ff_ffff)
+						sa := routed[i]
+						sb := routed[j]
+						vatti_maybe_split_flat(&splits, i, sa, i64(ord_j.ax), i64(ord_j.ay))
+						vatti_maybe_split_flat(&splits, i, sa, i64(ord_j.bx), i64(ord_j.by))
+						vatti_maybe_split_flat(&splits, j, sb, i64(ord_i.ax), i64(ord_i.ay))
+						vatti_maybe_split_flat(&splits, j, sb, i64(ord_i.bx), i64(ord_i.by))
+					}
+					continue
+				}
 				s_u32 := u32(s)
 				for ai in 0..<n_st {
 					ord_i := st[ai]

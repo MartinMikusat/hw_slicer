@@ -493,3 +493,143 @@ L_vs_ret:
     ldp     x19, x20, [sp, #16]
     ldp     x29, x30, [sp], #96
     ret
+
+
+// ============================================================================
+// _hw_vatti_snap_strip_pass2
+//
+// Hand-written ARM64 collinear-overlap filter for `vatti_snap_round` Pass 2.
+// Scans all pairs (ai < aj) in `st[0..n_st]` (32-byte RStrip_Entry structs)
+// and emits `(ai | (aj << 32))` ONLY for collinear overlapping pairs (<1%).
+//
+// RStrip_Entry layout (32 bytes, identical to Strip_Entry):
+//   +0  min_x: i32
+//   +4  min_y: i32
+//   +8  max_y: i32
+//   +12 ax:    i32
+//   +16 ay:    i32
+//   +20 bx:    i32
+//   +24 by:    i32
+//   +28 meta:  u32  (idx:24 | s0:6 << 24)
+//
+// Signature:
+//   i64 hw_vatti_snap_strip_pass2(
+//       const RStrip_Entry *st,  // x0
+//       i64 n_st,                // x1
+//       u64 s_u32,               // x2
+//       u64 *out_pairs,          // x3
+//       i64 out_cap              // x4
+//   )
+// Returns:
+//   number of emitted pairs (>= 0), or -1 if out_pairs overflowed.
+// ============================================================================
+.p2align 4
+.globl _hw_vatti_snap_strip_pass2
+_hw_vatti_snap_strip_pass2:
+    stp     x29, x30, [sp, #-80]!
+    mov     x29, sp
+    stp     x19, x20, [sp, #16]
+    stp     x21, x22, [sp, #32]
+    stp     x23, x24, [sp, #48]
+    stp     x25, x26, [sp, #64]
+
+    mov     x5, #0                  // out_count = 0
+    cmp     x1, #2
+    b.lt    L_p2_done
+
+    mov     x6, #0                  // ai = 0
+    mov     x19, x0                 // ptr_i = &st[0]
+
+.p2align 4
+L_p2_ai_loop:
+    add     x7, x6, #1              // aj = ai + 1
+    cmp     x7, x1
+    b.ge    L_p2_done
+
+    ldp     w8, w9, [x19, #4]       // w8 = a.min_y, w9 = a.max_y
+    ldp     w10, w11, [x19, #12]    // w10 = a.ax,   w11 = a.ay
+    ldp     w12, w13, [x19, #20]    // w12 = a.bx,   w13 = a.by
+    ldr     w14, [x19, #28]         // w14 = a.meta
+
+    sxtw    x20, w10                // x20 = a_ax
+    sxtw    x21, w11                // x21 = a_ay
+    sxtw    x12, w12                // x12 = a_bx
+    sxtw    x13, w13                // x13 = a_by
+    sub     x22, x12, x20           // x22 = dax
+    sub     x23, x13, x21           // x23 = day
+
+    cmp     w10, w12
+    csel    w24, w10, w12, ge       // w24 = a_max_x (i32)
+    ubfx    x25, x14, #24, #6       // x25 = i_s0
+    add     x26, x19, #32           // ptr_j = ptr_i + 32
+
+.p2align 4
+L_p2_aj_loop:
+    ldr     w10, [x26, #0]          // b.min_x
+    cmp     w10, w24                // b.min_x > a_max_x ?
+    b.gt    L_p2_next_ai
+    ldp     w11, w12, [x26, #4]     // b.min_y, b.max_y
+    cmp     w12, w8                 // b.max_y < a_min_y ?
+    b.lt    L_p2_next_aj
+    cmp     w11, w9                 // b.min_y > a_max_y ?
+    b.gt    L_p2_next_aj
+
+    ldr     w13, [x26, #28]         // b.meta
+    ubfx    x13, x13, #24, #6       // j_s0
+    cmp     x25, x13
+    csel    x13, x25, x13, ge       // max(i_s0, j_s0)
+    cmp     x13, x2
+    b.ne    L_p2_next_aj
+
+    // Collinearity check 1: dax*(b_ay - a_ay) - day*(b_ax - a_ax) == 0
+    ldp     w10, w11, [x26, #12]    // b.ax, b.ay
+    sxtw    x10, w10
+    sxtw    x11, w11
+    sub     x10, x10, x20           // b_ax - a_ax
+    sub     x11, x11, x21           // b_ay - a_ay
+    mul     x14, x22, x11
+    msub    x14, x23, x10, x14
+    cbnz    x14, L_p2_next_aj
+
+    // Collinearity check 2: dax*(b_by - a_ay) - day*(b_bx - a_ax) == 0
+    ldp     w10, w11, [x26, #20]    // b.bx, b.by
+    sxtw    x10, w10
+    sxtw    x11, w11
+    sub     x10, x10, x20           // b_bx - a_ax
+    sub     x11, x11, x21           // b_by - a_ay
+    mul     x14, x22, x11
+    msub    x14, x23, x10, x14
+    cbnz    x14, L_p2_next_aj
+
+    // Collinear overlap! Emit (ai | (aj << 32))
+    cmp     x5, x4
+    b.ge    L_p2_overflow
+    orr     x14, x6, x7, lsl #32
+    str     x14, [x3, x5, lsl #3]
+    add     x5, x5, #1
+
+L_p2_next_aj:
+    add     x7, x7, #1
+    add     x26, x26, #32
+    cmp     x7, x1
+    b.lt    L_p2_aj_loop
+
+L_p2_next_ai:
+    add     x6, x6, #1
+    add     x19, x19, #32
+    b       L_p2_ai_loop
+
+L_p2_overflow:
+    mov     x0, #-1
+    b       L_p2_ret
+
+L_p2_done:
+    mov     x0, x5
+
+L_p2_ret:
+    ldp     x25, x26, [sp, #64]
+    ldp     x23, x24, [sp, #48]
+    ldp     x21, x22, [sp, #32]
+    ldp     x19, x20, [sp, #16]
+    ldp     x29, x30, [sp], #80
+    ret
