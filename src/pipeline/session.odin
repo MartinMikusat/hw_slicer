@@ -45,8 +45,9 @@ Slice_Session :: struct {
 	profile:           profiles.Resolved_Profiles,
 	// The modifier and layer-list slices of the options belong to the caller and must outlive the
 	// session.
-	options:           Slice_Run_Options,
-	source:            formats.Decoded_Mesh,
+	options:                 Slice_Run_Options,
+	source:                  formats.Decoded_Mesh,
+	consume_source_on_model: bool,
 	// Guards the slots. A run holds it only while a stage changes state, never while it computes.
 	lock:              sync.Mutex,
 	slots:             [Stage_Id]Stage_Slot,
@@ -112,6 +113,29 @@ slice_session_create :: proc(
 	}
 	session_refresh(s)
 	// Metal device creation takes ~29 ms; start it now so it overlaps the CPU stages before Motion.
+	if options.use_gpu {slicer_gpu.metal_warm_up()}
+	return s
+}
+
+// Like `slice_session_create`, but takes ownership of `source` (zeroing the caller's struct) and
+// consumes it in-place during the Model stage, avoiding both full-mesh clones on one-shot runs.
+slice_session_create_owned :: proc(
+	source: ^formats.Decoded_Mesh,
+	profile: profiles.Resolved_Profiles,
+	options: Slice_Run_Options,
+	allocator := context.allocator,
+) -> ^Slice_Session {
+	s := new(Slice_Session, allocator)
+	s.allocator = allocator
+	s.source = source^
+	source^ = {}
+	s.consume_source_on_model = true
+	s.profile = profile
+	s.options = options
+	if len(options.object_name) > 0 {
+		s.options.object_name = strings.clone(options.object_name, allocator)
+	}
+	session_refresh(s)
 	if options.use_gpu {slicer_gpu.metal_warm_up()}
 	return s
 }
@@ -533,7 +557,19 @@ spine_error :: proc(err: Slice_Spine_Error) -> Slice_Run_Error {
 @(private = "file")
 stage_model :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	a := s.allocator
-	work := decoded_mesh_clone(s.source, a)
+	work: formats.Decoded_Mesh
+	if s.consume_source_on_model {
+		work = s.source
+		// Keep value-type source metadata (`s.source.source` / `source_root_id`) for downstream
+		// request hashing while transferring ownership of the 9 mesh slices into `work`.
+		s.source = {
+			source         = work.source,
+			source_root_id = work.source_root_id,
+		}
+		s.consume_source_on_model = false
+	} else {
+		work = decoded_mesh_clone(s.source, a)
+	}
 	defer formats.decoded_mesh_destroy(&work, a)
 	s.mesh_repair_stats = {}
 	if s.options.mesh_auto_repair {

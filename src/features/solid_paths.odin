@@ -108,12 +108,6 @@ solid_paths_generate :: proc(
 	if len(overlap.masks) > 0 && boundaries == nil {
 		return {}, .Allocation_Failed
 	}
-	defer {
-		for &boundary in boundaries {
-			polygon.polygon_set_destroy(&boundary, allocator)
-		}
-		delete(boundaries, allocator)
-	}
 	// Skin connectors may leave the scan boundary by up to a quarter line width.
 	connector_boundaries := make([]polygon.Polygon_Set, len(overlap.masks), allocator)
 	connector_inset := contracts.Micrometres(max(i64(0), i64(boundary_inset) - i64(line_width)/4))
@@ -134,6 +128,11 @@ solid_paths_generate :: proc(
 	canon_of := make([]int, mask_count, allocator)
 	unique_masks := make([dynamic]int, 0, mask_count, allocator)
 	defer {
+		for &boundary, bi in boundaries {
+			if canon_of[bi] != bi {continue}
+			polygon.polygon_set_destroy(&boundary, allocator)
+		}
+		delete(boundaries, allocator)
 		for &inp in mask_inputs {polygon.polygon_set_destroy(&inp, allocator)}
 		delete(mask_inputs, allocator)
 		delete(canon_of, allocator)
@@ -236,10 +235,11 @@ solid_paths_generate :: proc(
 		src := canon_of[mi]
 		if src < 0 || src == mi {continue}
 		if len(boundaries[src].paths) > 0 {
-			ok1, ok2: bool
-			boundaries[mi], ok1 = skin_polygon_clone(boundaries[src], allocator)
+			// Share read-only local `boundaries` slice header (only canonical entries are destroyed).
+			boundaries[mi] = boundaries[src]
+			ok2: bool
 			connector_boundaries[mi], ok2 = skin_polygon_clone(connector_boundaries[src], allocator)
-			if !ok1 || !ok2 {return {}, .Allocation_Failed}
+			if !ok2 {return {}, .Allocation_Failed}
 		}
 	}
 

@@ -43,33 +43,32 @@ motion_plan_fit_arcs :: proc(
 	max_err := config.max_chord_error_um
 	if max_err <= 0 {max_err = 20.0}
 
-	// Layers are fitted independently on the worker threads. Fitting only merges operations, so
-	// each layer writes its result into its own input range of `scratch`; the ranges are then
-	// compacted in layer order. The result does not depend on the thread count.
+	// Layers are fitted independently on the worker threads. Fitting only merges (>=3 -> 1)
+	// operations, so `write <= cursor` holds throughout and each layer compacts in-place into its
+	// own disjoint `[op_start:op_end]` range of `motion.operations` with zero scratch allocation.
 	Fit_Context :: struct {
-		motion:   ^Motion_Plan_Result,
-		printer:  profiles.Printer_Profile,
-		config:   Arc_Fit_Config,
-		min_segs: int,
-		max_err:  f64,
-		scratch:  []Motion_Operation,
-		produced: []int,
-		stats:    []Arc_Fit_Stats,
+		motion:     ^Motion_Plan_Result,
+		printer:    profiles.Printer_Profile,
+		config:     Arc_Fit_Config,
+		min_segs:   int,
+		max_err:    f64,
+		produced:   []int,
+		ext_counts: []u64,
+		stats:      []Arc_Fit_Stats,
 	}
+	_ = allocator
+	produced := make([]int, len(motion.layers), context.temp_allocator)
+	ext_counts := make([]u64, len(motion.layers), context.temp_allocator)
+	layer_stats_buf := make([]Arc_Fit_Stats, len(motion.layers), context.temp_allocator)
 	fit_ctx := Fit_Context{
-		motion   = motion,
-		printer  = printer,
-		config   = config,
-		min_segs = min_segs,
-		max_err  = max_err,
-		scratch  = features_make_non_zeroed([]Motion_Operation, len(motion.operations), allocator),
-		produced = make([]int, len(motion.layers), allocator),
-		stats    = make([]Arc_Fit_Stats, len(motion.layers), allocator),
-	}
-	defer {
-		delete(fit_ctx.scratch, allocator)
-		delete(fit_ctx.produced, allocator)
-		delete(fit_ctx.stats, allocator)
+		motion     = motion,
+		printer    = printer,
+		config     = config,
+		min_segs   = min_segs,
+		max_err    = max_err,
+		produced   = produced,
+		ext_counts = ext_counts,
+		stats      = layer_stats_buf,
 	}
 	parallel_for(len(motion.layers), &fit_ctx, proc(c: ^Fit_Context, layer_index: int) {
 		operations := c.motion.operations
@@ -78,13 +77,15 @@ motion_plan_fit_arcs :: proc(
 		op_end := op_start + int(layer.operation_count)
 		write := op_start
 		stats := &c.stats[layer_index]
+		ext_cnt: u64
 
 		i := op_start
 		for i < op_end {
 			op0 := operations[i]
 			if op0.kind != .Extrude || op0.arc != .None || op0.z_offset_um != 0 ||
 			   op0.role == .Sparse_Infill || op0.role == .Support || op0.role == .Support_Interface {
-				c.scratch[write] = op0
+				if write != i {operations[write] = op0}
+				if op0.kind == .Extrude {ext_cnt += 1}
 				write += 1
 				i += 1
 				continue
@@ -109,10 +110,15 @@ motion_plan_fit_arcs :: proc(
 
 			run_len := run_end - i
 			if run_len < c.min_segs {
-				for k in i..<run_end {
-					c.scratch[write] = operations[k]
-					write += 1
+				if write != i {
+					for k in i..<run_end {
+						operations[write] = operations[k]
+						write += 1
+					}
+				} else {
+					write += run_len
 				}
+				ext_cnt += u64(run_len)
 				i = run_end
 				continue
 			}
@@ -158,20 +164,23 @@ motion_plan_fit_arcs :: proc(
 					}
 					merged.filament_delta_nm = total_e
 					merged.duration_us = total_dur
-					c.scratch[write] = merged
+					operations[write] = merged
 					write += 1
+					ext_cnt += 1
 					stats.arcs_fitted += 1
 					stats.segments_replaced += u64(best_end - cursor)
 					cursor = best_end
 				} else {
-					c.scratch[write] = operations[cursor]
+					if write != cursor {operations[write] = operations[cursor]}
 					write += 1
+					ext_cnt += 1
 					cursor += 1
 				}
 			}
 			i = run_end
 		}
 		c.produced[layer_index] = write - op_start
+		c.ext_counts[layer_index] = ext_cnt
 	})
 
 	stats := Arc_Fit_Stats{}
@@ -181,55 +190,21 @@ motion_plan_fit_arcs :: proc(
 	}
 	if stats.arcs_fitted == 0 {return stats}
 
-	total := 0
-	for count in fit_ctx.produced {total += count}
-	new_ops := features_make_non_zeroed([]Motion_Operation, total, allocator)
-	old_offsets := make([]int, len(motion.layers), allocator)
-	defer delete(old_offsets, allocator)
+	// Compact layer ranges in-place (write <= old_start always holds; Odin's copy handles overlap).
 	write := 0
+	ext_count: u64
 	for &layer, layer_index in motion.layers {
-		old_offsets[layer_index] = int(layer.operation_offset)
+		old_start := int(layer.operation_offset)
 		count := fit_ctx.produced[layer_index]
+		if write != old_start && count > 0 {
+			copy(motion.operations[write:write + count], motion.operations[old_start:old_start + count])
+		}
 		layer.operation_offset = u64(write)
 		layer.operation_count = u32(count)
 		write += count
+		ext_count += fit_ctx.ext_counts[layer_index]
 	}
-	assert(write == len(new_ops))
-
-	Compact_Ctx :: struct {
-		layers:      []Motion_Layer,
-		old_offsets: []int,
-		scratch:     []Motion_Operation,
-		new_ops:     []Motion_Operation,
-		ext_counts:  []u64,
-	}
-	ext_counts := make([]u64, len(motion.layers), allocator)
-	defer delete(ext_counts, allocator)
-	compact_ctx := Compact_Ctx{
-		layers      = motion.layers,
-		old_offsets = old_offsets,
-		scratch     = fit_ctx.scratch,
-		new_ops     = new_ops,
-		ext_counts  = ext_counts,
-	}
-	parallel_for(len(motion.layers), &compact_ctx, proc(c: ^Compact_Ctx, layer_index: int) {
-		layer := c.layers[layer_index]
-		old_start := c.old_offsets[layer_index]
-		new_start := int(layer.operation_offset)
-		count := int(layer.operation_count)
-		src := c.scratch[old_start:old_start + count]
-		dst := c.new_ops[new_start:new_start + count]
-		copy(dst, src)
-		cnt: u64
-		for op in src {
-			if op.kind == .Extrude {cnt += 1}
-		}
-		c.ext_counts[layer_index] = cnt
-	})
-	delete(motion.operations, allocator)
-	motion.operations = new_ops
-	ext_count: u64
-	for c in ext_counts {ext_count += c}
+	motion.operations = motion.operations[:write]
 	motion.extrusion_count = ext_count
 	return stats
 }

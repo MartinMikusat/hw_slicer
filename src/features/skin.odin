@@ -529,22 +529,20 @@ skins_propagate :: proc(
 	for ui in unique_regions {
 		if region_errors[ui] != .None {return {}, region_errors[ui]}
 		filtered_source_count += region_filtered[ui]
+		// Drop sub-micrometre rounding slivers on canonical regions once.
+		if !config.skip_source_filtering {
+			for kind_index in 0..<3 {
+				oi := ui*3 + kind_index
+				if len(outputs[oi].paths) > 0 && len(output_sources[oi]) == 0 {
+					polygon.polygon_set_destroy(&outputs[oi], allocator)
+				}
+			}
+		}
 	}
-	// Clone canonical outputs to deduplicated sibling regions.
 	for r_idx in 0..<region_count {
 		src := canon_of[r_idx]
-		if src == r_idx {continue}
-		filtered_source_count += region_filtered[src]
-		for kind_index in 0..<3 {
-			src_out := outputs[src*3 + kind_index]
-			if len(src_out.paths) > 0 {
-				ok: bool
-				outputs[r_idx*3 + kind_index], ok = skin_polygon_clone(src_out, allocator)
-				if !ok {return {}, .Allocation_Failed}
-			}
-			if !config.skip_source_filtering && len(output_sources[src*3 + kind_index]) > 0 {
-				append(&output_sources[r_idx*3 + kind_index], ..output_sources[src*3 + kind_index][:])
-			}
+		if src != r_idx {
+			filtered_source_count += region_filtered[src]
 		}
 	}
 
@@ -552,34 +550,33 @@ skins_propagate :: proc(
 	total_paths: u64
 	total_points: u64
 	total_source_references: u64
-	for &output, output_index in outputs {
-		if len(output.paths) == 0 {continue}
-		if !config.skip_source_filtering && len(output_sources[output_index]) == 0 {
-			// Drop sub-micrometre rounding slivers that do not intersect any source surface.
-			polygon.polygon_set_destroy(&output, allocator)
-			continue
+	for r_idx in 0..<region_count {
+		src := canon_of[r_idx]
+		for kind_index in 0..<3 {
+			oi := src*3 + kind_index
+			output := outputs[oi]
+			if len(output.paths) == 0 {continue}
+			total_masks += 1
+			if total_masks > limits.max_masks {
+				return {}, .Mask_Limit
+			}
+			if total_paths > limits.max_paths ||
+			   u64(len(output.paths)) > limits.max_paths-total_paths {
+				return {}, .Path_Limit
+			}
+			if total_points > limits.max_points ||
+			   u64(len(output.points)) > limits.max_points-total_points {
+				return {}, .Point_Limit
+			}
+			if total_source_references > limits.max_source_references ||
+			   u64(len(output_sources[oi])) >
+			   	limits.max_source_references-total_source_references {
+				return {}, .Source_Reference_Limit
+			}
+			total_paths += u64(len(output.paths))
+			total_points += u64(len(output.points))
+			total_source_references += u64(len(output_sources[oi]))
 		}
-		total_masks += 1
-		if total_masks > limits.max_masks {
-			return {}, .Mask_Limit
-		}
-		if total_paths > limits.max_paths ||
-		   u64(len(output.paths)) > limits.max_paths-total_paths {
-			return {}, .Path_Limit
-		}
-		if total_points > limits.max_points ||
-		   u64(len(output.points)) > limits.max_points-total_points {
-			return {}, .Point_Limit
-		}
-		if total_source_references > limits.max_source_references ||
-		   u64(len(output_sources[output_index])) >
-		   	limits.max_source_references-total_source_references {
-			return {}, .Source_Reference_Limit
-		}
-		total_paths += u64(len(output.paths))
-		total_points += u64(len(output.points))
-		total_source_references +=
-			u64(len(output_sources[output_index]))
 	}
 	if total_masks > u64(max(int)) ||
 	   total_paths > u64(max(int)) ||
@@ -623,8 +620,9 @@ skins_propagate :: proc(
 		region_start := int(layer.region_offset)
 		region_end := region_start+int(layer.region_count)
 		for region_index in region_start..<region_end {
+			src_region := canon_of[region_index]
 			for kind_index in 0..<3 {
-				output_index := region_index*3+kind_index
+				output_index := src_region*3+kind_index
 				output := outputs[output_index]
 				if len(output.paths) == 0 {continue}
 				kind := Skin_Kind(kind_index+1)

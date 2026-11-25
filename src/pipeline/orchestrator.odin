@@ -427,7 +427,19 @@ slice_run_bytes :: proc(
 	defer formats.decoded_mesh_destroy(&decoded, allocator)
 	opts := options
 	opts.source_units = units
-	return slice_run_decoded_mesh(&decoded, profile, opts, allocator)
+	session := slice_session_create_owned(&decoded, profile, opts, allocator)
+	defer slice_session_destroy(session)
+	run_err := slice_session_run_all(session)
+	if len(run_err.stage) > 0 {return {}, run_err}
+	evidence_bytes: []u8
+	if opts.evidence_level != .Disabled {
+		ev_err: Slice_Run_Error
+		evidence_bytes, ev_err = slice_session_export_evidence_bundle(session, opts.evidence_level, allocator)
+		if len(ev_err.stage) > 0 {return {}, ev_err}
+	}
+	res := slice_session_take_result(session)
+	res.evidence_bundle_bytes = evidence_bytes
+	return res, {}
 }
 
 slice_run_decoded_mesh :: proc(
