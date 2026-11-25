@@ -201,6 +201,8 @@ infill_pattern_generate :: proc(
 	parallel_for(len(unique_preps), &pctx, proc(c: ^Infill_Prep_Ctx, ui: int) {
 		ri := c.unique_preps[ui]
 		li := int(c.regions.regions[ri].layer_index)
+		has_exclude := li < len(c.exclude) && len(c.exclude[li].paths) > 0
+		off_alloc := workers.scratch_allocator() if has_exclude else c.allocator
 		boundary, off_err := c.provider.offset(
 			c.region_inputs[ri],
 			-c.boundary_inset,
@@ -208,13 +210,13 @@ infill_pattern_generate :: proc(
 			2.0,
 			0.0,
 			polygon.DEFAULT_POLYGON_LIMITS,
-			c.allocator,
+			off_alloc,
 		)
 		if off_err != .None || len(boundary.paths) == 0 {
-			polygon.polygon_set_destroy(&boundary, c.allocator)
+			if !has_exclude {polygon.polygon_set_destroy(&boundary, c.allocator)}
 			return
 		}
-		if li < len(c.exclude) && len(c.exclude[li].paths) > 0 {
+		if has_exclude {
 			sparse, diff_err := c.provider.boolean(
 				boundary,
 				c.exclude[li],
@@ -223,7 +225,6 @@ infill_pattern_generate :: proc(
 				polygon.DEFAULT_POLYGON_LIMITS,
 				c.allocator,
 			)
-			polygon.polygon_set_destroy(&boundary, c.allocator)
 			if diff_err != .None || len(sparse.paths) == 0 {
 				polygon.polygon_set_destroy(&sparse, c.allocator)
 				return

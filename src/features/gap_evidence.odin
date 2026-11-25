@@ -7,6 +7,7 @@ import contracts "../contracts"
 import geometry "../geometry"
 import polygon "../polygon"
 import slicing "../slicing"
+import workers "../workers"
 
 Gap_Evidence_Kind :: enum u8 {
 	Invalid,
@@ -599,7 +600,8 @@ gap_evidence_process_region :: proc(
 			}
 		}
 		if all_single {
-			innermost, in_err := gap_perimeter_group_input(perimeters, u32(group_end - 1), allocator)
+			scratch := workers.scratch_allocator()
+			innermost, in_err := gap_perimeter_group_input(perimeters, u32(group_end - 1), scratch)
 			if in_err == .None {
 				residual_fast, off_err := provider.offset(
 					innermost,
@@ -610,7 +612,6 @@ gap_evidence_process_region :: proc(
 					limits.polygon,
 					allocator,
 				)
-				polygon.polygon_set_destroy(&innermost, allocator)
 				if off_err == .None {
 					polygon.polygon_set_destroy(&region_input, allocator)
 					output_offset := region_index * 6
@@ -623,23 +624,25 @@ gap_evidence_process_region :: proc(
 	}
 	if config.uncovered_only {
 		// Sequential shrinking subtraction: residual = (((region_input \ b0) \ b1) ... \ b_{N-1}).
-		// Avoids growing multi-ring coverage unions and exits immediately once residual is empty.
+		// All intermediate offsets and bands live on the thread-local scratch arena (reclaimed per iteration).
+		scratch := workers.scratch_allocator()
 		residual := region_input
+		residual_on_heap := true
 		for group_index in group_start..<group_end {
 			group := perimeters.groups[group_index]
 			if group.region_index != u32(region_index) ||
 			   group.region_id != region.stable_id {
-				polygon.polygon_set_destroy(&residual, allocator)
+				if residual_on_heap {polygon.polygon_set_destroy(&residual, allocator)}
 				return .Invalid_Input
 			}
 			if group.path_count == 0 || len(residual.paths) == 0 {continue}
 			centerlines, centerline_error := gap_perimeter_group_input(
 				perimeters,
 				u32(group_index),
-				allocator,
+				scratch,
 			)
 			if centerline_error != .None {
-				polygon.polygon_set_destroy(&residual, allocator)
+				if residual_on_heap {polygon.polygon_set_destroy(&residual, allocator)}
 				return centerline_error
 			}
 			outer, outer_error := provider.offset(
@@ -649,7 +652,7 @@ gap_evidence_process_region :: proc(
 				config.miter_limit,
 				config.arc_tolerance,
 				limits.polygon,
-				allocator,
+				scratch,
 			)
 			inner, inner_error := provider.offset(
 				centerlines,
@@ -658,13 +661,10 @@ gap_evidence_process_region :: proc(
 				config.miter_limit,
 				config.arc_tolerance,
 				limits.polygon,
-				allocator,
+				scratch,
 			)
-			polygon.polygon_set_destroy(&centerlines, allocator)
 			if outer_error != .None || inner_error != .None {
-				polygon.polygon_set_destroy(&outer, allocator)
-				polygon.polygon_set_destroy(&inner, allocator)
-				polygon.polygon_set_destroy(&residual, allocator)
+				if residual_on_heap {polygon.polygon_set_destroy(&residual, allocator)}
 				return .Provider
 			}
 			band: polygon.Polygon_Set
@@ -678,18 +678,14 @@ gap_evidence_process_region :: proc(
 					.Difference,
 					config.fill_rule,
 					limits.polygon,
-					allocator,
+					scratch,
 				)
-				polygon.polygon_set_destroy(&outer, allocator)
-				polygon.polygon_set_destroy(&inner, allocator)
 				if band_error != .None {
-					polygon.polygon_set_destroy(&band, allocator)
-					polygon.polygon_set_destroy(&residual, allocator)
+					if residual_on_heap {polygon.polygon_set_destroy(&residual, allocator)}
 					return .Provider
 				}
 			}
 			if len(band.paths) == 0 {
-				polygon.polygon_set_destroy(&band, allocator)
 				continue
 			}
 			next_residual, diff_error := provider.boolean(
@@ -698,15 +694,23 @@ gap_evidence_process_region :: proc(
 				.Difference,
 				config.fill_rule,
 				limits.polygon,
-				allocator,
+				scratch,
 			)
-			polygon.polygon_set_destroy(&band, allocator)
-			polygon.polygon_set_destroy(&residual, allocator)
+			if residual_on_heap {
+				polygon.polygon_set_destroy(&residual, allocator)
+				residual_on_heap = false
+			}
 			if diff_error != .None {
-				polygon.polygon_set_destroy(&next_residual, allocator)
 				return .Provider
 			}
 			residual = next_residual
+		}
+		if !residual_on_heap && len(residual.paths) > 0 {
+			cloned, clone_ok := skin_polygon_clone(residual, allocator)
+			if !clone_ok {return .Allocation_Failed}
+			residual = cloned
+		} else if !residual_on_heap {
+			residual = {}
 		}
 		output_offset := region_index * 6
 		outputs[output_offset + 1] = residual

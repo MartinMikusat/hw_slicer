@@ -20,6 +20,7 @@ import polygon "../polygon"
 import profiles "../profiles"
 import repair "../repair"
 import slicing "../slicing"
+import workers "../workers"
 
 Stage_Slot :: struct {
 	state:           Stage_State,
@@ -267,7 +268,8 @@ Stage_Job :: struct {
 
 @(private = "file")
 session_stage_thread :: proc(t: ^thread.Thread) {
-	// A thread started with a context gets its own temporary arena but must free it itself.
+	// A thread started with a context gets its own temporary arena and worker scratch arena; free both on exit.
+	defer workers.scratch_destroy()
 	defer if context.temp_allocator.procedure == runtime.default_temp_allocator_proc {
 		runtime.default_temp_allocator_destroy(auto_cast context.temp_allocator.data)
 	}

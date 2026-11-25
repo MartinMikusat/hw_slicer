@@ -4,6 +4,7 @@ import "core:mem"
 
 import contracts "../contracts"
 import polygon "../polygon"
+import workers "../workers"
 
 // Solid bands that keep the shell thick under sloped surfaces (Orca and PrusaSlicer
 // "ensure vertical shell thickness"). With L_k the outline of layer k and I_k the area inside its
@@ -226,6 +227,8 @@ vertical_shell_band :: proc(
 	if last < first {return {}}
 	if first < 0 || last >= len(layers) {return clone(inner[li], allocator)}
 	// Pieces covering [first, last]: pairs (k, k+1) and, for an odd count, the last single layer.
+	// Intermediate intersections live on the thread-local scratch arena (reclaimed per iteration).
+	scratch := workers.scratch_allocator()
 	covered: polygon.Polygon_Set
 	have := false
 	k := first
@@ -233,24 +236,20 @@ vertical_shell_band :: proc(
 		piece := pair[k] if k + 1 <= last else layers[k]
 		k += 2 if k + 1 <= last else 1
 		if len(piece.paths) == 0 {
-			polygon.polygon_set_destroy(&covered, allocator)
 			return clone(inner[li], allocator)
 		}
 		if !have {
-			covered = clone(piece, allocator)
+			covered = piece
 			have = true
 			continue
 		}
-		next, err := provider.boolean(covered, piece, .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, allocator)
-		polygon.polygon_set_destroy(&covered, allocator)
+		next, err := provider.boolean(covered, piece, .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, scratch)
 		if err != .None {
-			polygon.polygon_set_destroy(&next, allocator)
 			return clone(inner[li], allocator)
 		}
 		covered = next
 		if len(covered.paths) == 0 {return clone(inner[li], allocator)}
 	}
-	defer polygon.polygon_set_destroy(&covered, allocator)
 	band, err := provider.boolean(inner[li], covered, .Difference, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, allocator)
 	if err != .None {
 		polygon.polygon_set_destroy(&band, allocator)
@@ -271,30 +270,28 @@ vertical_shell_regularize :: proc(
 	allocator: mem.Allocator,
 ) -> polygon.Polygon_Set {
 	if len(band.paths) == 0 {return {}}
+	scratch := workers.scratch_allocator()
 	r_open := 0.5 * 0.65 * spacing
 	r_close := 0.5 * 1.2 * spacing
 	r_overlap := 0.2 * spacing
-	step :: proc(set: polygon.Polygon_Set, d: f64, provider: polygon.Polygon_Provider, allocator: mem.Allocator) -> (polygon.Polygon_Set, bool) {
-		out, err := provider.offset(set, contracts.Micrometres(i64(d)), .Square, 2.0, 0.0, polygon.DEFAULT_POLYGON_LIMITS, allocator)
+	step :: proc(set: polygon.Polygon_Set, d: f64, provider: polygon.Polygon_Provider, alloc: mem.Allocator) -> (polygon.Polygon_Set, bool) {
+		out, err := provider.offset(set, contracts.Micrometres(i64(d)), .Square, 2.0, 0.0, polygon.DEFAULT_POLYGON_LIMITS, alloc)
 		if err != .None {
-			polygon.polygon_set_destroy(&out, allocator)
 			return {}, false
 		}
 		return out, true
 	}
-	a, ok_a := step(band, -r_open, provider, allocator)
-	if !ok_a || len(a.paths) == 0 {return a}
-	b, ok_b := step(a, r_open + r_close, provider, allocator)
-	polygon.polygon_set_destroy(&a, allocator)
+	a, ok_a := step(band, -r_open, provider, scratch)
+	if !ok_a || len(a.paths) == 0 {return {}}
+	b, ok_b := step(a, r_open + r_close, provider, scratch)
 	if !ok_b {return {}}
-	c, ok_c := step(b, -(r_close - r_overlap), provider, allocator)
-	polygon.polygon_set_destroy(&b, allocator)
-	if !ok_c || len(c.paths) == 0 {return c}
+	c, ok_c := step(b, -(r_close - r_overlap), provider, scratch)
+	if !ok_c || len(c.paths) == 0 {return {}}
 
 	// Drop small pieces. Holes are kept only inside a kept outer path.
 	small_area_2 := 2.0 * spacing * 1500.0
 	wrapped_area_2 := 2.0 * spacing * 8000.0
-	keep := make([]bool, len(c.paths), context.temp_allocator)
+	keep := make([]bool, len(c.paths), scratch)
 	for path, pi in c.paths {
 		ring := c.points[path.offset:path.offset+path.count]
 		area := f64(polygon.polygon_path_area_2(ring))
@@ -302,9 +299,8 @@ vertical_shell_regularize :: proc(
 		drop := area < small_area_2
 		if !drop && area < wrapped_area_2 && len(object_volume.paths) > 0 {
 			piece := polygon.Polygon_Set{points = ring, paths = []polygon.Polygon_Path{{offset = 0, count = path.count}}}
-			outside, err := provider.boolean(piece, object_volume, .Difference, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, allocator)
+			outside, err := provider.boolean(piece, object_volume, .Difference, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, scratch)
 			drop = err == .None && len(outside.paths) == 0
-			polygon.polygon_set_destroy(&outside, allocator)
 		}
 		keep[pi] = !drop
 	}
@@ -322,21 +318,17 @@ vertical_shell_regularize :: proc(
 			}
 		}
 	}
-	kept_points := make([dynamic]polygon.Polygon_Point, 0, len(c.points), allocator)
-	kept_paths := make([dynamic]polygon.Polygon_Path, 0, len(c.paths), allocator)
+	kept_points := make([dynamic]polygon.Polygon_Point, 0, len(c.points), scratch)
+	kept_paths := make([dynamic]polygon.Polygon_Path, 0, len(c.paths), scratch)
 	for path, pi in c.paths {
 		if !keep[pi] {continue}
 		append(&kept_paths, polygon.Polygon_Path{offset = u64(len(kept_points)), count = path.count})
 		append(&kept_points, ..c.points[path.offset:path.offset+path.count])
 	}
-	polygon.polygon_set_destroy(&c, allocator)
 	if len(kept_paths) == 0 {
-		delete(kept_points)
-		delete(kept_paths)
 		return {}
 	}
 	kept := polygon.Polygon_Set{points = kept_points[:], paths = kept_paths[:]}
-	defer polygon.polygon_set_destroy(&kept, allocator)
 	final, err := provider.boolean(kept, inner, .Intersection, .Non_Zero, polygon.DEFAULT_POLYGON_LIMITS, allocator)
 	if err != .None {
 		polygon.polygon_set_destroy(&final, allocator)
