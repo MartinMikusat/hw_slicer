@@ -30,6 +30,14 @@ Follow the shared visual rules in `../hw_delta_support/DESIGN.md` for applicable
 
 The project aims for the highest possible performance in every part. Record every identified optimization in the [optimization ledger](docs/optimization-ledger.md) with its measured or estimated gain. A small gain or a high cost orders an optimization later; it is not a reason to drop it. Reject an optimization only when evidence shows it cannot pay off, and record that evidence in the ledger.
 
+## OrcaSlicer Output Comparison
+
+After changes to slicing geometry, infill/skin, supports/adhesion, path planning, motion, or profile options, compare both output geometry and speed against the local OrcaSlicer CLI:
+
+- `./scripts/orca-compare.py --suite=core --build` checks layer count, max Z, body XY span, net filament, extrude/travel lengths, retractions, G2/G3 arcs, estimated print time, Z-layer filament correlation (`r`), and 2D silhouette IoU on the core models.
+- Pass `--scenarios` (or `--scenario=<name>`) to compare feature-enabled presets (`default`, `quality_speed`, `ironing`, `concentric_combing`, `supports_adhesion`, `raft_fuzzy`). Pass `--strict` to exit non-zero on warnings.
+- `./slice-benchmark.sh --suite=core --compare-orca` runs the speed benchmark and includes the G-code output comparison in the same report.
+
 ## Pipeline workspace
 
 For pipeline workspace design and development priorities, follow [TODO.md](TODO.md).

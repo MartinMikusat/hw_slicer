@@ -6,6 +6,8 @@ and print time) between hw_slicer and OrcaSlicer 2.5.1 using matched settings.
 Usage:
   ./scripts/orca-compare.py --model=resources/models/benchy.stl
   ./scripts/orca-compare.py --suite=core [--out-json=/tmp/orca_cmp.json]
+  ./scripts/orca-compare.py --model=resources/models/benchy.stl --scenarios
+  ./scripts/orca-compare.py --suite=core --scenario=default --scenario=concentric_combing --strict
 """
 
 import argparse
@@ -20,6 +22,89 @@ import time
 from collections import defaultdict
 
 ORCA_BIN = "/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer"
+
+SCENARIOS = {
+    "default": {
+        "hw_set": [],
+        "orca_set": {},
+        "relaxed_geometry": False,
+    },
+    "quality_speed": {
+        "hw_set": [
+            "variable_walls_enabled=true",
+            "wall_sequence=inner_outer_inner",
+            "seam_gap=10",
+            "overhang_slowdown=true",
+            "bridge_flow=0.95",
+        ],
+        "orca_set": {
+            "wall_generator": "arachne",
+            "wall_sequence": "inner-outer-inner wall",
+            "seam_gap": "10%",
+            "slow_down_for_overhangs": "1",
+            "bridge_flow": "0.95",
+        },
+        "relaxed_geometry": False,
+    },
+    "ironing": {
+        "hw_set": [
+            "ironing_type=top",
+            "ironing_spacing=0.1",
+        ],
+        "orca_set": {
+            "ironing_type": "top",
+            "ironing_spacing": "0.1",
+        },
+        "relaxed_geometry": False,
+    },
+    "concentric_combing": {
+        "hw_set": [
+            "top_surface_pattern=concentric",
+            "bottom_surface_pattern=concentric",
+            "infill_pattern=cubic",
+            "reduce_crossing_wall=true",
+        ],
+        "orca_set": {
+            "top_surface_pattern": "concentric",
+            "bottom_surface_pattern": "concentric",
+            "sparse_infill_pattern": "cubic",
+            "reduce_crossing_wall": "1",
+        },
+        "relaxed_geometry": False,
+    },
+    "supports_adhesion": {
+        "hw_set": [
+            "enable_supports=true",
+            "support_style=tree",
+            "brim_type=outer_only",
+            "brim_width=5",
+            "draft_shield=true",
+        ],
+        "orca_set": {
+            "enable_support": "1",
+            "support_type": "tree(auto)",
+            "brim_type": "outer_only",
+            "brim_width": "5",
+            "draft_shield": "enabled",
+        },
+        "relaxed_geometry": True,
+    },
+    "raft_fuzzy": {
+        "hw_set": [
+            "raft_layers=2",
+            "fuzzy_skin=contour",
+            "fuzzy_skin_thickness=0.3",
+            "fuzzy_skin_point_distance=0.8",
+        ],
+        "orca_set": {
+            "raft_layers": "2",
+            "fuzzy_skin": "contour",
+            "fuzzy_skin_thickness": "0.3",
+            "fuzzy_skin_point_distance": "0.8",
+        },
+        "relaxed_geometry": True,
+    },
+}
 
 
 def parse_orca_time_seconds(text: str):
@@ -322,7 +407,7 @@ def pearson_r(xs, ys):
     return num / (dx * dy)
 
 
-def compare_parsed(hw_g, orca_g, hw_est_s=None):
+def compare_parsed(hw_g, orca_g, hw_est_s=None, relaxed_geometry=False):
     """Compute extensive structural, filament, motion, and 2D geometric comparison."""
     # Match layers by nearest Z (within 0.05 mm)
     hw_zs = hw_g["layer_z_list"]
@@ -398,18 +483,25 @@ def compare_parsed(hw_g, orca_g, hw_est_s=None):
 
     # Loose practical sanity checks (not 100% exact, flags real defects)
     warnings = []
-    if abs(hw_g["layers"] - orca_g["layers"]) > 2:
+    max_layer_delta = 5 if relaxed_geometry else 2
+    max_span_delta = 6.0 if relaxed_geometry else 1.0
+    max_z_delta = 1.2 if relaxed_geometry else 0.5
+    max_fil_pct = 55.0 if relaxed_geometry else 25.0
+    min_corr = 0.65 if relaxed_geometry else 0.85
+    min_sil_iou = 0.65 if relaxed_geometry else 0.80
+
+    if abs(hw_g["layers"] - orca_g["layers"]) > max_layer_delta:
         warnings.append(f"layer count delta {hw_g['layers'] - orca_g['layers']:+d}")
-    if abs(hw_bx - or_bx) > 1.0 or abs(hw_by - or_by) > 1.0:
+    if abs(hw_bx - or_bx) > max_span_delta or abs(hw_by - or_by) > max_span_delta:
         warnings.append(f"XY span delta ({hw_bx - or_bx:+.2f}, {hw_by - or_by:+.2f}) mm")
-    if abs(hw_g["max_z_mm"] - orca_g["max_z_mm"]) > 0.5:
+    if abs(hw_g["max_z_mm"] - orca_g["max_z_mm"]) > max_z_delta:
         warnings.append(f"max Z delta {hw_g['max_z_mm'] - orca_g['max_z_mm']:+.2f} mm")
     fil_pct = pct(hw_g["net_filament_mm"], orca_g["net_filament_mm"])
-    if abs(fil_pct) > 25.0:
+    if abs(fil_pct) > max_fil_pct:
         warnings.append(f"filament delta {fil_pct:+.1f}%")
-    if layer_e_r < 0.85:
+    if layer_e_r < min_corr:
         warnings.append(f"low Z-filament correlation r={layer_e_r:.3f}")
-    if mean_sil_iou < 0.80:
+    if mean_sil_iou < min_sil_iou:
         warnings.append(f"low 2D silhouette IoU={mean_sil_iou:.3f}")
 
     return {
@@ -468,15 +560,47 @@ def print_comparison(name: str, cmp: dict):
     print(f"  Geometry match:  Z-filament corr r={cmp['layer_filament_corr_r']:.4f} | 2D silhouette IoU={cmp['mean_silhouette_iou']:.3f} | Dilated path IoU={cmp['mean_path_iou']:.3f}")
 
 
+def print_summary_table(report):
+    print("\n=== OrcaSlicer Output Comparison Summary ===")
+    header = f"{'Model':<22} {'Scenario':<19} {'Status':<6} {'Layers':>9} {'Fil %':>7} {'Z-corr':>7} {'SilIoU':>7} {'Speedup':>8}"
+    print(header)
+    print("-" * len(header))
+    for r in report:
+        st = "OK" if not r["warnings"] else f"WARN({len(r['warnings'])})"
+        lay = f"{r['layers_hw']}/{r['layers_orca']}"
+        print(
+            f"{r['model']:<22} {r.get('scenario', 'default'):<19} {st:<6} {lay:>9} "
+            f"{r['filament_delta_pct']:+6.1f}% {r['layer_filament_corr_r']:7.4f} "
+            f"{r['mean_silhouette_iou']:7.3f} {r.get('speedup', 0.0):7.2f}x"
+        )
+    warn_total = sum(len(r["warnings"]) for r in report)
+    print(f"\nTotal runs: {len(report)}, warnings: {warn_total}")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Compare hw_slicer G-code output against OrcaSlicer 2.5.1")
     ap.add_argument("--model", action="append", default=[], help="Path to STL/OBJ/3MF model (repeatable)")
     ap.add_argument("--suite", choices=["core"], help="Run standard core models")
+    ap.add_argument(
+        "--scenario",
+        action="append",
+        default=[],
+        choices=list(SCENARIOS.keys()) + ["all"],
+        help="Named feature scenario(s) to compare (repeatable, or 'all')",
+    )
+    ap.add_argument("--scenarios", action="store_true", help="Shorthand for --scenario=all")
     ap.add_argument("--hw-cli", default="build/release/hw-slicer-cli", help="Path to hw-slicer-cli")
+    ap.add_argument("--build", action="store_true", help="Run ./build.sh cli-release before comparing")
     ap.add_argument("--hw-set", action="append", default=[], help="Extra hw-slicer --set key=val")
     ap.add_argument("--orca-set", action="append", default=[], help="Extra OrcaSlicer process key=val")
+    ap.add_argument("--strict", action="store_true", help="Exit non-zero if any comparison warning or failure occurs")
     ap.add_argument("--out-json", default="", help="Optional JSON output path")
     args = ap.parse_args()
+
+    if args.build:
+        bp = subprocess.run(["./build.sh", "cli-release"])
+        if bp.returncode != 0:
+            sys.exit(bp.returncode)
 
     models = [os.path.abspath(m) for m in args.model]
     if args.suite == "core" or not models:
@@ -485,9 +609,16 @@ def main():
             if os.path.exists(p):
                 models.append(p)
 
+    if args.scenarios or "all" in args.scenario:
+        scenario_names = list(SCENARIOS.keys())
+    elif args.scenario:
+        scenario_names = args.scenario
+    else:
+        scenario_names = ["default"]
+
     hw_cli = os.path.abspath(args.hw_cli)
     if not os.path.exists(hw_cli):
-        print(f"error: hw-slicer-cli not found at {hw_cli}; run ./build.sh cli-release", file=sys.stderr)
+        print(f"error: hw-slicer-cli not found at {hw_cli}; run ./build.sh cli-release or pass --build", file=sys.stderr)
         sys.exit(1)
     if not os.path.exists(ORCA_BIN):
         print(f"error: OrcaSlicer not found at {ORCA_BIN}", file=sys.stderr)
@@ -512,7 +643,7 @@ def main():
         "fan_min_speed": ["100"], "fan_max_speed": ["100"], "overhang_fan_speed": ["100"],
         "filament_max_volumetric_speed": ["20"],
     }
-    proc = {
+    base_proc = {
         "type": "process", "name": "0.20-standard", "from": "User",
         "layer_height": "0.2", "initial_layer_print_height": "0.2",
         "line_width": "0.42", "initial_layer_line_width": "0.42",
@@ -529,61 +660,91 @@ def main():
         "sparse_infill_speed": "120", "gap_infill_speed": "60",
         "bridge_speed": "35", "travel_speed": "200",
     }
-    for kv in args.orca_set:
-        k, v = kv.split("=", 1)
-        proc[k] = v
 
     report = []
+    failures = 0
     with tempfile.TemporaryDirectory(prefix="hw-orca-cmp-") as td:
-        mp, fp, pp = os.path.join(td, "m.json"), os.path.join(td, "f.json"), os.path.join(td, "p.json")
-        json.dump(mach, open(mp, "w"))
-        json.dump(fil, open(fp, "w"))
-        json.dump(proc, open(pp, "w"))
+        mp, fp = os.path.join(td, "m.json"), os.path.join(td, "f.json")
+        with open(mp, "w") as f:
+            json.dump(mach, f)
+        with open(fp, "w") as f:
+            json.dump(fil, f)
 
-        for mpath in models:
-            name = os.path.basename(mpath)
-            hw_out = os.path.join(td, f"hw_{name}.gcode")
-            orca_dir = os.path.join(td, f"orca_{name}")
-            os.makedirs(orca_dir, exist_ok=True)
+        for scen_name in scenario_names:
+            scen = SCENARIOS[scen_name]
+            proc = dict(base_proc)
+            proc.update(scen["orca_set"])
+            for kv in args.orca_set:
+                k, v = kv.split("=", 1)
+                proc[k] = v
+            pp = os.path.join(td, f"p_{scen_name}.json")
+            with open(pp, "w") as f:
+                json.dump(proc, f)
 
-            hw_cmd = [hw_cli, f"--input={mpath}", "--printer=vcore3", "--material=pla", "--process=0.20-standard", f"--out={hw_out}"]
-            for kv in args.hw_set:
-                hw_cmd.extend(["--set", kv])
-            t0 = time.perf_counter()
-            hp = subprocess.run(hw_cmd, capture_output=True, text=True)
-            hw_ms = (time.perf_counter() - t0) * 1000.0
-            if hp.returncode != 0:
-                print(f"FAIL hw_slicer on {name}: {hp.stderr or hp.stdout}", file=sys.stderr)
-                continue
+            for mpath in models:
+                name = os.path.basename(mpath)
+                label = name if len(scenario_names) == 1 and scen_name == "default" else f"{name} [{scen_name}]"
+                hw_out = os.path.join(td, f"hw_{scen_name}_{name}.gcode")
+                orca_dir = os.path.join(td, f"orca_{scen_name}_{name}")
+                os.makedirs(orca_dir, exist_ok=True)
 
-            orca_cmd = [ORCA_BIN, "--slice", "0", "--arrange", "1", "--load-settings", f"{mp};{pp}", "--load-filaments", fp, "--outputdir", orca_dir, mpath]
-            t0 = time.perf_counter()
-            op = subprocess.run(orca_cmd, cwd=orca_dir, capture_output=True, text=True)
-            orca_ms = (time.perf_counter() - t0) * 1000.0
-            if op.returncode != 0:
-                print(f"FAIL OrcaSlicer on {name}: {op.stderr or op.stdout}", file=sys.stderr)
-                continue
+                hw_cmd = [hw_cli, f"--input={mpath}", "--printer=vcore3", "--material=pla", "--process=0.20-standard", f"--out={hw_out}"]
+                for kv in scen["hw_set"]:
+                    hw_cmd.extend(["--set", kv])
+                for kv in args.hw_set:
+                    hw_cmd.extend(["--set", kv])
+                t0 = time.perf_counter()
+                hp = subprocess.run(hw_cmd, capture_output=True, text=True)
+                hw_ms = (time.perf_counter() - t0) * 1000.0
+                if hp.returncode != 0:
+                    print(f"FAIL hw_slicer on {label}: {hp.stderr or hp.stdout}", file=sys.stderr)
+                    failures += 1
+                    continue
 
-            gfiles = sorted(f for f in os.listdir(orca_dir) if f.endswith(".gcode"))
-            if not gfiles:
-                print(f"FAIL OrcaSlicer produced no gcode for {name}", file=sys.stderr)
-                continue
-            orca_gcode = os.path.join(orca_dir, gfiles[0])
+                orca_cmd = [ORCA_BIN, "--slice", "0", "--arrange", "1", "--load-settings", f"{mp};{pp}", "--load-filaments", fp, "--outputdir", orca_dir, mpath]
+                t0 = time.perf_counter()
+                op = subprocess.run(orca_cmd, cwd=orca_dir, capture_output=True, text=True)
+                orca_ms = (time.perf_counter() - t0) * 1000.0
+                if op.returncode != 0:
+                    print(f"FAIL OrcaSlicer on {label}: {op.stderr or op.stdout}", file=sys.stderr)
+                    failures += 1
+                    continue
 
-            hw_g = parse_gcode(hw_out)
-            orca_g = parse_gcode(orca_gcode)
-            cmp = compare_parsed(hw_g, orca_g, parse_hw_time_seconds(hp.stdout))
-            cmp["model"] = name
-            cmp["hw_ms"] = round(hw_ms, 1)
-            cmp["orca_ms"] = round(orca_ms, 1)
-            cmp["speedup"] = round(orca_ms / hw_ms, 2) if hw_ms > 0 else 0.0
-            print_comparison(name, cmp)
-            report.append(cmp)
+                gfiles = sorted(f for f in os.listdir(orca_dir) if f.endswith(".gcode"))
+                if not gfiles:
+                    print(f"FAIL OrcaSlicer produced no gcode for {label}", file=sys.stderr)
+                    failures += 1
+                    continue
+                orca_gcode = os.path.join(orca_dir, gfiles[0])
+
+                hw_g = parse_gcode(hw_out)
+                orca_g = parse_gcode(orca_gcode)
+                cmp = compare_parsed(
+                    hw_g,
+                    orca_g,
+                    parse_hw_time_seconds(hp.stdout),
+                    relaxed_geometry=scen["relaxed_geometry"],
+                )
+                cmp["model"] = name
+                cmp["scenario"] = scen_name
+                cmp["hw_ms"] = round(hw_ms, 1)
+                cmp["orca_ms"] = round(orca_ms, 1)
+                cmp["speedup"] = round(orca_ms / hw_ms, 2) if hw_ms > 0 else 0.0
+                print_comparison(label, cmp)
+                report.append(cmp)
+
+    if len(report) > 1:
+        print_summary_table(report)
 
     if args.out_json:
         with open(args.out_json, "w") as f:
             json.dump(report, f, indent=2)
         print(f"\nWrote comparison JSON: {args.out_json}")
+
+    if failures > 0:
+        sys.exit(1)
+    if args.strict and any(r["warnings"] for r in report):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
