@@ -105,6 +105,7 @@ klipper_emit :: proc(
 	object_name := "",
 	pause_layers: []u32 = nil,
 	color_change_layers: []u32 = nil,
+	record_commands := true,
 ) -> (Klipper_Result, Klipper_Error) {
 	resolved, resolve_error := profiles.profiles_resolve(
 		profile.printer,
@@ -127,6 +128,7 @@ klipper_emit :: proc(
 			object_name,
 			pause_layers,
 			color_change_layers,
+			record_commands,
 		)
 	}
 	object_name := klipper_object_name(object_name, context.temp_allocator) if len(object_name) > 0 else ""
@@ -154,10 +156,12 @@ klipper_emit :: proc(
 	)
 	if builder_error != nil {return {}, .Allocation_Failed}
 	defer strings.builder_destroy(&builder)
-	commands :=
-		make([]Klipper_Command_Record, int(maximum_commands), allocator)
-	if maximum_commands > 0 && commands == nil {
-		return {}, .Allocation_Failed
+	commands: []Klipper_Command_Record
+	if record_commands {
+		commands = make([]Klipper_Command_Record, int(maximum_commands), allocator)
+		if maximum_commands > 0 && commands == nil {
+			return {}, .Allocation_Failed
+		}
 	}
 	command_write := 0
 	result := Klipper_Result{
@@ -401,14 +405,14 @@ klipper_emit :: proc(
 		return {}, .Allocation_Failed
 	}
 	copy(result.bytes, transmute([]u8)text)
-	result.commands = commands[:command_write]
+	result.commands = commands[:command_write] if record_commands else nil
 	result.final_x = state.x
 	result.final_y = state.y
 	result.final_z = state.z
 	report, validation_error :=
 		klipper_validate(result.bytes, profile, motion)
 	if validation_error != .None ||
-	   report.command_count != u64(len(result.commands)) ||
+	   report.command_count != u64(command_write) ||
 	   report.positive_filament_nm != result.positive_filament_nm ||
 	   report.negative_filament_nm != result.negative_filament_nm ||
 	   report.dwell_ms != result.emitted_dwell_ms ||
@@ -450,6 +454,7 @@ Klipper_Parallel_Context :: struct {
 	layers:              []Klipper_Layer_Emit,
 	out_bytes:           []u8,
 	out_commands:        []Klipper_Command_Record,
+	record_commands:     bool,
 }
 
 @(private = "file")
@@ -461,6 +466,7 @@ klipper_emit_parallel :: proc(
 	object_name := "",
 	pause_layers: []u32 = nil,
 	color_change_layers: []u32 = nil,
+	record_commands := true,
 ) -> (Klipper_Result, Klipper_Error) {
 	layer_count := len(motion.layers)
 	object_name_clean := klipper_object_name(object_name, context.temp_allocator) if len(object_name) > 0 else ""
@@ -627,6 +633,7 @@ klipper_emit_parallel :: proc(
 		color_change_layers = color_change_layers,
 		allocator           = worker_allocator,
 		layers              = layer_emits,
+		record_commands     = record_commands,
 	}
 	workers.parallel_for(layer_count, &pctx, klipper_emit_layer_worker, g_gcode_worker_threads)
 
@@ -672,24 +679,28 @@ klipper_emit_parallel :: proc(
 	}
 
 	result.bytes = make([]u8, int(total_bytes), allocator)
-	result.commands = make([]Klipper_Command_Record, int(total_cmds), allocator)
-	if (total_bytes > 0 && result.bytes == nil) || (total_cmds > 0 && result.commands == nil) {
+	if record_commands {
+		result.commands = make([]Klipper_Command_Record, int(total_cmds), allocator)
+	}
+	if (total_bytes > 0 && result.bytes == nil) || (record_commands && total_cmds > 0 && result.commands == nil) {
 		klipper_result_destroy(&result, allocator)
 		return {}, .Allocation_Failed
 	}
 
 	copy(result.bytes[:len(header_text)], header_text)
-	copy(result.commands[:header_cmd_write], header_cmds[:header_cmd_write])
 	copy(result.bytes[footer_byte_offset:], footer_text)
-	for i in 0..<footer_cmd_write {
-		cmd := footer_cmds[i]
-		gidx := footer_cmd_offset+u64(i)
-		parent := cmd.source_operation_id
-		if parent == contracts.INVALID_STABLE_ID {parent = contracts.Stable_ID(1)}
-		cmd.command_index = u32(gidx)
-		cmd.byte_offset += footer_byte_offset
-		cmd.stable_id = contracts.stable_id_child(parent, .Command, gidx)
-		result.commands[gidx] = cmd
+	if record_commands {
+		copy(result.commands[:header_cmd_write], header_cmds[:header_cmd_write])
+		for i in 0..<footer_cmd_write {
+			cmd := footer_cmds[i]
+			gidx := footer_cmd_offset+u64(i)
+			parent := cmd.source_operation_id
+			if parent == contracts.INVALID_STABLE_ID {parent = contracts.Stable_ID(1)}
+			cmd.command_index = u32(gidx)
+			cmd.byte_offset += footer_byte_offset
+			cmd.stable_id = contracts.stable_id_child(parent, .Command, gidx)
+			result.commands[gidx] = cmd
+		}
 	}
 
 	last_end := layer_emits[layer_count-1].end_state
@@ -746,7 +757,7 @@ klipper_emit_parallel :: proc(
 
 	ftr_val_err := klipper_validate_footer_slice(result.bytes[footer_byte_offset:], &report)
 	if ftr_val_err != .None ||
-	   report.command_count != u64(len(result.commands)) ||
+	   report.command_count != total_cmds ||
 	   report.motion_operation_count != u64(len(motion.operations)) ||
 	   report.positive_filament_nm != result.positive_filament_nm ||
 	   report.negative_filament_nm != result.negative_filament_nm ||
@@ -771,10 +782,13 @@ klipper_emit_layer_worker :: proc(ctx: ^Klipper_Parallel_Context, li: int) {
 	max_cmds := op_count*5+8
 	builder, b_err := strings.builder_make(0, est_bytes, ctx.allocator)
 	if b_err != nil {return}
-	cmds := make([]Klipper_Command_Record, max_cmds, ctx.allocator)
-	if cmds == nil {
-		strings.builder_destroy(&builder)
-		return
+	cmds: []Klipper_Command_Record
+	if ctx.record_commands {
+		cmds = make([]Klipper_Command_Record, max_cmds, ctx.allocator)
+		if cmds == nil {
+			strings.builder_destroy(&builder)
+			return
+		}
 	}
 	cmd_write := 0
 	local_res := Klipper_Result{}
@@ -889,15 +903,17 @@ klipper_command_end_deferred :: proc(
 	source_operation_id := contracts.INVALID_STABLE_ID,
 	layer_index := max(u32),
 ) -> bool {
-	if command_write^ >= len(commands) {return false}
 	end := len(strings.to_string(builder))
 	if end <= start || end-start > int(max(u32)) {return false}
-	commands[command_write^] = {
-		kind                = kind,
-		byte_offset         = u64(start),
-		byte_count          = u32(end-start),
-		source_operation_id = source_operation_id,
-		layer_index         = layer_index,
+	if commands != nil {
+		if command_write^ >= len(commands) {return false}
+		commands[command_write^] = {
+			kind                = kind,
+			byte_offset         = u64(start),
+			byte_count          = u32(end-start),
+			source_operation_id = source_operation_id,
+			layer_index         = layer_index,
+		}
 	}
 	command_write^ += 1
 	return true
@@ -909,15 +925,17 @@ klipper_assemble_and_validate_layer :: proc(ctx: ^Klipper_Parallel_Context, li: 
 	src_bytes := le.builder.buf[:]
 	dst_bytes := ctx.out_bytes[le.byte_offset : le.byte_offset+u64(len(src_bytes))]
 	copy(dst_bytes, src_bytes)
-	for cmd, i in le.commands_buf[:le.command_count] {
-		gidx := le.command_offset+u64(i)
-		parent := cmd.source_operation_id
-		if parent == contracts.INVALID_STABLE_ID {parent = contracts.Stable_ID(1)}
-		out := cmd
-		out.command_index = u32(gidx)
-		out.byte_offset += le.byte_offset
-		out.stable_id = contracts.stable_id_child(parent, .Command, gidx)
-		ctx.out_commands[gidx] = out
+	if ctx.record_commands {
+		for cmd, i in le.commands_buf[:le.command_count] {
+			gidx := le.command_offset+u64(i)
+			parent := cmd.source_operation_id
+			if parent == contracts.INVALID_STABLE_ID {parent = contracts.Stable_ID(1)}
+			out := cmd
+			out.command_index = u32(gidx)
+			out.byte_offset += le.byte_offset
+			out.stable_id = contracts.stable_id_child(parent, .Command, gidx)
+			ctx.out_commands[gidx] = out
+		}
 	}
 	le.val_end_state, le.val_report, le.val_error = klipper_validate_layer_slice(
 		dst_bytes,
@@ -1405,28 +1423,30 @@ klipper_command_end :: proc(
 	source_operation_id := contracts.INVALID_STABLE_ID,
 	layer_index := max(u32),
 ) -> bool {
-	if command_write^ >= len(commands) {return false}
 	end := len(strings.to_string(builder))
 	if end <= start || end-start > int(max(u32)) {
 		return false
 	}
-	command_index := command_write^
-	parent := source_operation_id
-	if parent == contracts.INVALID_STABLE_ID {
-		parent = contracts.Stable_ID(1)
-	}
-	commands[command_index] = {
-		stable_id = contracts.stable_id_child(
-			parent,
-			.Command,
-			u64(command_index),
-		),
-		command_index = u32(command_index),
-		kind = kind,
-		byte_offset = u64(start),
-		byte_count = u32(end-start),
-		source_operation_id = source_operation_id,
-		layer_index = layer_index,
+	if commands != nil {
+		if command_write^ >= len(commands) {return false}
+		command_index := command_write^
+		parent := source_operation_id
+		if parent == contracts.INVALID_STABLE_ID {
+			parent = contracts.Stable_ID(1)
+		}
+		commands[command_index] = {
+			stable_id = contracts.stable_id_child(
+				parent,
+				.Command,
+				u64(command_index),
+			),
+			command_index = u32(command_index),
+			kind = kind,
+			byte_offset = u64(start),
+			byte_count = u32(end-start),
+			source_operation_id = source_operation_id,
+			layer_index = layer_index,
+		}
 	}
 	command_write^ += 1
 	return true

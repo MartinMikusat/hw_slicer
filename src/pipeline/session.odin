@@ -1376,9 +1376,10 @@ stage_gcode :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		object_name = s.options.object_name,
 		pause_layers = s.options.pause_layers,
 		color_change_layers = s.options.color_change_layers,
+		record_commands = s.options.evidence_level != .Disabled,
 	)
 	if klip_err != .None {return {stage = "klipper_emit", detail = fmt.tprintf("klipper emit error: %v", klip_err)}}
 	s.slots[.Gcode].count_a = u64(len(s.klipper.bytes))
-	s.slots[.Gcode].count_b = u64(len(s.klipper.commands))
+	s.slots[.Gcode].count_b = s.klipper.validation.command_count
 	return {}
 }

@@ -144,7 +144,7 @@ write_trace_json :: proc(
 	fmt.sbprintf(&b, "  \"travel_moves\": %d,\n", res.unified_plan.travel_move_count)
 	fmt.sbprintf(&b, "  \"filament_mm\": %.3f,\n", f64(res.extrusion.total_filament_nm)/1_000_000.0)
 	fmt.sbprintf(&b, "  \"gcode_bytes\": %d,\n", len(res.klipper.bytes))
-	fmt.sbprintf(&b, "  \"gcode_commands\": %d,\n", len(res.klipper.commands))
+	fmt.sbprintf(&b, "  \"gcode_commands\": %d,\n", res.klipper.validation.command_count)
 	fmt.sbprintf(&b, "  \"total_duration_ms\": %.3f,\n", res.total_duration_ms)
 	strings.write_string(&b, "  \"stages\": [\n")
 	for st, idx in res.stages {
