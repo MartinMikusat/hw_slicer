@@ -335,6 +335,7 @@ gap_sample_scan_mask :: proc(
 		config.spacing,
 	)
 	if !line_ok {error = .Arithmetic; return}
+	sweep := infill_sweep_init(boundary, scan_axis)
 	mask_sample_index: u32
 	for i128(i64(line)) < i128(i64(maximum)) {
 		if scanline_count >= limits.max_scanlines {
@@ -342,9 +343,8 @@ gap_sample_scan_mask :: proc(
 			return
 		}
 		scanline_count += 1
-		hit_count, hit_error := infill_collect_hits(
-			boundary,
-			scan_axis,
+		hit_count, hit_error := infill_sweep_collect_hits(
+			&sweep,
 			line,
 			hits,
 		)

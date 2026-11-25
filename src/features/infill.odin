@@ -324,6 +324,7 @@ infill_scan_region :: proc(
 		config.spacing,
 	)
 	if !line_ok {error = .Arithmetic; return}
+	sweep := infill_sweep_init(boundary, axis)
 	region_segment_index: u64
 	for i128(i64(line)) < i128(i64(maximum)) {
 		if scanline_count >= limits.max_scanlines {
@@ -331,9 +332,8 @@ infill_scan_region :: proc(
 			return
 		}
 		scanline_count += 1
-		hit_count, hit_error := infill_collect_hits(
-			boundary,
-			axis,
+		hit_count, hit_error := infill_sweep_collect_hits(
+			&sweep,
 			line,
 			hits,
 		)
@@ -406,6 +406,134 @@ infill_scan_region :: proc(
 		line = contracts.Micrometres(i64(next))
 	}
 	return
+}
+
+Infill_Sweep_Edge :: struct {
+	min_fixed:           i64,
+	max_fixed:           i64,
+	var_at_min:          i64,
+	dvar:                i64,
+	boundary_path_index: u32,
+	boundary_edge_index: u32,
+}
+
+Infill_Active_Sweep :: struct {
+	edges:  []Infill_Sweep_Edge,
+	active: [dynamic]Infill_Sweep_Edge,
+	cursor: int,
+}
+
+// Builds a min_fixed-sorted edge list on `context.temp_allocator` for O(E log E + S * A)
+// active-edge scanline sweeping, producing bit-exact identical hits to `infill_collect_hits`.
+infill_sweep_init :: proc(
+	boundary: polygon.Polygon_Set,
+	axis: Infill_Axis,
+) -> Infill_Active_Sweep {
+	horiz := axis == .Horizontal
+	edges := make([dynamic]Infill_Sweep_Edge, 0, len(boundary.points), context.temp_allocator)
+	for path, path_index in boundary.paths {
+		start := int(path.offset)
+		n := int(path.count)
+		if n < 2 {continue}
+		pts := boundary.points[start:start + n]
+		for edge_index in 0..<n {
+			a := pts[edge_index]
+			b := pts[edge_index + 1] if edge_index + 1 < n else pts[0]
+			af, bf := i64(a.y), i64(b.y)
+			av, bv := i64(a.x), i64(b.x)
+			if !horiz {
+				af, bf = i64(a.x), i64(b.x)
+				av, bv = i64(a.y), i64(b.y)
+			}
+			if af == bf {continue}
+			if af < bf {
+				append(&edges, Infill_Sweep_Edge{
+					min_fixed           = af,
+					max_fixed           = bf,
+					var_at_min          = av,
+					dvar                = bv - av,
+					boundary_path_index = u32(path_index),
+					boundary_edge_index = u32(edge_index),
+				})
+			} else {
+				append(&edges, Infill_Sweep_Edge{
+					min_fixed           = bf,
+					max_fixed           = af,
+					var_at_min          = bv,
+					dvar                = av - bv,
+					boundary_path_index = u32(path_index),
+					boundary_edge_index = u32(edge_index),
+				})
+			}
+		}
+	}
+	features_fast_sort(edges[:], proc(a, b: Infill_Sweep_Edge) -> bool {
+		return a.min_fixed < b.min_fixed
+	})
+	return Infill_Active_Sweep{
+		edges  = edges[:],
+		active = make([dynamic]Infill_Sweep_Edge, 0, min(64, len(edges)), context.temp_allocator),
+		cursor = 0,
+	}
+}
+
+infill_sweep_collect_hits :: proc(
+	sweep: ^Infill_Active_Sweep,
+	line: contracts.Micrometres,
+	hits: []Infill_Rational_Hit,
+) -> (int, Infill_Error) {
+	lv := i64(line)
+	// Drop expired active edges (max_fixed <= lv).
+	w := 0
+	for e in sweep.active {
+		if e.max_fixed > lv {
+			sweep.active[w] = e
+			w += 1
+		}
+	}
+	resize(&sweep.active, w)
+	// Activate newly entered edges (min_fixed <= lv < max_fixed).
+	n_edges := len(sweep.edges)
+	for sweep.cursor < n_edges && sweep.edges[sweep.cursor].min_fixed <= lv {
+		e := sweep.edges[sweep.cursor]
+		sweep.cursor += 1
+		if e.max_fixed > lv {
+			append(&sweep.active, e)
+		}
+	}
+	hit_count := 0
+	for e in sweep.active {
+		if hit_count >= len(hits) {
+			return 0, .Arithmetic
+		}
+		denom := i128(e.max_fixed) - i128(e.min_fixed)
+		numer := i128(e.var_at_min)*denom + (i128(lv) - i128(e.min_fixed))*i128(e.dvar)
+		rounded, error_numerator, round_ok := infill_rational_round(numer, denom)
+		if !round_ok {return 0, .Arithmetic}
+		hits[hit_count] = {
+			numerator           = numer,
+			denominator         = denom,
+			rounded_coordinate  = rounded,
+			error_numerator     = error_numerator,
+			boundary_path_index = e.boundary_path_index,
+			boundary_edge_index = e.boundary_edge_index,
+		}
+		hit_count += 1
+	}
+	if hit_count <= 16 {
+		for i := 1; i < hit_count; i += 1 {
+			key := hits[i]
+			j := i - 1
+			for j >= 0 && infill_rational_hit_less(key, hits[j]) {
+				hits[j + 1] = hits[j]
+				j -= 1
+			}
+			hits[j + 1] = key
+		}
+	} else {
+		features_fast_sort(hits[:hit_count], infill_rational_hit_less)
+	}
+	return hit_count, .None
 }
 
 infill_collect_hits :: proc(

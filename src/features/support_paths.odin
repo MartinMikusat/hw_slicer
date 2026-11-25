@@ -316,6 +316,7 @@ support_path_scan_boundary :: proc(
 	minimum, maximum := infill_boundary_axis_bounds(boundary, axis)
 	line, line_ok := infill_first_scanline(minimum, phase, spacing)
 	if !line_ok {error = .Arithmetic; return}
+	sweep := infill_sweep_init(boundary, axis)
 	mask_path_index: u64
 	for i128(i64(line)) < i128(i64(maximum)) {
 		if scanline_count >= limits.max_scanlines {
@@ -324,9 +325,8 @@ support_path_scan_boundary :: proc(
 		}
 		scanline_index := scanline_count
 		scanline_count += 1
-		hit_count, hit_error := infill_collect_hits(
-			boundary,
-			axis,
+		hit_count, hit_error := infill_sweep_collect_hits(
+			&sweep,
 			line,
 			scratch_hits,
 		)
