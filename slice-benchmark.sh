@@ -6,7 +6,8 @@ set -euo pipefail
 #
 # Usage:
 #   ./slice-benchmark.sh [--suite=all|core|voron2.4] [--runs=1] [--threads=0] \
-#                        [--compare-orca] [--out-json=PATH] [--out-md=PATH]
+#                        [--compare-orca] [--out-json=PATH] [--out-md=PATH] \
+#                        [--save-baseline=DIR] [--verify-determinism] [--stage-diff=DIR]
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -17,6 +18,9 @@ THREADS=""
 COMPARE_ORCA=0
 OUT_JSON=""
 OUT_MD=""
+SAVE_BASELINE=""
+VERIFY_DET=0
+STAGE_DIFF=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -26,8 +30,12 @@ for arg in "$@"; do
     --compare-orca) COMPARE_ORCA=1 ;;
     --out-json=*) OUT_JSON="${arg#--out-json=}" ;;
     --out-md=*) OUT_MD="${arg#--out-md=}" ;;
+    --save-baseline=*) SAVE_BASELINE="${arg#--save-baseline=}" ;;
+    --verify-determinism) VERIFY_DET=1 ;;
+    --verify-determinism=*) VERIFY_DET=1; STAGE_DIFF="${STAGE_DIFF:-${arg#--verify-determinism=}}" ;;
+    --stage-diff=*) STAGE_DIFF="${arg#--stage-diff=}" ;;
     -h|--help)
-      echo "Usage: $0 [--suite=all|core|voron2.4] [--runs=N] [--threads=N] [--compare-orca] [--out-json=PATH] [--out-md=PATH]"
+      echo "Usage: $0 [--suite=all|core|voron2.4] [--runs=N] [--threads=N] [--compare-orca] [--out-json=PATH] [--out-md=PATH] [--save-baseline=DIR] [--verify-determinism[=DIR]] [--stage-diff=DIR]"
       exit 0
       ;;
     *)
@@ -46,12 +54,31 @@ if [ "$COMPARE_ORCA" = "1" ] && [ ! -x "$ORCA_BIN" ]; then
   exit 1
 fi
 
-python3 - "$ROOT" "$CLI" "$ORCA_BIN" "$SUITE" "$RUNS" "$THREADS" "$COMPARE_ORCA" "$OUT_JSON" "$OUT_MD" <<'PY'
-import json, math, os, re, statistics, subprocess, sys, tempfile, time
+python3 - "$ROOT" "$CLI" "$ORCA_BIN" "$SUITE" "$RUNS" "$THREADS" "$COMPARE_ORCA" "$OUT_JSON" "$OUT_MD" "$SAVE_BASELINE" "$VERIFY_DET" "$STAGE_DIFF" <<'PY'
+import hashlib, json, math, os, re, statistics, subprocess, sys, tempfile, time
 
-root, cli, orca_bin, suite, runs_s, threads, cmp_orca_s, out_json, out_md = sys.argv[1:10]
+root, cli, orca_bin, suite, runs_s, threads, cmp_orca_s, out_json, out_md, save_baseline, verify_det_s, stage_diff = sys.argv[1:13]
 runs = max(1, int(runs_s))
 compare_orca = cmp_orca_s == "1"
+verify_det = verify_det_s == "1"
+want_stages = bool(save_baseline or stage_diff)
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+baseline_data = {}
+if stage_diff:
+    bp = os.path.join(stage_diff, "baseline.json") if os.path.isdir(stage_diff) else stage_diff
+    if not os.path.exists(bp):
+        print(f"[slice-benchmark] baseline file not found: {bp}", file=sys.stderr)
+        sys.exit(1)
+    with open(bp) as f:
+        raw_base = json.load(f)
+    baseline_data = {r["name"]: r for r in raw_base.get("results", [])}
 
 HIGH_STRESS_PREFIXES = (
     "xy_topbrace_",
@@ -216,6 +243,8 @@ hw_faster_count = 0
 
 with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
     out_gcode = os.path.join(tmpdir, "out.gcode")
+    trace_json = os.path.join(tmpdir, "trace.json")
+    det_gcode = os.path.join(tmpdir, "det.gcode")
     orca_out_dir = os.path.join(tmpdir, "orca_out")
     os.makedirs(orca_out_dir, exist_ok=True)
     orca_profiles = write_orca_profiles(tmpdir) if compare_orca else {}
@@ -229,6 +258,8 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
             f"--process={c['process']}",
             f"--out={out_gcode}",
         ]
+        if want_stages:
+            cmd.append(f"--trace-json={trace_json}")
         if threads:
             cmd.append(f"--threads={threads}")
 
@@ -236,7 +267,10 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
         best_stdout = ""
         err_text = ""
         ok = True
-        for _ in range(runs):
+        stage_samples = {}
+        stage_order = []
+        gcode_sha = None
+        for run_idx in range(runs):
             t0 = time.perf_counter()
             p = subprocess.run(cmd, capture_output=True, text=True)
             dt_ms = (time.perf_counter() - t0) * 1000.0
@@ -247,6 +281,50 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
             if best_ms is None or dt_ms < best_ms:
                 best_ms = dt_ms
                 best_stdout = p.stdout
+            if run_idx == 0 and (verify_det or save_baseline):
+                gcode_sha = sha256_file(out_gcode)
+            if want_stages and os.path.exists(trace_json):
+                with open(trace_json) as tf:
+                    td = json.load(tf)
+                for st in td.get("stages", []):
+                    sn = st["name"]
+                    if sn not in stage_samples:
+                        stage_samples[sn] = []
+                        stage_order.append(sn)
+                    stage_samples[sn].append(float(st["duration_ms"]))
+
+        det_status = None
+        if ok and verify_det:
+            det_ok = True
+            for label, extra_flag in (("threads=1", "--threads=1"), ("no-gpu", "--no-gpu")):
+                dcmd = [
+                    cli,
+                    f"--input={c['path']}",
+                    f"--printer={c['printer']}",
+                    f"--material={c['material']}",
+                    f"--process={c['process']}",
+                    extra_flag,
+                    f"--out={det_gcode}",
+                ]
+                dp = subprocess.run(dcmd, capture_output=True, text=True)
+                if dp.returncode != 0:
+                    ok = False
+                    det_ok = False
+                    err_text = f"determinism {label} failed (exit {dp.returncode})"
+                    break
+                dsha = sha256_file(det_gcode)
+                if dsha != gcode_sha:
+                    ok = False
+                    det_ok = False
+                    err_text = f"determinism mismatch ({label}: {dsha[:12]} != {gcode_sha[:12]})"
+                    break
+            if det_ok and c["name"] in baseline_data and baseline_data[c["name"]].get("gcode_sha256"):
+                bsha = baseline_data[c["name"]]["gcode_sha256"]
+                if gcode_sha != bsha:
+                    ok = False
+                    det_ok = False
+                    err_text = f"baseline hash mismatch ({gcode_sha[:12]} != {bsha[:12]})"
+            det_status = "3-way exact" if det_ok else err_text
 
         rec = {
             "suite": c["suite"],
@@ -256,6 +334,18 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
             "ok": ok,
             "wall_ms": round(best_ms, 2) if best_ms is not None else None,
         }
+        if gcode_sha is not None:
+            rec["gcode_sha256"] = gcode_sha
+        if det_status is not None:
+            rec["determinism"] = det_status
+        if stage_samples:
+            rec["stages"] = {
+                sn: {
+                    "min_ms": round(min(stage_samples[sn]), 2),
+                    "median_ms": round(statistics.median(stage_samples[sn]), 2),
+                }
+                for sn in stage_order
+            }
         if ok:
             m = re.search(r"tris=(\d+)\s+layers=(\d+)\s+repairs=(\d+)\s+extrude=(\d+)\s+travel=(\d+)\s+filament=([0-9.]+)\s+mm\s+est_time=([0-9:]+)\s+gcode=(\d+)\s+bytes", best_stdout)
             if m:
@@ -359,6 +449,36 @@ for k, v in sorted(suite_wall_ms.items()):
         print(f"  {k:10s}: {cnt:3d} models  hw={v:8.1f} ms ({v/cnt:5.1f} avg)  orca={ov:8.1f} ms ({ov/cnt:5.1f} avg)  speedup={ov/v:.2f}x")
     else:
         print(f"  {k:10s}: {cnt:3d} models  {v:8.1f} ms total  ({v/cnt:6.1f} ms avg)")
+
+if save_baseline:
+    os.makedirs(save_baseline, exist_ok=True)
+    bp = os.path.join(save_baseline, "baseline.json")
+    with open(bp, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"Saved baseline (hashes + stage timings): {bp}")
+
+if stage_diff and baseline_data:
+    print("\n=== STAGE DIFF (min_ms / median_ms vs baseline) ===")
+    for r in results:
+        b = baseline_data.get(r["name"])
+        if not b or not r.get("ok") or "stages" not in r or "stages" not in b:
+            continue
+        bw = b.get("wall_ms") or 0.0
+        cw = r.get("wall_ms") or 0.0
+        dw = cw - bw
+        pct = (dw / bw * 100.0) if bw > 0 else 0.0
+        print(f"\n  {r['name']}  wall: {bw:.1f} -> {cw:.1f} ms ({dw:+.1f} ms, {pct:+.1f}%)")
+        for sn, cur_st in r["stages"].items():
+            bst = b["stages"].get(sn)
+            if not bst:
+                continue
+            bmin, cmin = bst["min_ms"], cur_st["min_ms"]
+            bmed, cmed = bst["median_ms"], cur_st["median_ms"]
+            dmin = cmin - bmin
+            if abs(dmin) < 0.25 and bmin < 1.0 and cmin < 1.0:
+                continue
+            spct = (dmin / bmin * 100.0) if bmin > 0 else 0.0
+            print(f"    {sn:24s} min {bmin:6.2f} -> {cmin:6.2f} ms ({dmin:+6.2f}, {spct:+5.1f}%) | med {bmed:6.2f} -> {cmed:6.2f} ms")
 
 if out_json:
     os.makedirs(os.path.dirname(os.path.abspath(out_json)), exist_ok=True)
