@@ -63,13 +63,21 @@ if [ "$COMPARE_ORCA" = "1" ] && [ ! -x "$ORCA_BIN" ]; then
 fi
 
 python3 - "$ROOT" "$CLI" "$ORCA_BIN" "$SUITE" "$RUNS" "$THREADS" "$COMPARE_ORCA" "$OUT_JSON" "$OUT_MD" "$SAVE_BASELINE" "$VERIFY_DET" "$STAGE_DIFF" "$AB_BASE" <<'PY'
-import hashlib, json, math, os, re, statistics, subprocess, sys, tempfile, time
+import hashlib, importlib.util, json, math, os, re, statistics, subprocess, sys, tempfile, time
 
 root, cli, orca_bin, suite, runs_s, threads, cmp_orca_s, out_json, out_md, save_baseline, verify_det_s, stage_diff, ab_base = sys.argv[1:14]
 runs = max(1, int(runs_s))
 compare_orca = cmp_orca_s == "1"
 verify_det = verify_det_s == "1"
 want_stages = bool(save_baseline or stage_diff or ab_base)
+
+orca_cmp_mod = None
+if compare_orca:
+    _cmp_path = os.path.join(root, "scripts", "orca-compare.py")
+    if os.path.exists(_cmp_path):
+        _spec = importlib.util.spec_from_file_location("orca_compare", _cmp_path)
+        orca_cmp_mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(orca_cmp_mod)
 
 def sha256_file(path):
     h = hashlib.sha256()
@@ -467,6 +475,9 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
             orca_ok = True
             orca_err = ""
             for _ in range(runs):
+                for old_gf in os.listdir(orca_out_dir):
+                    if old_gf.endswith(".gcode"):
+                        os.unlink(os.path.join(orca_out_dir, old_gf))
                 t0 = time.perf_counter()
                 op = subprocess.run(orca_cmd, cwd=orca_out_dir, capture_output=True, text=True)
                 odt = (time.perf_counter() - t0) * 1000.0
@@ -489,6 +500,14 @@ with tempfile.TemporaryDirectory(prefix="hw-slicer-bench-") as tmpdir:
                     ratios.append(ratio)
                     if ratio >= 1.0:
                         hw_faster_count += 1
+                if ok and orca_cmp_mod is not None and os.path.exists(out_gcode):
+                    gfiles = sorted(f for f in os.listdir(orca_out_dir) if f.endswith(".gcode"))
+                    if gfiles:
+                        hw_g = orca_cmp_mod.parse_gcode(out_gcode)
+                        or_g = orca_cmp_mod.parse_gcode(os.path.join(orca_out_dir, gfiles[0]))
+                        rec["orca_compare"] = orca_cmp_mod.compare_parsed(
+                            hw_g, or_g, orca_cmp_mod.parse_hw_time_seconds(best_stdout)
+                        )
             else:
                 rec["orca_error"] = orca_err
 
@@ -578,6 +597,13 @@ if ab_base and ab_paired_count > 0:
                 bm, cm, dm = st["base_median_ms"], st["cand_median_ms"], st["delta_ms"]
                 spct = (dm / bm * 100.0) if bm > 0 else 0.0
                 print(f"    {sn:24s} {bm:6.2f} -> {cm:6.2f} ms ({dm:+6.2f}, {spct:+5.1f}%)")
+
+if compare_orca and orca_cmp_mod is not None:
+    cmp_rows = [r for r in results if "orca_compare" in r]
+    if cmp_rows:
+        print("\n=== ORCASLICER RESULT COMPARISON (G-code geometry, filament, motion) ===")
+        for r in cmp_rows:
+            orca_cmp_mod.print_comparison(r["name"], r["orca_compare"])
 
 if save_baseline:
     os.makedirs(save_baseline, exist_ok=True)
