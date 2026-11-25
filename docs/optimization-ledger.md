@@ -159,3 +159,15 @@ Release CLI benchmark (10 threads, 158/158 models passing, 3-way byte-identical 
 | **OPT-62** | `features/infill.odin`, `features/gap_samples.odin`, `features/support_paths.odin` | Replaced the $O(\text{scanlines} \times \text{edges})$ `infill_collect_hits` scan (61 samples / 8% of total CPU on bunny) with a shared `Infill_Active_Sweep` (`infill_sweep_init` + `infill_sweep_collect_hits`) that sorts non-degenerate edges once by `min_fixed` and maintains a small active edge list across monotonic scanlines with bit-exact rational intersection math. | `Gap fill` stage (3-run min): `benchy.stl` `56.21 → 43.00 ms` (−23.5%), `all-in-one-test.stl` `68.17 → 56.61 ms` (−17.0%), `stanford-bunny.stl` `142.95 → 44.10 ms` (**−98.85 ms, −69.2%, 3.24× faster**) | `DONE` |
 | **OPT-63** | `features/arc_fit.odin`, `polygon/odin_offset.odin` | Replaced libm `math.hypot` with hardware `math.sqrt(dx*dx + dy*dy)` in `arc_fit_slice` and `odin_offset`, added conservative squared-radius bounds (`r_lo_sq`/`r_hi_sq`) to reject non-circular vertices and chord midpoints before `sqrt`/`atan2`, and rejected wrong-sign turns before calling `math.atan2`. | `Motion` on bunny `79.21 → 77.69 ms` (−1.52 ms; 3-way + baseline byte-exact across all models) | `DONE` |
 | **OPT-64** | `gcode/klipper_validator.odin` (`klipper_parse_command`) | Added a single-pass inline parser for `G0`/`G1`/`G2`/`G3` motion commands (99.8% of emitted lines), bypassing `klipper_tokenize` and its `[8]string` array while preserving identical syntax and bounds checks. | `G-code` stage (3-run min): `benchy.stl` `2.10 → 1.94 ms` (−7.6%), `all-in-one-test.stl` `5.75 → 5.33 ms` (−7.3%), `stanford-bunny.stl` `23.15 → 21.54 ms` (−7.0%; cumulative `47.41 → 21.54 ms`, **2.20× faster** vs. pre-OPT-56) | `DONE` |
+
+## Build flag comparison (2026-11-25)
+
+Release CLI at `e67befc`, M4, `benchy.stl`, `all-in-one-test.stl` and `stanford-bunny.stl`, default settings. G-code was byte-identical for all six builds. Medians of 9 interleaved `/usr/bin/time -l` runs, relative to the release flags `-o:speed -microarch:native`. The machine ran other builds (load average 9–19), so wall time differed by up to 40 % between rounds and decides nothing here; cycle spread was at most 1.5 %.
+
+| ID | Flags | Instructions retired | Cycles | Status |
+|---|---|---:|---:|---|
+| **OPT-65** | `-o:speed` without `-microarch:native` | −0.3 to +0.1 % | +0.1 to +1.0 % | `NO GAIN` |
+| **OPT-66** | `-lto:thin` (links with Homebrew `lld`) | −2.1 to −1.4 % | −1.1 to +0.8 % | `NO GAIN` |
+| **OPT-67** | `-o:aggressive` | 0.0 % | −1.0 to +0.8 % | `NO GAIN` |
+| **OPT-68** | `-o:aggressive -lto:thin` | −2.1 to −1.4 % | −1.3 to +0.6 % | `NO GAIN` |
+| **OPT-69** | `-no-bounds-check` for the whole program | −10.3 to −9.4 % | −3.8 to −2.3 % | `REJECTED`: removes crash diagnosis everywhere; apply `#no_bounds_check` only to a hot loop that measures a gain |
