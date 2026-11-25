@@ -671,7 +671,7 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	hot := make([dynamic][2]i64, 0, 16, context.temp_allocator)
 	if fits_i32 {
 		did_snap_strips := false
-		if n_segs >= 64 {
+		if n_segs >= 64 && n_segs < (1 << 24) {
 			g_min_y := seg_ords_32[0].min_y
 			g_max_y := seg_ords_32[0].max_y
 			for oi in 1..<n_segs {
@@ -682,12 +682,17 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 			y_span := i64(g_max_y) - i64(g_min_y) + 2
 			if y_span > 0 {
 				n_strips := clamp(n_segs / 16, 4, 64)
+				// Self-contained 32-byte strip entry (2 per cache line): embeds endpoints + packed
+				// (idx | s0<<24 | is_clip<<30) so the inner pair loop never touches 72-byte `segs[j]`.
 				Strip_Entry :: struct {
 					min_x: i32,
 					min_y: i32,
 					max_y: i32,
-					idx:   i32,
-					s0:    i32,
+					ax:    i32,
+					ay:    i32,
+					bx:    i32,
+					by:    i32,
+					meta:  u32,
 				}
 				inv_span := f64(n_strips) / f64(y_span)
 				base_y := i64(g_min_y) - 1
@@ -712,50 +717,116 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 					o := seg_ords_32[oi]
 					s0 := int(s0s[oi])
 					s1 := int(s1s[oi])
-					ent := Strip_Entry{min_x = o.min_x, min_y = o.min_y, max_y = o.max_y, idx = o.idx, s0 = i32(s0)}
+					sg := segs[int(o.idx)]
+					meta := u32(o.idx) | (u32(s0) << 24) | (u32(1) << 30 if sg.is_clip else 0)
+					ent := Strip_Entry{
+						min_x = o.min_x,
+						min_y = o.min_y,
+						max_y = o.max_y,
+						ax    = i32(sg.ax),
+						ay    = i32(sg.ay),
+						bx    = i32(sg.bx),
+						by    = i32(sg.by),
+						meta  = meta,
+					}
 					for s in s0..=s1 {
 						strip_data[cursors[s]] = ent
 						cursors[s] += 1
 					}
 				}
+				try_snap_i32 :: #force_inline proc(
+					snaps: ^[dynamic]Snap_Item,
+					idx: int,
+					ax, ay, bx, by, min_x, max_x, min_y, max_y, dx_i, dy_i, adx, ady: i64,
+					hx, hy: i64,
+				) {
+					if (hx == ax && hy == ay) || (hx == bx && hy == by) {return}
+					if hx < min_x - 1 || hx > max_x + 1 || hy < min_y - 1 || hy > max_y + 1 {return}
+					if adx < 1_000_000_000 && ady < 1_000_000_000 {
+						cross := (hx - ax)*dy_i - (hy - ay)*dx_i
+						if 2*abs(cross) > adx + ady {return}
+					}
+					sg := Vatti_Seg{ax = ax, ay = ay, bx = bx, by = by}
+					if !vatti_segment_hits_pixel(sg, {hx, hy}) {return}
+					dx := f64(dx_i)
+					dy := f64(dy_i)
+					t := (f64(hx - ax)*dx + f64(hy - ay)*dy) / (dx*dx + dy*dy)
+					append(snaps, Snap_Item{idx, t, hx, hy})
+				}
 				for s in 0..<n_strips {
 					st := strip_data[offsets[s]:offsets[s + 1]]
 					n_st := len(st)
-					s_i32 := i32(s)
+					s_u32 := u32(s)
 					for ai in 0..<n_st {
 						ord_i := st[ai]
-						i := int(ord_i.idx)
-						sa := &segs[i]
-						sa_max_x_1 := i32(sa.max_x + 1)
-						sa_min_y_1 := i32(sa.min_y - 1)
-						sa_max_y_1 := i32(sa.max_y + 1)
+						i := int(ord_i.meta & 0x00ff_ffff)
+						i_s0 := (ord_i.meta >> 24) & 0x3f
+						i_clip := (ord_i.meta >> 30) & 1
+						a_ax, a_ay := i64(ord_i.ax), i64(ord_i.ay)
+						a_bx, a_by := i64(ord_i.bx), i64(ord_i.by)
+						a_min_x := i64(ord_i.min_x)
+						a_max_x := max(a_ax, a_bx)
+						a_min_y := i64(ord_i.min_y)
+						a_max_y := i64(ord_i.max_y)
+						dax := a_bx - a_ax
+						day := a_by - a_ay
+						adax := abs(dax)
+						aday := abs(day)
+						sa_max_x_1 := i32(a_max_x + 1)
+						sa_min_y_1 := ord_i.min_y - 1
+						sa_max_y_1 := ord_i.max_y + 1
 						for aj := ai + 1; aj < n_st; aj += 1 {
 							ord_j := st[aj]
 							if ord_j.min_x > sa_max_x_1 {break}
 							if ord_j.max_y < sa_min_y_1 || ord_j.min_y > sa_max_y_1 {continue}
-							if max(ord_i.s0, ord_j.s0) != s_i32 {continue}
-							j := int(ord_j.idx)
-							sb := &segs[j]
-							try_snap(&snaps, i, sa, sb.ax, sb.ay)
-							try_snap(&snaps, i, sa, sb.bx, sb.by)
-							try_snap(&snaps, j, sb, sa.ax, sa.ay)
-							try_snap(&snaps, j, sb, sa.bx, sa.by)
-							if sb.min_x > sa.max_x || sb.max_y < sa.min_y || sb.min_y > sa.max_y {continue}
-							if skip_same_set && sa.is_clip == sb.is_clip {continue}
-							shared := (sa.ax == sb.ax && sa.ay == sb.ay) || (sa.ax == sb.bx && sa.ay == sb.by) ||
-							          (sa.bx == sb.ax && sa.by == sb.ay) || (sa.bx == sb.bx && sa.by == sb.by)
+							j_s0 := (ord_j.meta >> 24) & 0x3f
+							if max(i_s0, j_s0) != s_u32 {continue}
+							j := int(ord_j.meta & 0x00ff_ffff)
+							b_ax, b_ay := i64(ord_j.ax), i64(ord_j.ay)
+							b_bx, b_by := i64(ord_j.bx), i64(ord_j.by)
+							b_min_x := i64(ord_j.min_x)
+							b_max_x := max(b_ax, b_bx)
+							b_min_y := i64(ord_j.min_y)
+							b_max_y := i64(ord_j.max_y)
+							dbx := b_bx - b_ax
+							dby := b_by - b_ay
+							adbx := abs(dbx)
+							adby := abs(dby)
+							try_snap_i32(&snaps, i, a_ax, a_ay, a_bx, a_by, a_min_x, a_max_x, a_min_y, a_max_y, dax, day, adax, aday, b_ax, b_ay)
+							try_snap_i32(&snaps, i, a_ax, a_ay, a_bx, a_by, a_min_x, a_max_x, a_min_y, a_max_y, dax, day, adax, aday, b_bx, b_by)
+							try_snap_i32(&snaps, j, b_ax, b_ay, b_bx, b_by, b_min_x, b_max_x, b_min_y, b_max_y, dbx, dby, adbx, adby, a_ax, a_ay)
+							try_snap_i32(&snaps, j, b_ax, b_ay, b_bx, b_by, b_min_x, b_max_x, b_min_y, b_max_y, dbx, dby, adbx, adby, a_bx, a_by)
+							if b_min_x > a_max_x || b_max_y < a_min_y || b_min_y > a_max_y {continue}
+							if skip_same_set && i_clip == ((ord_j.meta >> 30) & 1) {continue}
+							shared := (a_ax == b_ax && a_ay == b_ay) || (a_ax == b_bx && a_ay == b_by) ||
+							          (a_bx == b_ax && a_by == b_ay) || (a_bx == b_bx && a_by == b_by)
 							if !shared {
-								if px, py, ta, tb, hit := vatti_seg_intersect_i64(sa, sb); hit {
-									if (ta > 1e-9 && ta < 1.0 - 1e-9) || (tb > 1e-9 && tb < 1.0 - 1e-9) {
-										append(&hot, [2]i64{px, py})
-										crossings += 1
+								denom := dax*dby - day*dbx
+								if denom != 0 {
+									rx := b_ax - a_ax
+									ry := b_ay - a_ay
+									num_a := rx*dby - ry*dbx
+									num_b := rx*day - ry*dax
+									hit := (num_a >= 0 && num_a <= denom && num_b >= 0 && num_b <= denom) if denom > 0 else
+									       (num_a <= 0 && num_a >= denom && num_b <= 0 && num_b >= denom)
+									if hit {
+										inv_d := 1.0 / f64(denom)
+										ta := f64(num_a) * inv_d
+										tb := f64(num_b) * inv_d
+										if (ta > 1e-9 && ta < 1.0 - 1e-9) || (tb > 1e-9 && tb < 1.0 - 1e-9) {
+											px := a_ax + i64(math.round(ta * f64(dax)))
+											py := a_ay + i64(math.round(ta * f64(day)))
+											append(&hot, [2]i64{px, py})
+											crossings += 1
+										}
+										continue
 									}
-									continue
 								}
 							}
-							if vatti_segs_collinear_i64(sa, sb) &&
-							   max(sa.min_x, sb.min_x) <= min(sa.max_x, sb.max_x) &&
-							   max(sa.min_y, sb.min_y) <= min(sa.max_y, sb.max_y) {
+							if dax*(b_ay - a_ay) - day*(b_ax - a_ax) == 0 &&
+							   dax*(b_by - a_ay) - day*(b_bx - a_ax) == 0 &&
+							   max(a_min_x, b_min_x) <= min(a_max_x, b_max_x) &&
+							   max(a_min_y, b_min_y) <= min(a_max_y, b_max_y) {
 								crossings += 1
 							}
 						}
@@ -908,21 +979,6 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 
 	// Split collinear overlaps at the other piece's endpoints (exact points, no rounding).
 	n_routed := len(routed)
-	route_ords := make_temp_non_zeroed(Seg_Ord, n_routed)
-	for i in 0..<n_routed {
-		r := routed[i]
-		route_ords[i] = {min_x = r.min_x, min_y = r.min_y, max_y = r.max_y, idx = i32(i)}
-	}
-	// Insertion sort: the pieces are nearly sorted already.
-	for ai := 1; ai < n_routed; ai += 1 {
-		key := route_ords[ai]
-		aj := ai - 1
-		for aj >= 0 && route_ords[aj].min_x > key.min_x {
-			route_ords[aj + 1] = route_ords[aj]
-			aj -= 1
-		}
-		route_ords[aj + 1] = key
-	}
 	Flat_Split :: struct {
 		seg_idx: int,
 		t:       f64,
@@ -930,23 +986,34 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 	}
 	splits := make([dynamic]Flat_Split, 0, 16, context.temp_allocator)
 	did_route_strips := false
-	if fits_i32 && n_routed >= 64 {
-		g_min_y := route_ords[0].min_y
-		g_max_y := route_ords[0].max_y
+	if fits_i32 && n_routed >= 64 && n_routed < (1 << 24) {
+		route_ords_32 := make_temp_non_zeroed(Seg_Ord_32, n_routed)
+		for i in 0..<n_routed {
+			r := routed[i]
+			route_ords_32[i] = {min_x = i32(r.min_x), min_y = i32(r.min_y), max_y = i32(r.max_y), idx = i32(i)}
+		}
+		if !radix_sort_by_i64(route_ords_32, proc(o: Seg_Ord_32) -> i64 {return i64(o.min_x)}) {
+			fast_sort(route_ords_32, proc(a, b: Seg_Ord_32) -> bool {return a.min_x < b.min_x})
+		}
+		g_min_y := route_ords_32[0].min_y
+		g_max_y := route_ords_32[0].max_y
 		for oi in 1..<n_routed {
-			o := route_ords[oi]
+			o := route_ords_32[oi]
 			if o.min_y < g_min_y {g_min_y = o.min_y}
 			if o.max_y > g_max_y {g_max_y = o.max_y}
 		}
-		y_span := g_max_y - g_min_y + 1
+		y_span := i64(g_max_y) - i64(g_min_y) + 1
 		if y_span > 0 {
 			n_strips := clamp(n_routed / 16, 4, 64)
 			RStrip_Entry :: struct {
 				min_x: i32,
 				min_y: i32,
 				max_y: i32,
-				idx:   i32,
-				s0:    i32,
+				ax:    i32,
+				ay:    i32,
+				bx:    i32,
+				by:    i32,
+				meta:  u32,
 			}
 			inv_span := f64(n_strips) / f64(y_span)
 			counts: [64]int
@@ -954,9 +1021,9 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 			s1s := make_temp_non_zeroed(i32, n_routed)
 			total_entries := 0
 			for oi in 0..<n_routed {
-				o := route_ords[oi]
-				s0 := clamp(int(f64(o.min_y - g_min_y) * inv_span), 0, n_strips - 1)
-				s1 := clamp(int(f64(o.max_y - g_min_y) * inv_span), 0, n_strips - 1)
+				o := route_ords_32[oi]
+				s0 := clamp(int(f64(i64(o.min_y) - i64(g_min_y)) * inv_span), 0, n_strips - 1)
+				s1 := clamp(int(f64(i64(o.max_y) - i64(g_min_y)) * inv_span), 0, n_strips - 1)
 				s0s[oi] = i32(s0)
 				s1s[oi] = i32(s1)
 				for s in s0..=s1 {counts[s] += 1}
@@ -967,10 +1034,20 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 			cursors := offsets
 			strip_data := make_temp_non_zeroed(RStrip_Entry, total_entries)
 			for oi in 0..<n_routed {
-				o := route_ords[oi]
+				o := route_ords_32[oi]
 				s0 := int(s0s[oi])
 				s1 := int(s1s[oi])
-				ent := RStrip_Entry{min_x = i32(o.min_x), min_y = i32(o.min_y), max_y = i32(o.max_y), idx = o.idx, s0 = i32(s0)}
+				r := routed[int(o.idx)]
+				ent := RStrip_Entry{
+					min_x = o.min_x,
+					min_y = o.min_y,
+					max_y = o.max_y,
+					ax    = i32(r.ax),
+					ay    = i32(r.ay),
+					bx    = i32(r.bx),
+					by    = i32(r.by),
+					meta  = u32(o.idx) | (u32(s0) << 24),
+				}
 				for s in s0..=s1 {
 					strip_data[cursors[s]] = ent
 					cursors[s] += 1
@@ -979,26 +1056,35 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 			for s in 0..<n_strips {
 				st := strip_data[offsets[s]:offsets[s + 1]]
 				n_st := len(st)
-				s_i32 := i32(s)
+				s_u32 := u32(s)
 				for ai in 0..<n_st {
 					ord_i := st[ai]
-					i := int(ord_i.idx)
-					sa := routed[i]
-					sa_max_x := i32(sa.max_x)
-					sa_min_y := i32(sa.min_y)
-					sa_max_y := i32(sa.max_y)
+					i_s0 := (ord_i.meta >> 24) & 0x3f
+					a_ax, a_ay := i64(ord_i.ax), i64(ord_i.ay)
+					a_bx, a_by := i64(ord_i.bx), i64(ord_i.by)
+					dax := a_bx - a_ax
+					day := a_by - a_ay
+					sa_max_x := max(ord_i.ax, ord_i.bx)
+					sa_min_y := ord_i.min_y
+					sa_max_y := ord_i.max_y
 					for aj := ai + 1; aj < n_st; aj += 1 {
 						ord_j := st[aj]
 						if ord_j.min_x > sa_max_x {break}
 						if ord_j.max_y < sa_min_y || ord_j.min_y > sa_max_y {continue}
-						if max(ord_i.s0, ord_j.s0) != s_i32 {continue}
-						j := int(ord_j.idx)
-						sb := &routed[j]
-						if !vatti_segs_collinear_i64(&routed[i], sb) {continue}
-						vatti_maybe_split_flat(&splits, i, sa, sb.ax, sb.ay)
-						vatti_maybe_split_flat(&splits, i, sa, sb.bx, sb.by)
-						vatti_maybe_split_flat(&splits, j, sb^, sa.ax, sa.ay)
-						vatti_maybe_split_flat(&splits, j, sb^, sa.bx, sa.by)
+						j_s0 := (ord_j.meta >> 24) & 0x3f
+						if max(i_s0, j_s0) != s_u32 {continue}
+						b_ax, b_ay := i64(ord_j.ax), i64(ord_j.ay)
+						if dax*(b_ay - a_ay) - day*(b_ax - a_ax) != 0 {continue}
+						b_bx, b_by := i64(ord_j.bx), i64(ord_j.by)
+						if dax*(b_by - a_ay) - day*(b_bx - a_ax) != 0 {continue}
+						i := int(ord_i.meta & 0x00ff_ffff)
+						j := int(ord_j.meta & 0x00ff_ffff)
+						sa := routed[i]
+						sb := routed[j]
+						vatti_maybe_split_flat(&splits, i, sa, b_ax, b_ay)
+						vatti_maybe_split_flat(&splits, i, sa, b_bx, b_by)
+						vatti_maybe_split_flat(&splits, j, sb, a_ax, a_ay)
+						vatti_maybe_split_flat(&splits, j, sb, a_bx, a_by)
 					}
 				}
 			}
@@ -1006,6 +1092,20 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 		}
 	}
 	if !did_route_strips {
+		route_ords := make_temp_non_zeroed(Seg_Ord, n_routed)
+		for i in 0..<n_routed {
+			r := routed[i]
+			route_ords[i] = {min_x = r.min_x, min_y = r.min_y, max_y = r.max_y, idx = i32(i)}
+		}
+		for ai := 1; ai < n_routed; ai += 1 {
+			key := route_ords[ai]
+			aj := ai - 1
+			for aj >= 0 && route_ords[aj].min_x > key.min_x {
+				route_ords[aj + 1] = route_ords[aj]
+				aj -= 1
+			}
+			route_ords[aj + 1] = key
+		}
 		for oi in 0..<n_routed {
 			i := int(route_ords[oi].idx)
 			sa := routed[i]
@@ -1023,11 +1123,11 @@ vatti_snap_round :: proc(segs: []Vatti_Seg, skip_same_set: bool) -> (pieces: [dy
 			}
 		}
 	}
-	pieces = make([dynamic]Vatti_Seg, 0, n_routed + len(splits), context.temp_allocator)
 	if len(splits) == 0 {
-		append(&pieces, ..routed[:])
+		pieces = routed
 		return
 	}
+	pieces = make([dynamic]Vatti_Seg, 0, n_routed + len(splits), context.temp_allocator)
 	fast_sort(splits[:], proc(a, b: Flat_Split) -> bool {
 		if a.seg_idx != b.seg_idx {return a.seg_idx < b.seg_idx}
 		if a.t != b.t {return a.t < b.t}
