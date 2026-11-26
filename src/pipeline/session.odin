@@ -1518,9 +1518,9 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 @(private = "file")
 stage_gcode :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	klip_err: gcode.Klipper_Error
-	minimum_cruise_ratio_pct := i64(-1)
+	minimum_cruise_ratio_ppm := i64(-1)
 	if s.options.accel_to_decel_pct > 0 {
-		minimum_cruise_ratio_pct = 100 - s.options.accel_to_decel_pct
+		minimum_cruise_ratio_ppm = (100 - s.options.accel_to_decel_pct) * 10_000
 	}
 	s.klipper, klip_err = gcode.klipper_emit(
 		s.motion,
@@ -1530,10 +1530,10 @@ stage_gcode :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		pause_layers = s.options.pause_layers,
 		color_change_layers = s.options.color_change_layers,
 		record_commands = s.options.evidence_level != .Disabled,
-		minimum_cruise_ratio_pct = minimum_cruise_ratio_pct,
+		minimum_cruise_ratio_ppm = minimum_cruise_ratio_ppm,
 	)
 	if klip_err != .None {return {stage = "klipper_emit", detail = fmt.tprintf("klipper emit error: %v", klip_err)}}
-	s.estimated_seconds = gcode.klipper_estimate_seconds(s.klipper, s.profile, minimum_cruise_ratio_pct)
+	s.estimated_seconds = gcode.klipper_estimate_seconds(s.klipper, s.profile, minimum_cruise_ratio_ppm)
 	s.slots[.Gcode].count_a = u64(len(s.klipper.bytes))
 	s.slots[.Gcode].count_b = s.klipper.validation.command_count
 	return {}

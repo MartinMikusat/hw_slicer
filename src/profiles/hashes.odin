@@ -214,6 +214,7 @@ append_printer_motion_limits :: proc(
 		hash,
 		i64(profile.maximum_extruder_acceleration),
 	)
+	contracts.canonical_hash_append_u32(hash, u32(profile.minimum_cruise_ratio))
 }
 
 append_material_path_limits :: proc(

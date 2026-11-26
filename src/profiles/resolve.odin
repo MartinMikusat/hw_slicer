@@ -95,7 +95,8 @@ printer_profile_validate :: proc(
 	   i64(profile.maximum_speed) <= 0 ||
 	   i64(profile.maximum_acceleration) <= 0 ||
 	   i64(profile.maximum_extruder_speed) <= 0 ||
-	   i64(profile.maximum_extruder_acceleration) <= 0 {
+	   i64(profile.maximum_extruder_acceleration) <= 0 ||
+	   u32(profile.minimum_cruise_ratio) >= RATIO_SCALE {
 		return .Printer_Limits
 	}
 	return .None

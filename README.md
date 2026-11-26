@@ -281,7 +281,10 @@ The current engine implementation provides:
   `END_PRINT` owns retraction, parking, and shutdown. Each layer reports
   `SET_PRINT_STATS_INFO`, and acceleration uses `M204`. Moves carry `F` only
   when the feed rate changes. An enabled accel-to-decel factor sets Klipper's
-  `MINIMUM_CRUISE_RATIO` once after `START_PRINT`.
+  `MINIMUM_CRUISE_RATIO` to 1 − factor after `START_PRINT` and restores the
+  printer profile's `minimum_cruise_ratio` (default 0.5) before `END_PRINT`.
+  A cancelled print skips the restore, so the printer's `CANCEL_PRINT` macro
+  must restore the value itself.
 - A print-time estimate from Klipper's look-ahead planner run over the emitted
   G-code, with Klipper defaults for limits that the printer profile lacks.
 - Exact decimal coordinate, feed, acceleration, and extrusion formatting with

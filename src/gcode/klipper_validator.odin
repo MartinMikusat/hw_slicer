@@ -33,7 +33,8 @@ Klipper_Validation_Report :: struct {
 	bed_temperature:       i32,
 	print_ended:           bool,
 	has_minimum_cruise_ratio: bool,
-	minimum_cruise_ratio_pct: i64,
+	minimum_cruise_ratio_ppm: i64,
+	minimum_cruise_ratio_restored: bool,
 }
 
 Klipper_Parsed_Kind :: enum u8 {
@@ -86,7 +87,7 @@ Klipper_Parsed_Command :: struct {
 	p:           i64,
 	r:           i64,
 	t:           i64,
-	value:       i64, // MINIMUM_CRUISE_RATIO in percent, TOTAL_LAYER or CURRENT_LAYER
+	value:       i64, // MINIMUM_CRUISE_RATIO in ppm, TOTAL_LAYER or CURRENT_LAYER
 	extruder_temperature:       i64,
 	extruder_other_temperature: i64,
 	bed_temperature:            i64,
@@ -176,7 +177,7 @@ klipper_validate :: proc(
 				return {}, startup_error
 			}
 		} else if klipper_printing_complete(state, motion) {
-			shutdown_error := klipper_validate_shutdown(command, &report)
+			shutdown_error := klipper_validate_shutdown(command, profile, &report)
 			if shutdown_error != .None {
 				return {}, shutdown_error
 			}
@@ -319,6 +320,7 @@ klipper_validate_header_slice :: proc(
 @(private)
 klipper_validate_footer_slice :: proc(
 	bytes: []u8,
+	profile: profiles.Resolved_Profiles,
 	report: ^Klipper_Validation_Report,
 ) -> Klipper_Validation_Error {
 	line_start := 0
@@ -334,7 +336,7 @@ klipper_validate_footer_slice :: proc(
 		command, parse_error := klipper_parse_command(line)
 		if parse_error != .None {return parse_error}
 		report.command_count += 1
-		shutdown_error := klipper_validate_shutdown(command, report)
+		shutdown_error := klipper_validate_shutdown(command, profile, report)
 		if shutdown_error != .None {return shutdown_error}
 		line_start = byte_index+1
 	}
@@ -428,7 +430,7 @@ klipper_validate_print_command :: proc(
 			return .Invalid_Sequence
 		}
 		report.has_minimum_cruise_ratio = true
-		report.minimum_cruise_ratio_pct = command.value
+		report.minimum_cruise_ratio_ppm = command.value
 		return .None
 	case .M106, .M107:
 		return klipper_apply_fan(command, state, report)
@@ -657,10 +659,22 @@ klipper_validate_print_dwell :: proc(
 // parks and shuts down.
 klipper_validate_shutdown :: proc(
 	command: Klipper_Parsed_Command,
+	profile: profiles.Resolved_Profiles,
 	report: ^Klipper_Validation_Report,
 ) -> Klipper_Validation_Error {
-	if command.kind == .Exclude_Object && !report.print_ended {
+	if command.kind == .Exclude_Object && !report.print_ended && !report.minimum_cruise_ratio_restored {
 		return .None
+	}
+	if command.kind == .Set_Velocity_Limit {
+		if !report.has_minimum_cruise_ratio || report.minimum_cruise_ratio_restored || report.print_ended ||
+		   command.value != i64(profile.printer.minimum_cruise_ratio) {
+			return .Invalid_Sequence
+		}
+		report.minimum_cruise_ratio_restored = true
+		return .None
+	}
+	if command.kind == .End_Print && report.has_minimum_cruise_ratio && !report.minimum_cruise_ratio_restored {
+		return .Invalid_Sequence
 	}
 	if command.kind != .End_Print || report.print_ended {return .Invalid_Sequence}
 	report.print_ended = true
@@ -1040,9 +1054,8 @@ klipper_parse_extended :: proc(
 		ok = len(tokens) == 2
 		if !ok {break}
 		ratio, ratio_ok := parameter(tokens[1], "MINIMUM_CRUISE_RATIO")
-		ok = ratio_ok && len(ratio) == 4 && ratio[:2] == "0." &&
-			ratio[2] >= '0' && ratio[2] <= '9' && ratio[3] >= '0' && ratio[3] <= '9'
-		if ok {result.value = i64(ratio[2]-'0')*10+i64(ratio[3]-'0')}
+		ok = ratio_ok && len(ratio) == 8 && ratio[:2] == "0."
+		if ok {result.value, ok = klipper_parse_fixed_i64(ratio, 6)}
 	case "SET_PRINT_STATS_INFO":
 		ok = len(tokens) == 2
 		if !ok {break}

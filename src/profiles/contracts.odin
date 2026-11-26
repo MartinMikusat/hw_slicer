@@ -11,6 +11,7 @@ RATIO_SCALE :: u32(1_000_000)
 MAX_BRIDGE_ANGLE_CANDIDATES :: 8
 
 Ratio_Ppm :: distinct u32
+KLIPPER_DEFAULT_MINIMUM_CRUISE_RATIO :: 0.5
 Speed_Um_Per_Second :: distinct i64
 Acceleration_Um_Per_Second_Squared :: distinct i64
 Temperature_Celsius :: distinct i32
@@ -193,6 +194,7 @@ Printer_Profile :: struct {
 	maximum_acceleration: Acceleration_Um_Per_Second_Squared,
 	maximum_extruder_speed: Speed_Um_Per_Second,
 	maximum_extruder_acceleration: Acceleration_Um_Per_Second_Squared,
+	minimum_cruise_ratio: Ratio_Ppm,
 }
 
 Material_Profile :: struct {

@@ -15,5 +15,6 @@
   "max_speed_mm_s": 250,
   "max_acceleration_mm_s2": 6000,
   "max_extruder_speed_mm_s": 100,
-  "max_extruder_acceleration_mm_s2": 4000
+  "max_extruder_acceleration_mm_s2": 4000,
+  "minimum_cruise_ratio": 0.5
 }

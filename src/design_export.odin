@@ -113,6 +113,7 @@ design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved
 		maximum_acceleration = DEV_MAX_ACCELERATION,
 		maximum_extruder_speed = DEV_MAX_EXTRUDER_SPEED,
 		maximum_extruder_acceleration = DEV_MAX_EXTRUDER_ACCELERATION,
+		minimum_cruise_ratio = profiles.Ratio_Ppm(u32(profiles.KLIPPER_DEFAULT_MINIMUM_CRUISE_RATIO*f64(profiles.RATIO_SCALE))),
 	}
 	material := profiles.Material_Profile{
 		schema_version = profiles.MATERIAL_PROFILE_SCHEMA_VERSION,

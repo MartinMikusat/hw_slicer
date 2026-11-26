@@ -147,6 +147,7 @@ Printer_JSON :: struct {
 	max_acceleration_mm_s2:          f64,
 	max_extruder_speed_mm_s:         f64,
 	max_extruder_acceleration_mm_s2: f64,
+	minimum_cruise_ratio:            f64,
 }
 
 @(private = "file")
@@ -355,10 +356,11 @@ printer_profile_load_json :: proc(
 ) -> (Printer_Profile, Profile_JSON_Error) {
 	bytes, read_err := os.read_entire_file(path, context.temp_allocator)
 	if read_err != nil {return {}, .Read_Failed}
-	raw: Printer_JSON
+	raw := Printer_JSON{minimum_cruise_ratio = KLIPPER_DEFAULT_MINIMUM_CRUISE_RATIO}
 	if err := json.unmarshal(bytes, &raw, allocator = context.temp_allocator); err != nil {
 		return {}, .Parse_Failed
 	}
+	if raw.minimum_cruise_ratio < 0 || raw.minimum_cruise_ratio >= 1 {return {}, .Parse_Failed}
 	return Printer_Profile{
 		schema_version                = PRINTER_PROFILE_SCHEMA_VERSION,
 		axis_minimum_x                = mm_to_um(raw.bed_min_x_mm),
@@ -377,6 +379,7 @@ printer_profile_load_json :: proc(
 		maximum_acceleration          = mm_s2_to_um_s2(raw.max_acceleration_mm_s2),
 		maximum_extruder_speed        = mm_s_to_um_s(raw.max_extruder_speed_mm_s),
 		maximum_extruder_acceleration = mm_s2_to_um_s2(raw.max_extruder_acceleration_mm_s2),
+		minimum_cruise_ratio          = Ratio_Ppm(u32(math.round(raw.minimum_cruise_ratio*f64(RATIO_SCALE)))),
 	}, .None
 }
 

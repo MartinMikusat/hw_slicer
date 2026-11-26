@@ -5,18 +5,18 @@ import toolpath "../toolpath"
 import workers "../workers"
 
 KLIPPER_DEFAULT_SQUARE_CORNER_VELOCITY :: 5.0
-KLIPPER_DEFAULT_MINIMUM_CRUISE_RATIO :: 0.5
 KLIPPER_DEFAULT_INSTANTANEOUS_CORNER_VELOCITY :: 1.0
 KLIPPER_DEFAULT_ARC_RESOLUTION :: 1.0
 
 klipper_planner_limits :: proc(
 	profile: profiles.Resolved_Profiles,
-	minimum_cruise_ratio_pct: i64,
+	minimum_cruise_ratio_ppm: i64,
 ) -> toolpath.Limits {
 	max_velocity := f64(i64(profile.printer.maximum_speed)) * 0.001
 	max_accel := f64(i64(profile.printer.maximum_acceleration)) * 0.001
-	cruise_ratio := KLIPPER_DEFAULT_MINIMUM_CRUISE_RATIO
-	if minimum_cruise_ratio_pct >= 0 {cruise_ratio = f64(minimum_cruise_ratio_pct) * 0.01}
+	cruise_ratio_ppm := i64(profile.printer.minimum_cruise_ratio)
+	if minimum_cruise_ratio_ppm >= 0 {cruise_ratio_ppm = minimum_cruise_ratio_ppm}
+	cruise_ratio := f64(cruise_ratio_ppm) / f64(profiles.RATIO_SCALE)
 	return {
 		max_velocity                  = max_velocity,
 		max_accel                     = max_accel,
@@ -43,14 +43,14 @@ Klipper_Estimate_Context :: struct {
 klipper_estimate_seconds :: proc(
 	result: Klipper_Result,
 	profile: profiles.Resolved_Profiles,
-	minimum_cruise_ratio_pct: i64,
+	minimum_cruise_ratio_ppm: i64,
 ) -> f64 {
 	if len(result.bytes) == 0 {return 0}
 	span_count := len(result.plan_cuts) + 1
 	ctx := Klipper_Estimate_Context{
 		bytes   = result.bytes,
 		cuts    = result.plan_cuts,
-		limits  = klipper_planner_limits(profile, minimum_cruise_ratio_pct),
+		limits  = klipper_planner_limits(profile, minimum_cruise_ratio_ppm),
 		seconds = make([]f64, span_count),
 	}
 	defer delete(ctx.seconds)

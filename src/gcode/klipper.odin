@@ -117,9 +117,9 @@ klipper_emit :: proc(
 	pause_layers: []u32 = nil,
 	color_change_layers: []u32 = nil,
 	record_commands := true,
-	minimum_cruise_ratio_pct: i64 = -1,
+	minimum_cruise_ratio_ppm: i64 = -1,
 ) -> (Klipper_Result, Klipper_Error) {
-	if minimum_cruise_ratio_pct < -1 || minimum_cruise_ratio_pct > 99 {
+	if minimum_cruise_ratio_ppm < -1 || minimum_cruise_ratio_ppm >= i64(profiles.RATIO_SCALE) {
 		return {}, .Invalid_Profile
 	}
 	resolved, resolve_error := profiles.profiles_resolve(
@@ -144,7 +144,7 @@ klipper_emit :: proc(
 			pause_layers,
 			color_change_layers,
 			record_commands,
-			minimum_cruise_ratio_pct,
+			minimum_cruise_ratio_ppm,
 		)
 	}
 	object_name := klipper_object_name(object_name, context.temp_allocator) if len(object_name) > 0 else ""
@@ -229,7 +229,7 @@ klipper_emit :: proc(
 	   !klipper_write_literal(&builder, commands, &command_write, .Set_Absolute_Coordinates, "G90\n") ||
 	   !klipper_write_literal(&builder, commands, &command_write, .Set_Relative_Extrusion, "M83\n") ||
 	   !klipper_write_literal(&builder, commands, &command_write, .Set_Fan, "M107\n") ||
-	   !klipper_write_cruise_ratio(&builder, commands, &command_write, minimum_cruise_ratio_pct) {
+	   !klipper_write_cruise_ratio(&builder, commands, &command_write, minimum_cruise_ratio_ppm) {
 		delete(commands, allocator)
 		return {}, .Command_Limit
 	}
@@ -408,7 +408,8 @@ klipper_emit :: proc(
 		}
 	}
 
-	if !klipper_write_literal(&builder, commands, &command_write, .End_Print, "END_PRINT\n") {
+	if !klipper_write_cruise_ratio_restore(&builder, commands, &command_write, profile, minimum_cruise_ratio_ppm) ||
+	   !klipper_write_literal(&builder, commands, &command_write, .End_Print, "END_PRINT\n") {
 		delete(commands, allocator)
 		return {}, .Command_Limit
 	}
@@ -432,7 +433,8 @@ klipper_emit :: proc(
 	report, validation_error :=
 		klipper_validate(result.bytes, profile, motion, record_commands)
 	if validation_error != .None ||
-	   !klipper_cruise_ratio_reported(report, minimum_cruise_ratio_pct) ||
+	   !klipper_cruise_ratio_reported(report, minimum_cruise_ratio_ppm) ||
+	   report.minimum_cruise_ratio_restored != (minimum_cruise_ratio_ppm >= 0) ||
 	   report.command_count != u64(command_write) ||
 	   report.positive_filament_nm != result.positive_filament_nm ||
 	   report.negative_filament_nm != result.negative_filament_nm ||
@@ -490,7 +492,7 @@ klipper_emit_parallel :: proc(
 	pause_layers: []u32 = nil,
 	color_change_layers: []u32 = nil,
 	record_commands := true,
-	minimum_cruise_ratio_pct: i64 = -1,
+	minimum_cruise_ratio_ppm: i64 = -1,
 ) -> (Klipper_Result, Klipper_Error) {
 	layer_count := len(motion.layers)
 	object_name_clean := klipper_object_name(object_name, context.temp_allocator) if len(object_name) > 0 else ""
@@ -537,7 +539,7 @@ klipper_emit_parallel :: proc(
 	   !klipper_write_literal(&header_builder, header_cmds, &header_cmd_write, .Set_Absolute_Coordinates, "G90\n") ||
 	   !klipper_write_literal(&header_builder, header_cmds, &header_cmd_write, .Set_Relative_Extrusion, "M83\n") ||
 	   !klipper_write_literal(&header_builder, header_cmds, &header_cmd_write, .Set_Fan, "M107\n") ||
-	   !klipper_write_cruise_ratio(&header_builder, header_cmds, &header_cmd_write, minimum_cruise_ratio_pct) {
+	   !klipper_write_cruise_ratio(&header_builder, header_cmds, &header_cmd_write, minimum_cruise_ratio_ppm) {
 		return {}, .Command_Limit
 	}
 	if len(object_name_clean) > 0 {
@@ -590,7 +592,8 @@ klipper_emit_parallel :: proc(
 			return {}, .Command_Limit
 		}
 	}
-	if !klipper_write_literal(&footer_builder, footer_cmds, &footer_cmd_write, .End_Print, "END_PRINT\n") {
+	if !klipper_write_cruise_ratio_restore(&footer_builder, footer_cmds, &footer_cmd_write, profile, minimum_cruise_ratio_ppm) ||
+	   !klipper_write_literal(&footer_builder, footer_cmds, &footer_cmd_write, .End_Print, "END_PRINT\n") {
 		return {}, .Command_Limit
 	}
 
@@ -767,7 +770,7 @@ klipper_emit_parallel :: proc(
 
 	// Validate header, check per-layer validation + cross-layer state continuity, and validate footer.
 	hdr_state, report, hdr_val_err := klipper_validate_header_slice(result.bytes[:len(header_text)], profile, motion)
-	if hdr_val_err != .None || !klipper_cruise_ratio_reported(report, minimum_cruise_ratio_pct) {
+	if hdr_val_err != .None || !klipper_cruise_ratio_reported(report, minimum_cruise_ratio_ppm) {
 		klipper_result_destroy(&result, allocator)
 		return {}, .Invalid_Motion
 	}
@@ -810,8 +813,9 @@ klipper_emit_parallel :: proc(
 	report.final_z = contracts.Micrometres(last_val.z)
 	report.final_fan_pwm = layer_emits[layer_count-1].val_report.final_fan_pwm
 
-	ftr_val_err := klipper_validate_footer_slice(result.bytes[footer_byte_offset:], &report)
+	ftr_val_err := klipper_validate_footer_slice(result.bytes[footer_byte_offset:], profile, &report)
 	if ftr_val_err != .None ||
+	   report.minimum_cruise_ratio_restored != (minimum_cruise_ratio_ppm >= 0) ||
 	   report.command_count != total_cmds ||
 	   report.motion_operation_count != u64(len(motion.operations)) ||
 	   report.positive_filament_nm != result.positive_filament_nm ||
@@ -1616,18 +1620,29 @@ klipper_write_cruise_ratio :: proc(
 	builder: ^strings.Builder,
 	commands: []Klipper_Command_Record,
 	command_write: ^int,
-	ratio_pct: i64,
+	ratio_ppm: i64,
 ) -> bool {
-	if ratio_pct < 0 {return true}
-	if ratio_pct > 99 {return false}
+	if ratio_ppm < 0 {return true}
+	if ratio_ppm >= i64(profiles.RATIO_SCALE) {return false}
 	start := klipper_command_begin(builder^)
-	fmt.sbprintf(builder, "SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.%02d\n", ratio_pct)
+	fmt.sbprintf(builder, "SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.%06d\n", ratio_ppm)
 	return klipper_command_end(builder^, commands, command_write, .Set_Acceleration, start)
 }
 
-klipper_cruise_ratio_reported :: proc(report: Klipper_Validation_Report, ratio_pct: i64) -> bool {
-	if ratio_pct < 0 {return !report.has_minimum_cruise_ratio}
-	return report.has_minimum_cruise_ratio && report.minimum_cruise_ratio_pct == ratio_pct
+klipper_write_cruise_ratio_restore :: proc(
+	builder: ^strings.Builder,
+	commands: []Klipper_Command_Record,
+	command_write: ^int,
+	profile: profiles.Resolved_Profiles,
+	ratio_ppm: i64,
+) -> bool {
+	if ratio_ppm < 0 {return true}
+	return klipper_write_cruise_ratio(builder, commands, command_write, i64(profile.printer.minimum_cruise_ratio))
+}
+
+klipper_cruise_ratio_reported :: proc(report: Klipper_Validation_Report, ratio_ppm: i64) -> bool {
+	if ratio_ppm < 0 {return !report.has_minimum_cruise_ratio}
+	return report.has_minimum_cruise_ratio && report.minimum_cruise_ratio_ppm == ratio_ppm
 }
 
 klipper_plan_cut_operation :: proc(kind: features.Motion_Operation_Kind) -> bool {
