@@ -32,6 +32,8 @@ Klipper_Validation_Report :: struct {
 	nozzle_temperature:    i32,
 	bed_temperature:       i32,
 	print_ended:           bool,
+	has_minimum_cruise_ratio: bool,
+	minimum_cruise_ratio_pct: i64,
 }
 
 Klipper_Parsed_Kind :: enum u8 {
@@ -48,6 +50,7 @@ Klipper_Parsed_Kind :: enum u8 {
 	M83,
 	M106,
 	M107,
+	M204,
 	Start_Print,
 	End_Print,
 	Set_Velocity_Limit,
@@ -83,7 +86,7 @@ Klipper_Parsed_Command :: struct {
 	p:           i64,
 	r:           i64,
 	t:           i64,
-	value:       i64, // ACCEL, TOTAL_LAYER or CURRENT_LAYER
+	value:       i64, // MINIMUM_CRUISE_RATIO in percent, TOTAL_LAYER or CURRENT_LAYER
 	extruder_temperature:       i64,
 	extruder_other_temperature: i64,
 	bed_temperature:            i64,
@@ -114,6 +117,7 @@ Klipper_Validation_State :: struct {
 	z:                    i64,
 	physical_z:           i64,
 	acceleration:         i64,
+	feed:                 i64,
 	fan_pwm:              i32,
 	z_hop_stage:          u8, // 0 = none, 1 = hopped up awaiting XY, 2 = XY done awaiting un-hop
 }
@@ -146,6 +150,7 @@ klipper_validate :: proc(
 		startup = .Header,
 		current_layer = max(u32),
 		acceleration = -1,
+		feed = -1,
 		fan_pwm = -1,
 	}
 	report := Klipper_Validation_Report{}
@@ -234,6 +239,7 @@ klipper_validate_layer_slice :: proc(
 		z               = i64(init.z),
 		physical_z      = i64(init.physical_z),
 		acceleration    = init.acceleration,
+		feed            = init.feed,
 		fan_pwm         = init.fan_pwm,
 	}
 	report = Klipper_Validation_Report{
@@ -278,6 +284,7 @@ klipper_validate_header_slice :: proc(
 		startup       = .Header,
 		current_layer = max(u32),
 		acceleration  = -1,
+		feed          = -1,
 		fan_pwm       = -1,
 	}
 	line_start := 0
@@ -414,11 +421,21 @@ klipper_validate_print_command :: proc(
 		}
 		state.layer_announced = true
 		return .None
-	case .Set_Velocity_Limit:
+	case .M204:
 		return klipper_apply_acceleration(command, profile, state)
+	case .Set_Velocity_Limit:
+		if state.layer_active || report.layer_count != 0 || report.has_minimum_cruise_ratio {
+			return .Invalid_Sequence
+		}
+		report.has_minimum_cruise_ratio = true
+		report.minimum_cruise_ratio_pct = command.value
+		return .None
 	case .M106, .M107:
 		return klipper_apply_fan(command, state, report)
-	case .Exclude_Object, .Pause_Or_Filament:
+	case .Pause_Or_Filament:
+		state.feed = -1
+		return .None
+	case .Exclude_Object:
 		return .None
 	case .G0, .G1, .G2, .G3:
 		return klipper_validate_print_move(
@@ -459,12 +476,13 @@ klipper_validate_print_move :: proc(
 		if !state.layer_announced ||
 		   command.kind != .G0 ||
 		   command.has_x || command.has_y || command.has_e ||
-		   !command.has_z || !command.has_f ||
+		   !command.has_z ||
+		   !klipper_feed_matches(command, state^, travel_feed) ||
 		   command.z != i64(klipper_layer_start_z(motion, layer)) ||
-		   command.f != travel_feed ||
 		   state.acceleration != travel_acceleration {
 			return .Motion_Mismatch
 		}
+		state.feed = travel_feed
 		state.z = i64(layer.z)
 		state.physical_z = command.z
 		state.layer_z_emitted = true
@@ -477,13 +495,13 @@ klipper_validate_print_move :: proc(
 		if command.kind != .G0 ||
 		   !command.has_x || !command.has_y ||
 		   command.has_z || command.has_e ||
-		   !command.has_f ||
+		   !klipper_feed_matches(command, state^, travel_feed) ||
 		   command.x != i64(operation.point_a.x) ||
 		   command.y != i64(operation.point_a.y) ||
-		   command.f != travel_feed ||
 		   state.acceleration != travel_acceleration {
 			return .Motion_Mismatch
 		}
+		state.feed = travel_feed
 		state.positioned_xy = true
 		state.x = command.x
 		state.y = command.y
@@ -496,13 +514,16 @@ klipper_validate_print_move :: proc(
 	}
 	expected_feed := klipper_feed_rate(operation.speed)
 	expected_acceleration := i64(operation.acceleration)/1_000
+	if !klipper_feed_matches(command, state^, expected_feed) {
+		return .Motion_Mismatch
+	}
+	state.feed = expected_feed
 	switch operation.kind {
 	case .Retract, .Recover:
 		if command.kind != .G1 ||
 		   command.has_x || command.has_y || command.has_z ||
-		   !command.has_e || !command.has_f ||
-		   command.e_nm != operation.filament_delta_nm ||
-		   command.f != expected_feed {
+		   !command.has_e ||
+		   command.e_nm != operation.filament_delta_nm {
 			return .Motion_Mismatch
 		}
 	case .Travel:
@@ -514,9 +535,7 @@ klipper_validate_print_move :: proc(
 				if command.kind != .G0 ||
 				   command.has_x || command.has_y ||
 				   !command.has_z || command.has_e ||
-				   !command.has_f ||
 				   command.z != hop_z ||
-				   command.f != expected_feed ||
 				   state.acceleration != expected_acceleration {
 					return .Motion_Mismatch
 				}
@@ -528,10 +547,8 @@ klipper_validate_print_move :: proc(
 				if command.kind != .G0 ||
 				   !command.has_x || !command.has_y ||
 				   command.has_z || command.has_e ||
-				   !command.has_f ||
 				   command.x != i64(operation.point_b.x) ||
 				   command.y != i64(operation.point_b.y) ||
-				   command.f != expected_feed ||
 				   state.acceleration != expected_acceleration {
 					return .Motion_Mismatch
 				}
@@ -543,9 +560,7 @@ klipper_validate_print_move :: proc(
 				if command.kind != .G0 ||
 				   command.has_x || command.has_y ||
 				   !command.has_z || command.has_e ||
-				   !command.has_f ||
 				   command.z != travel_z ||
-				   command.f != expected_feed ||
 				   state.acceleration != expected_acceleration {
 					return .Motion_Mismatch
 				}
@@ -562,10 +577,8 @@ klipper_validate_print_move :: proc(
 			   command.has_z != need_z_restore ||
 			   (need_z_restore && command.z != travel_z) ||
 			   command.has_e ||
-			   !command.has_f ||
 			   command.x != i64(operation.point_b.x) ||
 			   command.y != i64(operation.point_b.y) ||
-			   command.f != expected_feed ||
 			   state.acceleration != expected_acceleration {
 				return .Motion_Mismatch
 			}
@@ -587,7 +600,6 @@ klipper_validate_print_move :: proc(
 		   command.has_z != expected_z_change ||
 		   (expected_z_change && command.z != expected_target_z) ||
 		   !command.has_e ||
-		   !command.has_f ||
 		   command.has_i != expected_arc ||
 		   command.has_j != expected_arc ||
 		   command.x != i64(operation.point_b.x) ||
@@ -595,7 +607,6 @@ klipper_validate_print_move :: proc(
 		   (expected_arc && (command.i != i64(operation.arc_center.x)-i64(operation.point_a.x) ||
 		                     command.j != i64(operation.arc_center.y)-i64(operation.point_a.y))) ||
 		   command.e_nm != operation.filament_delta_nm ||
-		   command.f != expected_feed ||
 		   state.acceleration != expected_acceleration ||
 		   state.fan_pwm != klipper_fan_pwm(operation.fan_ratio) {
 			return .Motion_Mismatch
@@ -661,11 +672,20 @@ klipper_apply_acceleration :: proc(
 	profile: profiles.Resolved_Profiles,
 	state: ^Klipper_Validation_State,
 ) -> Klipper_Validation_Error {
-	if command.kind != .Set_Velocity_Limit {return .Invalid_Sequence}
+	if command.kind != .M204 {return .Invalid_Sequence}
 	limit := i64(profile.printer.maximum_acceleration)/1_000
-	if command.value <= 0 || command.value > limit {return .Machine_Bounds}
-	state.acceleration = command.value
+	if command.s <= 0 || command.s > limit {return .Machine_Bounds}
+	state.acceleration = command.s
 	return .None
+}
+
+klipper_feed_matches :: proc(
+	command: Klipper_Parsed_Command,
+	state: Klipper_Validation_State,
+	expected: i64,
+) -> bool {
+	if command.has_f {return command.f == expected && state.feed != expected}
+	return state.feed == expected
 }
 
 klipper_apply_fan :: proc(
@@ -877,6 +897,7 @@ klipper_parse_command :: proc(
 		case "M83":  result.kind = .M83
 		case "M106": result.kind = .M106
 		case "M107": result.kind = .M107
+		case "M204": result.kind = .M204
 		case "START_PRINT", "END_PRINT", "SET_VELOCITY_LIMIT", "SET_PRINT_STATS_INFO":
 			return klipper_parse_extended(tokens[:token_count])
 		case "EXCLUDE_OBJECT_DEFINE", "EXCLUDE_OBJECT_START", "EXCLUDE_OBJECT_END":
@@ -970,19 +991,18 @@ klipper_command_parameters_valid :: proc(
 	case .G0, .G1:
 		return (command.has_x || command.has_y ||
 			command.has_z || command.has_e) &&
-			command.has_f &&
 			!command.has_i && !command.has_j &&
 			!command.has_s && !command.has_p &&
 			!command.has_r && !command.has_t
 	case .G2, .G3:
 		return command.has_x && command.has_y &&
 			command.has_i && command.has_j &&
-			command.has_e && command.has_f &&
+			command.has_e &&
 			!command.has_s && !command.has_p &&
 			!command.has_r && !command.has_t
 	case .G4:
 		return command.has_p && parameter_count == 1
-	case .M106:
+	case .M106, .M204:
 		return command.has_s && parameter_count == 1
 	case .Header, .Layer, .Invalid, .Start_Print, .End_Print,
 	     .Set_Velocity_Limit, .Print_Stats_Total, .Print_Stats_Current,
@@ -1017,14 +1037,12 @@ klipper_parse_extended :: proc(
 		ok = len(tokens) == 1
 	case "SET_VELOCITY_LIMIT":
 		result.kind = .Set_Velocity_Limit
-		if len(tokens) == 2 {
-			result.value, ok = integer(tokens[1], "ACCEL")
-		} else if len(tokens) == 3 {
-			a_val, a_ok := integer(tokens[1], "ACCEL")
-			_, atd_ok := integer(tokens[2], "ACCEL_TO_DECEL")
-			result.value = a_val
-			ok = a_ok && atd_ok
-		}
+		ok = len(tokens) == 2
+		if !ok {break}
+		ratio, ratio_ok := parameter(tokens[1], "MINIMUM_CRUISE_RATIO")
+		ok = ratio_ok && len(ratio) == 4 && ratio[:2] == "0." &&
+			ratio[2] >= '0' && ratio[2] <= '9' && ratio[3] >= '0' && ratio[3] <= '9'
+		if ok {result.value = i64(ratio[2]-'0')*10+i64(ratio[3]-'0')}
 	case "SET_PRINT_STATS_INFO":
 		ok = len(tokens) == 2
 		if !ok {break}

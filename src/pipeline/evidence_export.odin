@@ -200,7 +200,7 @@ slice_session_export_evidence_bundle :: proc(
 		{name = "z_ramps_ops", value = s.z_ramp_stats.ops_modified},
 		{name = "arc_fitting_enabled", value = evidence_bool_u64(s.options.arc_fitting_enabled && !s.options.vase_mode)},
 		{name = "arcs_fitted", value = s.arc_fit_stats.arcs_fitted},
-		{name = "estimated_time_s", value = u64(s.time_estimate.total_seconds)},
+		{name = "estimated_time_s", value = u64(s.estimated_seconds)},
 	}
 	gcode_counters := []evidence.Evidence_Counter{
 		{name = "gcode_bytes", value = u64(len(s.klipper.bytes))},

@@ -134,7 +134,7 @@ plate_slice_sequential :: proc(
 		} else {
 			out.positive_filament_nm += u128(obj_res.extrusion.total_filament_nm)
 		}
-		out.total_seconds += obj_res.time_estimate.total_seconds
+		out.total_seconds += obj_res.estimated_seconds
 		out.total_duration_ms += obj_res.total_duration_ms
 	}
 

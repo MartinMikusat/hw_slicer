@@ -279,7 +279,11 @@ The current engine implementation provides:
   extrusion. The printer's `START_PRINT` macro receives the temperatures and
   the extrusion area and owns homing, heating, meshing, and priming;
   `END_PRINT` owns retraction, parking, and shutdown. Each layer reports
-  `SET_PRINT_STATS_INFO`, and acceleration uses `SET_VELOCITY_LIMIT`.
+  `SET_PRINT_STATS_INFO`, and acceleration uses `M204`. Moves carry `F` only
+  when the feed rate changes. An enabled accel-to-decel factor sets Klipper's
+  `MINIMUM_CRUISE_RATIO` once after `START_PRINT`.
+- A print-time estimate from Klipper's look-ahead planner run over the emitted
+  G-code, with Klipper defaults for limits that the printer profile lacks.
 - Exact decimal coordinate, feed, acceleration, and extrusion formatting with
   command-to-motion correlation records.
 - An independent strict parser that replays modes, the start and end macros,

@@ -93,7 +93,7 @@ Slice_Session :: struct {
 	motion:              features.Motion_Plan_Result,
 	z_ramp_stats:        features.Scarf_Seam_Stats,
 	arc_fit_stats:       features.Arc_Fit_Stats,
-	time_estimate:       features.Print_Time_Estimate,
+	estimated_seconds:   f64,
 	klipper:             gcode.Klipper_Result,
 	validation:          gcode.Klipper_Validation_Report,
 }
@@ -353,7 +353,7 @@ slice_session_take_result :: proc(s: ^Slice_Session) -> Slice_Run_Result {
 	r.klipper = s.klipper
 	s.klipper = {}
 	r.validation = r.klipper.validation
-	r.time_estimate = s.time_estimate
+	r.estimated_seconds = s.estimated_seconds
 	r.mesh_repair_stats = s.mesh_repair_stats
 	r.stages = make([dynamic]Stage_Trace, 0, len(Stage_Id), s.allocator)
 	for id in Stage_Id {
@@ -500,9 +500,9 @@ session_clear_stage :: proc(s: ^Slice_Session, id: Stage_Id) {
 	case .Motion:
 		features.motion_plan_result_destroy(&s.motion, a)
 		features.extrusion_result_destroy(&s.extrusion, a)
-		s.time_estimate = {}
 	case .Gcode:
 		gcode.klipper_result_destroy(&s.klipper, a)
+		s.estimated_seconds = 0
 	}
 	slot := &s.slots[id]
 	delete(slot.failure.stage, a)
@@ -1511,7 +1511,6 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	if len(options.modifiers) > 0 {
 		_ = modifiers_apply_motion(&s.motion, options.modifiers, s.profile)
 	}
-	s.time_estimate = features.motion_plan_estimate_klipper_time(s.motion)
 	s.slots[.Motion].count_a = u64(len(s.motion.operations))
 	return {}
 }
@@ -1519,6 +1518,10 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 @(private = "file")
 stage_gcode :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	klip_err: gcode.Klipper_Error
+	minimum_cruise_ratio_pct := i64(-1)
+	if s.options.accel_to_decel_pct > 0 {
+		minimum_cruise_ratio_pct = 100 - s.options.accel_to_decel_pct
+	}
 	s.klipper, klip_err = gcode.klipper_emit(
 		s.motion,
 		s.profile,
@@ -1527,9 +1530,10 @@ stage_gcode :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 		pause_layers = s.options.pause_layers,
 		color_change_layers = s.options.color_change_layers,
 		record_commands = s.options.evidence_level != .Disabled,
-		accel_to_decel_pct = s.options.accel_to_decel_pct,
+		minimum_cruise_ratio_pct = minimum_cruise_ratio_pct,
 	)
 	if klip_err != .None {return {stage = "klipper_emit", detail = fmt.tprintf("klipper emit error: %v", klip_err)}}
+	s.estimated_seconds = gcode.klipper_estimate_seconds(s.klipper, s.profile, minimum_cruise_ratio_pct)
 	s.slots[.Gcode].count_a = u64(len(s.klipper.bytes))
 	s.slots[.Gcode].count_b = s.klipper.validation.command_count
 	return {}

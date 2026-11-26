@@ -214,7 +214,7 @@ Slice_Run_Result :: struct {
 	motion:            features.Motion_Plan_Result,
 	klipper:           gcode.Klipper_Result,
 	validation:        gcode.Klipper_Validation_Report,
-	time_estimate:     features.Print_Time_Estimate,
+	estimated_seconds: f64,
 	mesh_repair_stats: repair.Mesh_Repair_Stats,
 	stages:                [dynamic]Stage_Trace,
 	total_duration_ms:     f64,

@@ -189,5 +189,5 @@ Every object prints with its own `speed`, `acceleration`, and `fan`. An unset
 value uses the design default. Evaluation rejects a feature, with its line,
 when its speed or acceleration exceeds the printer's limit or when
 `line_width × layer height × speed` exceeds the volumetric flow limit. The
-G-code sets `SET_VELOCITY_LIMIT ACCEL` and `M106` whenever the next feature
+G-code sets `M204` and `M106` whenever the next feature
 needs another value. The results panel lists each feature's resolved values.

@@ -12,14 +12,14 @@ import polygon "../polygon"
 import profiles "../profiles"
 import workers "../workers"
 
-@(private = "file")
+@(private)
 g_gcode_worker_threads := 1
 
 set_worker_threads :: proc(n: int) {
 	g_gcode_worker_threads = clamp(n, 1, workers.MAX_WORKERS)
 }
 
-KLIPPER_EMITTER_SCHEMA_VERSION :: u32(2)
+KLIPPER_EMITTER_SCHEMA_VERSION :: u32(3)
 KLIPPER_HEADER :: "; hw_slicer klipper"
 
 // The printer's START_PRINT and END_PRINT macros own homing, heating, bed meshing, priming,
@@ -65,6 +65,16 @@ Klipper_Result :: struct {
 	final_y:                    contracts.Micrometres,
 	final_z:                    contracts.Micrometres,
 	validation:                 Klipper_Validation_Report,
+	plan_cuts:                  []Klipper_Plan_Cut,
+}
+
+Klipper_Plan_Cut :: struct {
+	byte_offset:  u64,
+	x:            contracts.Micrometres,
+	y:            contracts.Micrometres,
+	z:            contracts.Micrometres,
+	feed:         i64,
+	acceleration: i64,
 }
 
 Klipper_Limits :: struct {
@@ -89,7 +99,7 @@ Klipper_Error :: enum u8 {
 
 Klipper_State :: struct {
 	acceleration:         i64, // mm/s²; -1 until set
-	accel_to_decel_pct:   i64, // 0 = omit ACCEL_TO_DECEL; 10..100 = emit ACCEL_TO_DECEL
+	feed:                 i64, // mm/min; -1 until set
 	fan_pwm:              i32,
 	positioned_xy:        bool,
 	x:                    contracts.Micrometres,
@@ -107,8 +117,11 @@ klipper_emit :: proc(
 	pause_layers: []u32 = nil,
 	color_change_layers: []u32 = nil,
 	record_commands := true,
-	accel_to_decel_pct: i64 = 0,
+	minimum_cruise_ratio_pct: i64 = -1,
 ) -> (Klipper_Result, Klipper_Error) {
+	if minimum_cruise_ratio_pct < -1 || minimum_cruise_ratio_pct > 99 {
+		return {}, .Invalid_Profile
+	}
 	resolved, resolve_error := profiles.profiles_resolve(
 		profile.printer,
 		profile.material,
@@ -131,7 +144,7 @@ klipper_emit :: proc(
 			pause_layers,
 			color_change_layers,
 			record_commands,
-			accel_to_decel_pct,
+			minimum_cruise_ratio_pct,
 		)
 	}
 	object_name := klipper_object_name(object_name, context.temp_allocator) if len(object_name) > 0 else ""
@@ -173,10 +186,13 @@ klipper_emit :: proc(
 		motion_operation_count = u64(len(motion.operations)),
 	}
 	state := Klipper_State{
-		acceleration       = -1,
-		accel_to_decel_pct = accel_to_decel_pct,
-		fan_pwm            = -1,
+		acceleration = -1,
+		feed         = -1,
+		fan_pwm      = -1,
 	}
+	plan_cuts := make([dynamic]Klipper_Plan_Cut, 0, len(motion.layers), allocator)
+	plan_cuts_owned := false
+	defer if !plan_cuts_owned {delete(plan_cuts)}
 
 	area := klipper_extrusion_area(motion)
 	start := klipper_command_begin(builder)
@@ -212,7 +228,8 @@ klipper_emit :: proc(
 	   !klipper_write_literal(&builder, commands, &command_write, .Set_Millimetres, "G21\n") ||
 	   !klipper_write_literal(&builder, commands, &command_write, .Set_Absolute_Coordinates, "G90\n") ||
 	   !klipper_write_literal(&builder, commands, &command_write, .Set_Relative_Extrusion, "M83\n") ||
-	   !klipper_write_literal(&builder, commands, &command_write, .Set_Fan, "M107\n") {
+	   !klipper_write_literal(&builder, commands, &command_write, .Set_Fan, "M107\n") ||
+	   !klipper_write_cruise_ratio(&builder, commands, &command_write, minimum_cruise_ratio_pct) {
 		delete(commands, allocator)
 		return {}, .Command_Limit
 	}
@@ -301,11 +318,7 @@ klipper_emit :: proc(
 		start = klipper_command_begin(builder)
 		strings.write_string(&builder, "G0 Z")
 		klipper_append_coordinate(&builder, layer_start_z)
-		fmt.sbprintf(
-			&builder,
-			" F%d\n",
-			klipper_feed_rate(profile.process.source.travel.speed),
-		)
+		klipper_append_feed(&builder, &state, klipper_feed_rate(profile.process.source.travel.speed))
 		if !klipper_command_end(
 			builder,
 			commands,
@@ -326,6 +339,7 @@ klipper_emit :: proc(
 					delete(commands, allocator)
 					return {}, .Command_Limit
 				}
+				state.feed = -1
 				break
 			}
 		}
@@ -335,6 +349,7 @@ klipper_emit :: proc(
 					delete(commands, allocator)
 					return {}, .Command_Limit
 				}
+				state.feed = -1
 				break
 			}
 		}
@@ -342,6 +357,7 @@ klipper_emit :: proc(
 		operation_start := int(layer.operation_offset)
 		operation_end :=
 			operation_start+int(layer.operation_count)
+		layer_cut := false
 		for operation in motion.operations[operation_start:operation_end] {
 			if !state.positioned_xy && operation.kind != .Dwell {
 				start = klipper_command_begin(builder)
@@ -349,13 +365,7 @@ klipper_emit :: proc(
 				klipper_append_coordinate(&builder, operation.point_a.x)
 				strings.write_string(&builder, " Y")
 				klipper_append_coordinate(&builder, operation.point_a.y)
-				fmt.sbprintf(
-					&builder,
-					" F%d\n",
-					klipper_feed_rate(
-						profile.process.source.travel.speed,
-					),
-				)
+				klipper_append_feed(&builder, &state, klipper_feed_rate(profile.process.source.travel.speed))
 				if !klipper_command_end(
 					builder,
 					commands,
@@ -370,6 +380,10 @@ klipper_emit :: proc(
 				state.positioned_xy = true
 				state.x = operation.point_a.x
 				state.y = operation.point_a.y
+			}
+			if !layer_cut && klipper_plan_cut_operation(operation.kind) && state.feed >= 0 {
+				append(&plan_cuts, klipper_plan_cut(state, u64(len(builder.buf))))
+				layer_cut = true
 			}
 			if !klipper_emit_operation(
 				&builder,
@@ -410,12 +424,15 @@ klipper_emit :: proc(
 	}
 	copy(result.bytes, transmute([]u8)text)
 	result.commands = commands[:command_write] if record_commands else nil
+	result.plan_cuts = plan_cuts[:]
+	plan_cuts_owned = true
 	result.final_x = state.x
 	result.final_y = state.y
 	result.final_z = state.z
 	report, validation_error :=
 		klipper_validate(result.bytes, profile, motion, record_commands)
 	if validation_error != .None ||
+	   !klipper_cruise_ratio_reported(report, minimum_cruise_ratio_pct) ||
 	   report.command_count != u64(command_write) ||
 	   report.positive_filament_nm != result.positive_filament_nm ||
 	   report.negative_filament_nm != result.negative_filament_nm ||
@@ -442,6 +459,8 @@ Klipper_Layer_Emit :: struct {
 	emitted_dwell_ms:     u64,
 	byte_offset:          u64,
 	command_offset:       u64,
+	cut:                  Klipper_Plan_Cut,
+	has_cut:              bool,
 	ok:                   bool,
 	val_end_state:        Klipper_Validation_State,
 	val_report:           Klipper_Validation_Report,
@@ -471,7 +490,7 @@ klipper_emit_parallel :: proc(
 	pause_layers: []u32 = nil,
 	color_change_layers: []u32 = nil,
 	record_commands := true,
-	accel_to_decel_pct: i64 = 0,
+	minimum_cruise_ratio_pct: i64 = -1,
 ) -> (Klipper_Result, Klipper_Error) {
 	layer_count := len(motion.layers)
 	object_name_clean := klipper_object_name(object_name, context.temp_allocator) if len(object_name) > 0 else ""
@@ -517,7 +536,8 @@ klipper_emit_parallel :: proc(
 	   !klipper_write_literal(&header_builder, header_cmds, &header_cmd_write, .Set_Millimetres, "G21\n") ||
 	   !klipper_write_literal(&header_builder, header_cmds, &header_cmd_write, .Set_Absolute_Coordinates, "G90\n") ||
 	   !klipper_write_literal(&header_builder, header_cmds, &header_cmd_write, .Set_Relative_Extrusion, "M83\n") ||
-	   !klipper_write_literal(&header_builder, header_cmds, &header_cmd_write, .Set_Fan, "M107\n") {
+	   !klipper_write_literal(&header_builder, header_cmds, &header_cmd_write, .Set_Fan, "M107\n") ||
+	   !klipper_write_cruise_ratio(&header_builder, header_cmds, &header_cmd_write, minimum_cruise_ratio_pct) {
 		return {}, .Command_Limit
 	}
 	if len(object_name_clean) > 0 {
@@ -585,22 +605,31 @@ klipper_emit_parallel :: proc(
 		delete(layer_emits, allocator)
 	}
 	cur_state := Klipper_State{
-		acceleration       = -1,
-		accel_to_decel_pct = accel_to_decel_pct,
-		fan_pwm            = 0,
+		acceleration = -1,
+		feed         = -1,
+		fan_pwm      = 0,
 	}
 	travel_accel := i64(profile.process.source.travel.acceleration)/1_000
+	travel_feed := klipper_feed_rate(profile.process.source.travel.speed)
 	for layer, li in motion.layers {
 		layer_emits[li].init_state = cur_state
 		op_start := int(layer.operation_offset)
 		op_end := op_start+int(layer.operation_count)
 		cur_state.acceleration = travel_accel
+		cur_state.feed = travel_feed
+		for pl in pause_layers {
+			if pl == layer.layer_index {cur_state.feed = -1}
+		}
+		for cl in color_change_layers {
+			if cl == layer.layer_index {cur_state.feed = -1}
+		}
 		cur_state.z = layer.z
 		cur_state.physical_z = klipper_layer_start_z(motion, layer)
 
 		found_accel := false
 		found_fan := false
 		found_xy := false
+		found_feed := false
 		for i := op_end-1; i >= op_start; i -= 1 {
 			op := motion.operations[i]
 			if !found_accel && (op.kind == .Travel || op.kind == .Extrude) {
@@ -617,7 +646,11 @@ klipper_emit_parallel :: proc(
 				cur_state.y = op.point_b.y
 				found_xy = true
 			}
-			if found_accel && found_fan && found_xy {break}
+			if !found_feed && op.kind != .Dwell {
+				cur_state.feed = klipper_feed_rate(op.speed)
+				found_feed = true
+			}
+			if found_accel && found_fan && found_xy && found_feed {break}
 		}
 		if !cur_state.positioned_xy {
 			for i in op_start..<op_end {
@@ -652,11 +685,13 @@ klipper_emit_parallel :: proc(
 		layer_count            = u32(layer_count),
 		motion_operation_count = u64(len(motion.operations)),
 	}
+	cut_count := 0
 	for &le, li in layer_emits {
 		if !le.ok {return {}, .Command_Limit}
 		if li+1 < layer_count {
 			next_init := layer_emits[li+1].init_state
 			if le.end_state.acceleration != next_init.acceleration ||
+			   le.end_state.feed != next_init.feed ||
 			   le.end_state.fan_pwm != next_init.fan_pwm ||
 			   le.end_state.positioned_xy != next_init.positioned_xy ||
 			   le.end_state.x != next_init.x ||
@@ -667,6 +702,7 @@ klipper_emit_parallel :: proc(
 		}
 		le.byte_offset = total_bytes
 		le.command_offset = total_cmds
+		if le.has_cut {cut_count += 1}
 		total_bytes += u64(len(le.builder.buf))
 		total_cmds += u64(le.command_count)
 		result.positive_filament_nm += le.positive_filament_nm
@@ -688,9 +724,20 @@ klipper_emit_parallel :: proc(
 	if record_commands {
 		result.commands = make([]Klipper_Command_Record, int(total_cmds), allocator)
 	}
-	if (total_bytes > 0 && result.bytes == nil) || (record_commands && total_cmds > 0 && result.commands == nil) {
+	result.plan_cuts = make([]Klipper_Plan_Cut, cut_count, allocator)
+	if (total_bytes > 0 && result.bytes == nil) ||
+	   (record_commands && total_cmds > 0 && result.commands == nil) ||
+	   (cut_count > 0 && result.plan_cuts == nil) {
 		klipper_result_destroy(&result, allocator)
 		return {}, .Allocation_Failed
+	}
+	cut_write := 0
+	for le in layer_emits {
+		if !le.has_cut {continue}
+		cut := le.cut
+		cut.byte_offset += le.byte_offset
+		result.plan_cuts[cut_write] = cut
+		cut_write += 1
 	}
 
 	copy(result.bytes[:len(header_text)], header_text)
@@ -720,11 +767,12 @@ klipper_emit_parallel :: proc(
 
 	// Validate header, check per-layer validation + cross-layer state continuity, and validate footer.
 	hdr_state, report, hdr_val_err := klipper_validate_header_slice(result.bytes[:len(header_text)], profile, motion)
-	if hdr_val_err != .None {
+	if hdr_val_err != .None || !klipper_cruise_ratio_reported(report, minimum_cruise_ratio_pct) {
 		klipper_result_destroy(&result, allocator)
 		return {}, .Invalid_Motion
 	}
 	if hdr_state.acceleration != layer_emits[0].init_state.acceleration ||
+	   hdr_state.feed != layer_emits[0].init_state.feed ||
 	   hdr_state.fan_pwm != layer_emits[0].init_state.fan_pwm ||
 	   hdr_state.positioned_xy != layer_emits[0].init_state.positioned_xy {
 		klipper_result_destroy(&result, allocator)
@@ -738,6 +786,7 @@ klipper_emit_parallel :: proc(
 		if li+1 < layer_count {
 			next_init := layer_emits[li+1].init_state
 			if le.val_end_state.acceleration != next_init.acceleration ||
+			   le.val_end_state.feed != next_init.feed ||
 			   le.val_end_state.fan_pwm != next_init.fan_pwm ||
 			   le.val_end_state.positioned_xy != next_init.positioned_xy ||
 			   le.val_end_state.x != i64(next_init.x) ||
@@ -833,7 +882,7 @@ klipper_emit_layer_worker :: proc(ctx: ^Klipper_Parallel_Context, li: int) {
 	start = klipper_command_begin(builder)
 	strings.write_string(&builder, "G0 Z")
 	klipper_append_coordinate(&builder, layer_start_z)
-	klipper_append_feed(&builder, klipper_feed_rate(ctx.profile.process.source.travel.speed))
+	klipper_append_feed(&builder, &state, klipper_feed_rate(ctx.profile.process.source.travel.speed))
 	if !klipper_command_end_deferred(builder, cmds, &cmd_write, .Move, start, layer_index = layer.layer_index) {
 		strings.builder_destroy(&builder)
 		delete(cmds, ctx.allocator)
@@ -849,6 +898,7 @@ klipper_emit_layer_worker :: proc(ctx: ^Klipper_Parallel_Context, li: int) {
 				delete(cmds, ctx.allocator)
 				return
 			}
+			state.feed = -1
 			break
 		}
 	}
@@ -859,6 +909,7 @@ klipper_emit_layer_worker :: proc(ctx: ^Klipper_Parallel_Context, li: int) {
 				delete(cmds, ctx.allocator)
 				return
 			}
+			state.feed = -1
 			break
 		}
 	}
@@ -872,7 +923,7 @@ klipper_emit_layer_worker :: proc(ctx: ^Klipper_Parallel_Context, li: int) {
 			klipper_append_coordinate(&builder, operation.point_a.x)
 			strings.write_string(&builder, " Y")
 			klipper_append_coordinate(&builder, operation.point_a.y)
-			klipper_append_feed(&builder, klipper_feed_rate(ctx.profile.process.source.travel.speed))
+			klipper_append_feed(&builder, &state, klipper_feed_rate(ctx.profile.process.source.travel.speed))
 			if !klipper_command_end_deferred(builder, cmds, &cmd_write, .Move, start, layer_index = layer.layer_index) {
 				strings.builder_destroy(&builder)
 				delete(cmds, ctx.allocator)
@@ -881,6 +932,10 @@ klipper_emit_layer_worker :: proc(ctx: ^Klipper_Parallel_Context, li: int) {
 			state.positioned_xy = true
 			state.x = operation.point_a.x
 			state.y = operation.point_a.y
+		}
+		if !le.has_cut && klipper_plan_cut_operation(operation.kind) && state.feed >= 0 {
+			le.cut = klipper_plan_cut(state, u64(len(builder.buf)))
+			le.has_cut = true
 		}
 		if !klipper_emit_operation(&builder, cmds, &cmd_write, &state, operation, &local_res) {
 			strings.builder_destroy(&builder)
@@ -1001,14 +1056,14 @@ klipper_emit_operation :: proc(
 	case .Retract, .Recover:
 		strings.write_string(builder, "G1 E")
 		klipper_append_extrusion(builder, operation.filament_delta_nm)
-		klipper_append_feed(builder, klipper_feed_rate(operation.speed))
+		klipper_append_feed(builder, state, klipper_feed_rate(operation.speed))
 	case .Travel:
 		travel_z := contracts.Micrometres(max(i64(0), i64(state.z)+i64(operation.z_offset_um)))
 		if i64(operation.z_hop_um) > 0 {
 			hop_z := contracts.Micrometres(i64(state.z) + i64(operation.z_hop_um))
 			strings.write_string(builder, "G0 Z")
 			klipper_append_coordinate(builder, hop_z)
-			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
+			klipper_append_feed(builder, state, klipper_feed_rate(operation.speed))
 			if !klipper_command_end(
 				builder^,
 				commands,
@@ -1031,7 +1086,7 @@ klipper_emit_operation :: proc(
 			klipper_append_coordinate(builder, travel_z)
 			state.physical_z = travel_z
 		}
-		klipper_append_feed(builder, klipper_feed_rate(operation.speed))
+		klipper_append_feed(builder, state, klipper_feed_rate(operation.speed))
 		if i64(operation.z_hop_um) > 0 {
 			if !klipper_command_end(
 				builder^,
@@ -1047,7 +1102,7 @@ klipper_emit_operation :: proc(
 			start = klipper_command_begin(builder^)
 			strings.write_string(builder, "G0 Z")
 			klipper_append_coordinate(builder, travel_z)
-			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
+			klipper_append_feed(builder, state, klipper_feed_rate(operation.speed))
 			state.physical_z = travel_z
 		}
 	case .Extrude:
@@ -1068,7 +1123,7 @@ klipper_emit_operation :: proc(
 			klipper_append_coordinate(builder, contracts.Micrometres(i64(operation.arc_center.y)-i64(operation.point_a.y)))
 			strings.write_string(builder, " E")
 			klipper_append_extrusion(builder, operation.filament_delta_nm)
-			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
+			klipper_append_feed(builder, state, klipper_feed_rate(operation.speed))
 		} else {
 			strings.write_string(builder, "G1 X")
 			klipper_append_coordinate(builder, operation.point_b.x)
@@ -1081,7 +1136,7 @@ klipper_emit_operation :: proc(
 			}
 			strings.write_string(builder, " E")
 			klipper_append_extrusion(builder, operation.filament_delta_nm)
-			klipper_append_feed(builder, klipper_feed_rate(operation.speed))
+			klipper_append_feed(builder, state, klipper_feed_rate(operation.speed))
 		}
 	case .Dwell:
 		dwell_ms := (operation.duration_us+999)/1_000
@@ -1195,12 +1250,9 @@ klipper_emit_acceleration :: proc(
 	current := &state.acceleration
 	if current^ == value {return true}
 	start := klipper_command_begin(builder^)
-	if state.accel_to_decel_pct > 0 {
-		atd := max(i64(1), (value * state.accel_to_decel_pct) / 100)
-		fmt.sbprintf(builder, "SET_VELOCITY_LIMIT ACCEL=%d ACCEL_TO_DECEL=%d\n", value, atd)
-	} else {
-		fmt.sbprintf(builder, "SET_VELOCITY_LIMIT ACCEL=%d\n", value)
-	}
+	strings.write_string(builder, "M204 S")
+	klipper_append_uint(builder, u64(value))
+	strings.write_byte(builder, '\n')
 	if !klipper_command_end(
 		builder^,
 		commands,
@@ -1524,11 +1576,19 @@ klipper_append_extrusion :: #force_inline proc(builder: ^strings.Builder, value_
 	klipper_append_fixed(builder, value_nm / 10, 5)
 }
 
-klipper_append_feed :: proc(builder: ^strings.Builder, feed: i64) {
+klipper_append_feed :: proc(builder: ^strings.Builder, state: ^Klipper_State, feed: i64) {
+	if state.feed != feed {
+		strings.write_string(builder, " F")
+		klipper_append_uint(builder, u64(feed))
+		state.feed = feed
+	}
+	strings.write_byte(builder, '\n')
+}
+
+klipper_append_uint :: proc(builder: ^strings.Builder, value: u64) {
 	buf: [24]u8
 	pos := len(buf)
-	pos -= 1; buf[pos] = '\n'
-	v := u64(feed)
+	v := value
 	if v == 0 {
 		pos -= 1; buf[pos] = '0'
 	} else {
@@ -1549,9 +1609,40 @@ klipper_append_feed :: proc(builder: ^strings.Builder, feed: i64) {
 			buf[pos] = u8('0' + v)
 		}
 	}
-	pos -= 1; buf[pos] = 'F'
-	pos -= 1; buf[pos] = ' '
 	strings.write_bytes(builder, buf[pos:])
+}
+
+klipper_write_cruise_ratio :: proc(
+	builder: ^strings.Builder,
+	commands: []Klipper_Command_Record,
+	command_write: ^int,
+	ratio_pct: i64,
+) -> bool {
+	if ratio_pct < 0 {return true}
+	if ratio_pct > 99 {return false}
+	start := klipper_command_begin(builder^)
+	fmt.sbprintf(builder, "SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.%02d\n", ratio_pct)
+	return klipper_command_end(builder^, commands, command_write, .Set_Acceleration, start)
+}
+
+klipper_cruise_ratio_reported :: proc(report: Klipper_Validation_Report, ratio_pct: i64) -> bool {
+	if ratio_pct < 0 {return !report.has_minimum_cruise_ratio}
+	return report.has_minimum_cruise_ratio && report.minimum_cruise_ratio_pct == ratio_pct
+}
+
+klipper_plan_cut_operation :: proc(kind: features.Motion_Operation_Kind) -> bool {
+	return kind == .Retract || kind == .Recover || kind == .Dwell
+}
+
+klipper_plan_cut :: proc(state: Klipper_State, byte_offset: u64) -> Klipper_Plan_Cut {
+	return {
+		byte_offset  = byte_offset,
+		x            = state.x,
+		y            = state.y,
+		z            = state.physical_z,
+		feed         = state.feed,
+		acceleration = state.acceleration,
+	}
 }
 
 @(private = "file")
@@ -1676,5 +1767,6 @@ klipper_result_destroy :: proc(
 ) {
 	delete(result.bytes, allocator)
 	delete(result.commands, allocator)
+	delete(result.plan_cuts, allocator)
 	result^ = {}
 }

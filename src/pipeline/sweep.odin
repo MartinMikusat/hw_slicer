@@ -199,7 +199,7 @@ plate_slice_settings_sweep :: proc(
 		} else {
 			out.plate.positive_filament_nm += u128(res.extrusion.total_filament_nm)
 		}
-		out.plate.total_seconds += res.time_estimate.total_seconds
+		out.plate.total_seconds += res.estimated_seconds
 		out.plate.total_duration_ms += res.total_duration_ms
 	}
 

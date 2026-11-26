@@ -139,7 +139,7 @@ submit_move :: proc(p: ^Path, target: [4]f64, speed: f64, offset: i64) {
 		inv_r := 1 / abs(m.e_r)
 		limit_speed(&m, p.limits.max_extrude_only_velocity * inv_r, p.limits.max_extrude_only_accel * inv_r)
 	}
-	if m.kinematic && m.e_r > 0 && (axes_d[0] != 0 || axes_d[1] != 0) {
+	if p.record_deposits && m.kinematic && m.e_r > 0 && (axes_d[0] != 0 || axes_d[1] != 0) {
 		bead_shape(p, &m, target[2])
 	}
 	m.barrier, m.dwell = p.next_barrier, p.next_dwell
@@ -226,7 +226,7 @@ commit :: proc(p: ^Path, m: ^Pending, start_v2, cruise_v2, end_v2: f64) {
 		barrier = m.barrier,
 	}
 	p.cursor_time += f64(out.accel_t) + f64(out.cruise_t) + f64(out.decel_t)
-	if m.width > 0 {
+	if p.record_deposits && m.width > 0 {
 		end := m.start + [3]f64{m.axes_r[0], m.axes_r[1], m.axes_r[2]} * m.move_d
 		append(&p.deposits, Deposit{
 			p0 = out.start, p1 = {f32(end[0]), f32(end[1]), f32(end[2])},

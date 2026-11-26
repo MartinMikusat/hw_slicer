@@ -634,7 +634,7 @@ main :: proc() {
 
 	fmt.printf("SLICE OK: %s  printer=%s material=%s process=%s\n",
 		filepath.base(opts.input_path), opts.printer, opts.material, opts.process)
-	est_s := int(math.round(res.time_estimate.total_seconds))
+	est_s := int(math.round(res.estimated_seconds))
 	reported_filament_nm := u128(res.extrusion.total_filament_nm)
 	if res.klipper.positive_filament_nm > res.klipper.negative_filament_nm {
 		reported_filament_nm = res.klipper.positive_filament_nm - res.klipper.negative_filament_nm

@@ -28,18 +28,20 @@ Path :: struct {
 	finished: bool,
 	// Extruded beads committed since the owner last drained them, in time order.
 	deposits: [dynamic]Deposit,
+	record_deposits: bool,
 	layer_z, layer_height: f64,
 	tone: u8,
 }
 
-init :: proc(p: ^Path, capacity: int, limits: Limits, allocator := context.allocator) {
+init :: proc(p: ^Path, capacity: int, limits: Limits, allocator := context.allocator, record_deposits := true) {
 	assert(capacity > 0)
 	assert(limits.max_velocity > 0 && limits.max_accel > 0)
 	p^ = {}
 	p.moves = make([]Move, capacity, allocator)
 	p.queue = make([dynamic]Pending, 0, 256, allocator)
 	p.junctions = make([dynamic]Junction, 0, 256, allocator)
-	p.deposits = make([dynamic]Deposit, 0, 4096, allocator)
+	p.deposits = make([dynamic]Deposit, 0, 4096 if record_deposits else 0, allocator)
+	p.record_deposits = record_deposits
 	p.tone = TONE_DEFAULT
 	p.limits = limits
 	limits_changed(p)
@@ -56,6 +58,18 @@ destroy :: proc(p: ^Path) {
 	delete(p.junctions)
 	delete(p.deposits)
 	p^ = {}
+}
+
+resume :: proc(p: ^Path, position: [3]f64, feed_mm_per_min, accel: f64, absolute_e: bool) {
+	assert(p.count == 0 && len(p.queue) == 0 && p.parsed == 0)
+	assert(feed_mm_per_min > 0 && accel > 0)
+	p.last = {position[0], position[1], position[2], 0}
+	p.base = {}
+	p.commanded = p.last
+	p.absolute, p.absolute_e = true, absolute_e
+	p.speed = feed_mm_per_min * p.speed_factor
+	p.limits.max_accel = accel
+	limits_changed(p)
 }
 
 // Parses the next bytes of the file, which must continue at p.parsed.
