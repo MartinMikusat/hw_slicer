@@ -50,7 +50,7 @@ EOF
 fi
 
 if [ ! -x "$SLICER_BIN" ]; then
-  echo "error: hw-slicer-cli not found; run ./build.sh cli-release or ./build.sh debug" >&2
+  echo "error: hw-slicer-cli not found; run ./build.sh cli-debug or ./build.sh cli-release" >&2
   exit 1
 fi
 if [ ! -x "$SIM_BIN" ] || [ ! -x "$HOST_BIN" ]; then

@@ -348,6 +348,10 @@ build/release/hw-slicer-cli \
   --evidence-bundle=build/benchy.hwsdebug
 ```
 
+`./build.sh cli-debug` builds a debug CLI to `build/hw-slicer-cli` and the
+printer MCP server without the app, in a few seconds. Its output is identical
+to the release CLI.
+
 Compare feature-enabled builds with the end-to-end slicing benchmark. Save a
 baseline CLI before changing the slicer. The benchmark rebuilds the candidate.
 

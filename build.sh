@@ -32,7 +32,7 @@ NEO_ROOT="$ROOT/../hw_neobrutalism/neo"
 MODE=${1:-debug}
 
 case "$MODE" in
-  debug)
+  debug|cli-debug)
     APP="$ROOT/build/hw_slicer.app"
     ODIN_FLAGS="-debug -o:none -keep-temp-files"
     CLANG_FLAGS="-O0 -g"
@@ -48,18 +48,20 @@ case "$MODE" in
     CLANG_FLAGS="-O2"
     ;;
   *)
-    echo "usage: ./build.sh [debug|asan|release|cli-release]" >&2
+    echo "usage: ./build.sh [debug|asan|release|cli-debug|cli-release]" >&2
     exit 2
     ;;
 esac
 
 CLIPPER_MODE="$MODE"
-if [ "$MODE" = "cli-release" ]; then
-  CLIPPER_MODE="release"
-fi
+CLI_ONLY=0
+case "$MODE" in
+  cli-debug) CLIPPER_MODE="debug"; CLI_ONLY=1 ;;
+  cli-release) CLIPPER_MODE="release"; CLI_ONLY=1 ;;
+esac
 
 "$ROOT/scripts/dependencies.sh" check
-if [ "$MODE" != "cli-release" ]; then
+if [ "$CLI_ONLY" = 0 ]; then
   bash "$RUNE_ROOT/scripts/build-metallib.sh"
 fi
 "$ROOT/scripts/clipper2-build.sh" "$CLIPPER_MODE" >/dev/null
@@ -96,7 +98,7 @@ mkdir -p "$BUILD_DIR"
   -c "$ROOT/host/HWSlicerMoonraker.m" \
   -o "$MOONRAKER_OBJECT"
 
-if [ "$MODE" != "cli-release" ]; then
+if [ "$CLI_ONLY" = 0 ]; then
   mkdir -p "$APP/Contents/MacOS"
   # shellcheck disable=SC2086
   "$CLANG" -fobjc-arc -Wall -Wextra -Werror $CLANG_FLAGS \
@@ -158,8 +160,8 @@ fi
     -extra-linker-flags:"$MOONRAKER_OBJECT $ASAN_COMPAT_OBJECT $MCP_FRAMEWORKS"
 )
 
-if [ "$MODE" = "cli-release" ]; then
-  echo "[hw_slicer] built cli-release: ${CLI_EXECUTABLE#"$ROOT"/}"
+if [ "$CLI_ONLY" = 1 ]; then
+  echo "[hw_slicer] built $MODE: ${CLI_EXECUTABLE#"$ROOT"/} ${MCP_EXECUTABLE#"$ROOT"/}"
   exit 0
 fi
 
