@@ -54,8 +54,16 @@ if [ ! -x "$SLICER_BIN" ]; then
   exit 1
 fi
 if [ ! -x "$SIM_BIN" ] || [ ! -x "$HOST_BIN" ]; then
-  echo "error: hw-printer / hw-printer-sim not found in $PRINTER_DIR/build/darwin_arm64-debug" >&2
-  exit 1
+  if [ ! -x "$PRINTER_DIR/build.sh" ]; then
+    echo "error: hw-printer / hw-printer-sim missing and $PRINTER_DIR/build.sh not found" >&2
+    exit 1
+  fi
+  echo "==> Building hw-printer and hw-printer-sim (debug)"
+  (cd "$PRINTER_DIR" && ./build.sh debug darwin_arm64)
+  if [ ! -x "$SIM_BIN" ] || [ ! -x "$HOST_BIN" ]; then
+    echo "error: hw-printer build did not produce $SIM_BIN and $HOST_BIN" >&2
+    exit 1
+  fi
 fi
 
 GCODE="$OUT_DIR/job.gcode"
