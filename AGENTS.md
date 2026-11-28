@@ -30,6 +30,8 @@ Follow the shared visual rules in `../hw_delta_support/DESIGN.md` for applicable
 
 The project aims for the highest possible performance in every part. Record every identified optimization in the [optimization ledger](docs/optimization-ledger.md) with its measured or estimated gain. A small gain or a high cost orders an optimization later; it is not a reason to drop it. Reject an optimization only when evidence shows it cannot pay off, and record that evidence in the ledger.
 
+Keep every precision limit (coordinate units, tolerances, output decimals) adjustable: follow the code rule in `../hw_printer/docs/plan.md`, "Precision experiments".
+
 ## OrcaSlicer Output Comparison
 
 After changes to slicing geometry, infill/skin, supports/adhesion, path planning, motion, or profile options, compare both output geometry and speed against the local OrcaSlicer CLI:
