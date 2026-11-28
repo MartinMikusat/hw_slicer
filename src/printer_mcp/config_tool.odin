@@ -18,6 +18,7 @@ ENDPOINT_LEGACY_ENV :: "HW_RATOS_MCP_ENDPOINT"
 STEP_SECONDS :: 20.0
 OUTPUT_BYTES_MAX :: 64 * 1024
 DRIFT_LINES_MAX :: 30
+DRIFT_VALUE_MAX :: 80
 
 config_tool_definition :: proc() -> json.Value {
 	string_property :: proc(description: string) -> json.Value {
@@ -27,13 +28,15 @@ config_tool_definition :: proc() -> json.Value {
 		"name" = json.String(CONFIG_TOOL),
 		"description" = json.String("Read the printer's reconciled Klipper configuration: the final value of every key after all [include] files and the SAVE_CONFIG block are applied, " +
 			"with the file:line that sets it and the earlier entries it overrides. Reads live from Moonraker (read-only). " +
-			"With no arguments it lists the sections. Use it to find where something is configured and which file to edit."),
+			"With no arguments it lists the sections. Use it to find where something is configured and which file to edit. " +
+			"Pass `snapshot` to save every final value, its source and the drift as one local JSON file."),
 		"inputSchema" = json.Object{
 			"type" = json.String("object"),
 			"properties" = json.Object{
 				"section" = string_property("Section name, exact (for example `stepper_x`) or a prefix (for example `gcode_macro`)."),
 				"key" = string_property("Key name within the matched sections, exact (for example `rotation_distance`)."),
 				"query" = string_property("Case-insensitive text to find in section names, key names and final values."),
+				"snapshot" = string_property("Absolute path of a local `.json` file that receives the complete reconciled configuration. The filters do not apply to it."),
 			},
 		},
 	}
@@ -66,6 +69,9 @@ config_tool_run :: proc(arguments: json.Object) -> (text: string, ok: bool) {
 	section, _ := arguments["section"].(json.String)
 	key, _ := arguments["key"].(json.String)
 	query, _ := arguments["query"].(json.String)
+	if snapshot, has_snapshot := arguments["snapshot"].(json.String); has_snapshot {
+		return write_snapshot(&client, &res, endpoint, snapshot)
+	}
 	return format_resolution(&client, &res, section, key, query), true
 }
 
@@ -129,7 +135,7 @@ format_resolution :: proc(c: ^mr.Client, res: ^cfg.Resolution, section_filter, k
 	strings.builder_init(&b, context.temp_allocator)
 	fmt.sbprintf(&b, "# Reconciled configuration from %d files (main file %s). Format: `key: value`, then\n", len(res.layers), CONFIG_MAIN)
 	strings.write_string(&b, "# `<- file:line` for the entry that wins and `shadowed|ignored file:line = value` for the others.\n")
-	write_drift(&b, c, res)
+	write_drift(&b, c, res, section_filter, key_filter, query)
 	for diagnostic in res.diagnostics {
 		fmt.sbprintf(&b, "# diagnostic: %s (%s:%d) %s\n", cfg.diagnostic_text(diagnostic.kind),
 			layer_name(res, diagnostic.layer), diagnostic.line, diagnostic.detail)
@@ -171,7 +177,7 @@ format_resolution :: proc(c: ^mr.Client, res: ^cfg.Resolution, section_filter, k
 	return strings.to_string(b)
 }
 
-write_drift :: proc(b: ^strings.Builder, c: ^mr.Client, res: ^cfg.Resolution) {
+write_drift :: proc(b: ^strings.Builder, c: ^mr.Client, res: ^cfg.Resolution, section_filter, key_filter, query: string) {
 	pending, items := mr.save_config_pending(c)
 	if pending {fmt.sbprintf(b, "# Klipper holds %d unsaved SAVE_CONFIG values.\n", items)}
 	running, ok := mr.running_configuration(c)
@@ -184,10 +190,115 @@ write_drift :: proc(b: ^strings.Builder, c: ^mr.Client, res: ^cfg.Resolution) {
 		strings.write_string(b, "# Files match Klipper's running configuration.\n")
 		return
 	}
-	fmt.sbprintf(b, "# %d keys differ from Klipper's running configuration (files changed since the last restart):\n", len(differences))
-	for difference, index in differences {
-		if index >= DRIFT_LINES_MAX {strings.write_string(b, "#   ...\n"); break}
+	fmt.sbprintf(b, "# %d keys differ from Klipper's running configuration (files changed since the last restart)", len(differences))
+	filtered := section_filter != "" || key_filter != "" || query != ""
+	strings.write_string(b, filtered ? "; those that match the filter:\n" : ":\n")
+	listed := 0
+	for difference in differences {
+		if filtered && !drift_matches(difference, section_filter, key_filter, query) {continue}
+		if listed >= DRIFT_LINES_MAX {strings.write_string(b, "#   ...\n"); break}
+		listed += 1
 		fmt.sbprintf(b, "#   [%s] %s: files=%s running=%s\n", difference.section, difference.key,
-			difference.files_value, difference.running_value)
+			drift_value(difference.files_value), drift_value(difference.running_value))
 	}
+}
+
+drift_matches :: proc(d: cfg.Difference, section_filter, key_filter, query: string) -> bool {
+	if section_filter != "" && d.section != section_filter && !strings.has_prefix(d.section, section_filter) {return false}
+	if key_filter != "" && d.key != key_filter {return false}
+	if query != "" && !contains_fold(d.section, query) && !contains_fold(d.key, query) &&
+		!contains_fold(d.files_value, query) && !contains_fold(d.running_value, query) {return false}
+	return true
+}
+
+// One line per value: newlines become ` | ` and long values are cut at a rune
+// boundary, so a changed macro body costs one line instead of its whole text.
+drift_value :: proc(value: string) -> string {
+	flat, _ := strings.replace_all(strings.trim_space(value), "\n", " | ", context.temp_allocator)
+	if len(flat) <= DRIFT_VALUE_MAX {return flat}
+	cut := 0
+	for _, index in flat {
+		if index > DRIFT_VALUE_MAX {break}
+		cut = index
+	}
+	return fmt.tprintf("%s... (%d bytes)", flat[:cut], len(value))
+}
+
+Snapshot_Key :: struct {
+	name: string,
+	value: string,
+	source: string,
+	overridden: int,
+}
+
+Snapshot_Section :: struct {
+	name: string,
+	keys: [dynamic]Snapshot_Key,
+}
+
+Snapshot_Drift :: struct {
+	section: string,
+	key: string,
+	files: string,
+	running: string,
+}
+
+Snapshot :: struct {
+	endpoint: string,
+	main_file: string,
+	files: [dynamic]string,
+	save_config_pending_items: int,
+	running_checked: bool,
+	drift: [dynamic]Snapshot_Drift,
+	diagnostics: [dynamic]string,
+	sections: [dynamic]Snapshot_Section,
+}
+
+// Writes the whole reconciled configuration to a local JSON file and returns a
+// short summary, so a baseline costs one call instead of one per section.
+write_snapshot :: proc(c: ^mr.Client, res: ^cfg.Resolution, endpoint, path: string) -> (text: string, ok: bool) {
+	if !strings.has_prefix(path, "/") || !strings.has_suffix(path, ".json") {
+		return "The snapshot path must be absolute and end in `.json`.", false
+	}
+	a := context.temp_allocator
+	snap := Snapshot{
+		endpoint = endpoint,
+		main_file = CONFIG_MAIN,
+		files = make([dynamic]string, a),
+		drift = make([dynamic]Snapshot_Drift, a),
+		diagnostics = make([dynamic]string, a),
+		sections = make([dynamic]Snapshot_Section, a),
+	}
+	for _, index in res.layers {append(&snap.files, layer_name(res, i32(index)))}
+	_, snap.save_config_pending_items = mr.save_config_pending(c)
+	if running, has_running := mr.running_configuration(c); has_running {
+		snap.running_checked = true
+		for d in cfg.compare_running(res, running, a) {
+			append(&snap.drift, Snapshot_Drift{d.section, d.key, d.files_value, d.running_value})
+		}
+	}
+	for diagnostic in res.diagnostics {
+		append(&snap.diagnostics, fmt.tprintf("%s (%s:%d) %s", cfg.diagnostic_text(diagnostic.kind),
+			layer_name(res, diagnostic.layer), diagnostic.line, diagnostic.detail))
+	}
+	key_count := 0
+	for &section in res.sections {
+		out := Snapshot_Section{name = section.name, keys = make([dynamic]Snapshot_Key, a)}
+		for &key in section.keys {
+			final, has_final := cfg.final_entry(&key)
+			if !has_final {continue}
+			append(&out.keys, Snapshot_Key{key.name, final.value,
+				fmt.tprintf("%s:%d", layer_name(res, final.layer), final.line), len(key.entries) - 1})
+			key_count += 1
+		}
+		append(&snap.sections, out)
+	}
+	data, marshal_error := json.marshal(snap, {pretty = true}, a)
+	if marshal_error != nil {return fmt.tprintf("Could not encode the snapshot: %v", marshal_error), false}
+	if write_error := os.write_entire_file_from_bytes(path, data); write_error != nil {
+		return fmt.tprintf("Could not write %s: %v", path, write_error), false
+	}
+	return fmt.tprintf("Wrote %s: %d sections, %d keys from %d files; %d unsaved SAVE_CONFIG values; %d keys differ from the running configuration%s.",
+		path, len(snap.sections), key_count, len(snap.files), snap.save_config_pending_items, len(snap.drift),
+		snap.running_checked ? "" : " (running configuration unavailable)"), true
 }
