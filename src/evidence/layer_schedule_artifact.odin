@@ -47,6 +47,7 @@ layer_schedule_artifact_encode :: proc(
 	limits := DEFAULT_LAYER_SCHEDULE_ARTIFACT_LIMITS,
 	allocator := context.allocator,
 ) -> ([]u8, Layer_Schedule_Artifact_Error) {
+	if result.adaptive {return nil, .Invalid_Record}
 	result_hash, result_ok := slicing.fixed_layer_schedule_hash(result)
 	if !result_ok {return nil, .Invalid_Record}
 	layer_count := u64(len(result.layer_z))

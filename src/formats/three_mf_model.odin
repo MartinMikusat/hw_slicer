@@ -517,10 +517,14 @@ three_mf_model_decode :: proc(
 			}
 			id_text, _ := three_mf_model_attribute(child, "id")
 			resource_id, _ := three_mf_parse_u32(id_text)
-			resource_index, _ := three_mf_resource_index(
+			resource_index, resource_found := three_mf_resource_index(
 				resource_ids[:resource_id_count],
 				resource_id,
 			)
+			if !resource_found {
+				three_mf_scene_destroy(&scene, allocator)
+				return {}, .Resource_ID_Invalid
+			}
 			if resource_kinds[resource_index] != .Object {
 				property_error := three_mf_decode_property_group(
 					document,

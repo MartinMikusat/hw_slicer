@@ -48,7 +48,7 @@ Label unimplemented stages as placeholders. Do not imply that their results exis
 
 Done means: the app loads a model, slices it with printer, material, and process profiles, shows every stage with its evidence, and exports G-code that prints correctly on the V-Core 3 through `hw_printer`. The CLI and the app run the same pipeline and produce the same evidence.
 
-1. [ ] Correctness gaps. Remaining: review `src/formats/` and `src/evidence/` (vase top-skin/Z-start `CR-44`, adaptive `max_lh` `CR-45`, and skirt fallback `CR-46` are fixed).
+1. [x] Correctness gaps (`src/formats/` and `src/evidence/` reviewed and confirmed defects fixed; vase top-skin/Z-start `CR-44`, adaptive `max_lh` `CR-45`, and skirt fallback `CR-46` fixed).
 2. [ ] One pipeline with evidence. Remaining: serialize per-stage binary primitive payloads for all 16 pipeline stages so bundles pass strict `bundle_replay.odin` validation without loosening checks (summary counters + G-code export and `--evidence-bundle` CLI wiring exist).
 3. [x] The app slices.
 4. [x] Geometric rendering, cross-stage selection, and 3D G-code preview views.

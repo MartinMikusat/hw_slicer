@@ -522,6 +522,11 @@ three_mf_hash_object_spans_valid :: proc(
 	triangle_count: int,
 	component_count: int,
 ) -> bool {
+	if object.vertex_offset > u64(vertex_count) ||
+	   object.triangle_offset > u64(triangle_count) ||
+	   object.component_offset > u64(component_count) {
+		return false
+	}
 	vertex_end := object.vertex_offset+u64(object.vertex_count)
 	triangle_end := object.triangle_offset+u64(object.triangle_count)
 	component_end := object.component_offset+u64(object.component_count)
@@ -567,17 +572,17 @@ three_mf_hash_object_relationships_valid :: proc(
 		}
 		start := int(object.triangle_offset)
 		end := start+int(object.triangle_count)
-		vertex_start := u32(object.vertex_offset)
-		vertex_end := vertex_start+object.vertex_count
+		vertex_start := object.vertex_offset
+		vertex_end := vertex_start+u64(object.vertex_count)
 		for triangle_index in start..<end {
 			if scene.triangles.object_indices[triangle_index] !=
 			   	u32(object_index) ||
-			   scene.triangles.a[triangle_index] < vertex_start ||
-			   scene.triangles.a[triangle_index] >= vertex_end ||
-			   scene.triangles.b[triangle_index] < vertex_start ||
-			   scene.triangles.b[triangle_index] >= vertex_end ||
-			   scene.triangles.c[triangle_index] < vertex_start ||
-			   scene.triangles.c[triangle_index] >= vertex_end {
+			   u64(scene.triangles.a[triangle_index]) < vertex_start ||
+			   u64(scene.triangles.a[triangle_index]) >= vertex_end ||
+			   u64(scene.triangles.b[triangle_index]) < vertex_start ||
+			   u64(scene.triangles.b[triangle_index]) >= vertex_end ||
+			   u64(scene.triangles.c[triangle_index]) < vertex_start ||
+			   u64(scene.triangles.c[triangle_index]) >= vertex_end {
 				return false
 			}
 		}

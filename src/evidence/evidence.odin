@@ -130,7 +130,15 @@ evidence_manifest_encode :: proc(
 		allocator,
 	)
 	if error != nil {return nil, .Encode_Failed}
+	if u64(len(bytes)+1) > EVIDENCE_STAGE_MANIFEST_BYTE_LIMIT {
+		delete(bytes, allocator)
+		return nil, .Byte_Limit
+	}
 	result := make([]u8, len(bytes)+1, allocator)
+	if result == nil {
+		delete(bytes, allocator)
+		return nil, .Encode_Failed
+	}
 	copy(result, bytes)
 	result[len(bytes)] = '\n'
 	delete(bytes, allocator)
@@ -141,6 +149,9 @@ evidence_manifest_decode :: proc(
 	bytes: []u8,
 	allocator := context.allocator,
 ) -> (Evidence_Manifest, Evidence_Error) {
+	if u64(len(bytes)) > EVIDENCE_STAGE_MANIFEST_BYTE_LIMIT {
+		return {}, .Byte_Limit
+	}
 	manifest: Evidence_Manifest
 	if error := json.unmarshal(bytes, &manifest, .JSON, allocator); error != nil {
 		evidence_manifest_destroy(&manifest, allocator)

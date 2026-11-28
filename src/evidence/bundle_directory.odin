@@ -141,6 +141,13 @@ evidence_bundle_directory_publish :: proc(
 				staging_cstring,
 				{.DIRECTORY, .CLOEXEC, .NOFOLLOW},
 			)
+			if staging_fd < 0 {
+				posix.unlinkat(
+					parent_fd,
+					staging_cstring,
+					{.REMOVEDIR},
+				)
+			}
 			break
 		}
 		if posix.get_errno() != .EEXIST {
