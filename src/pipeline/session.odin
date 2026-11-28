@@ -1505,6 +1505,7 @@ stage_motion :: proc(s: ^Slice_Session) -> Slice_Run_Error {
 	if options.arc_fitting_enabled && !options.vase_mode {
 		arc_cfg := features.DEFAULT_ARC_FIT_CONFIG
 		if options.arc_tolerance_um > 0 {arc_cfg.max_chord_error_um = options.arc_tolerance_um}
+		if options.klipper_arc_resolution_um >= 0 {arc_cfg.klipper_arc_resolution_um = options.klipper_arc_resolution_um}
 		s.arc_fit_stats = features.motion_plan_fit_arcs(&s.motion, s.profile.printer, arc_cfg, a)
 		s.slots[.Motion].count_b = s.arc_fit_stats.arcs_fitted
 	}

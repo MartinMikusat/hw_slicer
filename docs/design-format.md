@@ -14,9 +14,11 @@ Each successful load writes `build/gcode/<name>-<nozzle>mm.gcode` through the
 Klipper emitter. The machine values in `src/design_export.odin` come from the
 RatOS V-Core 3 configuration captured in `hw_ratos`: a 500 × 500 × 500 mm bed,
 300 mm/s and 3000 mm/s² limits, 120 mm/s and 800 mm/s² extruder limits, and
-0.5 mm retraction. PLA temperatures (210 °C nozzle, 60 °C bed), the 15 mm³/s
-flow limit, and print accelerations are assumptions. Coordinates are mm from
-the bed centre, and the export fails when a move leaves the bed.
+0.5 mm retraction. Nozzle and bed temperature ranges, density, the volumetric
+flow limit, and fan limits come from the shared material profiles in
+`resources/profiles/materials/`, which default to `pla`. Acceleration defaults
+are design values. Coordinates are mm from the bed centre, and the export fails
+when a move leaves the bed.
 
 The file calls the printer's `START_PRINT` macro with the RatOS parameters
 (`EXTRUDER_TEMP`, `EXTRUDER_OTHER_LAYER_TEMP`, `BED_TEMP`, and the extrusion
@@ -29,6 +31,7 @@ One statement per line. A statement inside parentheses can continue on the
 next lines. `#` starts a comment.
 
 ```text
+material = NAME
 let NAME = EXPRESSION
 let NAME = box(KEY = EXPRESSION, ...)
 box(KEY = EXPRESSION, ...)
@@ -40,6 +43,9 @@ let NAME = profile(height = LENGTH, walls = COUNT, outer = loop(...), hole = loo
 bevel(OBJECT_A, OBJECT_B, size = LENGTH)
 fillet(OBJECT_A, OBJECT_B, radius = LENGTH)
 ```
+
+`material` selects a shared material profile: `pla`, `petg`, or `abs`,
+case-insensitive. It is optional and defaults to `pla`.
 
 A `let` cannot redefine a name. A name must be defined before it is used.
 Objects bound with `let NAME = ...` can be referenced by `bevel` and `fillet`
@@ -72,6 +78,9 @@ The application defines these names from the selected printer:
 | `line_width` | length | yes | |
 | `layer_height` | length | yes | |
 | `first_layer_height` | length | no | `layer_height` |
+| `first_layer_fan` | scalar, percent | no | 0 |
+| `nozzle_temperature` | scalar, °C | no | material midpoint |
+| `bed_temperature` | scalar, °C | no | material midpoint |
 | `print_speed` | scalar, mm/s | no | 40 |
 | `print_acceleration` | scalar, mm/s² | no | 1000 |
 | `fan` | scalar, percent | no | 100 |
@@ -80,6 +89,11 @@ The application defines these names from the selected printer:
 
 `print_speed`, `print_acceleration`, and `fan` are defaults. Each feature can
 set its own values; see [Feature settings](#feature-settings).
+
+`nozzle_temperature` and `bed_temperature` default to the midpoint of the
+material's ranges. Layer 0 runs at `first_layer_fan` clamped to the material's
+maximum fan. Later layers clamp each feature's `fan` to the material's minimum
+and maximum fan limits.
 
 ## Functions
 

@@ -2,6 +2,29 @@
 
 The slice runs as 16 engine stages over one `Slice_Session` (`src/pipeline/session.odin`). Each stage keeps its result. The stage table, graph columns and settings hashes are in `src/pipeline/stages.odin`. The CLI and the application slice through the same session.
 
+## Stages and status
+
+All 16 stages are implemented and dispatched by the session; each retains its result in its slot. The evidence bundle collapses them into 11 stage kinds and adds a layer-span acceleration stage that is not an engine stage. Full primitives are written only in primitives-level bundles; summary-level bundles carry the counters alone.
+
+| Stage | Dependencies | Output | Status | Evidence export |
+|---|---|---|---|---|
+| Model | — | Repaired, centred, unit-normalised mesh | Implemented; counters only | Stages Decode, Resolve, Normalize: source and mesh-repair counters, no primitive |
+| Layer schedule | Model | Per-layer Z heights, fixed or adaptive | Implemented; replayable | `stages/04-schedule-layers/primitives/layer-schedule.bin` and replay hash; fixed schedules only, adaptive falls back to counters |
+| Mesh intersections | Layer schedule | Raw layer segments and merged snapped segments | Implemented; replayable | `stages/06-intersect/primitives/cpu-intersections.bin` and replay hash |
+| Contours and topology | Mesh intersections | Closed, simplified contours with path indices | Implemented; replayable | `stages/07-reconstruct-topology/primitives/topology.bin` and replay hash |
+| Regions | Contours and topology | Nested outer and hole regions per layer | Implemented; replayable | `stages/08-calculate-regions/primitives/regions.bin`; written only alongside the topology primitive |
+| Surfaces and skin | Layer schedule, Regions | Surface and skin masks, skin depth | Implemented; replayable | `stages/09-generate-features/primitives/surfaces.bin` and surface replay hash |
+| Perimeters | Regions | Perimeter loops per region | Implemented; counters only | Generate-features counters |
+| Bridges | Regions | Bridge masks, directions and paths | Implemented; counters only | Generate-features counters |
+| Solid areas | Layer schedule, Regions, Surfaces and skin, Bridges | Disjoint solid masks and contours | Implemented; counters only | Generate-features counters |
+| Solid paths | Layer schedule, Solid areas | Hatched solid fill and ironing paths | Implemented; counters only | Generate-features counters |
+| Sparse infill | Layer schedule, Regions, Surfaces and skin, Solid areas | Infill paths at the chosen pattern and density | Implemented; counters only | Generate-features counters |
+| Gap fill | Regions, Perimeters | Gap centreline paths | Implemented; counters only | Generate-features counters |
+| Supports and adhesion | Model, Layer schedule, Regions | Support paths, skirt, brim, raft | Implemented; counters only | Generate-features counters |
+| Path plan | Layer schedule, Perimeters, Bridges, Solid paths, Sparse infill, Gap fill, Supports | Ordered paths with seams and travel moves | Implemented; counters only | Plan-paths counters; the plan and extrusion results are not retained, so no primitive |
+| Motion | Layer schedule, Regions, Path plan | Operations with extrusion, speeds, arcs, modifiers | Implemented; counters only | Plan-paths counters, merged with Path plan; no primitive |
+| G-code | Motion | Validated Klipper G-code | Implemented; replayable | `stages/11-emit-gcode/output.gcode`, `primitives/klipper-gcode.bin` and replay hash |
+
 ## Stale tracking
 
 Each stage hashes the settings it reads and the hashes of the stages it needs. A settings change recomputes the hashes. A stage whose hash differs becomes stale, keeps its result, and names the earliest stage whose settings changed. A run recomputes only the stale or missing stages among the target and its dependencies. Settings that reach a stage through the whole process document are covered by the profile feature hash, so a stage can be marked stale without a real change, never the reverse. A rerun that produces an identical result still invalidates its dependents; there is no early cutoff.

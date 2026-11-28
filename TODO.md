@@ -76,7 +76,7 @@ Open decisions:
 - [ ] Own the stack as one native Odin "golden" setup: a printer host that replaces Klipper's host, Moonraker, Mainsail, and RatOS, and talks to the stock Klipper microcontroller firmware. The host is `../hw_printer`; see its [plan](../hw_printer/docs/plan.md).
 - [ ] GPU-accelerated coarse-grid supports and overhang/orientation scoring: evaluate a Metal exact Euclidean Distance Transform (`PBA`, Cao et al. 2010) with a top-down morphological sweep (Hornus et al. 2015) at 100–200 µm grid pitch for support volumes and build-orientation optimization, where sub-millimetre discretization is acceptable. See [GPU slicing notes](research/notes/gpu-slicing.md).
 - [ ] GPU interactive slice/overhang preview: evaluate an IceSL-style GPU ray-rep/slice preview for non-authoritative live feedback (overhang heatmaps, CSG/Toolpath Design edits) while keeping the exact CPU vector pipeline as the G-code authority. See [GPU slicing notes](research/notes/gpu-slicing.md).
-- [ ] Document the stages and their current implementation status as the workspace develops.
+- [x] Document the stages and their current implementation status as the workspace develops.
 
 ## Deferred
 

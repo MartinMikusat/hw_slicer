@@ -162,6 +162,9 @@ slice_configuration_resolve :: proc(
 	run.ironing_inset_um = contracts.Micrometres(i64(math.round(extras.ironing_inset_mm*1000.0)))
 	run.arc_fitting_enabled = extras.arc_fitting_enabled
 	run.arc_tolerance_um = extras.arc_tolerance_mm * 1000.0
+	if extras.klipper_arc_resolution_mm >= 0 {
+		run.klipper_arc_resolution_um = extras.klipper_arc_resolution_mm * 1000.0
+	}
 	run.variable_walls_enabled = extras.variable_walls_enabled
 	run.support_style_tree = extras.support_style != "grid"
 	run.adaptive_layers = config.adaptive_layers || extras.adaptive_layers

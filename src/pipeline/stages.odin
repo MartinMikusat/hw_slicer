@@ -403,6 +403,7 @@ stage_settings_hash :: proc(
 		hash_pod(&h, options.vase_mode)
 		hash_pod(&h, options.arc_fitting_enabled)
 		hash_pod(&h, options.arc_tolerance_um)
+		hash_pod(&h, options.klipper_arc_resolution_um)
 		hash_pod(&h, len(options.modifiers))
 		for modifier in options.modifiers {hash_pod(&h, modifier)}
 	case .Gcode:

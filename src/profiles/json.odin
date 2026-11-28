@@ -43,6 +43,8 @@ Process_JSON_Extras :: struct {
 	ironing_inset_mm:              f64,
 	arc_fitting_enabled:           bool,
 	arc_tolerance_mm:              f64,
+	// Klipper `[gcode_arcs] resolution` in mm; -1 uses the default, 0 disables the gate.
+	klipper_arc_resolution_mm:     f64,
 	variable_walls_enabled:        bool,
 	// Milestone 4
 	support_style:                 string, // "tree" | "grid"
@@ -226,6 +228,7 @@ Process_JSON :: struct {
 	ironing_inset_mm:              f64,
 	arc_fitting_enabled:           bool,
 	arc_tolerance_mm:              f64,
+	klipper_arc_resolution_mm:     ^f64,
 	variable_walls_enabled:        bool,
 	// Milestone 4
 	support_style:                 string, // "tree" | "grid"
@@ -422,6 +425,10 @@ process_profile_load_json :: proc(
 	} else if len(raw.support_mode) > 0 && !strings.equal_fold(raw.support_mode, "build_plate_only") {
 		return {}, {}, .Invalid_Field
 	}
+	if raw.klipper_arc_resolution_mm != nil && raw.klipper_arc_resolution_mm^ < 0 {
+		return {}, {}, .Invalid_Field
+	}
+	klipper_resolution := raw.klipper_arc_resolution_mm^ if raw.klipper_arc_resolution_mm != nil else -1.0
 	fan_ppm := pct_to_ppm(raw.fan_percent)
 	bridge_fan_ppm := pct_to_ppm(raw.bridge_fan_percent)
 	p_accel := mm_s2_to_um_s2(raw.perimeter_accel_mm_s2)
@@ -606,6 +613,7 @@ process_profile_load_json :: proc(
 		ironing_inset_mm              = max(0.0, raw.ironing_inset_mm),
 		arc_fitting_enabled           = raw.arc_fitting_enabled,
 		arc_tolerance_mm              = raw.arc_tolerance_mm if raw.arc_tolerance_mm > 0 else 0.02,
+		klipper_arc_resolution_mm     = klipper_resolution,
 		variable_walls_enabled        = raw.variable_walls_enabled,
 		support_style                 = support_style,
 		adaptive_layers               = raw.adaptive_layers,
@@ -1033,6 +1041,9 @@ profile_apply_override :: proc(
 		extras.ironing_inset_mm = max(0.0, num)
 	case "arc_tolerance", "arc_tolerance_mm":
 		extras.arc_tolerance_mm = max(0.005, num)
+	case "klipper_arc_resolution_mm":
+		if num < 0 {return .Invalid_Override_Value}
+		extras.klipper_arc_resolution_mm = num
 	case "initial_layer_line_width", "initial_layer_line_width_mm":
 		extras.initial_layer_line_width_mm = max(0.0, num)
 		if num > 0 {

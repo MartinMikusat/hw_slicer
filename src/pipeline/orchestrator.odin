@@ -59,6 +59,8 @@ Slice_Run_Options :: struct {
 	ironing_inset_um:              contracts.Micrometres,
 	arc_fitting_enabled:           bool,
 	arc_tolerance_um:              f64,
+	// Klipper `[gcode_arcs] resolution` in um; 0 disables the segmentation gate.
+	klipper_arc_resolution_um:     f64,
 	variable_walls_enabled:        bool,
 	// Milestone 4: Tree supports & Adaptive layer height
 	support_style_tree:            bool,
@@ -177,6 +179,7 @@ DEFAULT_SLICE_RUN_OPTIONS :: Slice_Run_Options{
 	ironing_flow_percent          = 15,
 	arc_fitting_enabled           = true,
 	arc_tolerance_um              = 20.0,
+	klipper_arc_resolution_um     = 1000.0,
 	variable_walls_enabled        = true,
 	support_style_tree            = true,
 	tree_branch_angle_deg         = 45.0,
