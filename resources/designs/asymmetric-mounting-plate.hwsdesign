@@ -14,10 +14,10 @@ let thickness = 3mm
 let plate = profile(
     height = thickness, walls = 4, floor = ceil(0.6mm / layer_height),
     outer = loop(outline,
-        smooth(west_shoulder, left, 16mm, -1, 0, 8mm, 9mm),
+        smooth(west_shoulder, left, 16mm, -1, 0, 8mm, 9mm, shift(10.484844388167495mm, -7.75722809418734mm, -18.80797896289374, -0.7227673794831349mm, 0mm)),
         smooth(west_tip, -width / 2, 0mm, 0, -1, 10mm, 8mm),
         smooth(west_heel, left, -12mm, 1, 0, 8mm, 10mm),
-        smooth(lower_waist, 0mm, -waist / 2, 1, 0, 7mm, 7mm),
+        smooth(lower_waist, 0mm, -waist / 2, 1, 0, 7mm, 7mm, shift(0.5108490227140785mm, -2.0194353526169557mm, 0, 0mm, 0mm)),
         smooth(east_heel, right, -10mm, 1, 0, 6mm, 8mm),
         corner(east_tip, width / 2, 1mm, 0mm, -6mm, -2mm, 8mm),
         smooth(east_shoulder, right, 13mm, -1, 0, 9mm, 10mm),
