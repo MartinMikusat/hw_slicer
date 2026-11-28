@@ -31,7 +31,6 @@ DEV_RETRACTION_UM :: 500
 DEV_RETRACTION_SPEED :: 120_000
 DEV_MINIMUM_RETRACTION_TRAVEL_UM :: 1_500
 DEV_DEFAULT_MATERIAL :: "pla"
-DEV_FALLBACK_MAX_VOLUMETRIC_FLOW :: 20_000_000_000 // µm³/s, PLA default fallback
 
 Design_Export_Error :: enum u8 {
 	None,
@@ -67,14 +66,22 @@ design_load_material :: proc(name: string) -> (profiles.Material_Profile, bool) 
 }
 
 // The physical printer as designs see it: the selected nozzle and the machine limits.
+// Without a loadable material profile the flow limit is unknown; the preview then does not
+// restrict it and export fails on the missing profile instead of on a guessed PLA value.
 design_printer :: proc(nozzle_mm: f64, material_name := "") -> design.Printer {
-	max_flow := f64(DEV_FALLBACK_MAX_VOLUMETRIC_FLOW) / 1e9
-	if mat, ok := design_load_material(material_name); ok && mat.maximum_volumetric_flow > 0 {
-		max_flow = f64(mat.maximum_volumetric_flow) / 1e9
+	max_flow := max(f64)
+	filament_diameter := DESIGN_FILAMENT_DIAMETER
+	if mat, ok := design_load_material(material_name); ok {
+		if mat.maximum_volumetric_flow > 0 {
+			max_flow = f64(mat.maximum_volumetric_flow)/1e9
+		}
+		if mat.filament_diameter > 0 {
+			filament_diameter = f64(i64(mat.filament_diameter))/1000
+		}
 	}
 	return {
 		nozzle_diameter = nozzle_mm,
-		filament_diameter = DESIGN_FILAMENT_DIAMETER,
+		filament_diameter = filament_diameter,
 		max_speed = f64(DEV_MAX_SPEED)/1000,
 		max_acceleration = f64(DEV_MAX_ACCELERATION)/1000,
 		max_volumetric_flow = max_flow,
@@ -104,7 +111,8 @@ design_um :: proc(mm: f64) -> contracts.Micrometres {
 design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved_Profiles, profiles.Profile_Resolve_Error) {
 	material, mat_ok := design_load_material(d.material)
 	if !mat_ok {return {}, .Material_Schema}
-	if d.filament_diameter > 0 {
+	// The shared material profile owns the filament; the design's printer value only fills a gap.
+	if material.filament_diameter == 0 {
 		material.filament_diameter = design_um(d.filament_diameter)
 	}
 	nozzle := design_um(nozzle_mm)
@@ -338,12 +346,18 @@ design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Prof
 		delta := max(emitted-b.emitted_nm, 10)
 		b.emitted_nm += delta
 		speed := design_speed(move.speed)
-		fan_percent := first_layer_fan if len(b.layers) == 1 else move.fan
-		fan_ratio := clamp(
-			design_fan(fan_percent),
-			profile.material.minimum_fan_ratio,
-			profile.material.maximum_fan_ratio,
-		)
+		// First-layer cooling: layer 0 runs with the part fan off unless the design sets
+		// `first_layer_fan`; later layers clamp the feature's fan to the material's fan limits.
+		fan_ratio: profiles.Ratio_Ppm
+		if b.layers[len(b.layers)-1].layer_index == 0 {
+			fan_ratio = min(design_fan(first_layer_fan), profile.material.maximum_fan_ratio)
+		} else {
+			fan_ratio = clamp(
+				design_fan(move.fan),
+				profile.material.minimum_fan_ratio,
+				profile.material.maximum_fan_ratio,
+			)
+		}
 		plan_operation(&b, {
 			kind = .Extrude,
 			arc = op_arc,

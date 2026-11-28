@@ -110,6 +110,51 @@ evidence_region_bounds :: proc(
 	return bounds
 }
 
+// Strict replay validation requires a topology whose path segment indices cover the whole source
+// segment space exactly once, and whose vertex degrees are the ones the reconstruction produced.
+// Contour simplification and repair drop segments and vertices while keeping the original snapped
+// segment indices and the pre-simplification degrees, so the derived view renumbers the retained
+// segments into their own compact space and re-measures the degrees, the open chains, the
+// degenerate loops and the non-manifold vertices from the paths themselves.
+@(private = "file")
+evidence_topology_export_view :: proc(
+	topo: slicing.Topology_Result,
+	allocator: mem.Allocator,
+) -> (slicing.Topology_Result, int) {
+	view := topo
+	segment_indices := make([]u32, len(topo.path_segment_indices), allocator)
+	for &segment_index, i in segment_indices {
+		segment_index = u32(i)
+	}
+	vertices := make([]slicing.Topology_Vertex, len(topo.vertices), allocator)
+	copy(vertices, topo.vertices)
+	for &vertex in vertices {vertex.degree = 0}
+	open_chains, degenerate_loops, non_manifold: u64
+	for path in topo.paths {
+		#partial switch path.kind {
+		case .Open_Chain:
+			open_chains += 1
+		case .Degenerate_Loop:
+			degenerate_loops += 1
+		}
+		indices := topo.path_vertex_indices[path.vertex_offset:path.vertex_offset+u64(path.vertex_count)]
+		for vertex_index, local_index in indices {
+			add := u32(2)
+			if path.kind == .Open_Chain && (local_index == 0 || local_index == len(indices)-1) {add = 1}
+			vertices[vertex_index].degree += add
+		}
+	}
+	for vertex in vertices {
+		if vertex.degree > 2 {non_manifold += 1}
+	}
+	view.vertices = vertices
+	view.path_segment_indices = segment_indices
+	view.open_chain_count = open_chains
+	view.degenerate_loop_count = degenerate_loops
+	view.non_manifold_vertex_count = non_manifold
+	return view, len(segment_indices)
+}
+
 // Builds a complete, validated `.hwsdebug` evidence bundle covering every canonical stage
 // (decode through emit-gcode, including bridges, gap fill, supports, adhesion, ironing,
 // Z ramps, arc fitting, and modifiers) directly from a completed `Slice_Session`.
@@ -254,54 +299,33 @@ slice_session_export_evidence_bundle :: proc(
 			}
 		}
 		if snapped_ok {
+			// The active topology is the one the regions were built from, so it is the only one the
+			// region and surface primitives can depend on. Strict replay validation wants that
+			// topology to cover every snapped segment with its post-reconstruction vertex degrees,
+			// which holds when no contour pass ran; when the strict hash rejects it, the derived
+			// view below restores that shape instead of skipping the stage.
 			export_topo := active_topo
 			topo_source_segments := len(s.snapped.segments.segment_ids)
-			// Contour simplification or repair drops segments/vertices while retaining original
-			// snapped segment indices and pre-simplification vertex degrees. Build a normalized
-			// temp view of the active topology (which regions were built from) so strict
-			// topology/region/surface artifact encoding succeeds without loosening replay checks.
-			if s.has_simplified || s.contour_repairs > 0 || len(active_topo.path_segment_indices) != topo_source_segments {
-				dense := make([]u32, len(active_topo.path_segment_indices), a)
-				for i in 0 ..< len(dense) {
-					dense[i] = u32(i)
-				}
-				verts := make([]slicing.Topology_Vertex, len(active_topo.vertices), a)
-				copy(verts, active_topo.vertices)
-				for &v in verts {
-					v.degree = 0
-				}
-				open_chains, deg_loops, non_manifold: u64
-				for path in active_topo.paths {
-					#partial switch path.kind {
-					case .Open_Chain:      open_chains += 1
-					case .Degenerate_Loop: deg_loops += 1
-					}
-					v_slice := active_topo.path_vertex_indices[path.vertex_offset:path.vertex_offset+u64(path.vertex_count)]
-					for vi, li in v_slice {
-						add := u32(1) if (path.kind == .Open_Chain && (li == 0 || li == len(v_slice)-1)) else u32(2)
-						verts[vi].degree += add
-					}
-				}
-				for v in verts {
-					if v.degree > 2 {non_manifold += 1}
-				}
-				export_topo.vertices = verts
-				export_topo.path_segment_indices = dense
-				export_topo.open_chain_count = open_chains
-				export_topo.degenerate_loop_count = deg_loops
-				export_topo.non_manifold_vertex_count = non_manifold
-				topo_source_segments = len(dense)
-			}
 			topo_hash, topo_ok = slicing.topology_result_hash(snapped_hash, topo_source_segments, export_topo)
 			if topo_ok {
 				if bytes, err := evidence.topology_artifact_encode(snapped_hash, topo_source_segments, export_topo, allocator = a); err == .None {
 					topology_bytes = bytes
 					active_topo = export_topo
 				}
-				// Replay decodes regions only after the topology primitive, so keep the pair together.
-				if len(topology_bytes) > 0 {
-					region_hash, region_ok = slicing.region_result_hash(topo_hash, export_topo, s.regions)
+			}
+			if len(topology_bytes) == 0 {
+				export_topo, topo_source_segments = evidence_topology_export_view(active_topo, a)
+				topo_hash, topo_ok = slicing.topology_result_hash(snapped_hash, topo_source_segments, export_topo)
+				if topo_ok {
+					if bytes, err := evidence.topology_artifact_encode(snapped_hash, topo_source_segments, export_topo, allocator = a); err == .None {
+						topology_bytes = bytes
+						active_topo = export_topo
+					}
 				}
+			}
+			// Replay decodes regions only after the topology primitive, so keep the pair together.
+			if len(topology_bytes) > 0 {
+				region_hash, region_ok = slicing.region_result_hash(topo_hash, export_topo, s.regions)
 			}
 			if region_ok {
 				if bytes, err := evidence.region_artifact_encode(topo_hash, export_topo, s.regions, allocator = a); err == .None {
