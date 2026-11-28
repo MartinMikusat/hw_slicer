@@ -7,19 +7,25 @@ import polygon "../polygon"
 import profiles "../profiles"
 
 Arc_Fit_Config :: struct {
-	enabled:             bool,
-	max_chord_error_um:  f64, // default 20.0 um (0.02 mm)
-	min_radius_um:       f64, // default 200.0 um (0.2 mm)
-	max_radius_um:       f64, // default 500_000.0 um (500 mm)
-	min_segments:        int, // default 3
+	enabled:                   bool,
+	max_chord_error_um:        f64, // default 20.0 um (0.02 mm)
+	min_radius_um:             f64, // default 200.0 um (0.2 mm)
+	max_radius_um:             f64, // default 500_000.0 um (500 mm)
+	min_segments:              int, // default 3
+	// Klipper `[gcode_arcs] resolution`: every G2/G3 is expanded into
+	// max(1, floor(length / resolution)) straight chords. Default 1000.0 um (1.0 mm) matches
+	// KLIPPER_DEFAULT_ARC_RESOLUTION; 0 disables the segmentation gate and accepts any arc
+	// that fits the chord tolerance on the ideal circle.
+	klipper_arc_resolution_um: f64,
 }
 
 DEFAULT_ARC_FIT_CONFIG :: Arc_Fit_Config{
-	enabled            = true,
-	max_chord_error_um = 20.0,
-	min_radius_um      = 200.0,
-	max_radius_um      = 500_000.0,
-	min_segments       = 3,
+	enabled                   = true,
+	max_chord_error_um        = 20.0,
+	min_radius_um             = 200.0,
+	max_radius_um             = 500_000.0,
+	min_segments              = 3,
+	klipper_arc_resolution_um = 1000.0,
 }
 
 Arc_Fit_Stats :: struct {
@@ -139,6 +145,7 @@ motion_plan_fit_arcs :: proc(
 							c.max_err,
 							c.config.min_radius_um,
 							c.config.max_radius_um,
+							c.config.klipper_arc_resolution_um,
 							c.printer,
 						)
 						if fit_ok {
@@ -213,6 +220,7 @@ motion_plan_fit_arcs :: proc(
 arc_fit_slice :: proc(
 	ops: []Motion_Operation,
 	max_err_um, min_r_um, max_r_um: f64,
+	klipper_arc_resolution_um: f64,
 	printer: profiles.Printer_Profile,
 ) -> (center: polygon.Polygon_Point, kind: Motion_Arc_Kind, ok: bool) {
 	n := len(ops)
@@ -292,6 +300,20 @@ arc_fit_slice :: proc(
 		total_sweep += math.abs(ang)
 	}
 	if total_sweep > math.PI * 0.94 {return {}, .None, false}
+
+	// Klipper's `[gcode_arcs]` expansion (`planArc` in toolpath/parse.odin) replaces this G2/G3
+	// with max(1, floor(arc_length / resolution)) straight chords. Their sagitta must also fit
+	// `max_err_um`, otherwise the emitted arc breaks the geometry contract on the host.
+	if klipper_arc_resolution_um > 0 {
+		// 0.01 mm floor and segment cap mirror toolpath/parse.odin `run_arc`.
+		resolution_um := max(klipper_arc_resolution_um, 10.0)
+		segments := math.floor(r * total_sweep / resolution_um)
+		if segments < 1 {segments = 1}
+		if segments > 100000 {segments = 100000}
+		if r * (1.0 - math.cos(total_sweep / (2.0 * segments))) > max_err_um {
+			return {}, .None, false
+		}
+	}
 
 	// Keep arc center within reasonable machine coordinate range.
 	_ = printer
