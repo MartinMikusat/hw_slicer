@@ -12,7 +12,7 @@ reloads when its file changes.
 
 Each successful load writes `build/gcode/<name>-<nozzle>mm.gcode` through the
 Klipper emitter. The machine values in `src/design_export.odin` come from the
-RatOS V-Core 3 configuration captured in `hw_ratos`: a 500 × 500 × 500 mm bed,
+RatOS V-Core 3 configuration captured in `../references/ratos-captured-config/`: a 500 × 500 × 500 mm bed,
 300 mm/s and 3000 mm/s² limits, 120 mm/s and 800 mm/s² extruder limits, and
 0.5 mm retraction. Nozzle and bed temperature ranges, density, the volumetric
 flow limit, and fan limits come from the shared material profiles in
