@@ -245,27 +245,70 @@ slice_session_export_evidence_bundle :: proc(
 			if bytes, err := evidence.cpu_intersection_artifact_encode(span_hash, s.intersections, allocator = a); err == .None {
 				intersect_bytes = bytes
 			}
-			// The merged snapped result records no parent hash of its own; the topology artifact
-			// only needs a stable one, so use the intersection hash it was built from.
+			// The merged snapped result may contain planar-owned segments whose edge fields are
+			// `.Invalid` (rejected by primary snapped-segment hashing). Fall back to the primary
+			// snapped result hash so the downstream topology/region/surface chain remains anchored.
 			snapped_hash, snapped_ok = slicing.snapped_segment_result_hash(inter_hash, s.snapped)
+			if !snapped_ok {
+				snapped_hash, snapped_ok = slicing.snapped_segment_result_hash(inter_hash, s.primary_snapped)
+			}
 		}
 		if snapped_ok {
-			topo_hash, topo_ok = slicing.topology_result_hash(snapped_hash, len(s.snapped.segments.segment_ids), active_topo)
-		}
-		if topo_ok {
-			if bytes, err := evidence.topology_artifact_encode(snapped_hash, len(s.snapped.segments.segment_ids), active_topo, allocator = a); err == .None {
-				topology_bytes = bytes
+			export_topo := active_topo
+			topo_source_segments := len(s.snapped.segments.segment_ids)
+			// Contour simplification or repair drops segments/vertices while retaining original
+			// snapped segment indices and pre-simplification vertex degrees. Build a normalized
+			// temp view of the active topology (which regions were built from) so strict
+			// topology/region/surface artifact encoding succeeds without loosening replay checks.
+			if s.has_simplified || s.contour_repairs > 0 || len(active_topo.path_segment_indices) != topo_source_segments {
+				dense := make([]u32, len(active_topo.path_segment_indices), a)
+				for i in 0 ..< len(dense) {
+					dense[i] = u32(i)
+				}
+				verts := make([]slicing.Topology_Vertex, len(active_topo.vertices), a)
+				copy(verts, active_topo.vertices)
+				for &v in verts {
+					v.degree = 0
+				}
+				open_chains, deg_loops, non_manifold: u64
+				for path in active_topo.paths {
+					#partial switch path.kind {
+					case .Open_Chain:      open_chains += 1
+					case .Degenerate_Loop: deg_loops += 1
+					}
+					v_slice := active_topo.path_vertex_indices[path.vertex_offset:path.vertex_offset+u64(path.vertex_count)]
+					for vi, li in v_slice {
+						add := u32(1) if (path.kind == .Open_Chain && (li == 0 || li == len(v_slice)-1)) else u32(2)
+						verts[vi].degree += add
+					}
+				}
+				for v in verts {
+					if v.degree > 2 {non_manifold += 1}
+				}
+				export_topo.vertices = verts
+				export_topo.path_segment_indices = dense
+				export_topo.open_chain_count = open_chains
+				export_topo.degenerate_loop_count = deg_loops
+				export_topo.non_manifold_vertex_count = non_manifold
+				topo_source_segments = len(dense)
 			}
-			// Replay decodes regions only after the topology primitive, so keep the pair together.
-			if len(topology_bytes) > 0 {
-				region_hash, region_ok = slicing.region_result_hash(topo_hash, active_topo, s.regions)
+			topo_hash, topo_ok = slicing.topology_result_hash(snapped_hash, topo_source_segments, export_topo)
+			if topo_ok {
+				if bytes, err := evidence.topology_artifact_encode(snapped_hash, topo_source_segments, export_topo, allocator = a); err == .None {
+					topology_bytes = bytes
+					active_topo = export_topo
+				}
+				// Replay decodes regions only after the topology primitive, so keep the pair together.
+				if len(topology_bytes) > 0 {
+					region_hash, region_ok = slicing.region_result_hash(topo_hash, export_topo, s.regions)
+				}
 			}
-		}
-		if region_ok {
-			if bytes, err := evidence.region_artifact_encode(topo_hash, active_topo, s.regions, allocator = a); err == .None {
-				region_bytes = bytes
+			if region_ok {
+				if bytes, err := evidence.region_artifact_encode(topo_hash, export_topo, s.regions, allocator = a); err == .None {
+					region_bytes = bytes
+				}
+				surface_hash, surface_ok = features.surface_result_hash(region_hash, s.surfaces)
 			}
-			surface_hash, surface_ok = features.surface_result_hash(region_hash, s.surfaces)
 		}
 		if surface_ok {
 			if bytes, err := features.surface_artifact_encode(region_hash, s.surfaces, allocator = a); err == .None {

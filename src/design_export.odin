@@ -29,11 +29,9 @@ DEV_MAX_EXTRUDER_SPEED :: 120_000
 DEV_MAX_EXTRUDER_ACCELERATION :: 800_000
 DEV_RETRACTION_UM :: 500
 DEV_RETRACTION_SPEED :: 120_000
-// ponytail: PLA and toolhead assumptions; the captured configuration does not contain them.
-DEV_NOZZLE_TEMPERATURE :: 210
-DEV_BED_TEMPERATURE :: 60
-DEV_MAX_VOLUMETRIC_FLOW :: 15_000_000_000 // µm³/s, 15 mm³/s
 DEV_MINIMUM_RETRACTION_TRAVEL_UM :: 1_500
+DEV_DEFAULT_MATERIAL :: "pla"
+DEV_FALLBACK_MAX_VOLUMETRIC_FLOW :: 20_000_000_000 // µm³/s, PLA default fallback
 
 Design_Export_Error :: enum u8 {
 	None,
@@ -58,14 +56,28 @@ design_export_error_text :: proc(error: Design_Export_Error) -> string {
 	return "unknown"
 }
 
+design_load_material :: proc(name: string) -> (profiles.Material_Profile, bool) {
+	resolved_name := strings.to_lower(name if len(name) > 0 else DEV_DEFAULT_MATERIAL, context.temp_allocator)
+	for base_dir in ([?]string{DEV_PROFILE_DIRECTORY, "resources/profiles"}) {
+		path := fmt.tprintf("%s/materials/%s.json", base_dir, resolved_name)
+		mat, err := profiles.material_profile_load_json(path)
+		if err == .None {return mat, true}
+	}
+	return {}, false
+}
+
 // The physical printer as designs see it: the selected nozzle and the machine limits.
-design_printer :: proc(nozzle_mm: f64) -> design.Printer {
+design_printer :: proc(nozzle_mm: f64, material_name := "") -> design.Printer {
+	max_flow := f64(DEV_FALLBACK_MAX_VOLUMETRIC_FLOW) / 1e9
+	if mat, ok := design_load_material(material_name); ok && mat.maximum_volumetric_flow > 0 {
+		max_flow = f64(mat.maximum_volumetric_flow) / 1e9
+	}
 	return {
 		nozzle_diameter = nozzle_mm,
 		filament_diameter = DESIGN_FILAMENT_DIAMETER,
 		max_speed = f64(DEV_MAX_SPEED)/1000,
 		max_acceleration = f64(DEV_MAX_ACCELERATION)/1000,
-		max_volumetric_flow = f64(DEV_MAX_VOLUMETRIC_FLOW)/1e9,
+		max_volumetric_flow = max_flow,
 	}
 }
 
@@ -88,15 +100,21 @@ design_um :: proc(mm: f64) -> contracts.Micrometres {
 	return contracts.Micrometres(i64(math.round(mm*1000)))
 }
 
-// Builds and resolves the development profiles from the design's derived values.
+// Builds and resolves the development profiles from the design's derived values and shared material profile.
 design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved_Profiles, profiles.Profile_Resolve_Error) {
+	material, mat_ok := design_load_material(d.material)
+	if !mat_ok {return {}, .Material_Schema}
+	if d.filament_diameter > 0 {
+		material.filament_diameter = design_um(d.filament_diameter)
+	}
 	nozzle := design_um(nozzle_mm)
 	// Role targets hold the design-wide defaults; each feature's own values travel on its moves.
+	clamped_fan := clamp(design_fan(d.defaults.fan), material.minimum_fan_ratio, material.maximum_fan_ratio)
 	role := profiles.Role_Target{
 		speed        = design_speed(d.defaults.speed),
 		acceleration = design_acceleration(d.defaults.acceleration),
 		flow_ratio   = profiles.Ratio_Ppm(profiles.RATIO_SCALE),
-		fan_ratio    = design_fan(d.defaults.fan),
+		fan_ratio    = clamped_fan,
 	}
 	printer := profiles.Printer_Profile{
 		schema_version = profiles.PRINTER_PROFILE_SCHEMA_VERSION,
@@ -115,16 +133,10 @@ design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved
 		maximum_extruder_acceleration = DEV_MAX_EXTRUDER_ACCELERATION,
 		minimum_cruise_ratio = profiles.Ratio_Ppm(u32(profiles.KLIPPER_DEFAULT_MINIMUM_CRUISE_RATIO*f64(profiles.RATIO_SCALE))),
 	}
-	material := profiles.Material_Profile{
-		schema_version = profiles.MATERIAL_PROFILE_SCHEMA_VERSION,
-		filament_diameter = design_um(d.filament_diameter),
-		density = 1_240,
-		minimum_nozzle_temperature = 180,
-		maximum_nozzle_temperature = 230,
-		maximum_bed_temperature = 70,
-		maximum_fan_ratio = profiles.Ratio_Ppm(profiles.RATIO_SCALE),
-		maximum_volumetric_flow = DEV_MAX_VOLUMETRIC_FLOW,
-	}
+	nozzle_temp := profiles.Temperature_Celsius(i32(math.round(d.nozzle_temperature))) if d.nozzle_temperature > 0 else
+		profiles.Temperature_Celsius((i32(material.minimum_nozzle_temperature) + i32(material.maximum_nozzle_temperature)) / 2)
+	bed_temp := profiles.Temperature_Celsius(i32(math.round(d.bed_temperature))) if d.bed_temperature > 0 else
+		profiles.Temperature_Celsius((i32(material.minimum_bed_temperature) + i32(material.maximum_bed_temperature)) / 2)
 	line_width := design_um(d.line_width)
 	layer_height := design_um(d.layer_height)
 	process := profiles.Process_Profile{
@@ -163,8 +175,8 @@ design_profiles :: proc(d: ^design.Design, nozzle_mm: f64) -> (profiles.Resolved
 		support = role,
 		support_interface = role,
 		travel = {design_speed(d.travel_speed), design_acceleration(d.travel_acceleration)},
-		nozzle_temperature = DEV_NOZZLE_TEMPERATURE,
-		bed_temperature = DEV_BED_TEMPERATURE,
+		nozzle_temperature = nozzle_temp,
+		bed_temperature = bed_temp,
 		minimum_layer_time = 5_000,
 		minimum_layer_time_policy = .Slowdown_Then_Dwell,
 		minimum_print_speed = 50,
@@ -259,7 +271,7 @@ plan_filament :: proc(b: ^Plan_Builder, speed: profiles.Speed_Um_Per_Second, sig
 
 // Converts the layer-ordered design toolpath into a validated motion plan in bed coordinates.
 // Long travels retract and recover; the extrusion length follows the bead's stadium area.
-design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Profiles) -> (features.Motion_Plan_Result, Design_Export_Error) {
+design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Profiles, first_layer_fan: f64 = 0) -> (features.Motion_Plan_Result, Design_Export_Error) {
 	b := Plan_Builder{profile = profile}
 	b.layers = make([dynamic]features.Motion_Layer)
 	b.operations = make([dynamic]features.Motion_Operation, 0, len(t.moves)+len(t.moves)/4)
@@ -326,6 +338,12 @@ design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Prof
 		delta := max(emitted-b.emitted_nm, 10)
 		b.emitted_nm += delta
 		speed := design_speed(move.speed)
+		fan_percent := first_layer_fan if len(b.layers) == 1 else move.fan
+		fan_ratio := clamp(
+			design_fan(fan_percent),
+			profile.material.minimum_fan_ratio,
+			profile.material.maximum_fan_ratio,
+		)
 		plan_operation(&b, {
 			kind = .Extrude,
 			arc = op_arc,
@@ -335,7 +353,7 @@ design_motion_plan :: proc(t: ^design.Toolpath, profile: ^profiles.Resolved_Prof
 			arc_center = op_center,
 			speed = speed,
 			acceleration = design_acceleration(move.acceleration),
-			fan_ratio = design_fan(move.fan),
+			fan_ratio = fan_ratio,
 			filament_delta_nm = delta,
 			duration_us = plan_duration_us(distance_um, speed),
 		})
@@ -355,7 +373,7 @@ design_export :: proc(s: ^Design_State, allocator := context.allocator, director
 	assert(s.active)
 	profile, profile_error := design_profiles(&s.evaluated, design_nozzle(s))
 	if profile_error != .None {return "", .Profile}
-	plan, plan_error := design_motion_plan(&s.toolpath, &profile)
+	plan, plan_error := design_motion_plan(&s.toolpath, &profile, s.evaluated.first_layer_fan)
 	if plan_error != .None {return "", plan_error}
 	defer {
 		delete(plan.layers)

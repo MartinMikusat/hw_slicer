@@ -124,12 +124,16 @@ Parameter :: struct {
 }
 
 Design :: struct {
-	parameters:         [dynamic]Parameter,
-	objects:            [dynamic]Object,
-	junctions:          [dynamic]Junction,
-	line_width:         f64,
-	layer_height:       f64,
-	first_layer_height: f64,
+	parameters:          [dynamic]Parameter,
+	objects:             [dynamic]Object,
+	junctions:           [dynamic]Junction,
+	material:            string,
+	line_width:          f64,
+	layer_height:        f64,
+	first_layer_height:  f64,
+	first_layer_fan:     f64, // percent (default 0)
+	nozzle_temperature:  f64, // °C override (0 = material default)
+	bed_temperature:     f64, // °C override (0 = material default)
 	defaults:            Feature_Settings,
 	travel_speed:        f64, // mm/s
 	travel_acceleration: f64, // mm/s²
@@ -152,6 +156,7 @@ MAX_PARAMETERS :: 256
 EPSILON :: 1e-9
 
 design_destroy :: proc(d: ^Design) {
+	delete(d.material, d.parameters.allocator)
 	for parameter in d.parameters {delete(parameter.name, d.parameters.allocator)}
 	for object in d.objects {
 		if object.profile != nil {destroy_bezier_profile(object.profile, d.objects.allocator)}
@@ -432,6 +437,13 @@ parse_statements :: proc(p: ^Parser) -> bool {
 					value := parse_expression(p) or_return
 					define(p, name.text, value, name.line) or_return
 				}
+			} else if token.text == "material" {
+				if len(p.design.material) > 0 {
+					return fail(p, token.line, "material is already set")
+				}
+				expect(p, .Equals, "'=' after 'material'") or_return
+				mat := expect(p, .Ident, "a material name (e.g. pla, petg, abs)") or_return
+				p.design.material = strings.clone(mat.text, p.allocator)
 			} else if is_object_keyword(token.text) {
 				parse_object(p, token, "") or_return
 			} else if token.text == "bevel" || token.text == "fillet" {
@@ -991,6 +1003,12 @@ resolve_process :: proc(p: ^Parser, printer: Printer) -> bool {
 	d.line_width = length(p, "line_width", true, 0) or_return
 	d.layer_height = length(p, "layer_height", true, 0) or_return
 	d.first_layer_height = length(p, "first_layer_height", false, d.layer_height) or_return
+	d.first_layer_fan = scalar(p, "first_layer_fan", "percent", 0) or_return
+	if d.first_layer_fan < 0 || d.first_layer_fan > 100 {
+		return fail(p, 1, "first_layer_fan %.0f must be a percentage from 0 to 100", d.first_layer_fan)
+	}
+	d.nozzle_temperature = scalar(p, "nozzle_temperature", "°C", 0) or_return
+	d.bed_temperature = scalar(p, "bed_temperature", "°C", 0) or_return
 	d.defaults.speed = scalar(p, "print_speed", "mm/s", DEFAULT_PRINT_SPEED) or_return
 	d.defaults.acceleration = scalar(p, "print_acceleration", "mm/s²", DEFAULT_PRINT_ACCELERATION) or_return
 	d.defaults.fan = scalar(p, "fan", "percent", DEFAULT_FAN) or_return
