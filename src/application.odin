@@ -89,6 +89,8 @@ startup_gcode_view := -1
 startup_stage_edits: [dynamic][2]string
 // `--tabs=slicer,design,printer,…`: tabs to switch to on the first frame, in order.
 startup_tabs: [dynamic]App_Tab
+// `--subtab=control|tuning|files|console|macros|config|connection`: printer sub-view to select on the first frame.
+startup_printer_subtab: Maybe(Printer_Subtab)
 bench_frames_target: int
 bench_frames_done: int
 bench_start_tick: time.Tick
@@ -987,7 +989,11 @@ application_shutdown :: proc "c" () {
 // Replays `--tabs` once, on the first frame: each switch is followed by a design-watcher check, as
 // the frames after a click would run it. A capture then shows the state after the last switch.
 app_run_startup_tabs :: proc() {
-	if len(startup_tabs) == 0 {return}
+	sub, has_sub := startup_printer_subtab.?
+	if len(startup_tabs) == 0 && !has_sub {return}
+	if len(startup_tabs) == 0 && has_sub {
+		app_set_demo_tab(.Printer)
+	}
 	for tab in startup_tabs {
 		app_set_demo_tab(tab)
 		app.design.poll_tick = {}
@@ -996,6 +1002,12 @@ app_run_startup_tabs :: proc() {
 		app_printer_poll()
 	}
 	clear(&startup_tabs)
+	if has_sub {
+		app.printer.subtab = sub
+		if sub == .Config {printer_config_refresh(&app.printer)}
+		startup_printer_subtab = nil
+		app_printer_poll()
+	}
 	app.needs_redraw = true
 }
 
@@ -1712,6 +1724,18 @@ main :: proc() {
 				case "printer": append(&startup_tabs, App_Tab.Printer)
 				case: fmt.eprintf("hw_slicer: ignoring unknown tab '%s' in --tabs\n", name)
 				}
+			}
+		} else if strings.has_prefix(argument, "--subtab=") {
+			name := strings.to_lower(argument[len("--subtab="):], context.temp_allocator)
+			switch name {
+			case "control":    startup_printer_subtab = Printer_Subtab.Control
+			case "tuning":     startup_printer_subtab = Printer_Subtab.Tuning
+			case "files":      startup_printer_subtab = Printer_Subtab.Files
+			case "console":    startup_printer_subtab = Printer_Subtab.Console
+			case "macros":     startup_printer_subtab = Printer_Subtab.Macros
+			case "config":     startup_printer_subtab = Printer_Subtab.Config
+			case "connection": startup_printer_subtab = Printer_Subtab.Connection
+			case: fmt.eprintf("hw_slicer: ignoring unknown printer subtab '%s' in --subtab\n", name)
 			}
 		} else if strings.has_prefix(argument, "--bench-frames=") {
 			if parsed, ok := strconv.parse_int(argument[len("--bench-frames="):], 10); ok && parsed > 0 {

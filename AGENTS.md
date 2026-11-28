@@ -87,6 +87,8 @@ The capture renders the first frame to an offscreen Metal texture and writes a
 PNG, so it works with the window hidden and without screen-recording permission.
 Arguments after the path go to the app. `--tabs=slicer,design` switches the demo
 tabs in order on the first frame and runs the design watcher after each switch,
-so a capture covers tab-switch paths without computer control. `--stage-run`
+so a capture covers tab-switch paths without computer control. `--subtab=<name>`
+(`control`, `tuning`, `files`, `console`, `macros`, `config`, `connection`)
+selects a Printer sub-view on the first frame. `--stage-run`
 slices before the first frame; set `CAPTURE_TIMEOUT` (seconds, default 10) for it.
 After a capture, `hw-devlog --dir .dev-logs/capture summary` shows any `fatal` record.
