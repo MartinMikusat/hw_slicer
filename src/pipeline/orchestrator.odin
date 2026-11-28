@@ -478,13 +478,19 @@ decode_mesh_bytes :: proc(
 		defer formats.three_mf_scene_destroy(&scene, allocator)
 		flat, flat_err := formats.three_mf_scene_flatten(scene, allocator = allocator)
 		if flat_err != .None {return {}, default_units, {stage = "decode_3mf", detail = fmt.tprintf("3mf flatten error: %v", flat_err)}}
-		// Transfer flat.mesh ownership directly to caller.
-		return flat.mesh, scene.source.units, {}
+		// Transfer flat.mesh ownership to caller and free auxiliary flatten arrays.
+		mesh = flat.mesh
+		flat.mesh = {}
+		formats.three_mf_flattened_mesh_destroy(&flat, allocator)
+		return mesh, scene.source.units, {}
 	}
 	if is_obj {
 		obj_dec, obj_err := formats.obj_decode(bytes, default_units, allocator = allocator)
 		if obj_err != .None {return {}, default_units, {stage = "decode_obj", detail = fmt.tprintf("obj decode error: %v", obj_err)}}
-		return obj_dec.mesh, default_units, {}
+		mesh = obj_dec.mesh
+		obj_dec.mesh = {}
+		formats.obj_decoded_mesh_destroy(&obj_dec, allocator)
+		return mesh, default_units, {}
 	}
 	stl_dec, stl_err := formats.stl_decode(bytes, default_units, allocator = allocator)
 	if stl_err != .None {return {}, default_units, {stage = "decode_stl", detail = fmt.tprintf("stl decode error: %v", stl_err)}}

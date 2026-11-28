@@ -7,6 +7,18 @@ import "core:strings"
 
 import contracts "../contracts"
 import evidence "../evidence"
+import slicing "../slicing"
+
+@(private = "file")
+evidence_stage_schema_version :: proc(kind: contracts.Stage_Kind) -> u32 {
+	#partial switch kind {
+	case .Schedule_Layers:
+		return slicing.SCHEMA_VERSION_FIXED_LAYER_SCHEDULE_HASH
+	case .Calculate_Regions:
+		return slicing.SCHEMA_VERSION_REGION_HASH
+	}
+	return contracts.SCHEMA_VERSION_STAGE_RESULT
+}
 
 @(private = "file")
 evidence_hex_hash :: proc(h: contracts.Content_Hash, allocator: mem.Allocator) -> string {
@@ -257,7 +269,7 @@ slice_session_export_evidence_bundle :: proc(
 		}
 		stage_info := evidence.Evidence_Stage{
 			name           = stage_name,
-			schema_version = contracts.SCHEMA_VERSION_STAGE_RESULT,
+			schema_version = evidence_stage_schema_version(spec.kind),
 			revision       = 1,
 		}
 
