@@ -20,11 +20,18 @@ PRINTER_MAX_VISIBLE_FILES :: 48
 PRINTER_JOG_STEPS := [4]f64{0.1, 1.0, 10.0, 50.0}
 PRINTER_JOG_FEED_XY :: 80.0
 PRINTER_JOG_FEED_Z :: 15.0
+PRINTER_FEATURE_MAX :: 16
+PRINTER_DESIGN_PARAM_MAX :: 24
+PRINTER_MACRO_MAX :: 128
+PRINTER_MACRO_ROW_MAX :: 40
+PRINTER_FAN_ROWS_MAX :: 6
 
 Printer_Subtab :: enum u8 {
 	Control,
+	Tuning,
 	Files,
 	Console,
+	Macros,
 	Config,
 	Connection,
 }
@@ -41,11 +48,17 @@ Printer_State :: struct {
 	api_key:        string,
 	heater_drafts:  [PRINTER_MAX_HEATERS]string,
 	move_drafts:    [3]string,
+	feature_speed_drafts: [PRINTER_FEATURE_MAX]string,
+	feature_accel_drafts: [PRINTER_FEATURE_MAX]string,
+	feature_fan_drafts:   [PRINTER_FEATURE_MAX]string,
+	design_param_drafts:  [PRINTER_DESIGN_PARAM_MAX]string,
 	jog_step_index: int,
 	history_range:  int, // 0 = 1m, 1 = 5m, 2 = 20m
 	selected_file:  string,
 	files_scroll:   int,
 	console_scroll: int,
+	macros_scroll:  int,
+	expanded_macro: string,
 	download_dest:  string,
 	last_revision:  u64,
 	notice:         string,
@@ -82,15 +95,21 @@ printer_state_destroy :: proc(p: ^Printer_State) {
 	if !p.initialized {return}
 	printer_config_destroy(&p.config)
 	printer_tracking_destroy(p)
+	printer_thumbnail_destroy(&printer_thumbnail)
 	mr.destroy(&p.client)
 	text_input.destroy(&p.edit)
 	delete(p.endpoint)
 	delete(p.api_key)
 	delete(p.selected_file)
 	delete(p.download_dest)
+	delete(p.expanded_macro)
 	delete(p.notice)
 	for &d in p.heater_drafts {delete(d)}
 	for &d in p.move_drafts {delete(d)}
+	for &d in p.feature_speed_drafts {delete(d)}
+	for &d in p.feature_accel_drafts {delete(d)}
+	for &d in p.feature_fan_drafts {delete(d)}
+	for &d in p.design_param_drafts {delete(d)}
 	p^ = {}
 }
 
@@ -126,6 +145,9 @@ app_printer_poll :: proc() {
 		if mr.file_info_step(&p.client, p.selected_file, p.files_scroll, visible) {
 			changed = true
 		}
+		if printer_thumbnail_poll(p, mr.file_index(&p.client, p.selected_file)) {
+			changed = true
+		}
 	}
 	if changed || p.client.state.revision != p.last_revision {
 		p.last_revision = p.client.state.revision
@@ -149,6 +171,18 @@ printer_field_ptr :: proc(p: ^Printer_State, field: text_input.Field_ID) -> ^str
 	}
 	if idx, ok := printer_heater_field_index(action); ok && idx < PRINTER_MAX_HEATERS {
 		return &p.heater_drafts[idx]
+	}
+	if idx, ok := printer_feature_index(action, .Printer_Feature_Speed_Base); ok {
+		return &p.feature_speed_drafts[idx]
+	}
+	if idx, ok := printer_feature_index(action, .Printer_Feature_Accel_Base); ok {
+		return &p.feature_accel_drafts[idx]
+	}
+	if idx, ok := printer_feature_index(action, .Printer_Feature_Fan_Base); ok {
+		return &p.feature_fan_drafts[idx]
+	}
+	if idx, ok := printer_design_param_index(action, .Printer_Design_Param_Field_Base); ok {
+		return &p.design_param_drafts[idx]
 	}
 	return printer_config_field_ptr(p, action)
 }
@@ -299,6 +333,14 @@ app_printer_key :: proc(key_code: u16, characters: string, modifiers: u64) -> bo
 
 @(private = "file")
 printer_submit_field :: proc(p: ^Printer_State, action: UI_Action) {
+	if idx, ok := printer_feature_field_index(action); ok {
+		printer_submit_feature(p, idx)
+		return
+	}
+	if idx, ok := printer_design_param_index(action, .Printer_Design_Param_Field_Base); ok {
+		printer_submit_design_param(p, idx, false)
+		return
+	}
 	#partial switch action {
 	case .Printer_Conn_Endpoint, .Printer_Conn_Api_Key:
 		printer_connect_current(p)
@@ -354,6 +396,56 @@ printer_file_row_index :: proc(action: UI_Action) -> (int, bool) {
 	id := u64(action)
 	base := u64(UI_Action.Printer_File_Row_Base)
 	if id < base || id-base >= PRINTER_MAX_VISIBLE_FILES {return 0, false}
+	return int(id-base), true
+}
+
+printer_feature_index :: proc(action: UI_Action, base: UI_Action) -> (int, bool) {
+	id := u64(action)
+	first := u64(base)
+	if id < first || id-first >= PRINTER_FEATURE_MAX {return 0, false}
+	return int(id-first), true
+}
+printer_feature_field_index :: proc(action: UI_Action) -> (int, bool) {
+	if i, ok := printer_feature_index(action, .Printer_Feature_Speed_Base); ok {return i, true}
+	if i, ok := printer_feature_index(action, .Printer_Feature_Accel_Base); ok {return i, true}
+	return printer_feature_index(action, .Printer_Feature_Fan_Base)
+}
+printer_feature_speed_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Printer_Feature_Speed_Base) + u64(index))
+}
+printer_feature_accel_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Printer_Feature_Accel_Base) + u64(index))
+}
+printer_feature_fan_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Printer_Feature_Fan_Base) + u64(index))
+}
+printer_feature_apply_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Printer_Feature_Apply_Base) + u64(index))
+}
+
+printer_design_param_index :: proc(action: UI_Action, base: UI_Action) -> (int, bool) {
+	id := u64(action)
+	first := u64(base)
+	if id < first || id-first >= PRINTER_DESIGN_PARAM_MAX {return 0, false}
+	return int(id-first), true
+}
+printer_design_param_field_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Printer_Design_Param_Field_Base) + u64(index))
+}
+printer_design_param_apply_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Printer_Design_Param_Apply_Base) + u64(index))
+}
+printer_design_param_reset_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Printer_Design_Param_Reset_Base) + u64(index))
+}
+
+printer_macro_row_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Printer_Macro_Row_Base) + u64(index))
+}
+printer_macro_row_index :: proc(action: UI_Action) -> (int, bool) {
+	id := u64(action)
+	base := u64(UI_Action.Printer_Macro_Row_Base)
+	if id < base || id-base >= PRINTER_MACRO_ROW_MAX {return 0, false}
 	return int(id-base), true
 }
 
@@ -426,6 +518,80 @@ printer_submit_move :: proc(p: ^Printer_State, axis_idx: int) {
 }
 
 @(private = "file")
+printer_submit_feature :: proc(p: ^Printer_State, index: int) {
+	if index < 0 || index >= len(p.client.state.features) || index >= PRINTER_FEATURE_MAX {return}
+	f := p.client.state.features[index]
+	speed, speed_ok := strconv.parse_f64(strings.trim_space(p.feature_speed_drafts[index]))
+	accel, accel_ok := strconv.parse_f64(strings.trim_space(p.feature_accel_drafts[index]))
+	fan, fan_ok := strconv.parse_f64(strings.trim_space(p.feature_fan_drafts[index]))
+	if !speed_ok || !accel_ok || !fan_ok {
+		printer_set_notice(p, "Enter numeric speed, acceleration, and fan values", true)
+		return
+	}
+	site := devlog.Site{feature = "printer", operation = "feature_set"}
+	devlog.started(devlog.global(), site, {scope = "printer", stage = f.label})
+	if mr.set_feature(&p.client, index, speed, accel, fan) {
+		devlog.succeeded(devlog.global(), site, {scope = "printer", stage = f.label})
+		printer_set_notice(p, fmt.tprintf("%s → %.0f mm/s · %.0f mm/s² · %.0f%%", f.label, speed, accel, fan))
+	} else {
+		devlog.failed(devlog.global(), site, {reason = "feature change rejected", detail = p.client.state.error, severity = .Warning})
+		printer_set_notice(p, p.client.state.error if len(p.client.state.error) > 0 else "Feature change rejected", true)
+	}
+}
+
+@(private = "file")
+printer_submit_design_param :: proc(p: ^Printer_State, index: int, reset: bool) {
+	if index < 0 || index >= len(p.client.state.design_params) || index >= PRINTER_DESIGN_PARAM_MAX {return}
+	dp := p.client.state.design_params[index]
+	value := dp.value
+	if !reset {
+		parsed, ok := strconv.parse_f64(strings.trim_space(p.design_param_drafts[index]))
+		if !ok || math.is_nan(parsed) || math.is_inf(parsed, 0) {
+			printer_set_notice(p, "Enter a finite design parameter value", true)
+			return
+		}
+		value = parsed
+	}
+	if mr.set_design_param(&p.client, dp.name, value, reset) {
+		value_text := fmt.tprintf("→ %.4g", value)
+		if len(dp.unit) > 0 {value_text = fmt.tprintf("%s %s", value_text, dp.unit)}
+		printer_set_notice(p, fmt.tprintf("%s %s", dp.name, "reset to base value" if reset else value_text))
+	} else {
+		printer_set_notice(p, p.client.state.error if len(p.client.state.error) > 0 else "Design parameter change rejected", true)
+	}
+}
+
+// Keeps the live tuning drafts aligned with reported values, skipping the field being typed in.
+@(private = "file")
+printer_sync_tuning_drafts :: proc(p: ^Printer_State) {
+	s := &p.client.state
+	for f, i in s.features {
+		if i >= PRINTER_FEATURE_MAX {break}
+		if p.edit.active_field != text_input.Field_ID(u64(printer_feature_speed_action(i))) {
+			printer_set_draft(&p.feature_speed_drafts[i], fmt.tprintf("%.0f", f.speed))
+		}
+		if p.edit.active_field != text_input.Field_ID(u64(printer_feature_accel_action(i))) {
+			printer_set_draft(&p.feature_accel_drafts[i], fmt.tprintf("%.0f", f.acceleration))
+		}
+		if p.edit.active_field != text_input.Field_ID(u64(printer_feature_fan_action(i))) {
+			printer_set_draft(&p.feature_fan_drafts[i], fmt.tprintf("%.0f", f.fan))
+		}
+	}
+	for dp, i in s.design_params {
+		if i >= PRINTER_DESIGN_PARAM_MAX {break}
+		if p.edit.active_field == text_input.Field_ID(u64(printer_design_param_field_action(i))) {continue}
+		printer_set_draft(&p.design_param_drafts[i], fmt.tprintf("%.4g", dp.value))
+	}
+}
+
+@(private = "file")
+printer_set_draft :: proc(draft: ^string, value: string) {
+	if draft^ == value {return}
+	delete(draft^)
+	draft^ = strings.clone(value)
+}
+
+@(private = "file")
 printer_download_selected :: proc(p: ^Printer_State) {
 	if len(p.selected_file) == 0 {return}
 	if app.host.save_document == nil {return}
@@ -469,6 +635,42 @@ app_printer_activate :: proc(action: UI_Action) -> bool {
 		}
 		return true
 	}
+	if idx, ok := printer_feature_field_index(action); ok {
+		_ = idx
+		printer_focus_field(p, action)
+		return true
+	}
+	if idx, ok := printer_feature_index(action, .Printer_Feature_Apply_Base); ok {
+		printer_blur_field(p)
+		printer_submit_feature(p, idx)
+		return true
+	}
+	if idx, ok := printer_design_param_index(action, .Printer_Design_Param_Field_Base); ok {
+		_ = idx
+		printer_focus_field(p, action)
+		return true
+	}
+	if idx, ok := printer_design_param_index(action, .Printer_Design_Param_Apply_Base); ok {
+		printer_blur_field(p)
+		printer_submit_design_param(p, idx, false)
+		return true
+	}
+	if idx, ok := printer_design_param_index(action, .Printer_Design_Param_Reset_Base); ok {
+		printer_blur_field(p)
+		printer_submit_design_param(p, idx, true)
+		return true
+	}
+	if row, ok := printer_macro_row_index(action); ok {
+		idx := p.macros_scroll + row
+		if idx >= 0 && idx < len(p.client.state.macros) {
+			name := p.client.state.macros[idx].name
+			expanded := p.expanded_macro == name
+			delete(p.expanded_macro)
+			p.expanded_macro = "" if expanded else strings.clone(name)
+			app.needs_redraw = true
+		}
+		return true
+	}
 	#partial switch action {
 	case .Printer_Control_Surface, .Printer_Chart_Surface:
 		printer_blur_field(p)
@@ -476,6 +678,12 @@ app_printer_activate :: proc(action: UI_Action) -> bool {
 	case .Printer_Sub_Control:
 		printer_blur_field(p)
 		p.subtab = .Control
+	case .Printer_Sub_Tuning:
+		printer_blur_field(p)
+		p.subtab = .Tuning
+	case .Printer_Sub_Macros:
+		printer_blur_field(p)
+		p.subtab = .Macros
 	case .Printer_Sub_Files:
 		printer_blur_field(p)
 		p.subtab = .Files
@@ -616,6 +824,14 @@ app_printer_scroll :: proc(delta_y: f64) -> bool {
 		p.console_scroll = clamp(p.console_scroll + step, 0, max(0, len(p.client.state.console) - visible))
 		app.needs_redraw = true
 		return true
+	case .Macros:
+		visible := printer_macro_visible_rows(&app.ui)
+		total := min(len(p.client.state.macros), PRINTER_MACRO_MAX)
+		p.macros_scroll = clamp(p.macros_scroll + step, 0, max(0, total - visible))
+		app.needs_redraw = true
+		return true
+	case .Tuning:
+		return true
 	case .Control:
 		if ui_contains(ui_printer_control_card_rect(&app.ui), app.ui.pointer_x, app.ui.pointer_y) ||
 		   ui_contains(ui_printer_chart_card_rect(&app.ui), app.ui.pointer_x, app.ui.pointer_y) {
@@ -668,6 +884,72 @@ printer_console_visible_rows :: proc(ui: ^UI_State) -> int {
 	return max(1, int((vp.h - 52) / 20))
 }
 
+printer_macro_visible_rows :: proc(ui: ^UI_State) -> int {
+	vp := ui_printer_viewport_rect(ui)
+	return clamp(int((vp.h - 88) / 30), 1, PRINTER_MACRO_ROW_MAX)
+}
+
+printer_macro_row_height :: proc(m: mr.Macro, expanded: bool) -> f64 {
+	h := 30.0
+	if !expanded {return h}
+	if len(m.description) > 0 {h += 20}
+	if len(m.parameters) > 0 {h += 20}
+	return h
+}
+
+printer_tuning_columns :: proc(ui: ^UI_State) -> (left, right: UI_Rect) {
+	vp := ui_printer_viewport_rect(ui)
+	gap := 24.0
+	w := max(240.0, (vp.w - 32 - gap) * 0.5)
+	return {vp.x+16, vp.y+12, w, vp.h-24}, {vp.x+16+w+gap, vp.y+12, vp.w-32-gap-w, vp.h-24}
+}
+
+Printer_Tuning_Row :: struct {
+	label, v0, v1, v2, apply, reset: UI_Rect,
+}
+
+printer_tuning_feature_row :: proc(col: UI_Rect, y: f64) -> (row: Printer_Tuning_Row) {
+	h := 26.0
+	apply_w, fan_w, accel_w, speed_w := 58.0, 58.0, 70.0, 70.0
+	row.apply = {col.x+col.w-apply_w, y, apply_w, h}
+	row.v2 = {row.apply.x-6-fan_w, y, fan_w, h}
+	row.v1 = {row.v2.x-6-accel_w, y, accel_w, h}
+	row.v0 = {row.v1.x-6-speed_w, y, speed_w, h}
+	row.label = {col.x, y, max(70.0, row.v0.x-6-col.x), h}
+	return
+}
+
+printer_tuning_param_row :: proc(col: UI_Rect, y: f64) -> (row: Printer_Tuning_Row) {
+	h := 26.0
+	reset_w, apply_w, unit_w, value_w := 54.0, 58.0, 44.0, 92.0
+	row.reset = {col.x+col.w-reset_w, y, reset_w, h}
+	row.apply = {row.reset.x-6-apply_w, y, apply_w, h}
+	row.v1 = {row.apply.x-6-unit_w, y, unit_w, h}
+	row.v0 = {row.v1.x-6-value_w, y, value_w, h}
+	row.label = {col.x, y, max(70.0, row.v0.x-6-col.x), h}
+	return
+}
+
+printer_fans_card_rect :: proc(ui: ^UI_State) -> UI_Rect {
+	rows := min(len(app.printer.client.state.fans), PRINTER_FAN_ROWS_MAX)
+	if rows == 0 {return {}}
+	vp := ui_printer_viewport_rect(ui)
+	chart := ui_printer_chart_card_rect(ui)
+	w := min(230.0, max(150.0, vp.w*0.26))
+	h := 34 + f64(rows)*20
+	top := vp.y + 52
+	if top + h > chart.y - 12 {h = chart.y - 12 - top}
+	if h < 56 || w > vp.w - 24 {return {}}
+	return {vp.x+vp.w-w-12, top, w, h}
+}
+
+printer_object_name :: proc(name: string) -> string {
+	for prefix in ([?]string{"fan_generic ", "heater_fan ", "controller_fan ", "temperature_fan "}) {
+		if strings.has_prefix(name, prefix) {return name[len(prefix):]}
+	}
+	return name
+}
+
 // Controls ----------------------------------------------------------------------------------------
 
 ui_printer_custom_control :: proc(action: UI_Action) -> bool {
@@ -675,6 +957,8 @@ ui_printer_custom_control :: proc(action: UI_Action) -> bool {
 	if _, ok := printer_file_row_index(action); ok {return true}
 	if _, ok := printer_cfg_param_index(action); ok {return true}
 	if _, ok := printer_cfg_row_index(action); ok {return true}
+	if _, ok := printer_feature_field_index(action); ok {return true}
+	if _, ok := printer_design_param_index(action, .Printer_Design_Param_Field_Base); ok {return true}
 	#partial switch action {
 	case .Printer_Control_Surface, .Printer_Chart_Surface,
 	     .Printer_Conn_Endpoint, .Printer_Conn_Api_Key,
@@ -689,7 +973,7 @@ ui_printer_controls :: proc(ui: ^UI_State) {
 	p := &app.printer
 	s := &p.client.state
 	sub := ui_printer_subbar_rect(ui)
-	sub_items := [5]struct {
+	sub_items := [7]struct {
 		tab:    Printer_Subtab,
 		action: UI_Action,
 		name:   string,
@@ -697,8 +981,10 @@ ui_printer_controls :: proc(ui: ^UI_State) {
 		w:      f64,
 	}{
 		{.Control, .Printer_Sub_Control, "printer control tab", "Control", 78},
+		{.Tuning, .Printer_Sub_Tuning, "printer tuning tab", "Tuning", 74},
 		{.Files, .Printer_Sub_Files, "printer files tab", "Files", 66},
 		{.Console, .Printer_Sub_Console, "printer console tab", "Console", 80},
+		{.Macros, .Printer_Sub_Macros, "printer macros tab", "Macros", 74},
 		{.Config, .Printer_Sub_Config, "printer config tab", "Config", 74},
 		{.Connection, .Printer_Sub_Connection, "printer connection tab", "Connection", 96},
 	}
@@ -815,6 +1101,58 @@ ui_printer_controls :: proc(ui: ^UI_State) {
 
 	case .Console:
 		// Read-only scrollable log.
+	case .Tuning:
+		printer_sync_tuning_drafts(p)
+		left, right := printer_tuning_columns(ui)
+		editable := s.connection == .Connected && !p.demo && !s.stale && s.printer_state == "ready"
+		y := left.y + 54
+		features := min(len(s.features), PRINTER_FEATURE_MAX)
+		for i in 0..<features {
+			row := printer_tuning_feature_row(left, y)
+			if row.v0.y + row.v0.h > left.y + left.h {break}
+			f := s.features[i]
+			ui_add_control(ui, fmt.tprintf("feature %d speed", i), fmt.tprintf("%s speed in mm/s", f.label), row.v0, printer_feature_speed_action(i), editable)
+			ui_add_control(ui, fmt.tprintf("feature %d accel", i), fmt.tprintf("%s acceleration in mm/s²", f.label), row.v1, printer_feature_accel_action(i), editable)
+			ui_add_control(ui, fmt.tprintf("feature %d fan", i), fmt.tprintf("%s fan in percent", f.label), row.v2, printer_feature_fan_action(i), editable)
+			ui_add_control(ui, fmt.tprintf("feature %d apply", i), fmt.tprintf("Apply %s", f.label), row.apply, printer_feature_apply_action(i), editable)
+			y += 32
+		}
+
+		y = right.y + 54
+		params := min(len(s.design_params), PRINTER_DESIGN_PARAM_MAX)
+		for i in 0..<params {
+			row := printer_tuning_param_row(right, y)
+			if row.v0.y + row.v0.h > right.y + right.h {break}
+			dp := s.design_params[i]
+			can_edit := editable && dp.editable
+			ui_add_control(ui, fmt.tprintf("design param %d value", i), fmt.tprintf("%s value", dp.name), row.v0, printer_design_param_field_action(i), can_edit)
+			if dp.editable {
+				ui_add_control(ui, fmt.tprintf("design param %d apply", i), fmt.tprintf("Apply %s", dp.name), row.apply, printer_design_param_apply_action(i), can_edit)
+			}
+			if dp.editable && dp.overridden {
+				ui_add_control(ui, fmt.tprintf("design param %d reset", i), fmt.tprintf("Reset %s", dp.name), row.reset, printer_design_param_reset_action(i), can_edit)
+			}
+			y += 32
+		}
+
+	case .Macros:
+		visible := printer_macro_visible_rows(ui)
+		macros := s.macros
+		total := min(len(macros), PRINTER_MACRO_MAX)
+		p.macros_scroll = clamp(p.macros_scroll, 0, max(0, total - visible))
+		list_w := max(200.0, vp.w - 32)
+		y := vp.y + 54
+		bottom := vp.y + vp.h - 12
+		row := 0
+		for idx := p.macros_scroll; idx < total && row < visible; idx += 1 {
+			if y + 30 > bottom {break}
+			m := macros[idx]
+			expanded := p.expanded_macro == m.name
+			ui_add_control(ui, fmt.tprintf("macro row %d", row), m.name, {vp.x+16, y, list_w, 30}, printer_macro_row_action(row), true, 1, expanded)
+			y += printer_macro_row_height(m, expanded)
+			row += 1
+		}
+
 	case .Config:
 		ui_printer_config_controls(ui)
 
@@ -917,10 +1255,14 @@ ui_draw_printer_panels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 		if chart.w >= 260 {
 			ui_neo_panel(painter, ui, chart, theme.surface, theme.radius, true)
 		}
+		fans := printer_fans_card_rect(ui)
+		if fans.w > 0 {
+			ui_neo_panel(painter, ui, fans, theme.surface, theme.radius, true)
+		}
 	case .Config:
 		panel := ui_printer_config_left_rect(ui)
 		ui_neo_panel(painter, ui, panel, theme.surface, theme.radius, true)
-	case .Files, .Console, .Connection:
+	case .Files, .Console, .Connection, .Tuning, .Macros:
 		ui_neo_panel(painter, ui, vp, theme.surface, theme.radius, true)
 	}
 }
@@ -931,10 +1273,12 @@ ui_draw_printer_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	s := &p.client.state
 	sub := ui_printer_subbar_rect(ui)
 
-	sub_labels := [5]struct {action: UI_Action, text: string}{
+	sub_labels := [7]struct {action: UI_Action, text: string}{
 		{.Printer_Sub_Control, "Control"},
+		{.Printer_Sub_Tuning, "Tuning"},
 		{.Printer_Sub_Files, "Files"},
 		{.Printer_Sub_Console, "Console"},
+		{.Printer_Sub_Macros, "Macros"},
 		{.Printer_Sub_Config, "Config"},
 		{.Printer_Sub_Connection, "Connection"},
 	}
@@ -943,7 +1287,7 @@ ui_draw_printer_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	}
 	// Live connection badge in the sub-bar.
 	conn_text, conn_col := printer_connection_label(p)
-	conn_x := sub.x + 436
+	conn_x := sub.x + 584
 	stop_rect := ui_control_rect(ui, .Printer_Emergency_Stop)
 	if stop_rect.x - conn_x > 130 {
 		badge_w := min(220.0, stop_rect.x - conn_x - 16)
@@ -972,6 +1316,10 @@ ui_draw_printer_labels :: proc(painter: ^UI_Painter, ui: ^UI_State) {
 	switch p.subtab {
 	case .Control:
 		printer_draw_control_overlay(painter, ui, p)
+	case .Tuning:
+		printer_draw_tuning_panel(painter, ui, p, vp)
+	case .Macros:
+		printer_draw_macros_panel(painter, ui, p, vp)
 	case .Files:
 		printer_draw_files_panel(painter, ui, p, vp)
 	case .Console:
@@ -1078,6 +1426,127 @@ printer_draw_control_overlay :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Pr
 		ui_draw_text(painter, painter.semibold, ui, "20m", ui_control_rect(ui, .Printer_History_20m), ui_control_ink(ui, .Printer_History_20m), 0, .Center)
 		ui_draw_text(painter, painter.semibold, ui, "Sync", ui_control_rect(ui, .Printer_History_Refresh), ui_control_ink(ui, .Printer_History_Refresh), 0, .Center)
 		printer_draw_temperature_chart(painter, ui, p, {chart.x+12, chart.y+38, chart.w-24, chart.h-50})
+	}
+	printer_draw_fans_card(painter, ui)
+}
+
+@(private = "file")
+printer_draw_fans_card :: proc(painter: ^UI_Painter, ui: ^UI_State) {
+	card := printer_fans_card_rect(ui)
+	if card.w <= 0 {return}
+	theme := ui_theme(ui)
+	ui_draw_text(painter, painter.bold, ui, "Fans", {card.x+12, card.y+6, card.w-24, 20}, theme.text, 0)
+	y := card.y + 28
+	for fan, i in app.printer.client.state.fans {
+		if i >= PRINTER_FAN_ROWS_MAX || y + 20 > card.y + card.h - 4 {break}
+		speed := fmt.tprintf("%.0f%%", fan.speed*100) if fan.available else "Unknown"
+		ui_draw_text(painter, painter.font, ui, printer_object_name(fan.name), {card.x+12, y, card.w*0.55, 20}, theme.text, 0)
+		ui_draw_text(painter, painter.mono, ui, speed, {card.x+card.w-88, y, 76, 20}, theme.accent if fan.available && fan.speed > 0 else theme.muted, 0, .End, tracked = true)
+		y += 20
+	}
+}
+
+@(private = "file")
+printer_draw_tuning_panel :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printer_State, vp: UI_Rect) {
+	theme := ui_theme(ui)
+	s := &p.client.state
+	left, right := printer_tuning_columns(ui)
+
+	// Print features column.
+	ui_draw_text(painter, painter.bold, ui, "Print features (live)", {left.x, left.y, left.w, 22}, theme.text, 0)
+	header := printer_tuning_feature_row(left, left.y + 26)
+	ui_draw_text(painter, painter.font, ui, "Feature", header.label, theme.muted, 0)
+	ui_draw_text(painter, painter.font, ui, "mm/s", header.v0, theme.muted, 0, .Center)
+	ui_draw_text(painter, painter.font, ui, "mm/s²", header.v1, theme.muted, 0, .Center)
+	ui_draw_text(painter, painter.font, ui, "Fan%", header.v2, theme.muted, 0, .Center)
+	y := left.y + 54
+	features := min(len(s.features), PRINTER_FEATURE_MAX)
+	if features == 0 {
+		ui_draw_text(painter, painter.font, ui, "No live print features reported", {left.x, y, left.w, 22}, theme.muted, 0)
+	}
+	for i in 0..<features {
+		row := printer_tuning_feature_row(left, y)
+		if row.v0.y + row.v0.h > left.y + left.h {break}
+		f := s.features[i]
+		active := s.job_current_feature == f.index
+		label := fmt.tprintf("%s%s", "* " if active else "  ", f.label)
+		ui_draw_text(painter, painter.font, ui, label, row.label, theme.accent if active else theme.text, 0)
+		printer_draw_text_field(painter, ui, printer_feature_speed_action(i), p.feature_speed_drafts[i], "")
+		printer_draw_text_field(painter, ui, printer_feature_accel_action(i), p.feature_accel_drafts[i], "")
+		printer_draw_text_field(painter, ui, printer_feature_fan_action(i), p.feature_fan_drafts[i], "")
+		apply_action := printer_feature_apply_action(i)
+		ui_draw_text(painter, painter.font, ui, "Apply", ui_control_rect(ui, apply_action), ui_control_ink(ui, apply_action), 0, .Center)
+		y += 32
+	}
+
+	// Design parameters column.
+	heading := fmt.tprintf("Design parameters (live · rev %d)", s.job_design_revision) if s.job_design_revision > 0 else "Design parameters (live)"
+	ui_draw_text(painter, painter.bold, ui, heading, {right.x, right.y, right.w, 22}, theme.text, 0)
+	header = printer_tuning_param_row(right, right.y + 26)
+	ui_draw_text(painter, painter.font, ui, "Parameter", header.label, theme.muted, 0)
+	ui_draw_text(painter, painter.font, ui, "Value", header.v0, theme.muted, 0, .Center)
+	ui_draw_text(painter, painter.font, ui, "Unit", header.v1, theme.muted, 0, .Center)
+	y = right.y + 54
+	params := min(len(s.design_params), PRINTER_DESIGN_PARAM_MAX)
+	if params == 0 {
+		ui_draw_text(painter, painter.font, ui, "No live design parameters reported", {right.x, y, right.w, 22}, theme.muted, 0)
+	}
+	for i in 0..<params {
+		row := printer_tuning_param_row(right, y)
+		if row.v0.y + row.v0.h > right.y + right.h {break}
+		dp := s.design_params[i]
+		label := fmt.tprintf("%s%s", "* " if dp.overridden else "  ", dp.name)
+		ui_draw_text(painter, painter.font, ui, label, row.label, theme.accent if dp.overridden else theme.text, 0)
+		printer_draw_text_field(painter, ui, printer_design_param_field_action(i), p.design_param_drafts[i], "")
+		ui_draw_text(painter, painter.mono, ui, dp.unit, row.v1, theme.muted, 0, .Center, tracked = true)
+		if dp.editable {
+			apply_action := printer_design_param_apply_action(i)
+			ui_draw_text(painter, painter.font, ui, "Apply", ui_control_rect(ui, apply_action), ui_control_ink(ui, apply_action), 0, .Center)
+			if dp.overridden {
+				reset_action := printer_design_param_reset_action(i)
+				ui_draw_text(painter, painter.font, ui, "Reset", ui_control_rect(ui, reset_action), ui_control_ink(ui, reset_action), 0, .Center)
+			}
+		} else {
+			ui_draw_text(painter, painter.font, ui, dp.reason if len(dp.reason) > 0 else "locked", row.apply, theme.muted, 0)
+		}
+		y += 32
+	}
+}
+
+@(private = "file")
+printer_draw_macros_panel :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printer_State, vp: UI_Rect) {
+	theme := ui_theme(ui)
+	macros := p.client.state.macros
+	ui_draw_text(painter, painter.font, ui, fmt.tprintf("Macros (%d discovered)", len(macros)), {vp.x+16, vp.y+10, vp.w-32, 22}, theme.text, 0)
+	ui_draw_text(painter, painter.font, ui, "Select a macro to show its description and parameters. Execution is not available.", {vp.x+16, vp.y+32, vp.w-32, 16}, theme.muted, 0)
+	if len(macros) == 0 {
+		ui_draw_text(painter, painter.font, ui, "No macros discovered. Connect to a printer that reports its macro list.", {vp.x+16, vp.y+54, vp.w-32, 22}, theme.muted, 0)
+		return
+	}
+	visible := printer_macro_visible_rows(ui)
+	total := min(len(macros), PRINTER_MACRO_MAX)
+	row := 0
+	for idx := p.macros_scroll; idx < total && row < visible; idx += 1 {
+		action := printer_macro_row_action(row)
+		r := ui_control_rect(ui, action)
+		if r.w <= 0 {break}
+		m := macros[idx]
+		expanded := p.expanded_macro == m.name
+		ui_draw_text(painter, painter.font, ui, fmt.tprintf("%s %s", "−" if expanded else "+", m.name), r, ui_control_ink(ui, action), 0)
+		if expanded {
+			dy := r.y + 32
+			if len(m.description) > 0 {
+				ui_draw_text(painter, painter.font, ui, m.description, {vp.x+28, dy, vp.w-56, 18}, theme.muted, 0)
+				dy += 20
+			}
+			if len(m.parameters) > 0 {
+				ui_draw_text(painter, painter.mono, ui, m.parameters, {vp.x+28, dy, vp.w-56, 18}, theme.text, 0, tracked = true)
+			}
+		}
+		row += 1
+	}
+	if len(macros) > PRINTER_MACRO_MAX {
+		ui_draw_text(painter, painter.mono, ui, fmt.tprintf("Showing the first %d macros", PRINTER_MACRO_MAX), {vp.x+16, vp.y+vp.h-24, vp.w-32, 18}, theme.muted, 0, tracked = true)
 	}
 }
 
@@ -1189,7 +1658,10 @@ printer_draw_files_panel :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printe
 		if .Nozzle_Diameter in m.available {ui_draw_measurement(painter, ui, "Nozzle", fmt.tprintf("%.2f mm", m.numbers[.Nozzle_Diameter]), {detail_x+12, y, detail_w-24, 22}, 110); y += 24}
 		if .Filament_Weight in m.available {ui_draw_measurement(painter, ui, "Weight", fmt.tprintf("%.1f g", m.numbers[.Filament_Weight]), {detail_x+12, y, detail_w-24, 22}, 110); y += 24}
 	} else if f.metadata_status == .Pending {
-		ui_draw_text(painter, painter.font, ui, "Loading slicer metadata…", {detail_x+12, y, detail_w-24, 22}, theme.muted, 0)
+		ui_draw_text(painter, painter.font, ui, "Loading slicer metadata…", {detail_x+12, y, detail_w-24, 22}, theme.muted, 0); y += 24
+	}
+	if thumb := printer_thumbnail_label(&printer_thumbnail); len(thumb) > 0 {
+		ui_draw_measurement(painter, ui, "Thumbnail", thumb, {detail_x+12, y, detail_w-24, 22}, 110); y += 24
 	}
 	if s.connection == .Connected && !p.demo {
 		ui_draw_text(painter, painter.font, ui, "Download", ui_control_rect(ui, .Printer_Files_Download), ui_control_ink(ui, .Printer_Files_Download), 0, .Center)

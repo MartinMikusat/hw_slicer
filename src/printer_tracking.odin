@@ -239,8 +239,10 @@ printer_tracking_step :: proc(p: ^Printer_State) -> bool {
 		t.design_revision = s.job_design_revision
 	}
 
-	// Keep finished/cancelled part visible until standby or another file loads.
-	if connected && !t.active {
+	// Keep finished/cancelled part visible until standby or another file loads. The part records
+	// the print, so a missing clock (only needed for live motion) must not hide it.
+	part_reporting := !p.demo && s.connection == .Connected && !s.stale
+	if part_reporting && !t.active {
 		switch {
 		case s.job_state == "standby" || s.job_state == "" || (s.filename != "" && s.filename != t.part_file):
 			t.part_shown = false

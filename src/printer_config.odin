@@ -9,14 +9,28 @@ import text_input "components:text_input"
 
 import cfg "./configuration"
 import mr "./moonraker"
+import pm "./powermodules"
 
 CONFIG_MAIN_FILE :: "printer.cfg"
 CONFIG_PARAM_MAX :: 26
 CONFIG_LAYERED_ROWS_MAX :: 48
+CONFIG_PRESET_MAX :: 4
 
 Printer_Config_Mode :: enum u8 {
 	Guided,
 	Layered,
+}
+
+// Trident moves the bed on three Z leadscrews under a fixed gantry; Voron 2.4 keeps the bed
+// fixed and lifts the whole gantry on four corner Z drives.
+Printer_Frame_Kind :: enum u8 {
+	Trident,
+	Voron_24,
+}
+
+PRINTER_FRAME_NAMES := [Printer_Frame_Kind]string{
+	.Trident  = "Trident",
+	.Voron_24 = "Voron 2.4",
 }
 
 Printer_Config_Subsystem :: enum u8 {
@@ -78,6 +92,58 @@ PRINTER_CONFIG_PARAMS := [CONFIG_PARAM_MAX]Config_Param_Def{
 	{.Heaters, "extruder", "min_extrude_temp", "Min extrude temp", "°C", "170"},
 }
 
+Config_Preset_Value :: struct {
+	param: int,
+	value: string,
+}
+
+Config_Preset :: struct {
+	subsystem: Printer_Config_Subsystem,
+	label:     string,
+	board:     int, // index into pm.board_at, -1 keeps the active board mapping
+	values:    [8]Config_Preset_Value,
+	count:     int,
+}
+
+CONFIG_PRESETS := [CONFIG_PRESET_MAX]Config_Preset{
+	{
+		subsystem = .Toolhead,
+		label = "EVA 3 · Orbiter 2 + Rapido",
+		board = -1,
+		values = {
+			{14, "4.637"}, {12, "0.4"}, {15, "0.03"},
+			{16, "-28"}, {17, "-13"}, {18, "5.19"}, {23, "350"},
+			{0, ""},
+		},
+		count = 7,
+	},
+	{
+		subsystem = .Toolhead,
+		label = "EVA 3 · LGX Lite + Dragon",
+		board = -1,
+		values = {
+			{14, "5.57"}, {12, "0.4"}, {15, "0.04"},
+			{16, "-28"}, {17, "-13"}, {18, "5.19"}, {23, "290"},
+			{0, ""},
+		},
+		count = 7,
+	},
+	{
+		subsystem = .Board_Wiring,
+		label = "Octopus v1.1",
+		board = 0,
+		values = {{19, "/dev/RatOS/btt-octopus-11"}, {20, "PF13"}, {21, "PG0"}, {22, "PC13"}, {0, ""}, {0, ""}, {0, ""}, {0, ""}},
+		count = 4,
+	},
+	{
+		subsystem = .Board_Wiring,
+		label = "Octopus v1.1 + EBB42",
+		board = 1,
+		values = {{19, "/dev/RatOS/btt-octopus-11"}, {20, "PF13"}, {21, "PG0"}, {22, "PC13"}, {0, ""}, {0, ""}, {0, ""}, {0, ""}},
+		count = 4,
+	},
+}
+
 Config_Flat_Row :: struct {
 	section_idx: int,
 	key_idx:     int,
@@ -88,6 +154,8 @@ Config_Flat_Row :: struct {
 Printer_Config_State :: struct {
 	mode:            Printer_Config_Mode,
 	subsystem:       Printer_Config_Subsystem,
+	frame:           Printer_Frame_Kind,
+	board:           int,
 	loading:         bool,
 	waiting_list:    bool,
 	waiting_file:    string,
@@ -325,10 +393,94 @@ printer_config_dirty_count :: proc(c: ^Printer_Config_State) -> int {
 	return n
 }
 
+@(private = "file")
+printer_config_parse_pair_checked :: proc(s: string) -> (a, b: f64, ok: bool) {
+	parts := strings.split(strings.trim_space(s), ",", context.temp_allocator)
+	if len(parts) != 2 {return 0, 0, false}
+	va, ok_a := strconv.parse_f64(strings.trim_space(parts[0]))
+	vb, ok_b := strconv.parse_f64(strings.trim_space(parts[1]))
+	if !ok_a || !ok_b || math.is_nan(va) || math.is_nan(vb) || math.is_inf(va, 0) || math.is_inf(vb, 0) {
+		return 0, 0, false
+	}
+	return va, vb, true
+}
+
+// Rejects an edit before it reaches printer.cfg. Zero is legal only for the offsets and the
+// pressure-advance factor; every dimension, speed, and acceleration must stay positive.
+@(private = "file")
+printer_config_validate :: proc(c: ^Printer_Config_State) -> (message: string, ok: bool) {
+	for def, i in PRINTER_CONFIG_PARAMS {
+		if !c.dirty[i] {continue}
+		value := strings.trim_space(c.drafts[i])
+		switch def.key {
+		case "serial":
+			if len(value) == 0 {return fmt.tprintf("%s needs a device path", def.label), false}
+			if strings.contains_any(value, "\r\n[]") {
+				return fmt.tprintf("%s must not contain whitespace or brackets", def.label), false
+			}
+		case "step_pin":
+			if len(value) == 0 {return fmt.tprintf("%s cannot be empty", def.label), false}
+		case "mesh_min", "mesh_max":
+			if _, _, parsed := printer_config_parse_pair_checked(value); !parsed {
+				return fmt.tprintf("%s needs two comma-separated numbers", def.label), false
+			}
+		case "probe_count":
+			px, py, parsed := printer_config_parse_pair_checked(value)
+			if !parsed || px < 2 || py < 2 || px != math.floor(px) || py != math.floor(py) {
+				return fmt.tprintf("%s needs two whole counts of at least 2 (e.g. 7, 7)", def.label), false
+			}
+		case:
+			v, parsed := strconv.parse_f64(value)
+			if !parsed || math.is_nan(v) || math.is_inf(v, 0) {
+				return fmt.tprintf("%s must be a finite number", def.label), false
+			}
+			switch def.key {
+			case "x_offset", "y_offset", "z_offset", "pressure_advance":
+			case:
+				if v <= 0 {return fmt.tprintf("%s must be greater than zero", def.label), false}
+			}
+		}
+	}
+	// Mesh bounds are a rectangle: probe count and direction both depend on min < max.
+	if c.dirty[7] || c.dirty[8] {
+		min_x, min_y, ok_min := printer_config_parse_pair_checked(c.drafts[7])
+		max_x, max_y, ok_max := printer_config_parse_pair_checked(c.drafts[8])
+		if ok_min && ok_max && (min_x >= max_x || min_y >= max_y) {
+			return "Mesh min must stay below mesh max on both axes", false
+		}
+	}
+	return "", true
+}
+
+@(private = "file")
+printer_config_apply_preset :: proc(c: ^Printer_Config_State, index: int) {
+	if index < 0 || index >= CONFIG_PRESET_MAX {return}
+	preset := CONFIG_PRESETS[index]
+	for value, i in preset.values {
+		if i >= preset.count {break}
+		delete(c.drafts[value.param])
+		c.drafts[value.param] = strings.clone(value.value)
+		c.dirty[value.param] = true
+	}
+	if preset.board >= 0 {c.board = preset.board}
+	app.section_dirty = true
+	printer_config_set_status(c, fmt.tprintf("Applied %s preset — review and save printer.cfg", preset.label))
+}
+
+@(private = "file")
+printer_config_board :: proc(c: ^Printer_Config_State) -> pm.Board_Mapping {
+	board, ok := pm.board_at(c.board)
+	return board if ok else pm.Board_Mapping{label = "No board mapping"}
+}
+
 printer_config_save :: proc(p: ^Printer_State) {
 	c := &p.config
 	if !c.resolved || p.demo || p.client.state.connection != .Connected {
 		printer_config_set_status(c, "Load live configuration before saving printer.cfg", true)
+		return
+	}
+	if message, valid := printer_config_validate(c); !valid {
+		printer_config_set_status(c, message, true)
 		return
 	}
 	updates := make([dynamic]cfg.Update, context.temp_allocator)
@@ -420,6 +572,29 @@ printer_config_build_3d_lines :: proc(p: ^Printer_State, out: ^[dynamic]Mesh_Ver
 	add_seg(out, c000, c001, up); add_seg(out, c100, c101, up)
 	add_seg(out, c110, c111, up); add_seg(out, c010, c011, up)
 
+	// Frame architecture: a Trident bed rides three leadscrews under a fixed gantry, while a
+	// Voron 2.4 lifts the whole gantry on four corner Z drives.
+	switch c.frame {
+	case .Trident:
+		for post in ([3]Vec3{
+			{-hx*0.86, -hy*0.86, 0},
+			{hx*0.86, -hy*0.86, 0},
+			{0, hy*0.86, 0},
+		}) {
+			add_seg(out, post, {post.x, post.y, bz}, up)
+			add_seg(out, {post.x-8, post.y, 0}, {post.x+8, post.y, 0}, up)
+			add_seg(out, {post.x, post.y-8, 0}, {post.x, post.y+8, 0}, up)
+		}
+	case .Voron_24:
+		fx, fy := hx + 12, hy + 12
+		corners := [4]Vec3{{-fx, -fy, 0}, {fx, -fy, 0}, {fx, fy, 0}, {-fx, fy, 0}}
+		for post, i in corners {
+			add_seg(out, post, {post.x, post.y, bz}, up)
+			next := corners[(i+1)%4]
+			add_seg(out, {post.x, post.y, bz}, {next.x, next.y, bz}, up)
+		}
+	}
+
 	// Bed mesh probe grid when Bed Mesh subsystem is selected.
 	if c.subsystem == .Bed_Mesh {
 		mx0, my0 := printer_config_parse_pair(c.drafts[7], 20, 20)
@@ -462,6 +637,30 @@ printer_cfg_row_index :: proc(action: UI_Action) -> (int, bool) {
 	return int(id-base), true
 }
 
+printer_cfg_preset_action :: proc(index: int) -> UI_Action {
+	return UI_Action(u64(UI_Action.Printer_Cfg_Preset_Base) + u64(index))
+}
+printer_cfg_preset_index :: proc(action: UI_Action) -> (int, bool) {
+	id := u64(action)
+	base := u64(UI_Action.Printer_Cfg_Preset_Base)
+	if id < base || id-base >= CONFIG_PRESET_MAX {return 0, false}
+	return int(id-base), true
+}
+
+// Include depth counts hops from the main file through parent includes.
+printer_config_layer_depth :: proc(c: ^Printer_Config_State, layer: i32) -> int {
+	depth := 0
+	index := layer
+	for depth < cfg.INCLUDE_DEPTH_MAX {
+		if index < 0 || int(index) >= len(c.resolution.layers) {break}
+		parent := c.resolution.layers[index].parent
+		if parent < 0 || parent == index {break}
+		index = parent
+		depth += 1
+	}
+	return depth
+}
+
 printer_config_field_ptr :: proc(p: ^Printer_State, action: UI_Action) -> ^string {
 	if action == .Printer_Cfg_Search {return &p.config.search}
 	if idx, ok := printer_cfg_param_index(action); ok {return &p.config.drafts[idx]}
@@ -495,6 +694,12 @@ printer_config_activate :: proc(p: ^Printer_State, action: UI_Action) -> bool {
 		}
 		return true
 	}
+	if preset, ok := printer_cfg_preset_index(action); ok {
+		printer_blur_field(p)
+		printer_config_apply_preset(c, preset)
+		app.needs_redraw = true
+		return true
+	}
 	#partial switch action {
 	case .Printer_Cfg_Mode_Guided:
 		printer_blur_field(p)
@@ -510,6 +715,12 @@ printer_config_activate :: proc(p: ^Printer_State, action: UI_Action) -> bool {
 	case .Printer_Cfg_Sub_Tool:   c.subsystem = .Toolhead; app.section_dirty = true
 	case .Printer_Cfg_Sub_Board:  c.subsystem = .Board_Wiring; app.section_dirty = true
 	case .Printer_Cfg_Sub_Heat:   c.subsystem = .Heaters; app.section_dirty = true
+	case .Printer_Cfg_Frame_Trident:
+		c.frame = .Trident
+		if printer_config_shows_3d(p) {app.section_dirty = true}
+	case .Printer_Cfg_Frame_Voron24:
+		c.frame = .Voron_24
+		if printer_config_shows_3d(p) {app.section_dirty = true}
 	case .Printer_Cfg_Refresh:
 		printer_blur_field(p)
 		printer_config_refresh(p)
@@ -600,7 +811,23 @@ ui_printer_config_controls :: proc(ui: ^UI_State) {
 			sx += w + 6
 		}
 
-		py := sub_y + 40
+		py := panel.y + 88
+		if c.subsystem == .Build_Plate {
+			fw := max(96.0, (panel.w - 24 - 6) / 2)
+			ui_add_control(ui, "config frame trident", "Trident: bed on 3 leadscrews under a fixed gantry", {panel.x+12, py, fw, 26}, .Printer_Cfg_Frame_Trident, true, 1, c.frame == .Trident)
+			ui_add_control(ui, "config frame voron24", "Voron 2.4: fixed bed, gantry on 4 corner Z drives", {panel.x+18+fw, py, fw, 26}, .Printer_Cfg_Frame_Voron24, true, 1, c.frame == .Voron_24)
+			py += 34
+		}
+		if c.subsystem == .Toolhead || c.subsystem == .Board_Wiring {
+			pw := max(120.0, (panel.w - 24 - 6) / 2)
+			px := panel.x + 12
+			for preset, i in CONFIG_PRESETS {
+				if preset.subsystem != c.subsystem {continue}
+				ui_add_control(ui, fmt.tprintf("cfg preset %d", i), preset.label, {px, py, pw, 26}, printer_cfg_preset_action(i))
+				px += pw + 6
+			}
+			py += 34
+		}
 		field_w := min(220.0, max(120.0, panel.w*0.42))
 		for def, i in PRINTER_CONFIG_PARAMS {
 			if def.subsystem != c.subsystem {continue}
@@ -653,6 +880,19 @@ ui_draw_printer_config :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printer_
 		}
 
 		py := panel.y + 88
+		if c.subsystem == .Build_Plate {
+			ui_draw_text(painter, painter.font, ui, "Trident", ui_control_rect(ui, .Printer_Cfg_Frame_Trident), ui_control_ink(ui, .Printer_Cfg_Frame_Trident), 0, .Center)
+			ui_draw_text(painter, painter.font, ui, "Voron 2.4", ui_control_rect(ui, .Printer_Cfg_Frame_Voron24), ui_control_ink(ui, .Printer_Cfg_Frame_Voron24), 0, .Center)
+			py += 34
+		}
+		if c.subsystem == .Toolhead || c.subsystem == .Board_Wiring {
+			for preset, i in CONFIG_PRESETS {
+				if preset.subsystem != c.subsystem {continue}
+				action := printer_cfg_preset_action(i)
+				ui_draw_text(painter, painter.font, ui, preset.label, ui_control_rect(ui, action), ui_control_ink(ui, action), 0, .Center)
+			}
+			py += 34
+		}
 		field_w := min(220.0, max(120.0, panel.w*0.42))
 		label_w := max(100.0, panel.w - field_w - 40)
 		for def, i in PRINTER_CONFIG_PARAMS {
@@ -663,6 +903,21 @@ ui_draw_printer_config :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printer_
 			ui_draw_text(painter, painter.font, ui, label, {panel.x+16, py, label_w, 26}, theme.accent if c.dirty[i] else theme.text, 0)
 			printer_draw_text_field(painter, ui, printer_cfg_param_action(i), c.drafts[i], def.fallback)
 			py += 38
+		}
+
+		// Physical connector map for the active board, straight from the powermodules data.
+		if c.subsystem == .Board_Wiring {
+			board := printer_config_board(c)
+			ty := py + 4
+			if ty + 26 < panel.y + panel.h - 36 {
+				ui_draw_text(painter, painter.font, ui, fmt.tprintf("Wiring · %s", board.label), {panel.x+16, ty, panel.w-32, 22}, theme.text, 0)
+				ty += 26
+			}
+			for pin in board.pins {
+				if ty + 20 > panel.y + panel.h - 36 {break}
+				ui_draw_text(painter, painter.mono, ui, fmt.tprintf("%s  %s  %s", pin.socket, pin.mcu_pin, pin.component), {panel.x+16, ty, panel.w-32, 20}, theme.muted, 0, tracked = true)
+				ty += 20
+			}
 		}
 	} else {
 		printer_draw_text_field(painter, ui, .Printer_Cfg_Search, c.search, "Search section, key, or value…")
@@ -706,6 +961,18 @@ ui_draw_printer_config :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printer_
 			dy := panel.y + 88
 			ui_draw_text(painter, painter.mono, ui, fmt.tprintf("[%s] %s", sec.name, key.name), {dx+8, dy, dw-16, 22}, theme.text, 0, tracked = true)
 			dy += 28
+			// Provenance of the value that Klipper actually applies.
+			source := "File: unavailable"
+			if final.layer >= 0 && int(final.layer) < len(c.resolution.layers) {
+				active := c.resolution.layers[final.layer]
+				depth := printer_config_layer_depth(c, final.layer)
+				source = fmt.tprintf("File: %s:%d · include depth %d", active.path, final.line, depth)
+				if parent := active.parent; parent >= 0 && int(parent) < len(c.resolution.layers) {
+					source = fmt.tprintf("%s · from %s:%d", source, c.resolution.layers[parent].path, active.include_line)
+				}
+			}
+			ui_draw_text(painter, painter.mono, ui, source, {dx+8, dy, dw-16, 20}, theme.accent, 0, tracked = true)
+			dy += 24
 			ui_draw_text(painter, painter.font, ui, "Include provenance", {dx+8, dy, dw-16, 20}, theme.muted, 0)
 			dy += 24
 			for entry in key.entries {
@@ -714,7 +981,7 @@ ui_draw_printer_config :: proc(painter: ^UI_Painter, ui: ^UI_State, p: ^Printer_
 				lname := fmt.tprintf("%s (SAVE_CONFIG)", layer.path) if layer.kind == .Save_Config else layer.path
 				is_win := entry.layer == final.layer && entry.line == final.line
 				tag := "ACTIVE" if is_win else ("ignored" if entry.ignored else "shadowed")
-				ui_draw_text(painter, painter.mono, ui, fmt.tprintf("%s:%d  [%s]", lname, entry.line, tag), {dx+8, dy, dw-16, 18}, theme.accent if is_win else theme.muted, 0, tracked = true)
+				ui_draw_text(painter, painter.mono, ui, fmt.tprintf("%s:%d  [%s] d%d", lname, entry.line, tag, printer_config_layer_depth(c, entry.layer)), {dx+8, dy, dw-16, 18}, theme.accent if is_win else theme.muted, 0, tracked = true)
 				val_flat, _ := strings.replace_all(entry.value, "\n", " | ", context.temp_allocator)
 				ui_draw_text(painter, painter.mono, ui, val_flat, {dx+16, dy+18, dw-24, 18}, theme.text if is_win else theme.muted, 0, tracked = true)
 				dy += 42

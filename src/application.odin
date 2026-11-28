@@ -483,7 +483,7 @@ app_activate :: proc(action: UI_Action) -> bool {
 	     .Graph_Menu_Copy, .View_Mesh,
 	     .View_Result, .View_GCode_Prev, .View_GCode_Next, .View_GCode_Single_Layer,
 	     .View_Seam_Size_Dec, .View_Seam_Size_Inc,
-	     .Printer_Sub_Control, .Printer_Sub_Files, .Printer_Sub_Console, .Printer_Sub_Config,
+	     .Printer_Sub_Control, .Printer_Sub_Tuning, .Printer_Sub_Files, .Printer_Sub_Console, .Printer_Sub_Macros, .Printer_Sub_Config,
 	     .Printer_Sub_Connection, .Printer_Emergency_Stop, .Printer_Restart, .Printer_Firmware_Restart,
 	     .Printer_Home_All, .Printer_Home_X, .Printer_Home_Y, .Printer_Home_Z, .Printer_Disable_Motors,
 	     .Printer_Step_01, .Printer_Step_1, .Printer_Step_10, .Printer_Step_50,
@@ -499,8 +499,12 @@ app_activate :: proc(action: UI_Action) -> bool {
 	     .Printer_Cfg_Sub_Board, .Printer_Cfg_Sub_Heat,
 	     .Printer_Cfg_Refresh, .Printer_Cfg_Save, .Printer_Cfg_Revert,
 	     .Printer_Cfg_Search, .Printer_Cfg_Overridden, .Printer_Cfg_Drift,
+	     .Printer_Cfg_Frame_Trident, .Printer_Cfg_Frame_Voron24,
 	     .Printer_Heater_Field_Base, .Printer_Heater_Set_Base, .Printer_Heater_Off_Base, .Printer_File_Row_Base,
-	     .Printer_Cfg_Param_Base, .Printer_Cfg_Row_Base:
+	     .Printer_Cfg_Param_Base, .Printer_Cfg_Row_Base, .Printer_Macro_Row_Base,
+	     .Printer_Feature_Speed_Base, .Printer_Feature_Accel_Base, .Printer_Feature_Fan_Base, .Printer_Feature_Apply_Base,
+	     .Printer_Design_Param_Field_Base, .Printer_Design_Param_Apply_Base, .Printer_Design_Param_Reset_Base,
+	     .Printer_Cfg_Preset_Base:
 		return false
 	}
 	return true
